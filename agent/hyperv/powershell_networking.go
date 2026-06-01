@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -147,16 +148,22 @@ func updateSwitchScript(spec types.VirtualSwitchSpec) string {
 // Management OS vNIC
 // ---------------------------------------------------------------------------
 
-// vnicObservation is the actual state of a management OS vNIC.
-//
-// IP configuration is intentionally not observed or reconciled in v1: rewriting
-// the management NIC's address is how a host strands itself, and that path must
-// be validated on a real host before the agent applies it autonomously. The
-// adapter, its switch binding, and its VLAN are reconciled here.
+// vnicObservation is the actual state of a management OS vNIC: its adapter,
+// switch binding and VLAN. IP configuration is observed and reconciled
+// separately (see ipObservation) because it lives on the NetAdapter the vNIC
+// projects, not on the VM adapter object.
 type vnicObservation struct {
 	Exists     bool   `json:"exists"`
 	SwitchName string `json:"switchName"`
 	VlanID     int    `json:"vlanID"`
+}
+
+// ipObservation is the actual IPv4 configuration on a management vNIC's
+// projected interface ("vEthernet (<name>)").
+type ipObservation struct {
+	Address    string   `json:"address"` // CIDR, e.g. 10.0.0.21/24; empty if none/DHCP-less
+	Gateway    string   `json:"gateway"`
+	DNSServers []string `json:"dnsServers"`
 }
 
 type vnicPlan int
@@ -200,29 +207,146 @@ if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
 	return obs, nil
 }
 
-// EnsureMgmtVNIC makes the management OS vNIC exist on its switch and carry its
-// VLAN and bandwidth-weight intent, idempotently. See vnicObservation for why
-// IP configuration is deferred.
+// EnsureMgmtVNIC makes the management OS vNIC exist on its switch with its VLAN
+// and bandwidth weight, then (when the spec declares one) reconciles its static
+// IPv4 configuration. Idempotent throughout: a converged vNIC returns
+// OutcomeUnchanged and the IP step is skipped when actual already matches.
+//
+// IP reconciliation is observe-then-apply: the disruptive remove/replace only
+// runs when the address, gateway or DNS actually drift, never on a steady pass.
 func (p *PowerShell) EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVNICSpec) (Outcome, error) {
 	obs, err := p.queryVNIC(ctx, spec.Name)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("query vNIC %q: %w", spec.Name, err)
 	}
 
+	adapter := OutcomeUnchanged
 	switch planVNIC(spec, obs) {
-	case vnicNoop:
-		return OutcomeUnchanged, nil
 	case vnicCreate:
 		if err := p.run2(ctx, createVNICScript(spec)); err != nil {
 			return OutcomeUnchanged, fmt.Errorf("create vNIC %q: %w", spec.Name, err)
 		}
-		return OutcomeCreated, nil
-	default: // vnicUpdate
+		adapter = OutcomeCreated
+	case vnicUpdate:
 		if err := p.run2(ctx, updateVNICScript(spec)); err != nil {
 			return OutcomeUnchanged, fmt.Errorf("update vNIC %q: %w", spec.Name, err)
 		}
-		return OutcomeUpdated, nil
+		adapter = OutcomeUpdated
 	}
+
+	ipChanged := false
+	if spec.IPConfig != nil {
+		changed, err := p.reconcileVNICIP(ctx, spec.Name, spec.IPConfig)
+		if err != nil {
+			return adapter, fmt.Errorf("ensure vNIC %q IP: %w", spec.Name, err)
+		}
+		ipChanged = changed
+	}
+
+	switch {
+	case adapter == OutcomeCreated:
+		return OutcomeCreated, nil
+	case adapter == OutcomeUpdated || ipChanged:
+		return OutcomeUpdated, nil
+	default:
+		return OutcomeUnchanged, nil
+	}
+}
+
+// reconcileVNICIP observes the vNIC's current IPv4 config and applies the
+// desired one only if it differs. Returns whether it changed anything.
+func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *types.IPConfig) (bool, error) {
+	// Validate the desired address up front so we never run a destructive apply
+	// with a malformed spec.
+	ip, prefix, err := parseCIDR(desired.Address)
+	if err != nil {
+		return false, err
+	}
+
+	obs, err := p.queryVNICIP(ctx, name)
+	if err != nil {
+		return false, fmt.Errorf("query IP: %w", err)
+	}
+	if !ipDiffers(desired, obs) {
+		return false, nil
+	}
+	if err := p.run2(ctx, applyIPScript(name, ip, prefix, desired)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservation, error) {
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$alias = 'vEthernet (%[1]s)'
+$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne 'WellKnown' } | Select-Object -First 1
+$gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+$dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+[pscustomobject]@{
+  address    = if ($ip) { "$($ip.IPAddress)/$($ip.PrefixLength)" } else { '' }
+  gateway    = if ($gw) { [string]$gw } else { '' }
+  dnsServers = @($dns)
+} | ConvertTo-Json -Compress
+`, name) // name is a host-controlled adapter name; not attacker-supplied.
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return ipObservation{}, err
+	}
+	var obs ipObservation
+	if err := decodeJSON(out, &obs); err != nil {
+		return ipObservation{}, err
+	}
+	return obs, nil
+}
+
+// ipDiffers reports whether the desired IPv4 config differs from observed.
+// DNS order is significant (it is resolver priority), so it is compared exactly.
+func ipDiffers(desired *types.IPConfig, obs ipObservation) bool {
+	if desired.Address != obs.Address {
+		return true
+	}
+	if desired.Gateway != obs.Gateway {
+		return true
+	}
+	return !sameOrderedStrings(desired.DNSServers, obs.DNSServers)
+}
+
+func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
+	alias := fmt.Sprintf("vEthernet (%s)", name)
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference = 'Stop'\n")
+	fmt.Fprintf(&b, "$alias = %s\n", psQuote(alias))
+	// Switch off DHCP, then clear any existing address and default route so the
+	// new address applies cleanly and idempotently.
+	b.WriteString("Set-NetIPInterface -InterfaceAlias $alias -Dhcp Disabled -ErrorAction SilentlyContinue\n")
+	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
+	b.WriteString("Remove-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue\n")
+	if cfg.Gateway != "" {
+		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d -DefaultGateway %s | Out-Null\n",
+			psQuote(ip), prefix, psQuote(cfg.Gateway))
+	} else {
+		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d | Out-Null\n",
+			psQuote(ip), prefix)
+	}
+	if len(cfg.DNSServers) > 0 {
+		fmt.Fprintf(&b, "Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses %s | Out-Null\n",
+			psStringList(cfg.DNSServers))
+	} else {
+		b.WriteString("Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses | Out-Null\n")
+	}
+	return b.String()
+}
+
+// parseCIDR splits an address like "10.0.0.21/24" into its IP and prefix length.
+func parseCIDR(cidr string) (ip string, prefix int, err error) {
+	host, ipnet, perr := net.ParseCIDR(cidr)
+	if perr != nil {
+		return "", 0, fmt.Errorf("invalid CIDR address %q: %w", cidr, perr)
+	}
+	ones, _ := ipnet.Mask.Size()
+	return host.String(), ones, nil
 }
 
 func createVNICScript(spec types.ManagementVNICSpec) string {
@@ -280,14 +404,32 @@ func psBool(b bool) string {
 	return "$false"
 }
 
-// psAdapterList renders adapter names as a comma-separated list of quoted
-// strings for -NetAdapterName.
-func psAdapterList(names []string) string {
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = psQuote(n)
+// psStringList renders items as a comma-separated list of quoted PowerShell
+// strings, for parameters that take a string array (-NetAdapterName,
+// -ServerAddresses).
+func psStringList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = psQuote(s)
 	}
 	return strings.Join(quoted, ",")
+}
+
+// psAdapterList renders adapter names for -NetAdapterName.
+func psAdapterList(names []string) string { return psStringList(names) }
+
+// sameOrderedStrings reports whether a and b are equal element-for-element,
+// order included. Used where sequence is significant (DNS resolver priority).
+func sameOrderedStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // sameStringSet reports whether a and b contain the same elements, ignoring

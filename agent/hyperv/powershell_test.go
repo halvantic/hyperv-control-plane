@@ -206,6 +206,91 @@ func TestEnsureMgmtVNICCreate(t *testing.T) {
 	}
 }
 
+func TestIPDiffers(t *testing.T) {
+	desired := &types.IPConfig{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}
+	tests := []struct {
+		name string
+		obs  ipObservation
+		want bool
+	}{
+		{"exact match", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, false},
+		{"dhcp / no static", ipObservation{Address: "", Gateway: "", DNSServers: nil}, true},
+		{"address drift", ipObservation{Address: "10.0.0.99/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, true},
+		{"gateway drift", ipObservation{Address: "10.0.0.21/24", Gateway: "", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, true},
+		{"dns order matters", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.2", "10.0.0.1"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ipDiffers(desired, tt.obs); got != tt.want {
+				t.Fatalf("ipDiffers = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCIDR(t *testing.T) {
+	ip, prefix, err := parseCIDR("10.0.0.21/24")
+	if err != nil || ip != "10.0.0.21" || prefix != 24 {
+		t.Fatalf("parseCIDR = %q/%d err=%v", ip, prefix, err)
+	}
+	if _, _, err := parseCIDR("not-a-cidr"); err == nil {
+		t.Fatal("expected error on malformed CIDR")
+	}
+}
+
+// A vNIC that exists and matches, but whose IP has drifted from DHCP to the
+// desired static, reports Updated and runs the IP apply exactly once.
+func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{
+		[]byte(`{"exists":true,"switchName":"ConvergedSwitch","vlanID":0}`), // queryVNIC: adapter matches
+		[]byte(`{"address":"","gateway":"","dnsServers":[]}`),               // queryVNICIP: no static yet
+	}}
+	spec := types.ManagementVNICSpec{
+		Name: "Management", SwitchName: "ConvergedSwitch", VLANID: 0,
+		IPConfig: &types.IPConfig{Address: "10.0.0.21/24", DNSServers: []string{"10.0.0.1"}},
+	}
+	out, err := newTestPS(f).EnsureMgmtVNIC(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != OutcomeUpdated {
+		t.Fatalf("want Updated on IP drift, got %v", out)
+	}
+	// calls: queryVNIC, queryVNICIP, applyIP
+	if len(f.calls) != 3 {
+		t.Fatalf("want 3 calls (adapter query, ip query, ip apply), got %d", len(f.calls))
+	}
+	apply := f.calls[2]
+	if !strings.Contains(apply, "New-NetIPAddress") || !strings.Contains(apply, "-IPAddress '10.0.0.21' -PrefixLength 24") {
+		t.Fatalf("apply script wrong: %s", apply)
+	}
+	if strings.Contains(apply, "-DefaultGateway") {
+		t.Fatalf("no gateway desired, but apply set one: %s", apply)
+	}
+}
+
+// A fully converged vNIC (adapter and IP both match) makes no changes.
+func TestEnsureMgmtVNICConvergedNoChange(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{
+		[]byte(`{"exists":true,"switchName":"ConvergedSwitch","vlanID":0}`),
+		[]byte(`{"address":"10.0.0.21/24","gateway":"","dnsServers":["10.0.0.1"]}`),
+	}}
+	spec := types.ManagementVNICSpec{
+		Name: "Management", SwitchName: "ConvergedSwitch", VLANID: 0,
+		IPConfig: &types.IPConfig{Address: "10.0.0.21/24", DNSServers: []string{"10.0.0.1"}},
+	}
+	out, err := newTestPS(f).EnsureMgmtVNIC(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != OutcomeUnchanged {
+		t.Fatalf("want Unchanged on converged vNIC, got %v", out)
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("converged vNIC must not run an apply; calls=%d", len(f.calls))
+	}
+}
+
 func TestPSQuoteEscapesSingleQuotes(t *testing.T) {
 	if got := psQuote("a'b"); got != "'a''b'" {
 		t.Fatalf("psQuote escaping wrong: %s", got)
