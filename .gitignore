@@ -1,0 +1,20 @@
+# Build output
+/bin/
+*.exe
+*.exe~
+*.test
+
+# Agent embedded store
+*.db
+ballast-agent.db
+
+# Go workspace / env
+go.work
+go.work.sum
+.env
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

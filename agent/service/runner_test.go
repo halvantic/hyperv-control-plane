@@ -1,0 +1,168 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"testing"
+
+	"google.golang.org/grpc"
+
+	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/joshua-fourie/ballast/agent/reconcile"
+	"github.com/joshua-fourie/ballast/agent/store"
+	ballastpb "github.com/joshua-fourie/ballast/api/proto"
+	"github.com/joshua-fourie/ballast/api/types"
+)
+
+// fakeClient is a programmable AgentServiceClient. errAll makes every RPC fail,
+// simulating an unreachable centre.
+type fakeClient struct {
+	errAll bool
+
+	desired *ballastpb.Host // returned by PullDesiredState when set
+
+	registerCalls int
+	reportCalls   int
+	reported      []*ballastpb.HostStatus
+}
+
+var errUnreachable = errors.New("centre unreachable")
+
+func (f *fakeClient) RegisterHost(_ context.Context, _ *ballastpb.RegisterHostRequest, _ ...grpc.CallOption) (*ballastpb.RegisterHostResponse, error) {
+	f.registerCalls++
+	if f.errAll {
+		return nil, errUnreachable
+	}
+	return &ballastpb.RegisterHostResponse{Uid: "u-centre", Known: f.desired != nil}, nil
+}
+
+func (f *fakeClient) PullDesiredState(_ context.Context, _ *ballastpb.PullDesiredStateRequest, _ ...grpc.CallOption) (*ballastpb.PullDesiredStateResponse, error) {
+	if f.errAll {
+		return nil, errUnreachable
+	}
+	if f.desired == nil {
+		return &ballastpb.PullDesiredStateResponse{HasDesiredState: false}, nil
+	}
+	return &ballastpb.PullDesiredStateResponse{HasDesiredState: true, Host: f.desired}, nil
+}
+
+func (f *fakeClient) ReportStatus(_ context.Context, in *ballastpb.ReportStatusRequest, _ ...grpc.CallOption) (*ballastpb.ReportStatusResponse, error) {
+	f.reportCalls++
+	if f.errAll {
+		return nil, errUnreachable
+	}
+	f.reported = append(f.reported, in.GetStatus())
+	return &ballastpb.ReportStatusResponse{Accepted: true}, nil
+}
+
+func newTestRunner(t *testing.T) *runner {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hv := &hyperv.Stub{}
+	return &runner{
+		cfg:        runnerConfig{hostName: "host01"},
+		log:        log,
+		hv:         hv,
+		st:         st,
+		reconciler: reconcile.New(hv, log),
+	}
+}
+
+// When the centre is unreachable, a cycle must still complete: it journals an
+// Autonomous status locally and leaves it queued for replay. It must not block.
+func TestCycleAutonomousWhenCentreDown(t *testing.T) {
+	r := newTestRunner(t)
+	fc := &fakeClient{errAll: true}
+
+	r.cycle(context.Background(), fc)
+
+	if r.registered {
+		t.Fatal("must not be marked registered when registration failed")
+	}
+	queued, err := r.st.Undelivered()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("want 1 queued status, got %d", len(queued))
+	}
+	if !queued[0].Status.Autonomous {
+		t.Fatal("queued status should be marked Autonomous when centre is down")
+	}
+}
+
+// On boot the agent adopts the UID from cached desired state, so it has an
+// identity to report under before it can reach the centre.
+func TestAdoptCachedStateRecoversIdentity(t *testing.T) {
+	r := newTestRunner(t)
+	cached := types.Host{
+		Meta: types.ObjectMeta{Name: "host01", UID: "u-cached", Generation: 5},
+		Spec: types.HostSpec{FQDN: "host01.lab.local", RebootPolicy: types.RebootNever},
+	}
+	if err := r.st.SaveDesiredHost(cached); err != nil {
+		t.Fatal(err)
+	}
+
+	r.adoptCachedState()
+
+	if r.uid != "u-cached" {
+		t.Fatalf("want adopted uid u-cached, got %q", r.uid)
+	}
+}
+
+// Recovery path: a cycle that fails to reach the centre queues a status; a
+// later successful cycle registers, caches desired state, and drains the queue.
+func TestQueuedStatusDrainsOnReconnect(t *testing.T) {
+	r := newTestRunner(t)
+
+	// Cycle 1: centre down. One autonomous status queued.
+	down := &fakeClient{errAll: true}
+	r.cycle(context.Background(), down)
+	if q, _ := r.st.Undelivered(); len(q) != 1 {
+		t.Fatalf("after outage want 1 queued, got %d", len(q))
+	}
+
+	// Cycle 2: centre back, serving desired state.
+	up := &fakeClient{desired: ballastpb.HostToProto(types.Host{
+		Meta: types.ObjectMeta{Name: "host01", UID: "u-centre", Generation: 2},
+		Spec: types.HostSpec{FQDN: "host01.lab.local", RebootPolicy: types.RebootNever},
+	})}
+	r.cycle(context.Background(), up)
+
+	if !r.registered {
+		t.Fatal("expected registration to succeed on reconnect")
+	}
+	if up.registerCalls != 1 {
+		t.Fatalf("want exactly 1 register call, got %d", up.registerCalls)
+	}
+	// Desired state cached.
+	if h, ok, _ := r.st.LoadDesiredHost(); !ok || h.Meta.Generation != 2 {
+		t.Fatalf("desired state not cached after reconnect: ok=%v gen=%d", ok, h.Meta.Generation)
+	}
+	// Both the queued outage status and the fresh one delivered; none left.
+	if q, _ := r.st.Undelivered(); len(q) != 0 {
+		t.Fatalf("want queue drained, got %d remaining", len(q))
+	}
+	if up.reportCalls != 2 {
+		t.Fatalf("want 2 statuses delivered on reconnect (queued + current), got %d", up.reportCalls)
+	}
+}
+
+// Once registered, the agent does not re-register every cycle.
+func TestNoReRegisterOnceRegistered(t *testing.T) {
+	r := newTestRunner(t)
+	up := &fakeClient{}
+	r.cycle(context.Background(), up)
+	r.cycle(context.Background(), up)
+	if up.registerCalls != 1 {
+		t.Fatalf("want 1 register call across two cycles, got %d", up.registerCalls)
+	}
+}
