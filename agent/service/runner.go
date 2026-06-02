@@ -147,6 +147,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	}
 
 	autonomous := false
+	var assignment *reconcile.ClusterAssignment
 
 	// Pull desired state, sending the generation we already hold so the centre
 	// can answer "unchanged" cheaply.
@@ -167,6 +168,17 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 		} else {
 			r.log.Info("desired state updated",
 				"host", desired.Meta.Name, "generation", desired.Meta.Generation)
+		}
+	}
+	// Cluster assignment is only acted on when the centre is reachable: once a
+	// cluster exists, Failover Clustering maintains it without the centre.
+	if err == nil {
+		if ca := resp.GetClusterAssignment(); ca != nil && ca.GetIsMember() {
+			assignment = &reconcile.ClusterAssignment{
+				IsMember: true,
+				IsFormer: ca.GetIsFormer(),
+				Cluster:  ballastpb.ClusterFromProto(ca.GetCluster()),
+			}
 		}
 	}
 
@@ -193,6 +205,38 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 
 	st := r.buildStatus(inv, autonomous, phase, conds, hyperVInstalled, rebootRequired)
 	r.reportStatus(ctx, client, st)
+
+	// Cluster reconcile, only when the centre gave us a current assignment.
+	if assignment != nil {
+		cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+		if cerr != nil {
+			r.log.Error("cluster reconcile incomplete", "err", cerr)
+		}
+		r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+	}
+}
+
+// reportClusterStatus sends a cluster-only status report (no host status, so it
+// does not disturb the host's own status record).
+func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.AgentServiceClient, cluster types.Cluster, res reconcile.ClusterResult) {
+	cs := types.ClusterStatus{
+		Phase:              res.Phase,
+		ObservedGeneration: cluster.Meta.Generation,
+		FormedMembers:      res.FormedMembers,
+		Conditions:         res.Conditions,
+	}
+	if !res.Honoured {
+		cs.ObservedGeneration = 0
+	}
+	_, err := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
+		HostName:      r.cfg.hostName,
+		Uid:           r.uid,
+		ClusterName:   cluster.Meta.Name,
+		ClusterStatus: ballastpb.ClusterStatusToProto(cs),
+	})
+	if err != nil {
+		r.log.Warn("cluster status report failed", "err", err)
+	}
 }
 
 // buildStatus assembles the status to report. ObservedGeneration carries the

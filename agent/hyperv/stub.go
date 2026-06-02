@@ -38,6 +38,15 @@ type Stub struct {
 	EnsureRoleCalled bool
 	RebootCalled     bool
 
+	// Clustering: ClusteringInstalled seeds the feature state; ClusterExists and
+	// ClusterMembers model an existing cluster. FormCalled records that the
+	// reconciler formed one, so tests can assert the former actually acted.
+	ClusteringInstalled bool
+	ClusterExists       bool
+	ClusterName         string
+	ClusterMembers      []string
+	FormCalled          bool
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -140,6 +149,32 @@ func (s *Stub) RebootHost(_ context.Context) error {
 		s.HyperVInstalled = true
 		s.RebootPending = false
 	}
+	return nil
+}
+
+func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ClusterState{Exists: s.ClusterExists, Name: s.ClusterName, Members: s.ClusterMembers}, nil
+}
+
+func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ClusteringInstalled {
+		return OutcomeUnchanged, nil
+	}
+	s.ClusteringInstalled = true
+	return OutcomeCreated, nil
+}
+
+func (s *Stub) FormCluster(_ context.Context, f ClusterFormation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.FormCalled = true
+	s.ClusterExists = true
+	s.ClusterName = f.Name
+	s.ClusterMembers = append([]string(nil), f.Members...)
 	return nil
 }
 

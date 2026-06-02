@@ -83,6 +83,41 @@ type Interface interface {
 	// RebootHost restarts the host. The agent only calls this when RebootPolicy
 	// permits it; it is never invoked speculatively.
 	RebootHost(ctx context.Context) error
+
+	// GetClusterState observes the failover cluster this node belongs to, if
+	// any. It is a pure read.
+	GetClusterState(ctx context.Context) (ClusterState, error)
+
+	// EnsureFailoverClusteringFeature installs the Failover-Clustering feature
+	// and its tools if absent. The feature install does not require a reboot.
+	EnsureFailoverClusteringFeature(ctx context.Context) (Outcome, error)
+
+	// FormCluster creates the failover cluster described by f, with this node as
+	// the former. It uses New-Cluster (never hand-rolled quorum) and coordinates
+	// with the Failover Clustering service. Idempotency is the caller's
+	// responsibility: it must only be invoked when no cluster yet exists.
+	FormCluster(ctx context.Context, f ClusterFormation) error
+}
+
+// ClusterState is the observed failover-cluster membership from one node's view.
+type ClusterState struct {
+	// Exists is true when this node is part of a formed cluster.
+	Exists bool
+	// Name is the cluster's name (empty when Exists is false).
+	Name string
+	// Members are the node names currently in the cluster.
+	Members []string
+}
+
+// ClusterFormation is the input to New-Cluster: the cluster to create and the
+// nodes to bring in.
+type ClusterFormation struct {
+	Name string
+	// Members are the host names to include at formation.
+	Members []string
+	// ManagementIP is the cluster's static management address; empty asks
+	// Failover Clustering to obtain one via DHCP.
+	ManagementIP string
 }
 
 // HostRoleState is the observed state of the host's Hyper-V role.
