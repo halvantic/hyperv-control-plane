@@ -69,6 +69,19 @@ func TestDecodeJSONEmptyIsZero(t *testing.T) {
 	}
 }
 
+// Cluster cmdlets emit WARNING lines ahead of the JSON; decode must tolerate the
+// preamble and read the final JSON line.
+func TestDecodeJSONIgnoresWarningPreamble(t *testing.T) {
+	out := []byte("WARNING: Node HV01: No disks found to be used for cache\nWARNING: Node HV02: ...\n{\"s2dEnabled\":true,\"volumes\":[\"Vol01\"]}")
+	var obs storageObservation
+	if err := decodeJSON(out, &obs); err != nil {
+		t.Fatal(err)
+	}
+	if !obs.S2DEnabled || len(obs.Volumes) != 1 || obs.Volumes[0] != "Vol01" {
+		t.Fatalf("decode wrong: %+v", obs)
+	}
+}
+
 func sampleSwitchSpec() types.VirtualSwitchSpec {
 	return types.VirtualSwitchSpec{
 		Name:              "ConvergedSwitch",

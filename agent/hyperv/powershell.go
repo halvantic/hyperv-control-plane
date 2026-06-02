@@ -63,15 +63,35 @@ func psQuote(s string) string {
 
 // decodeJSON unmarshals PowerShell JSON output into v. Empty output (a cmdlet
 // that produced nothing) is treated as the zero value rather than an error.
+//
+// Some cluster cmdlets (e.g. Get-ClusterStorageSpacesDirect) emit warning lines
+// ahead of their result. Since every script here ends with
+// `ConvertTo-Json -Compress` (single-line output), we take the last non-empty
+// line as the JSON, tolerating any such preamble.
 func decodeJSON(out []byte, v any) error {
 	out = bytes.TrimSpace(out)
 	if len(out) == 0 {
 		return nil
 	}
+	// Strip any leading warning/preamble lines: the JSON begins at the first
+	// line starting with { or [. This keeps multi-line JSON intact.
+	if !startsWithJSON(out) {
+		lines := bytes.Split(out, []byte("\n"))
+		for i, line := range lines {
+			if startsWithJSON(bytes.TrimSpace(line)) {
+				out = bytes.TrimSpace(bytes.Join(lines[i:], []byte("\n")))
+				break
+			}
+		}
+	}
 	if err := json.Unmarshal(out, v); err != nil {
 		return fmt.Errorf("decode powershell output: %w (output: %q)", err, string(out))
 	}
 	return nil
+}
+
+func startsWithJSON(b []byte) bool {
+	return len(b) > 0 && (b[0] == '{' || b[0] == '[')
 }
 
 // inventoryScript collects physical adapters, physical disks, memory and CPU in

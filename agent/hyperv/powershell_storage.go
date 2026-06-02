@@ -13,7 +13,7 @@ type storageObservation struct {
 const storageStateScript = `
 $ErrorActionPreference = 'Stop'
 $enabled = $false
-$s2d = Get-ClusterStorageSpacesDirect -ErrorAction SilentlyContinue
+$s2d = Get-ClusterStorageSpacesDirect -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 3>$null
 if ($s2d -and $s2d.State -eq 'Enabled') { $enabled = $true }
 $vols = @()
 if ($enabled) { $vols = @((Get-VirtualDisk -ErrorAction SilentlyContinue).FriendlyName) }
@@ -53,7 +53,7 @@ $existing = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
 if ($existing) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 $pool = (Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1).FriendlyName
 if (-not $pool) { throw 'no Storage Spaces Direct pool found' }
-New-Volume -StoragePoolFriendlyName $pool -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]dB -ResiliencySettingName %[3]s | Out-Null
+New-Volume -StoragePoolFriendlyName $pool -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
 
