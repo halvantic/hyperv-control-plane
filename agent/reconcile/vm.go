@@ -45,16 +45,28 @@ type VMResult struct {
 func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 	res := VMResult{Name: vm.Meta.Name}
 
-	out, err := r.hv.EnsureVM(ctx, vm)
-	res.Conditions = append(res.Conditions, r.condition("VM/"+vm.Meta.Name, out, err))
+	ensured, err := r.hv.EnsureVM(ctx, vm)
+	res.Conditions = append(res.Conditions, r.condition("VM/"+vm.Meta.Name, ensured.Outcome, err))
 	if err != nil {
 		r.log.Error("ensure vm failed", "vm", vm.Meta.Name, "err", err)
 		res.Phase = types.PhaseDegraded
 		return res
 	}
-	if out != hyperv.OutcomeUnchanged {
+	if ensured.Outcome != hyperv.OutcomeUnchanged {
 		res.Changed = true
-		r.log.Info("vm reconciled", "vm", vm.Meta.Name, "outcome", out)
+		r.log.Info("vm reconciled", "vm", vm.Meta.Name, "outcome", ensured.Outcome)
+	}
+	// A processor-count or static-memory change cannot apply while the VM runs;
+	// surface it and hold ObservedGeneration back (Progressing, not Degraded)
+	// until the VM is stopped, rather than failing every cycle.
+	pending := ensured.PendingPowerOff
+	if pending {
+		res.Conditions = append(res.Conditions, types.Condition{
+			Type: "VMConfig/" + vm.Meta.Name, Status: false, Reason: "RequiresPowerOff",
+			Message:            "processor/memory change settles once the VM is stopped",
+			LastTransitionTime: r.now(),
+		})
+		r.log.Info("vm config change pending power-off", "vm", vm.Meta.Name)
 	}
 
 	// Drive power to the desired state. Only Running/Off are requested.
@@ -82,6 +94,13 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		res.AssignedMemoryBytes = state.AssignedMemoryBytes
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds
+	}
+
+	if pending {
+		// Configuration is not fully honoured until the deferred change applies.
+		res.Phase = types.PhaseProgressing
+		res.Honoured = false
+		return res
 	}
 
 	res.Phase = types.PhaseReady

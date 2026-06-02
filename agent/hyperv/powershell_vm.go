@@ -55,7 +55,7 @@ if (-not $vm) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress;
 // EnsureVM creates the VM if absent and then converges its processor count,
 // memory, disks and network adapters. The script reports whether the VM was
 // created and whether anything changed, which maps to the Outcome.
-func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (Outcome, error) {
+func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult, error) {
 	gen := vm.Spec.HyperVGeneration
 	if gen == 0 {
 		gen = 2
@@ -64,23 +64,26 @@ func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (Outcome, error)
 
 	out, err := p.run(ctx, script)
 	if err != nil {
-		return OutcomeUnchanged, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
+		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
 	}
 	var res struct {
-		Created bool `json:"created"`
-		Changed bool `json:"changed"`
+		Created         bool `json:"created"`
+		Changed         bool `json:"changed"`
+		PendingPowerOff bool `json:"pendingPowerOff"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
-		return OutcomeUnchanged, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
+		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
 	}
+	r := VMEnsureResult{PendingPowerOff: res.PendingPowerOff}
 	switch {
 	case res.Created:
-		return OutcomeCreated, nil
+		r.Outcome = OutcomeCreated
 	case res.Changed:
-		return OutcomeUpdated, nil
+		r.Outcome = OutcomeUpdated
 	default:
-		return OutcomeUnchanged, nil
+		r.Outcome = OutcomeUnchanged
 	}
+	return r, nil
 }
 
 // ensureVMScript builds the convergence script for one VM. It is split out so it
@@ -90,12 +93,28 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 	name := psQuote(vm.Meta.Name)
 	s := vm.Spec
 
-	// Memory: static unless dynamic memory is configured.
-	memScript := fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $false -StartupBytes %[2]d", name, s.MemoryStartupBytes)
+	// Processor count and static startup memory cannot change on a running VM, so
+	// each is applied only when it differs from actual, and skipped (flagging
+	// $pending) when the VM is running. The set commands run against $name.
+	procScript := fmt.Sprintf(`if ((Get-VMProcessor -VMName %[1]s).Count -ne %[2]d) {
+  if ($running) { $pending = $true } else { Set-VMProcessor -VMName %[1]s -Count %[2]d; $changed = $true }
+}`, name, s.ProcessorCount)
+
+	// Memory diff and apply: static unless dynamic memory is configured.
+	var memDiff, memApply string
 	if s.DynamicMemory != nil {
-		memScript = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $true -StartupBytes %[2]d -MinimumBytes %[3]d -MaximumBytes %[4]d",
+		memDiff = fmt.Sprintf("(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne %d) -or ($m.Minimum -ne %d) -or ($m.Maximum -ne %d)",
+			s.MemoryStartupBytes, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
+		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $true -StartupBytes %[2]d -MinimumBytes %[3]d -MaximumBytes %[4]d",
 			name, s.MemoryStartupBytes, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
+	} else {
+		memDiff = fmt.Sprintf("$m.DynamicMemoryEnabled -or ($m.Startup -ne %d)", s.MemoryStartupBytes)
+		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $false -StartupBytes %[2]d", name, s.MemoryStartupBytes)
 	}
+	memScript := fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
+if (%[2]s) {
+  if ($running) { $pending = $true } else { %[3]s; $changed = $true }
+}`, name, memDiff, memApply)
 
 	// Set-VM only when there is an automatic-start-action to apply; calling it
 	// with just -Name is rejected.
@@ -139,16 +158,20 @@ else { if ($ad.SwitchName -ne %[4]s) { Connect-VMNetworkAdapter -VMName %[1]s -N
 $ErrorActionPreference = 'Stop'
 $created = $false
 $changed = $false
+$pending = $false
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if (-not $vm) {
   New-VM -Name %[1]s -Generation %[2]d -MemoryStartupBytes %[3]d -NoVHD | Out-Null
   $created = $true
 }
-Set-VMProcessor -VMName %[1]s -Count %[4]d
+$running = $false
+$cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+if ($cur -and $cur.State -ne 'Off') { $running = $true }
+%[4]s
 %[5]s
 %[6]s%[7]s%[8]s
-[pscustomobject]@{ created = $created; changed = $changed } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, s.ProcessorCount, memScript, startAction, disks, adapters)
+[pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

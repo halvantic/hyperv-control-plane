@@ -121,12 +121,28 @@ type Interface interface {
 	// idempotently. It does not change power state — that is SetVMPowerState, so
 	// the reconciler can settle configuration before driving power. A vNIC's
 	// switch is expected to exist already (the networking reconcile runs first).
-	EnsureVM(ctx context.Context, vm types.VM) (Outcome, error)
+	//
+	// Hyper-V forbids changing processor count or static startup memory while a
+	// VM is running. When such a change is desired on a running VM, EnsureVM
+	// applies everything it safely can and reports PendingPowerOff rather than
+	// failing, so the reconciler can surface "settles after the VM is stopped"
+	// instead of erroring every cycle.
+	EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult, error)
 
 	// SetVMPowerState drives the VM to the requested power state (Running or
 	// Off). OutcomeUnchanged when it is already there. The reconciler only
 	// requests Running/Off; Paused/Saved are observed, never requested.
 	SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error)
+}
+
+// VMEnsureResult is what EnsureVM did.
+type VMEnsureResult struct {
+	// Outcome is Created/Updated/Unchanged for the parts that were applied.
+	Outcome Outcome
+	// PendingPowerOff is true when a desired processor-count or static-memory
+	// change could not be applied because the VM is running; it will settle once
+	// the VM is stopped. Disks and adapters (hot-pluggable) are still applied.
+	PendingPowerOff bool
 }
 
 // VMState is the observed state of one VM on the host.

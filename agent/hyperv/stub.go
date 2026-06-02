@@ -234,19 +234,19 @@ func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
 	return VMState{Exists: true, PowerState: vm.power}, nil
 }
 
-func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (Outcome, error) {
+func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (VMEnsureResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	name := vm.Meta.Name
 	if s.FailVM != "" && s.FailVM == name {
-		return OutcomeUnchanged, fmt.Errorf("stub: forced failure ensuring VM %q", name)
+		return VMEnsureResult{}, fmt.Errorf("stub: forced failure ensuring VM %q", name)
 	}
 	// A VM adapter cannot attach to a switch that does not exist; mirror that so
 	// tests catch a reconciler that ensures VMs before their switches.
 	for _, a := range vm.Spec.NetworkAdapters {
 		if _, ok := s.switches[a.SwitchName]; !ok {
-			return OutcomeUnchanged, fmt.Errorf("stub: switch %q for VM %q adapter %q does not exist", a.SwitchName, name, a.Name)
+			return VMEnsureResult{}, fmt.Errorf("stub: switch %q for VM %q adapter %q does not exist", a.SwitchName, name, a.Name)
 		}
 	}
 	if s.vms == nil {
@@ -257,12 +257,29 @@ func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (Outcome, error) {
 	case !ok:
 		// New VMs come up Off; SetVMPowerState drives them to desired.
 		s.vms[name] = &stubVM{spec: vm.Spec, power: types.VMPowerOff}
-		return OutcomeCreated, nil
+		return VMEnsureResult{Outcome: OutcomeCreated}, nil
 	case reflect.DeepEqual(cur.spec, vm.Spec):
-		return OutcomeUnchanged, nil
+		return VMEnsureResult{Outcome: OutcomeUnchanged}, nil
 	default:
+		// Processor count and static startup memory cannot change while running;
+		// defer them and report PendingPowerOff, mirroring Hyper-V.
+		sizingChanged := cur.spec.ProcessorCount != vm.Spec.ProcessorCount ||
+			cur.spec.MemoryStartupBytes != vm.Spec.MemoryStartupBytes ||
+			!reflect.DeepEqual(cur.spec.DynamicMemory, vm.Spec.DynamicMemory)
+		if cur.power == types.VMPowerRunning && sizingChanged {
+			// Apply the online-mutable parts, keep the running VM's sizing as-is.
+			applied := cur.spec
+			applied.ProcessorCount = cur.spec.ProcessorCount
+			applied.MemoryStartupBytes = cur.spec.MemoryStartupBytes
+			applied.DynamicMemory = cur.spec.DynamicMemory
+			applied.Disks = vm.Spec.Disks
+			applied.NetworkAdapters = vm.Spec.NetworkAdapters
+			applied.DesiredPowerState = vm.Spec.DesiredPowerState
+			cur.spec = applied
+			return VMEnsureResult{Outcome: OutcomeUpdated, PendingPowerOff: true}, nil
+		}
 		cur.spec = vm.Spec
-		return OutcomeUpdated, nil
+		return VMEnsureResult{Outcome: OutcomeUpdated}, nil
 	}
 }
 

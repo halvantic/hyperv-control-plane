@@ -88,6 +88,30 @@ func TestReconcileVMEnsureFailureIsDegraded(t *testing.T) {
 	}
 }
 
+// A processor/memory change requested while the VM is running cannot be applied
+// (Hyper-V forbids it). The reconciler surfaces it as Progressing + a
+// RequiresPowerOff condition and does NOT mark the VM honoured, so its
+// ObservedGeneration holds back until the VM is stopped — rather than erroring.
+func TestReconcileVMSizingChangeWhileRunningIsPending(t *testing.T) {
+	stub := stubWithSwitch()
+	r := testReconciler(stub)
+
+	// Create at 2 vCPU and power on.
+	r.ReconcileVM(context.Background(), vmDesired(types.VMPowerRunning))
+
+	// Now request 4 vCPU while it is running.
+	bigger := vmDesired(types.VMPowerRunning)
+	bigger.Spec.ProcessorCount = 4
+	res := r.ReconcileVM(context.Background(), bigger)
+
+	if res.Honoured || res.Phase != types.PhaseProgressing {
+		t.Fatalf("want progressing/not-honoured, got %+v", res)
+	}
+	if reason, _ := reasonByType(res.Conditions, "VMConfig/web01"); reason != "RequiresPowerOff" {
+		t.Fatalf("want RequiresPowerOff condition, got %q", reason)
+	}
+}
+
 // ReconcileVMs returns one result per VM, in order.
 func TestReconcileVMsMultiple(t *testing.T) {
 	stub := stubWithSwitch()
