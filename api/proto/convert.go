@@ -439,3 +439,114 @@ func HostFromProto(h *Host) types.Host {
 		Status: StatusFromProto(h.GetStatus()),
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cluster
+// ---------------------------------------------------------------------------
+//
+// The proto ClusterSpec omits Volumes (CSVSpec): Cluster Shared Volume
+// provisioning is a later increment, so it is not yet carried on the wire.
+
+func witnessTypeToProto(w types.WitnessType) WitnessType {
+	switch w {
+	case types.WitnessFileShare:
+		return WitnessType_WITNESS_TYPE_FILE_SHARE
+	case types.WitnessCloud:
+		return WitnessType_WITNESS_TYPE_CLOUD
+	case types.WitnessDisk:
+		return WitnessType_WITNESS_TYPE_DISK
+	default:
+		return WitnessType_WITNESS_TYPE_NONE
+	}
+}
+
+func witnessTypeFromProto(w WitnessType) types.WitnessType {
+	switch w {
+	case WitnessType_WITNESS_TYPE_FILE_SHARE:
+		return types.WitnessFileShare
+	case WitnessType_WITNESS_TYPE_CLOUD:
+		return types.WitnessCloud
+	case WitnessType_WITNESS_TYPE_DISK:
+		return types.WitnessDisk
+	default:
+		return ""
+	}
+}
+
+func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
+	return &ClusterSpec{
+		Members:      s.Members,
+		ManagementIp: s.ManagementIP,
+		EnableS2D:    s.EnableS2D,
+		Witness: &WitnessSpec{
+			Type:          witnessTypeToProto(s.Witness.Type),
+			FileSharePath: s.Witness.FileSharePath,
+			CloudAccount:  s.Witness.CloudAccount,
+		},
+	}
+}
+
+func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
+	if s == nil {
+		return types.ClusterSpec{}
+	}
+	out := types.ClusterSpec{
+		Members:      s.GetMembers(),
+		ManagementIP: s.GetManagementIp(),
+		EnableS2D:    s.GetEnableS2D(),
+	}
+	if w := s.GetWitness(); w != nil {
+		out.Witness = types.WitnessSpec{
+			Type:          witnessTypeFromProto(w.GetType()),
+			FileSharePath: w.GetFileSharePath(),
+			CloudAccount:  w.GetCloudAccount(),
+		}
+	}
+	return out
+}
+
+// ClusterStatusToProto converts an agent-reported ClusterStatus to the wire form.
+func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
+	return &ClusterStatus{
+		Phase:              phaseToProto(s.Phase),
+		ObservedGeneration: s.ObservedGeneration,
+		FormedMembers:      s.FormedMembers,
+		S2DEnabled:         s.S2DEnabled,
+		Conditions:         conditionsToProto(s.Conditions),
+	}
+}
+
+// ClusterStatusFromProto converts a wire ClusterStatus back to the schema type.
+func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
+	if s == nil {
+		return types.ClusterStatus{}
+	}
+	return types.ClusterStatus{
+		Phase:              phaseFromProto(s.GetPhase()),
+		ObservedGeneration: s.GetObservedGeneration(),
+		FormedMembers:      s.GetFormedMembers(),
+		S2DEnabled:         s.GetS2DEnabled(),
+		Conditions:         conditionsFromProto(s.GetConditions()),
+	}
+}
+
+// ClusterToProto converts a schema Cluster to the wire form.
+func ClusterToProto(c types.Cluster) *Cluster {
+	return &Cluster{
+		Meta:   MetaToProto(c.Meta),
+		Spec:   clusterSpecToProto(c.Spec),
+		Status: ClusterStatusToProto(c.Status),
+	}
+}
+
+// ClusterFromProto converts a wire Cluster back to the schema type.
+func ClusterFromProto(c *Cluster) types.Cluster {
+	if c == nil {
+		return types.Cluster{}
+	}
+	return types.Cluster{
+		Meta:   MetaFromProto(c.GetMeta()),
+		Spec:   clusterSpecFromProto(c.GetSpec()),
+		Status: ClusterStatusFromProto(c.GetStatus()),
+	}
+}

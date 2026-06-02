@@ -1,0 +1,285 @@
+syntax = "proto3";
+
+// Package ballast.v1 is the agent <-> centre gRPC contract for Ballast.
+//
+// The Go desired-state schema in api/types is the source of truth. These
+// messages mirror it for transport only; the single mapping between the two
+// lives in api/proto/convert.go so the wire form can never silently diverge
+// from the schema. Extend this file in lockstep with api/types, never alone.
+package ballast.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/joshua-fourie/ballast/api/proto;ballastpb";
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+// AgentService is served by the centre and consumed by each host agent. It is
+// deliberately small: announce, pull desired state, report status. The centre
+// never imperatively drives a host through this service; it only serves desired
+// state and accepts reported status.
+service AgentService {
+  // RegisterHost announces an agent to the centre on startup and reports
+  // initial inventory. The centre returns the host identity (UID) the agent
+  // should use for subsequent calls. Calling it again with the same host name
+  // is idempotent and returns the existing identity.
+  rpc RegisterHost(RegisterHostRequest) returns (RegisterHostResponse);
+
+  // PullDesiredState returns the current desired Host for the calling agent,
+  // plus any cluster assignment. The agent caches the result as its
+  // last-honoured state and keeps enforcing it if the centre later becomes
+  // unreachable.
+  rpc PullDesiredState(PullDesiredStateRequest) returns (PullDesiredStateResponse);
+
+  // ReportStatus delivers an agent's observed status to the centre, carrying
+  // ObservedGeneration and the Autonomous flag so the centre can tell whether
+  // an object is settled and whether the agent is running on cached state.
+  rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+}
+
+message RegisterHostRequest {
+  // host_name is the stable, human-meaningful host identifier (ObjectMeta.Name).
+  string host_name = 1;
+  // fqdn the agent believes it is reachable as.
+  string fqdn = 2;
+  // inventory observed at registration time (physical adapters at minimum).
+  HostInventory inventory = 3;
+  // agent_version for diagnostics and compatibility checks.
+  string agent_version = 4;
+}
+
+message RegisterHostResponse {
+  // uid is the immutable identity the centre assigns (or has) for this host.
+  string uid = 1;
+  // known is true when the centre already had desired state for this host.
+  bool known = 2;
+}
+
+message PullDesiredStateRequest {
+  string host_name = 1;
+  string uid = 2;
+  // known_generation lets the centre answer cheaply when nothing changed; the
+  // agent sends the Generation it currently holds, 0 if it holds none.
+  int64 known_generation = 3;
+}
+
+message PullDesiredStateResponse {
+  // has_desired_state is false when the centre has no Host assigned yet.
+  bool has_desired_state = 1;
+  // unchanged is true when known_generation already matches the centre's
+  // Generation, in which case host may be omitted.
+  bool unchanged = 2;
+  Host host = 3;
+  // cluster_assignment tells the host whether it belongs to a cluster and
+  // whether it is the designated former. Absent when the host is standalone.
+  ClusterAssignment cluster_assignment = 4;
+}
+
+message ReportStatusRequest {
+  string host_name = 1;
+  string uid = 2;
+  HostStatus status = 3;
+  // cluster_name and cluster_status are set when the host is a cluster member
+  // and has observed cluster state to report (typically from the former).
+  string cluster_name = 4;
+  ClusterStatus cluster_status = 5;
+}
+
+message ReportStatusResponse {
+  // accepted is false if the centre rejected the report (e.g. unknown host).
+  bool accepted = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Common envelope (mirrors api/types ObjectMeta, Phase, Condition)
+// ---------------------------------------------------------------------------
+
+message ObjectMeta {
+  string name = 1;
+  string uid = 2;
+  int64 generation = 3;
+  map<string, string> labels = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_PENDING = 1;
+  PHASE_PROGRESSING = 2;
+  PHASE_READY = 3;
+  PHASE_DEGRADED = 4;
+  PHASE_ERROR = 5;
+}
+
+message Condition {
+  string type = 1;
+  bool status = 2;
+  string reason = 3;
+  string message = 4;
+  google.protobuf.Timestamp last_transition_time = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Host
+// ---------------------------------------------------------------------------
+
+message Host {
+  ObjectMeta meta = 1;
+  HostSpec spec = 2;
+  HostStatus status = 3;
+}
+
+enum RebootPolicy {
+  REBOOT_POLICY_UNSPECIFIED = 0;
+  REBOOT_POLICY_NEVER = 1;
+  REBOOT_POLICY_IF_NEEDED = 2;
+}
+
+message HostSpec {
+  string fqdn = 1;
+  bool enable_hyperv_role = 2;
+  HostNetworkingSpec networking = 3;
+  HostStorageSpec storage = 4;
+  // cluster_membership is optional; absence means standalone.
+  ClusterMembershipSpec cluster_membership = 5;
+  RebootPolicy reboot_policy = 6;
+}
+
+message HostStatus {
+  Phase phase = 1;
+  int64 observed_generation = 2;
+  bool hyperv_installed = 3;
+  bool reboot_required = 4;
+  bool autonomous = 5;
+  google.protobuf.Timestamp last_contact = 6;
+  HostInventory inventory = 7;
+  repeated Condition conditions = 8;
+}
+
+message HostInventory {
+  repeated PhysicalAdapter physical_adapters = 1;
+  repeated PhysicalDisk physical_disks = 2;
+  uint64 total_memory_bytes = 3;
+  int32 logical_cpus = 4;
+}
+
+message PhysicalAdapter {
+  string name = 1;
+  string mac = 2;
+  uint64 link_speed_bps = 3;
+  bool up = 4;
+}
+
+message PhysicalDisk {
+  string device_id = 1;
+  uint64 size_bytes = 2;
+  string media_type = 3;
+  bool can_pool = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Networking
+// ---------------------------------------------------------------------------
+
+message HostNetworkingSpec {
+  repeated VirtualSwitchSpec switches = 1;
+  repeated ManagementVNICSpec management_vnics = 2;
+}
+
+enum SETTeamingMode {
+  SET_TEAMING_MODE_UNSPECIFIED = 0;
+  SET_TEAMING_MODE_SWITCH_INDEPENDENT = 1;
+}
+
+enum SETLoadBalancing {
+  SET_LOAD_BALANCING_UNSPECIFIED = 0;
+  SET_LOAD_BALANCING_HYPERV_PORT = 1;
+  SET_LOAD_BALANCING_DYNAMIC = 2;
+}
+
+message VirtualSwitchSpec {
+  string name = 1;
+  repeated string team_members = 2;
+  SETTeamingMode teaming_mode = 3;
+  SETLoadBalancing load_balancing = 4;
+  bool allow_management_os = 5;
+}
+
+message ManagementVNICSpec {
+  string name = 1;
+  string switch_name = 2;
+  int32 vlan_id = 3;
+  // ip_config absent means DHCP.
+  IPConfig ip_config = 4;
+  int32 min_bandwidth_weight = 5;
+}
+
+message IPConfig {
+  string address = 1;
+  string gateway = 2;
+  repeated string dns_servers = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Storage / Cluster
+// ---------------------------------------------------------------------------
+
+message HostStorageSpec {
+  bool contribute_to_s2d = 1;
+  map<string, string> eligible_disk_selector = 2;
+}
+
+message ClusterMembershipSpec {
+  string cluster_name = 1;
+}
+
+// ClusterAssignment is delivered to an agent that belongs to a cluster. It
+// names whether this host is the designated former (the single member that runs
+// Test-Cluster/New-Cluster) and carries the cluster's desired state so the
+// former can act on it. Non-formers use it to know their cluster and report.
+message ClusterAssignment {
+  bool is_member = 1;
+  bool is_former = 2;
+  Cluster cluster = 3;
+}
+
+message Cluster {
+  ObjectMeta meta = 1;
+  ClusterSpec spec = 2;
+  ClusterStatus status = 3;
+}
+
+message ClusterSpec {
+  // members are the host names that should form the cluster.
+  repeated string members = 1;
+  // management_ip is the cluster's virtual management address (CIDR or plain).
+  string management_ip = 2;
+  WitnessSpec witness = 3;
+  // enable_s2d requests Storage Spaces Direct once the cluster is formed.
+  bool enable_s2d = 4;
+}
+
+enum WitnessType {
+  WITNESS_TYPE_UNSPECIFIED = 0;
+  WITNESS_TYPE_NONE = 1;
+  WITNESS_TYPE_FILE_SHARE = 2;
+  WITNESS_TYPE_CLOUD = 3;
+  WITNESS_TYPE_DISK = 4;
+}
+
+message WitnessSpec {
+  WitnessType type = 1;
+  string file_share_path = 2;
+  string cloud_account = 3;
+}
+
+message ClusterStatus {
+  Phase phase = 1;
+  int64 observed_generation = 2;
+  repeated string formed_members = 3;
+  bool s2d_enabled = 4;
+  repeated Condition conditions = 5;
+}

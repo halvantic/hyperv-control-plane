@@ -231,6 +231,61 @@ func (SETLoadBalancing) EnumDescriptor() ([]byte, []int) {
 	return file_ballast_proto_rawDescGZIP(), []int{3}
 }
 
+type WitnessType int32
+
+const (
+	WitnessType_WITNESS_TYPE_UNSPECIFIED WitnessType = 0
+	WitnessType_WITNESS_TYPE_NONE        WitnessType = 1
+	WitnessType_WITNESS_TYPE_FILE_SHARE  WitnessType = 2
+	WitnessType_WITNESS_TYPE_CLOUD       WitnessType = 3
+	WitnessType_WITNESS_TYPE_DISK        WitnessType = 4
+)
+
+// Enum value maps for WitnessType.
+var (
+	WitnessType_name = map[int32]string{
+		0: "WITNESS_TYPE_UNSPECIFIED",
+		1: "WITNESS_TYPE_NONE",
+		2: "WITNESS_TYPE_FILE_SHARE",
+		3: "WITNESS_TYPE_CLOUD",
+		4: "WITNESS_TYPE_DISK",
+	}
+	WitnessType_value = map[string]int32{
+		"WITNESS_TYPE_UNSPECIFIED": 0,
+		"WITNESS_TYPE_NONE":        1,
+		"WITNESS_TYPE_FILE_SHARE":  2,
+		"WITNESS_TYPE_CLOUD":       3,
+		"WITNESS_TYPE_DISK":        4,
+	}
+)
+
+func (x WitnessType) Enum() *WitnessType {
+	p := new(WitnessType)
+	*p = x
+	return p
+}
+
+func (x WitnessType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WitnessType) Descriptor() protoreflect.EnumDescriptor {
+	return file_ballast_proto_enumTypes[4].Descriptor()
+}
+
+func (WitnessType) Type() protoreflect.EnumType {
+	return &file_ballast_proto_enumTypes[4]
+}
+
+func (x WitnessType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WitnessType.Descriptor instead.
+func (WitnessType) EnumDescriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{4}
+}
+
 type RegisterHostRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// host_name is the stable, human-meaningful host identifier (ObjectMeta.Name).
@@ -425,10 +480,13 @@ type PullDesiredStateResponse struct {
 	HasDesiredState bool `protobuf:"varint,1,opt,name=has_desired_state,json=hasDesiredState,proto3" json:"has_desired_state,omitempty"`
 	// unchanged is true when known_generation already matches the centre's
 	// Generation, in which case host may be omitted.
-	Unchanged     bool  `protobuf:"varint,2,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
-	Host          *Host `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Unchanged bool  `protobuf:"varint,2,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
+	Host      *Host `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`
+	// cluster_assignment tells the host whether it belongs to a cluster and
+	// whether it is the designated former. Absent when the host is standalone.
+	ClusterAssignment *ClusterAssignment `protobuf:"bytes,4,opt,name=cluster_assignment,json=clusterAssignment,proto3" json:"cluster_assignment,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PullDesiredStateResponse) Reset() {
@@ -482,11 +540,22 @@ func (x *PullDesiredStateResponse) GetHost() *Host {
 	return nil
 }
 
+func (x *PullDesiredStateResponse) GetClusterAssignment() *ClusterAssignment {
+	if x != nil {
+		return x.ClusterAssignment
+	}
+	return nil
+}
+
 type ReportStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	HostName      string                 `protobuf:"bytes,1,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
-	Uid           string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
-	Status        *HostStatus            `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	HostName string                 `protobuf:"bytes,1,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
+	Uid      string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	Status   *HostStatus            `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// cluster_name and cluster_status are set when the host is a cluster member
+	// and has observed cluster state to report (typically from the former).
+	ClusterName   string         `protobuf:"bytes,4,opt,name=cluster_name,json=clusterName,proto3" json:"cluster_name,omitempty"`
+	ClusterStatus *ClusterStatus `protobuf:"bytes,5,opt,name=cluster_status,json=clusterStatus,proto3" json:"cluster_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -538,6 +607,20 @@ func (x *ReportStatusRequest) GetUid() string {
 func (x *ReportStatusRequest) GetStatus() *HostStatus {
 	if x != nil {
 		return x.Status
+	}
+	return nil
+}
+
+func (x *ReportStatusRequest) GetClusterName() string {
+	if x != nil {
+		return x.ClusterName
+	}
+	return ""
+}
+
+func (x *ReportStatusRequest) GetClusterStatus() *ClusterStatus {
+	if x != nil {
+		return x.ClusterStatus
 	}
 	return nil
 }
@@ -1557,6 +1640,337 @@ func (x *ClusterMembershipSpec) GetClusterName() string {
 	return ""
 }
 
+// ClusterAssignment is delivered to an agent that belongs to a cluster. It
+// names whether this host is the designated former (the single member that runs
+// Test-Cluster/New-Cluster) and carries the cluster's desired state so the
+// former can act on it. Non-formers use it to know their cluster and report.
+type ClusterAssignment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IsMember      bool                   `protobuf:"varint,1,opt,name=is_member,json=isMember,proto3" json:"is_member,omitempty"`
+	IsFormer      bool                   `protobuf:"varint,2,opt,name=is_former,json=isFormer,proto3" json:"is_former,omitempty"`
+	Cluster       *Cluster               `protobuf:"bytes,3,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterAssignment) Reset() {
+	*x = ClusterAssignment{}
+	mi := &file_ballast_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterAssignment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterAssignment) ProtoMessage() {}
+
+func (x *ClusterAssignment) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterAssignment.ProtoReflect.Descriptor instead.
+func (*ClusterAssignment) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ClusterAssignment) GetIsMember() bool {
+	if x != nil {
+		return x.IsMember
+	}
+	return false
+}
+
+func (x *ClusterAssignment) GetIsFormer() bool {
+	if x != nil {
+		return x.IsFormer
+	}
+	return false
+}
+
+func (x *ClusterAssignment) GetCluster() *Cluster {
+	if x != nil {
+		return x.Cluster
+	}
+	return nil
+}
+
+type Cluster struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Meta          *ObjectMeta            `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	Spec          *ClusterSpec           `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	Status        *ClusterStatus         `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Cluster) Reset() {
+	*x = Cluster{}
+	mi := &file_ballast_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Cluster) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Cluster) ProtoMessage() {}
+
+func (x *Cluster) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Cluster.ProtoReflect.Descriptor instead.
+func (*Cluster) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *Cluster) GetMeta() *ObjectMeta {
+	if x != nil {
+		return x.Meta
+	}
+	return nil
+}
+
+func (x *Cluster) GetSpec() *ClusterSpec {
+	if x != nil {
+		return x.Spec
+	}
+	return nil
+}
+
+func (x *Cluster) GetStatus() *ClusterStatus {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+type ClusterSpec struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// members are the host names that should form the cluster.
+	Members []string `protobuf:"bytes,1,rep,name=members,proto3" json:"members,omitempty"`
+	// management_ip is the cluster's virtual management address (CIDR or plain).
+	ManagementIp string       `protobuf:"bytes,2,opt,name=management_ip,json=managementIp,proto3" json:"management_ip,omitempty"`
+	Witness      *WitnessSpec `protobuf:"bytes,3,opt,name=witness,proto3" json:"witness,omitempty"`
+	// enable_s2d requests Storage Spaces Direct once the cluster is formed.
+	EnableS2D     bool `protobuf:"varint,4,opt,name=enable_s2d,json=enableS2d,proto3" json:"enable_s2d,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterSpec) Reset() {
+	*x = ClusterSpec{}
+	mi := &file_ballast_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterSpec) ProtoMessage() {}
+
+func (x *ClusterSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterSpec.ProtoReflect.Descriptor instead.
+func (*ClusterSpec) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ClusterSpec) GetMembers() []string {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetManagementIp() string {
+	if x != nil {
+		return x.ManagementIp
+	}
+	return ""
+}
+
+func (x *ClusterSpec) GetWitness() *WitnessSpec {
+	if x != nil {
+		return x.Witness
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetEnableS2D() bool {
+	if x != nil {
+		return x.EnableS2D
+	}
+	return false
+}
+
+type WitnessSpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          WitnessType            `protobuf:"varint,1,opt,name=type,proto3,enum=ballast.v1.WitnessType" json:"type,omitempty"`
+	FileSharePath string                 `protobuf:"bytes,2,opt,name=file_share_path,json=fileSharePath,proto3" json:"file_share_path,omitempty"`
+	CloudAccount  string                 `protobuf:"bytes,3,opt,name=cloud_account,json=cloudAccount,proto3" json:"cloud_account,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WitnessSpec) Reset() {
+	*x = WitnessSpec{}
+	mi := &file_ballast_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WitnessSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WitnessSpec) ProtoMessage() {}
+
+func (x *WitnessSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WitnessSpec.ProtoReflect.Descriptor instead.
+func (*WitnessSpec) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *WitnessSpec) GetType() WitnessType {
+	if x != nil {
+		return x.Type
+	}
+	return WitnessType_WITNESS_TYPE_UNSPECIFIED
+}
+
+func (x *WitnessSpec) GetFileSharePath() string {
+	if x != nil {
+		return x.FileSharePath
+	}
+	return ""
+}
+
+func (x *WitnessSpec) GetCloudAccount() string {
+	if x != nil {
+		return x.CloudAccount
+	}
+	return ""
+}
+
+type ClusterStatus struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Phase              Phase                  `protobuf:"varint,1,opt,name=phase,proto3,enum=ballast.v1.Phase" json:"phase,omitempty"`
+	ObservedGeneration int64                  `protobuf:"varint,2,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
+	FormedMembers      []string               `protobuf:"bytes,3,rep,name=formed_members,json=formedMembers,proto3" json:"formed_members,omitempty"`
+	S2DEnabled         bool                   `protobuf:"varint,4,opt,name=s2d_enabled,json=s2dEnabled,proto3" json:"s2d_enabled,omitempty"`
+	Conditions         []*Condition           `protobuf:"bytes,5,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ClusterStatus) Reset() {
+	*x = ClusterStatus{}
+	mi := &file_ballast_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterStatus) ProtoMessage() {}
+
+func (x *ClusterStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterStatus.ProtoReflect.Descriptor instead.
+func (*ClusterStatus) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ClusterStatus) GetPhase() Phase {
+	if x != nil {
+		return x.Phase
+	}
+	return Phase_PHASE_UNSPECIFIED
+}
+
+func (x *ClusterStatus) GetObservedGeneration() int64 {
+	if x != nil {
+		return x.ObservedGeneration
+	}
+	return 0
+}
+
+func (x *ClusterStatus) GetFormedMembers() []string {
+	if x != nil {
+		return x.FormedMembers
+	}
+	return nil
+}
+
+func (x *ClusterStatus) GetS2DEnabled() bool {
+	if x != nil {
+		return x.S2DEnabled
+	}
+	return false
+}
+
+func (x *ClusterStatus) GetConditions() []*Condition {
+	if x != nil {
+		return x.Conditions
+	}
+	return nil
+}
+
 var File_ballast_proto protoreflect.FileDescriptor
 
 const file_ballast_proto_rawDesc = "" +
@@ -1574,15 +1988,18 @@ const file_ballast_proto_rawDesc = "" +
 	"\x17PullDesiredStateRequest\x12\x1b\n" +
 	"\thost_name\x18\x01 \x01(\tR\bhostName\x12\x10\n" +
 	"\x03uid\x18\x02 \x01(\tR\x03uid\x12)\n" +
-	"\x10known_generation\x18\x03 \x01(\x03R\x0fknownGeneration\"\x8a\x01\n" +
+	"\x10known_generation\x18\x03 \x01(\x03R\x0fknownGeneration\"\xd8\x01\n" +
 	"\x18PullDesiredStateResponse\x12*\n" +
 	"\x11has_desired_state\x18\x01 \x01(\bR\x0fhasDesiredState\x12\x1c\n" +
 	"\tunchanged\x18\x02 \x01(\bR\tunchanged\x12$\n" +
-	"\x04host\x18\x03 \x01(\v2\x10.ballast.v1.HostR\x04host\"t\n" +
+	"\x04host\x18\x03 \x01(\v2\x10.ballast.v1.HostR\x04host\x12L\n" +
+	"\x12cluster_assignment\x18\x04 \x01(\v2\x1d.ballast.v1.ClusterAssignmentR\x11clusterAssignment\"\xd9\x01\n" +
 	"\x13ReportStatusRequest\x12\x1b\n" +
 	"\thost_name\x18\x01 \x01(\tR\bhostName\x12\x10\n" +
 	"\x03uid\x18\x02 \x01(\tR\x03uid\x12.\n" +
-	"\x06status\x18\x03 \x01(\v2\x16.ballast.v1.HostStatusR\x06status\"2\n" +
+	"\x06status\x18\x03 \x01(\v2\x16.ballast.v1.HostStatusR\x06status\x12!\n" +
+	"\fcluster_name\x18\x04 \x01(\tR\vclusterName\x12@\n" +
+	"\x0ecluster_status\x18\x05 \x01(\v2\x19.ballast.v1.ClusterStatusR\rclusterStatus\"2\n" +
 	"\x14ReportStatusResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\"\xbf\x02\n" +
 	"\n" +
@@ -1678,7 +2095,34 @@ const file_ballast_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\":\n" +
 	"\x15ClusterMembershipSpec\x12!\n" +
-	"\fcluster_name\x18\x01 \x01(\tR\vclusterName*~\n" +
+	"\fcluster_name\x18\x01 \x01(\tR\vclusterName\"|\n" +
+	"\x11ClusterAssignment\x12\x1b\n" +
+	"\tis_member\x18\x01 \x01(\bR\bisMember\x12\x1b\n" +
+	"\tis_former\x18\x02 \x01(\bR\bisFormer\x12-\n" +
+	"\acluster\x18\x03 \x01(\v2\x13.ballast.v1.ClusterR\acluster\"\x95\x01\n" +
+	"\aCluster\x12*\n" +
+	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12+\n" +
+	"\x04spec\x18\x02 \x01(\v2\x17.ballast.v1.ClusterSpecR\x04spec\x121\n" +
+	"\x06status\x18\x03 \x01(\v2\x19.ballast.v1.ClusterStatusR\x06status\"\x9e\x01\n" +
+	"\vClusterSpec\x12\x18\n" +
+	"\amembers\x18\x01 \x03(\tR\amembers\x12#\n" +
+	"\rmanagement_ip\x18\x02 \x01(\tR\fmanagementIp\x121\n" +
+	"\awitness\x18\x03 \x01(\v2\x17.ballast.v1.WitnessSpecR\awitness\x12\x1d\n" +
+	"\n" +
+	"enable_s2d\x18\x04 \x01(\bR\tenableS2d\"\x87\x01\n" +
+	"\vWitnessSpec\x12+\n" +
+	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
+	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +
+	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\"\xe8\x01\n" +
+	"\rClusterStatus\x12'\n" +
+	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
+	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12%\n" +
+	"\x0eformed_members\x18\x03 \x03(\tR\rformedMembers\x12\x1f\n" +
+	"\vs2d_enabled\x18\x04 \x01(\bR\n" +
+	"s2dEnabled\x125\n" +
+	"\n" +
+	"conditions\x18\x05 \x03(\v2\x15.ballast.v1.ConditionR\n" +
+	"conditions*~\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPHASE_PENDING\x10\x01\x12\x15\n" +
@@ -1696,7 +2140,13 @@ const file_ballast_proto_rawDesc = "" +
 	"\x10SETLoadBalancing\x12\"\n" +
 	"\x1eSET_LOAD_BALANCING_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSET_LOAD_BALANCING_HYPERV_PORT\x10\x01\x12\x1e\n" +
-	"\x1aSET_LOAD_BALANCING_DYNAMIC\x10\x022\x93\x02\n" +
+	"\x1aSET_LOAD_BALANCING_DYNAMIC\x10\x02*\x8e\x01\n" +
+	"\vWitnessType\x12\x1c\n" +
+	"\x18WITNESS_TYPE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11WITNESS_TYPE_NONE\x10\x01\x12\x1b\n" +
+	"\x17WITNESS_TYPE_FILE_SHARE\x10\x02\x12\x16\n" +
+	"\x12WITNESS_TYPE_CLOUD\x10\x03\x12\x15\n" +
+	"\x11WITNESS_TYPE_DISK\x10\x042\x93\x02\n" +
 	"\fAgentService\x12Q\n" +
 	"\fRegisterHost\x12\x1f.ballast.v1.RegisterHostRequest\x1a .ballast.v1.RegisterHostResponse\x12]\n" +
 	"\x10PullDesiredState\x12#.ballast.v1.PullDesiredStateRequest\x1a$.ballast.v1.PullDesiredStateResponse\x12Q\n" +
@@ -1714,75 +2164,91 @@ func file_ballast_proto_rawDescGZIP() []byte {
 	return file_ballast_proto_rawDescData
 }
 
-var file_ballast_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_ballast_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_ballast_proto_goTypes = []any{
 	(Phase)(0),                       // 0: ballast.v1.Phase
 	(RebootPolicy)(0),                // 1: ballast.v1.RebootPolicy
 	(SETTeamingMode)(0),              // 2: ballast.v1.SETTeamingMode
 	(SETLoadBalancing)(0),            // 3: ballast.v1.SETLoadBalancing
-	(*RegisterHostRequest)(nil),      // 4: ballast.v1.RegisterHostRequest
-	(*RegisterHostResponse)(nil),     // 5: ballast.v1.RegisterHostResponse
-	(*PullDesiredStateRequest)(nil),  // 6: ballast.v1.PullDesiredStateRequest
-	(*PullDesiredStateResponse)(nil), // 7: ballast.v1.PullDesiredStateResponse
-	(*ReportStatusRequest)(nil),      // 8: ballast.v1.ReportStatusRequest
-	(*ReportStatusResponse)(nil),     // 9: ballast.v1.ReportStatusResponse
-	(*ObjectMeta)(nil),               // 10: ballast.v1.ObjectMeta
-	(*Condition)(nil),                // 11: ballast.v1.Condition
-	(*Host)(nil),                     // 12: ballast.v1.Host
-	(*HostSpec)(nil),                 // 13: ballast.v1.HostSpec
-	(*HostStatus)(nil),               // 14: ballast.v1.HostStatus
-	(*HostInventory)(nil),            // 15: ballast.v1.HostInventory
-	(*PhysicalAdapter)(nil),          // 16: ballast.v1.PhysicalAdapter
-	(*PhysicalDisk)(nil),             // 17: ballast.v1.PhysicalDisk
-	(*HostNetworkingSpec)(nil),       // 18: ballast.v1.HostNetworkingSpec
-	(*VirtualSwitchSpec)(nil),        // 19: ballast.v1.VirtualSwitchSpec
-	(*ManagementVNICSpec)(nil),       // 20: ballast.v1.ManagementVNICSpec
-	(*IPConfig)(nil),                 // 21: ballast.v1.IPConfig
-	(*HostStorageSpec)(nil),          // 22: ballast.v1.HostStorageSpec
-	(*ClusterMembershipSpec)(nil),    // 23: ballast.v1.ClusterMembershipSpec
-	nil,                              // 24: ballast.v1.ObjectMeta.LabelsEntry
-	nil,                              // 25: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	(*timestamppb.Timestamp)(nil),    // 26: google.protobuf.Timestamp
+	(WitnessType)(0),                 // 4: ballast.v1.WitnessType
+	(*RegisterHostRequest)(nil),      // 5: ballast.v1.RegisterHostRequest
+	(*RegisterHostResponse)(nil),     // 6: ballast.v1.RegisterHostResponse
+	(*PullDesiredStateRequest)(nil),  // 7: ballast.v1.PullDesiredStateRequest
+	(*PullDesiredStateResponse)(nil), // 8: ballast.v1.PullDesiredStateResponse
+	(*ReportStatusRequest)(nil),      // 9: ballast.v1.ReportStatusRequest
+	(*ReportStatusResponse)(nil),     // 10: ballast.v1.ReportStatusResponse
+	(*ObjectMeta)(nil),               // 11: ballast.v1.ObjectMeta
+	(*Condition)(nil),                // 12: ballast.v1.Condition
+	(*Host)(nil),                     // 13: ballast.v1.Host
+	(*HostSpec)(nil),                 // 14: ballast.v1.HostSpec
+	(*HostStatus)(nil),               // 15: ballast.v1.HostStatus
+	(*HostInventory)(nil),            // 16: ballast.v1.HostInventory
+	(*PhysicalAdapter)(nil),          // 17: ballast.v1.PhysicalAdapter
+	(*PhysicalDisk)(nil),             // 18: ballast.v1.PhysicalDisk
+	(*HostNetworkingSpec)(nil),       // 19: ballast.v1.HostNetworkingSpec
+	(*VirtualSwitchSpec)(nil),        // 20: ballast.v1.VirtualSwitchSpec
+	(*ManagementVNICSpec)(nil),       // 21: ballast.v1.ManagementVNICSpec
+	(*IPConfig)(nil),                 // 22: ballast.v1.IPConfig
+	(*HostStorageSpec)(nil),          // 23: ballast.v1.HostStorageSpec
+	(*ClusterMembershipSpec)(nil),    // 24: ballast.v1.ClusterMembershipSpec
+	(*ClusterAssignment)(nil),        // 25: ballast.v1.ClusterAssignment
+	(*Cluster)(nil),                  // 26: ballast.v1.Cluster
+	(*ClusterSpec)(nil),              // 27: ballast.v1.ClusterSpec
+	(*WitnessSpec)(nil),              // 28: ballast.v1.WitnessSpec
+	(*ClusterStatus)(nil),            // 29: ballast.v1.ClusterStatus
+	nil,                              // 30: ballast.v1.ObjectMeta.LabelsEntry
+	nil,                              // 31: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	(*timestamppb.Timestamp)(nil),    // 32: google.protobuf.Timestamp
 }
 var file_ballast_proto_depIdxs = []int32{
-	15, // 0: ballast.v1.RegisterHostRequest.inventory:type_name -> ballast.v1.HostInventory
-	12, // 1: ballast.v1.PullDesiredStateResponse.host:type_name -> ballast.v1.Host
-	14, // 2: ballast.v1.ReportStatusRequest.status:type_name -> ballast.v1.HostStatus
-	24, // 3: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
-	26, // 4: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
-	26, // 5: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
-	26, // 6: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
-	10, // 7: ballast.v1.Host.meta:type_name -> ballast.v1.ObjectMeta
-	13, // 8: ballast.v1.Host.spec:type_name -> ballast.v1.HostSpec
-	14, // 9: ballast.v1.Host.status:type_name -> ballast.v1.HostStatus
-	18, // 10: ballast.v1.HostSpec.networking:type_name -> ballast.v1.HostNetworkingSpec
-	22, // 11: ballast.v1.HostSpec.storage:type_name -> ballast.v1.HostStorageSpec
-	23, // 12: ballast.v1.HostSpec.cluster_membership:type_name -> ballast.v1.ClusterMembershipSpec
-	1,  // 13: ballast.v1.HostSpec.reboot_policy:type_name -> ballast.v1.RebootPolicy
-	0,  // 14: ballast.v1.HostStatus.phase:type_name -> ballast.v1.Phase
-	26, // 15: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
-	15, // 16: ballast.v1.HostStatus.inventory:type_name -> ballast.v1.HostInventory
-	11, // 17: ballast.v1.HostStatus.conditions:type_name -> ballast.v1.Condition
-	16, // 18: ballast.v1.HostInventory.physical_adapters:type_name -> ballast.v1.PhysicalAdapter
-	17, // 19: ballast.v1.HostInventory.physical_disks:type_name -> ballast.v1.PhysicalDisk
-	19, // 20: ballast.v1.HostNetworkingSpec.switches:type_name -> ballast.v1.VirtualSwitchSpec
-	20, // 21: ballast.v1.HostNetworkingSpec.management_vnics:type_name -> ballast.v1.ManagementVNICSpec
-	2,  // 22: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
-	3,  // 23: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
-	21, // 24: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
-	25, // 25: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	4,  // 26: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	6,  // 27: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	8,  // 28: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	5,  // 29: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	7,  // 30: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	9,  // 31: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	29, // [29:32] is the sub-list for method output_type
-	26, // [26:29] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	16, // 0: ballast.v1.RegisterHostRequest.inventory:type_name -> ballast.v1.HostInventory
+	13, // 1: ballast.v1.PullDesiredStateResponse.host:type_name -> ballast.v1.Host
+	25, // 2: ballast.v1.PullDesiredStateResponse.cluster_assignment:type_name -> ballast.v1.ClusterAssignment
+	15, // 3: ballast.v1.ReportStatusRequest.status:type_name -> ballast.v1.HostStatus
+	29, // 4: ballast.v1.ReportStatusRequest.cluster_status:type_name -> ballast.v1.ClusterStatus
+	30, // 5: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
+	32, // 6: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
+	32, // 7: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
+	32, // 8: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
+	11, // 9: ballast.v1.Host.meta:type_name -> ballast.v1.ObjectMeta
+	14, // 10: ballast.v1.Host.spec:type_name -> ballast.v1.HostSpec
+	15, // 11: ballast.v1.Host.status:type_name -> ballast.v1.HostStatus
+	19, // 12: ballast.v1.HostSpec.networking:type_name -> ballast.v1.HostNetworkingSpec
+	23, // 13: ballast.v1.HostSpec.storage:type_name -> ballast.v1.HostStorageSpec
+	24, // 14: ballast.v1.HostSpec.cluster_membership:type_name -> ballast.v1.ClusterMembershipSpec
+	1,  // 15: ballast.v1.HostSpec.reboot_policy:type_name -> ballast.v1.RebootPolicy
+	0,  // 16: ballast.v1.HostStatus.phase:type_name -> ballast.v1.Phase
+	32, // 17: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
+	16, // 18: ballast.v1.HostStatus.inventory:type_name -> ballast.v1.HostInventory
+	12, // 19: ballast.v1.HostStatus.conditions:type_name -> ballast.v1.Condition
+	17, // 20: ballast.v1.HostInventory.physical_adapters:type_name -> ballast.v1.PhysicalAdapter
+	18, // 21: ballast.v1.HostInventory.physical_disks:type_name -> ballast.v1.PhysicalDisk
+	20, // 22: ballast.v1.HostNetworkingSpec.switches:type_name -> ballast.v1.VirtualSwitchSpec
+	21, // 23: ballast.v1.HostNetworkingSpec.management_vnics:type_name -> ballast.v1.ManagementVNICSpec
+	2,  // 24: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
+	3,  // 25: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
+	22, // 26: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
+	31, // 27: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	26, // 28: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
+	11, // 29: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
+	27, // 30: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
+	29, // 31: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
+	28, // 32: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
+	4,  // 33: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
+	0,  // 34: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
+	12, // 35: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
+	5,  // 36: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	7,  // 37: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	9,  // 38: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	6,  // 39: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	8,  // 40: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	10, // 41: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	39, // [39:42] is the sub-list for method output_type
+	36, // [36:39] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }
@@ -1795,8 +2261,8 @@ func file_ballast_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ballast_proto_rawDesc), len(file_ballast_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   22,
+			NumEnums:      5,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

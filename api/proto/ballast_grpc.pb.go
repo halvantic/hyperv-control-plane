@@ -36,18 +36,19 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // AgentService is served by the centre and consumed by each host agent. It is
-// deliberately small for the first slice: announce, pull desired state, report
-// status. The centre never imperatively drives a host through this service; it
-// only serves desired state and accepts reported status.
+// deliberately small: announce, pull desired state, report status. The centre
+// never imperatively drives a host through this service; it only serves desired
+// state and accepts reported status.
 type AgentServiceClient interface {
 	// RegisterHost announces an agent to the centre on startup and reports
 	// initial inventory. The centre returns the host identity (UID) the agent
 	// should use for subsequent calls. Calling it again with the same host name
 	// is idempotent and returns the existing identity.
 	RegisterHost(ctx context.Context, in *RegisterHostRequest, opts ...grpc.CallOption) (*RegisterHostResponse, error)
-	// PullDesiredState returns the current desired Host for the calling agent.
-	// The agent caches the result as its last-honoured state and keeps enforcing
-	// it if the centre later becomes unreachable.
+	// PullDesiredState returns the current desired Host for the calling agent,
+	// plus any cluster assignment. The agent caches the result as its
+	// last-honoured state and keeps enforcing it if the centre later becomes
+	// unreachable.
 	PullDesiredState(ctx context.Context, in *PullDesiredStateRequest, opts ...grpc.CallOption) (*PullDesiredStateResponse, error)
 	// ReportStatus delivers an agent's observed status to the centre, carrying
 	// ObservedGeneration and the Autonomous flag so the centre can tell whether
@@ -98,18 +99,19 @@ func (c *agentServiceClient) ReportStatus(ctx context.Context, in *ReportStatusR
 // for forward compatibility.
 //
 // AgentService is served by the centre and consumed by each host agent. It is
-// deliberately small for the first slice: announce, pull desired state, report
-// status. The centre never imperatively drives a host through this service; it
-// only serves desired state and accepts reported status.
+// deliberately small: announce, pull desired state, report status. The centre
+// never imperatively drives a host through this service; it only serves desired
+// state and accepts reported status.
 type AgentServiceServer interface {
 	// RegisterHost announces an agent to the centre on startup and reports
 	// initial inventory. The centre returns the host identity (UID) the agent
 	// should use for subsequent calls. Calling it again with the same host name
 	// is idempotent and returns the existing identity.
 	RegisterHost(context.Context, *RegisterHostRequest) (*RegisterHostResponse, error)
-	// PullDesiredState returns the current desired Host for the calling agent.
-	// The agent caches the result as its last-honoured state and keeps enforcing
-	// it if the centre later becomes unreachable.
+	// PullDesiredState returns the current desired Host for the calling agent,
+	// plus any cluster assignment. The agent caches the result as its
+	// last-honoured state and keeps enforcing it if the centre later becomes
+	// unreachable.
 	PullDesiredState(context.Context, *PullDesiredStateRequest) (*PullDesiredStateResponse, error)
 	// ReportStatus delivers an agent's observed status to the centre, carrying
 	// ObservedGeneration and the Autonomous flag so the centre can tell whether
