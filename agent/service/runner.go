@@ -175,11 +175,13 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// given. ObservedGeneration only advances when the spec is fully honoured.
 	phase := types.PhasePending
 	var conds []types.Condition
+	var hyperVInstalled, rebootRequired bool
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
 		res, rerr := r.reconciler.Reconcile(ctx, cached)
 		phase, conds = res.Phase, res.Conditions
+		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		if rerr != nil {
 			r.log.Error("reconcile incomplete", "err", rerr)
 		}
@@ -189,17 +191,19 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 		}
 	}
 
-	st := r.buildStatus(inv, autonomous, phase, conds)
+	st := r.buildStatus(inv, autonomous, phase, conds, hyperVInstalled, rebootRequired)
 	r.reportStatus(ctx, client, st)
 }
 
 // buildStatus assembles the status to report. ObservedGeneration carries the
 // last fully-honoured generation, so the centre can tell when the host is
 // settled even across an autonomy window.
-func (r *runner) buildStatus(inv types.HostInventory, autonomous bool, phase types.Phase, conds []types.Condition) types.HostStatus {
+func (r *runner) buildStatus(inv types.HostInventory, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired bool) types.HostStatus {
 	return types.HostStatus{
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,
+		HyperVInstalled:    hyperVInstalled,
+		RebootRequired:     rebootRequired,
 		Autonomous:         autonomous,
 		LastContact:        time.Now().UTC(),
 		Inventory:          inv,

@@ -27,6 +27,17 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// HyperVInstalled / RebootPending seed GetHostRoleState. Default false (a
+	// host where the role is not yet installed); set HyperVInstalled true to
+	// model a ready host.
+	HyperVInstalled bool
+	RebootPending   bool
+
+	// EnsureRoleCalled / RebootCalled record that the reconciler drove these, so
+	// tests can assert reboot governance.
+	EnsureRoleCalled bool
+	RebootCalled     bool
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -100,6 +111,36 @@ func (s *Stub) EnsureMgmtVNIC(_ context.Context, spec types.ManagementVNICSpec) 
 		s.vnics[spec.Name] = spec
 		return OutcomeUpdated, nil
 	}
+}
+
+func (s *Stub) GetHostRoleState(_ context.Context) (HostRoleState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return HostRoleState{HyperVInstalled: s.HyperVInstalled, RebootPending: s.RebootPending}, nil
+}
+
+func (s *Stub) EnsureHyperVRole(_ context.Context) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.HyperVInstalled {
+		return OutcomeUnchanged, nil
+	}
+	// Install stages the role; it becomes active only after a reboot.
+	s.EnsureRoleCalled = true
+	s.RebootPending = true
+	return OutcomeCreated, nil
+}
+
+func (s *Stub) RebootHost(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RebootCalled = true
+	// Model the reboot completing the install.
+	if s.RebootPending {
+		s.HyperVInstalled = true
+		s.RebootPending = false
+	}
+	return nil
 }
 
 // HasSwitch reports whether the stub currently models a switch by that name.

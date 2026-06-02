@@ -49,6 +49,67 @@ func reasonByType(conds []types.Condition, condType string) (string, bool) {
 	return "", false
 }
 
+func hostWithRole(policy types.RebootPolicy) types.Host {
+	h := hostWithNetworking()
+	h.Spec.EnableHyperVRole = true
+	h.Spec.RebootPolicy = policy
+	return h
+}
+
+// When the role is already active the reconciler proceeds to networking and
+// reports HyperVInstalled.
+func TestReconcileRoleAlreadyInstalled(t *testing.T) {
+	stub := &hyperv.Stub{HyperVInstalled: true}
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Honoured || res.Phase != types.PhaseReady || !res.HyperVInstalled {
+		t.Fatalf("want honoured/ready/installed, got %+v", res)
+	}
+	if !stub.HasSwitch("ConvergedSwitch") {
+		t.Fatal("networking should run once the role is active")
+	}
+}
+
+// RebootNever: the agent installs the role but must NOT reboot; it surfaces
+// RebootRequired, does not honour the generation, and does not touch networking.
+func TestReconcileRoleNeedsRebootPolicyNever(t *testing.T) {
+	stub := &hyperv.Stub{HyperVInstalled: false}
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.EnsureRoleCalled {
+		t.Fatal("role should have been installed")
+	}
+	if stub.RebootCalled {
+		t.Fatal("RebootPolicy=Never must never reboot")
+	}
+	if res.Honoured || !res.RebootRequired || res.Phase != types.PhaseProgressing {
+		t.Fatalf("want progressing/reboot-required/not-honoured, got %+v", res)
+	}
+	if stub.HasSwitch("ConvergedSwitch") {
+		t.Fatal("networking must not run before the role is active")
+	}
+}
+
+// RebootIfNeeded: the agent installs and reboots to activate the role.
+func TestReconcileRoleNeedsRebootPolicyIfNeeded(t *testing.T) {
+	stub := &hyperv.Stub{HyperVInstalled: false}
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootIfNeeded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.EnsureRoleCalled || !stub.RebootCalled {
+		t.Fatalf("RebootPolicy=IfNeeded should install and reboot; ensure=%v reboot=%v",
+			stub.EnsureRoleCalled, stub.RebootCalled)
+	}
+	if res.Honoured || res.Phase != types.PhaseProgressing {
+		t.Fatalf("want progressing/not-honoured while rebooting, got %+v", res)
+	}
+}
+
 // A fresh host converges (everything Created, Honoured) and a second identical
 // pass is a no-op (everything AlreadyConfigured, Changed == false). This is the
 // load-bearing idempotency guarantee.

@@ -44,7 +44,8 @@ func New(hv hyperv.Interface, log *slog.Logger) *Reconciler {
 // status it reports.
 type Result struct {
 	// Phase is Ready when every piece of desired state was honoured, Degraded
-	// when at least one ensure-operation failed.
+	// when an ensure-operation failed, Progressing when the host is mid-change
+	// (for example awaiting a reboot to complete a role install).
 	Phase types.Phase
 
 	// Honoured is true only when the whole desired spec was applied successfully.
@@ -56,6 +57,13 @@ type Result struct {
 	// update). A converged host produces Changed == false, the steady state.
 	Changed bool
 
+	// HyperVInstalled reflects the observed Hyper-V role state.
+	HyperVInstalled bool
+
+	// RebootRequired is true when the spec cannot be fully honoured until a
+	// reboot and RebootPolicy forbids the agent rebooting autonomously.
+	RebootRequired bool
+
 	// Conditions records one machine-readable fact per reconciled resource.
 	Conditions []types.Condition
 }
@@ -66,11 +74,27 @@ type Result struct {
 // host, and reports Honoured == false if any failed.
 func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result, error) {
 	var (
-		conds    []types.Condition
-		changed  bool
-		failures int
-		firstErr error
+		conds           []types.Condition
+		changed         bool
+		failures        int
+		firstErr        error
+		hyperVInstalled bool
 	)
+
+	// Host role comes first: virtual switches cannot exist without the Hyper-V
+	// role, and installing it may need a reboot governed by RebootPolicy. If the
+	// role is not yet active we cannot honour networking this pass, so we return
+	// early rather than letting downstream operations fail.
+	if desired.Spec.EnableHyperVRole {
+		res, done, err := r.reconcileHostRole(ctx, desired)
+		conds = append(conds, res.Conditions...)
+		if done || err != nil {
+			res.Conditions = conds
+			return res, err
+		}
+		hyperVInstalled = res.HyperVInstalled
+		changed = changed || res.Changed
+	}
 
 	net := desired.Spec.Networking
 
@@ -109,9 +133,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 	}
 
 	res := Result{
-		Conditions: conds,
-		Changed:    changed,
-		Honoured:   failures == 0,
+		Conditions:      conds,
+		Changed:         changed,
+		Honoured:        failures == 0,
+		HyperVInstalled: hyperVInstalled,
 	}
 	if failures == 0 {
 		res.Phase = types.PhaseReady
@@ -119,6 +144,51 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 		res.Phase = types.PhaseDegraded
 	}
 	return res, firstErr
+}
+
+// reconcileHostRole drives the Hyper-V role towards desired. It returns
+// done == true when the caller should stop and report the returned Result
+// without touching networking: either the role is being installed/awaiting a
+// reboot, or an error occurred. done == false means the role is installed and
+// active and networking reconciliation may proceed.
+func (r *Reconciler) reconcileHostRole(ctx context.Context, desired types.Host) (Result, bool, error) {
+	state, err := r.hv.GetHostRoleState(ctx)
+	if err != nil {
+		c := r.condition("HyperVRole", hyperv.OutcomeUnchanged, err)
+		return Result{Phase: types.PhaseDegraded, Conditions: []types.Condition{c}}, true, err
+	}
+
+	if state.HyperVInstalled {
+		// Already active; let networking proceed.
+		return Result{HyperVInstalled: true}, false, nil
+	}
+
+	// Role absent: install it (this never reboots).
+	out, err := r.hv.EnsureHyperVRole(ctx)
+	c := r.condition("HyperVRole", out, err)
+	if err != nil {
+		return Result{Phase: types.PhaseDegraded, Conditions: []types.Condition{c}}, true, fmt.Errorf("ensure Hyper-V role: %w", err)
+	}
+	r.log.Info("Hyper-V role installed; reboot required to activate", "rebootPolicy", desired.Spec.RebootPolicy)
+
+	// The install only takes effect after a reboot. Whether the agent performs
+	// it is governed strictly by RebootPolicy.
+	if desired.Spec.RebootPolicy == types.RebootIfNeeded {
+		r.log.Info("rebooting to activate Hyper-V role (RebootPolicy=IfNeeded)")
+		if rerr := r.hv.RebootHost(ctx); rerr != nil {
+			return Result{Phase: types.PhaseDegraded, Conditions: []types.Condition{c}}, true, fmt.Errorf("reboot host: %w", rerr)
+		}
+		// Host is restarting; not honoured yet, will resume after boot.
+		return Result{Phase: types.PhaseProgressing, Changed: true, Conditions: []types.Condition{c}}, true, nil
+	}
+
+	// RebootNever: surface the requirement and wait for an operator.
+	return Result{
+		Phase:          types.PhaseProgressing,
+		Changed:        out != hyperv.OutcomeUnchanged,
+		RebootRequired: true,
+		Conditions:     []types.Condition{c},
+	}, true, nil
 }
 
 // condition turns an ensure outcome into a status Condition. condType is the

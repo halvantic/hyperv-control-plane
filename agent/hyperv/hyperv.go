@@ -68,4 +68,29 @@ type Interface interface {
 	// spec.SwitchName is expected to exist already; the reconciler ensures
 	// switches before vNICs.
 	EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVNICSpec) (Outcome, error)
+
+	// GetHostRoleState observes whether the Hyper-V role is installed and active
+	// and whether a reboot is pending. It is a pure read.
+	GetHostRoleState(ctx context.Context) (HostRoleState, error)
+
+	// EnsureHyperVRole installs the Hyper-V role and its management tools if they
+	// are absent. It never reboots — installation only takes effect after a
+	// reboot, which is governed by RebootPolicy and driven by the reconciler, not
+	// here. OutcomeCreated means the role was installed this call (a reboot is now
+	// needed to make it active); OutcomeUnchanged means it was already present.
+	EnsureHyperVRole(ctx context.Context) (Outcome, error)
+
+	// RebootHost restarts the host. The agent only calls this when RebootPolicy
+	// permits it; it is never invoked speculatively.
+	RebootHost(ctx context.Context) error
+}
+
+// HostRoleState is the observed state of the host's Hyper-V role.
+type HostRoleState struct {
+	// HyperVInstalled is true only when the role is installed and active (an
+	// install that is staged but awaiting a reboot reports false).
+	HyperVInstalled bool
+	// RebootPending is true when the host has a reboot queued (for example a
+	// staged role install) that has not yet happened.
+	RebootPending bool
 }
