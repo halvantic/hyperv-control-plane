@@ -474,7 +474,7 @@ func witnessTypeFromProto(w WitnessType) types.WitnessType {
 }
 
 func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
-	return &ClusterSpec{
+	out := &ClusterSpec{
 		Members:      s.Members,
 		ManagementIp: s.ManagementIP,
 		EnableS2D:    s.EnableS2D,
@@ -484,6 +484,15 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 			CloudAccount:  s.Witness.CloudAccount,
 		},
 	}
+	for _, v := range s.Volumes {
+		out.Volumes = append(out.Volumes, &CSVSpec{
+			Name:           v.Name,
+			SizeBytes:      v.SizeBytes,
+			ResiliencyType: v.ResiliencyType,
+			NumberOfCopies: int32(v.NumberOfCopies),
+		})
+	}
+	return out
 }
 
 func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
@@ -501,6 +510,14 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 			FileSharePath: w.GetFileSharePath(),
 			CloudAccount:  w.GetCloudAccount(),
 		}
+	}
+	for _, v := range s.GetVolumes() {
+		out.Volumes = append(out.Volumes, types.CSVSpec{
+			Name:           v.GetName(),
+			SizeBytes:      v.GetSizeBytes(),
+			ResiliencyType: v.GetResiliencyType(),
+			NumberOfCopies: int(v.GetNumberOfCopies()),
+		})
 	}
 	return out
 }

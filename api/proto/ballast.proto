@@ -260,6 +260,16 @@ message ClusterSpec {
   WitnessSpec witness = 3;
   // enable_s2d requests Storage Spaces Direct once the cluster is formed.
   bool enable_s2d = 4;
+  // volumes are the Cluster Shared Volumes to provision on the S2D pool.
+  repeated CSVSpec volumes = 5;
+}
+
+message CSVSpec {
+  string name = 1;
+  uint64 size_bytes = 2;
+  // resiliency_type is Mirror or Parity; empty defaults to Mirror.
+  string resiliency_type = 3;
+  int32 number_of_copies = 4;
 }
 
 enum WitnessType {

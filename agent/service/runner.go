@@ -223,6 +223,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		Phase:              res.Phase,
 		ObservedGeneration: cluster.Meta.Generation,
 		FormedMembers:      res.FormedMembers,
+		S2DEnabled:         res.S2DEnabled,
 		Conditions:         res.Conditions,
 	}
 	if !res.Honoured {

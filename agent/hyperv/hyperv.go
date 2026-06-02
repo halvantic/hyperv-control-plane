@@ -97,6 +97,36 @@ type Interface interface {
 	// with the Failover Clustering service. Idempotency is the caller's
 	// responsibility: it must only be invoked when no cluster yet exists.
 	FormCluster(ctx context.Context, f ClusterFormation) error
+
+	// GetStorageState observes whether Storage Spaces Direct is enabled on the
+	// cluster and which CSV volumes exist. Pure read.
+	GetStorageState(ctx context.Context) (StorageState, error)
+
+	// EnableS2D turns on Storage Spaces Direct for the cluster (creating the S2D
+	// pool). A cluster-level operation run by the former; the caller invokes it
+	// only when S2D is not already enabled.
+	EnableS2D(ctx context.Context) (Outcome, error)
+
+	// EnsureCSV makes the Cluster Shared Volume described by spec exist on the
+	// S2D pool, idempotently: OutcomeUnchanged when it already exists,
+	// OutcomeCreated when it had to be provisioned.
+	EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome, error)
+}
+
+// StorageState is the observed S2D/CSV state on the cluster.
+type StorageState struct {
+	// S2DEnabled is true when Storage Spaces Direct is on and the pool exists.
+	S2DEnabled bool
+	// Volumes are the CSV / virtual-disk names that currently exist.
+	Volumes []string
+}
+
+// CSVProvision is the input to provisioning one Cluster Shared Volume.
+type CSVProvision struct {
+	Name      string
+	SizeBytes uint64
+	// ResiliencyType is "Mirror" or "Parity"; empty defaults to Mirror.
+	ResiliencyType string
 }
 
 // ClusterState is the observed failover-cluster membership from one node's view.

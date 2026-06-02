@@ -22,6 +22,7 @@ type ClusterResult struct {
 	Honoured      bool
 	Changed       bool
 	FormedMembers []string
+	S2DEnabled    bool
 	Conditions    []types.Condition
 }
 
@@ -58,43 +59,96 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, err))
 		return ClusterResult{Phase: types.PhaseDegraded, Changed: changed, Conditions: conds}, fmt.Errorf("get cluster state: %w", err)
 	}
-	if state.Exists {
+	// 3. Not formed yet.
+	if !state.Exists {
+		// Only the designated former acts; others wait.
+		if !a.IsFormer {
+			conds = append(conds, types.Condition{
+				Type: "ClusterFormed", Status: false, Reason: "AwaitingFormer",
+				Message:            "waiting for the designated former to create the cluster",
+				LastTransitionTime: r.now(),
+			})
+			return ClusterResult{Phase: types.PhaseProgressing, Changed: changed, Conditions: conds}, nil
+		}
+		formation := hyperv.ClusterFormation{
+			Name:         a.Cluster.Meta.Name,
+			Members:      a.Cluster.Spec.Members,
+			ManagementIP: a.Cluster.Spec.ManagementIP,
+		}
+		r.log.Info("forming cluster", "name", formation.Name, "members", formation.Members)
+		if err := r.hv.FormCluster(ctx, formation); err != nil {
+			conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, err))
+			return ClusterResult{Phase: types.PhaseDegraded, Changed: changed, Conditions: conds}, fmt.Errorf("form cluster: %w", err)
+		}
+		changed = true
+		// Re-observe so the reported members reflect reality.
+		state, err = r.hv.GetClusterState(ctx)
+		if err != nil {
+			return ClusterResult{Phase: types.PhaseProgressing, Changed: true}, fmt.Errorf("re-observe cluster: %w", err)
+		}
+		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeCreated, nil))
+	} else {
 		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, nil))
-		return ClusterResult{
-			Phase: types.PhaseReady, Honoured: true, Changed: changed,
-			FormedMembers: state.Members, Conditions: conds,
-		}, nil
 	}
 
-	// 3. Not formed. Only the designated former acts; others wait.
-	if !a.IsFormer {
-		conds = append(conds, types.Condition{
-			Type: "ClusterFormed", Status: false, Reason: "AwaitingFormer",
-			Message:            "waiting for the designated former to create the cluster",
-			LastTransitionTime: r.now(),
-		})
-		return ClusterResult{Phase: types.PhaseProgressing, Changed: changed, Conditions: conds}, nil
-	}
+	// 4. Storage Spaces Direct + Cluster Shared Volumes — the former provisions
+	// cluster-wide storage once the cluster exists. Non-formers do not touch it.
+	s2dEnabled, storageConds, storageChanged, storageErr := r.reconcileStorage(ctx, a)
+	conds = append(conds, storageConds...)
+	changed = changed || storageChanged
 
-	formation := hyperv.ClusterFormation{
-		Name:         a.Cluster.Meta.Name,
-		Members:      a.Cluster.Spec.Members,
-		ManagementIP: a.Cluster.Spec.ManagementIP,
+	phase, honoured := types.PhaseReady, true
+	if storageErr != nil {
+		phase, honoured = types.PhaseDegraded, false
 	}
-	r.log.Info("forming cluster", "name", formation.Name, "members", formation.Members)
-	if err := r.hv.FormCluster(ctx, formation); err != nil {
-		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, err))
-		return ClusterResult{Phase: types.PhaseDegraded, Changed: changed, Conditions: conds}, fmt.Errorf("form cluster: %w", err)
-	}
-
-	// Re-observe so the reported members reflect reality.
-	state, err = r.hv.GetClusterState(ctx)
-	if err != nil {
-		return ClusterResult{Phase: types.PhaseProgressing, Changed: true}, fmt.Errorf("re-observe cluster: %w", err)
-	}
-	conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeCreated, nil))
 	return ClusterResult{
-		Phase: types.PhaseReady, Honoured: state.Exists, Changed: true,
-		FormedMembers: state.Members, Conditions: conds,
-	}, nil
+		Phase: phase, Honoured: honoured, Changed: changed,
+		FormedMembers: state.Members, S2DEnabled: s2dEnabled, Conditions: conds,
+	}, storageErr
+}
+
+// reconcileStorage enables S2D (if requested and not already on) and provisions
+// the desired CSVs. It is a no-op for non-formers or when EnableS2D is false.
+func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) (s2dEnabled bool, conds []types.Condition, changed bool, firstErr error) {
+	if !a.IsFormer || !a.Cluster.Spec.EnableS2D {
+		return false, nil, false, nil
+	}
+
+	state, err := r.hv.GetStorageState(ctx)
+	if err != nil {
+		return false, []types.Condition{r.condition("S2DEnabled", hyperv.OutcomeUnchanged, err)}, false, fmt.Errorf("get storage state: %w", err)
+	}
+	s2dEnabled = state.S2DEnabled
+
+	if !state.S2DEnabled {
+		out, err := r.hv.EnableS2D(ctx)
+		conds = append(conds, r.condition("S2DEnabled", out, err))
+		if err != nil {
+			return false, conds, changed, fmt.Errorf("enable S2D: %w", err)
+		}
+		r.log.Info("Storage Spaces Direct enabled")
+		s2dEnabled, changed = true, true
+	} else {
+		conds = append(conds, r.condition("S2DEnabled", hyperv.OutcomeUnchanged, nil))
+	}
+
+	for _, vol := range a.Cluster.Spec.Volumes {
+		out, err := r.hv.EnsureCSV(ctx, hyperv.CSVProvision{
+			Name:           vol.Name,
+			SizeBytes:      vol.SizeBytes,
+			ResiliencyType: vol.ResiliencyType,
+		})
+		conds = append(conds, r.condition("CSV/"+vol.Name, out, err))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ensure CSV %q: %w", vol.Name, err)
+			}
+			continue
+		}
+		if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("CSV reconciled", "name", vol.Name, "outcome", out)
+		}
+	}
+	return s2dEnabled, conds, changed, firstErr
 }

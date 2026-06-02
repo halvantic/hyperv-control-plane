@@ -47,6 +47,12 @@ type Stub struct {
 	ClusterMembers      []string
 	FormCalled          bool
 
+	// Storage: S2DEnabled seeds the S2D state; CSVs models existing volumes.
+	// EnableS2DCalled records that the reconciler enabled it.
+	S2DEnabled      bool
+	EnableS2DCalled bool
+	CSVs            []string
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -176,6 +182,35 @@ func (s *Stub) FormCluster(_ context.Context, f ClusterFormation) error {
 	s.ClusterName = f.Name
 	s.ClusterMembers = append([]string(nil), f.Members...)
 	return nil
+}
+
+func (s *Stub) GetStorageState(_ context.Context) (StorageState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return StorageState{S2DEnabled: s.S2DEnabled, Volumes: append([]string(nil), s.CSVs...)}, nil
+}
+
+func (s *Stub) EnableS2D(_ context.Context) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.S2DEnabled {
+		return OutcomeUnchanged, nil
+	}
+	s.EnableS2DCalled = true
+	s.S2DEnabled = true
+	return OutcomeCreated, nil
+}
+
+func (s *Stub) EnsureCSV(_ context.Context, spec CSVProvision) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.CSVs {
+		if v == spec.Name {
+			return OutcomeUnchanged, nil
+		}
+	}
+	s.CSVs = append(s.CSVs, spec.Name)
+	return OutcomeCreated, nil
 }
 
 // HasSwitch reports whether the stub currently models a switch by that name.

@@ -74,6 +74,74 @@ func TestReconcileClusterNonFormerWaits(t *testing.T) {
 	}
 }
 
+func clusterAssignmentWithS2D(isFormer bool) ClusterAssignment {
+	a := clusterAssignment(isFormer)
+	a.Cluster.Spec.EnableS2D = true
+	a.Cluster.Spec.Volumes = []types.CSVSpec{
+		{Name: "Vol01", SizeBytes: 50 << 30, ResiliencyType: "Mirror"},
+		{Name: "Vol02", SizeBytes: 50 << 30},
+	}
+	return a
+}
+
+// The former, with the cluster already formed, enables S2D and provisions the
+// CSVs.
+func TestReconcileClusterEnablesS2DAndCSVs(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusteringInstalled: true, ClusterExists: true,
+		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
+	}
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.EnableS2DCalled || !stub.S2DEnabled {
+		t.Fatal("former should enable S2D")
+	}
+	if len(stub.CSVs) != 2 {
+		t.Fatalf("want 2 CSVs created, got %v", stub.CSVs)
+	}
+	if !res.S2DEnabled || !res.Honoured || res.Phase != types.PhaseReady {
+		t.Fatalf("want s2d/honoured/ready, got %+v", res)
+	}
+}
+
+// A converged storage state (S2D on, CSVs present) makes no changes.
+func TestReconcileClusterStorageIdempotent(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusteringInstalled: true, ClusterExists: true,
+		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
+		S2DEnabled: true, CSVs: []string{"Vol01", "Vol02"},
+	}
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.EnableS2DCalled {
+		t.Fatal("must not re-enable S2D when already on")
+	}
+	if res.Changed {
+		t.Fatal("converged storage should not report Changed")
+	}
+	if !res.S2DEnabled || !res.Honoured {
+		t.Fatalf("want s2d/honoured, got %+v", res)
+	}
+}
+
+// A non-former never touches storage, even with EnableS2D set.
+func TestReconcileClusterNonFormerSkipsStorage(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusteringInstalled: true, ClusterExists: true,
+		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
+	}
+	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(false)); err != nil {
+		t.Fatal(err)
+	}
+	if stub.EnableS2DCalled || len(stub.CSVs) != 0 {
+		t.Fatal("non-former must not enable S2D or create CSVs")
+	}
+}
+
 // Once the cluster exists, the pass is honoured with no forming.
 func TestReconcileClusterAlreadyFormed(t *testing.T) {
 	stub := &hyperv.Stub{
