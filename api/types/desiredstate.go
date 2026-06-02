@@ -323,3 +323,149 @@ type ClusterStatus struct {
 	S2DEnabled         bool        `json:"s2dEnabled,omitempty"`
 	Conditions         []Condition `json:"conditions,omitempty"`
 }
+
+// ---------------------------------------------------------------------------
+// Virtual machine
+// ---------------------------------------------------------------------------
+
+// VM is the desired state for a single virtual machine. Like Cluster it is a
+// top-level, control-plane-owned object rather than a field of a Host: it is
+// placed on a host via Spec.Placement.HostName, and the agent on that host
+// reconciles it. Placement is static intent in v1 — live migration on host
+// death stays a Failover Clustering concern and is not modelled here.
+//
+// The same desired-state rules apply: the agent drives actual VM state towards
+// the spec idempotently, advancing Status.ObservedGeneration only once the spec
+// is fully honoured, and keeps enforcing the cached spec when the centre is
+// offline.
+type VM struct {
+	Meta ObjectMeta `json:"meta"`
+	Spec VMSpec     `json:"spec"`
+
+	// Status is reported by the owning host's agent; the control plane treats it
+	// as read-only.
+	Status VMStatus `json:"status,omitempty"`
+}
+
+type VMSpec struct {
+	// Placement assigns the VM to a host. Exactly one agent — the one for
+	// Placement.HostName — owns and reconciles this VM.
+	Placement VMPlacementSpec `json:"placement"`
+
+	// HyperVGeneration is the Hyper-V VM generation, 1 or 2. Generation 2 is
+	// UEFI-based and the default for modern guests; it is immutable once the VM
+	// exists. Named to avoid colliding with Meta.Generation, which is unrelated.
+	// Zero is treated as 2 by the agent.
+	HyperVGeneration int `json:"hyperVGeneration,omitempty"`
+
+	// ProcessorCount is the number of virtual processors assigned.
+	ProcessorCount int `json:"processorCount"`
+
+	// MemoryStartupBytes is the startup memory. With DynamicMemory unset this is
+	// also the fixed assignment.
+	MemoryStartupBytes uint64 `json:"memoryStartupBytes"`
+
+	// DynamicMemory, when set, lets the VM's memory float between Min and Max.
+	// Nil means a fixed assignment of MemoryStartupBytes.
+	DynamicMemory *DynamicMemorySpec `json:"dynamicMemory,omitempty"`
+
+	// Disks are the virtual hard disks attached to the VM, in attachment order.
+	Disks []VMDiskSpec `json:"disks,omitempty"`
+
+	// NetworkAdapters are the VM's vNICs, each bound to a named vSwitch that is
+	// expected to exist on the placement host.
+	NetworkAdapters []VMNetworkAdapterSpec `json:"networkAdapters,omitempty"`
+
+	// DesiredPowerState is the power state the agent should drive the VM to.
+	DesiredPowerState VMPowerState `json:"desiredPowerState"`
+
+	// AutomaticStartAction governs what the host does with the VM when the host
+	// itself boots. Empty defaults to the Hyper-V default (StartIfRunning).
+	AutomaticStartAction VMStartAction `json:"automaticStartAction,omitempty"`
+}
+
+// VMPlacementSpec assigns a VM to a host. It is the only link between a VM and
+// the agent that reconciles it.
+type VMPlacementSpec struct {
+	// HostName is the host the VM runs on. The matching agent owns it.
+	HostName string `json:"hostName"`
+}
+
+// DynamicMemorySpec bounds dynamic memory. MemoryStartupBytes must lie within
+// [MinBytes, MaxBytes].
+type DynamicMemorySpec struct {
+	MinBytes uint64 `json:"minBytes"`
+	MaxBytes uint64 `json:"maxBytes"`
+}
+
+type VMDiskSpec struct {
+	// Path is the VHDX path on the host, or on a CSV (C:\ClusterStorage\...) for
+	// a clustered VM.
+	Path string `json:"path"`
+
+	// SizeBytes is the provisioned size of a disk the agent must create. Zero
+	// means the VHDX already exists at Path and is attached as-is rather than
+	// created.
+	SizeBytes uint64 `json:"sizeBytes,omitempty"`
+
+	// Dynamic selects a dynamically-expanding VHDX (true) over a fixed one. Only
+	// consulted when the agent creates the disk (SizeBytes > 0).
+	Dynamic bool `json:"dynamic,omitempty"`
+}
+
+type VMNetworkAdapterSpec struct {
+	// Name identifies the adapter within the VM (stable key for reconciliation).
+	Name string `json:"name"`
+
+	// SwitchName is the vSwitch this adapter connects to.
+	SwitchName string `json:"switchName"`
+
+	// VLANID 0 means untagged/access to the native VLAN.
+	VLANID int `json:"vlanID,omitempty"`
+
+	// MACAddress, when empty, means the host assigns a dynamic MAC.
+	MACAddress string `json:"macAddress,omitempty"`
+}
+
+// VMPowerState is both the requested (Spec.DesiredPowerState) and observed
+// (Status.PowerState) power state. The agent only drives towards Running or
+// Off; Paused/Saved are reported when observed but never requested in v1.
+type VMPowerState string
+
+const (
+	VMPowerRunning VMPowerState = "Running"
+	VMPowerOff     VMPowerState = "Off"
+	VMPowerPaused  VMPowerState = "Paused"
+	VMPowerSaved   VMPowerState = "Saved"
+)
+
+type VMStartAction string
+
+const (
+	VMStartNothing      VMStartAction = "Nothing"
+	VMStartIfWasRunning VMStartAction = "StartIfRunning"
+	VMStartAlways       VMStartAction = "Start"
+)
+
+type VMStatus struct {
+	Phase Phase `json:"phase"`
+
+	// ObservedGeneration is the Meta.Generation the agent has fully honoured.
+	ObservedGeneration int64 `json:"observedGeneration"`
+
+	// PowerState is the actual observed power state of the VM.
+	PowerState VMPowerState `json:"powerState,omitempty"`
+
+	// AssignedMemoryBytes is the memory currently assigned (meaningful under
+	// dynamic memory). Best effort; zero when not observed.
+	AssignedMemoryBytes uint64 `json:"assignedMemoryBytes,omitempty"`
+
+	// CPUUsagePercent is the VM's host-CPU load. Best effort; zero when not
+	// observed.
+	CPUUsagePercent int `json:"cpuUsagePercent,omitempty"`
+
+	// UptimeSeconds is how long the VM has been running. Best effort.
+	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
+
+	Conditions []Condition `json:"conditions,omitempty"`
+}

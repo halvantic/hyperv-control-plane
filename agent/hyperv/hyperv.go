@@ -111,6 +111,35 @@ type Interface interface {
 	// S2D pool, idempotently: OutcomeUnchanged when it already exists,
 	// OutcomeCreated when it had to be provisioned.
 	EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome, error)
+
+	// GetVMState observes the named VM: whether it exists and, if so, its power
+	// state and best-effort runtime metrics. Pure read.
+	GetVMState(ctx context.Context, name string) (VMState, error)
+
+	// EnsureVM makes the VM described by vm exist on this host and match its
+	// configuration (processor count, memory, disks, network adapters),
+	// idempotently. It does not change power state — that is SetVMPowerState, so
+	// the reconciler can settle configuration before driving power. A vNIC's
+	// switch is expected to exist already (the networking reconcile runs first).
+	EnsureVM(ctx context.Context, vm types.VM) (Outcome, error)
+
+	// SetVMPowerState drives the VM to the requested power state (Running or
+	// Off). OutcomeUnchanged when it is already there. The reconciler only
+	// requests Running/Off; Paused/Saved are observed, never requested.
+	SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error)
+}
+
+// VMState is the observed state of one VM on the host.
+type VMState struct {
+	// Exists is true when a VM by that name is present on the host.
+	Exists bool
+	// PowerState is the actual power state; empty when Exists is false.
+	PowerState types.VMPowerState
+	// AssignedMemoryBytes, CPUUsagePercent and UptimeSeconds are best-effort
+	// runtime metrics, zero when the VM is off or not observed.
+	AssignedMemoryBytes uint64
+	CPUUsagePercent     int
+	UptimeSeconds       int64
 }
 
 // StorageState is the observed S2D/CSV state on the cluster.

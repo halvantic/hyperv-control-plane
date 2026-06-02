@@ -27,6 +27,7 @@ var (
 	bucketJournal = []byte("journal")
 
 	keyHost = []byte("host")
+	keyVMs  = []byte("vms")
 )
 
 // Store is the agent's embedded store. Safe for concurrent use: bbolt
@@ -99,6 +100,38 @@ func (s *Store) LoadDesiredHost() (host types.Host, ok bool, err error) {
 		return nil
 	})
 	return host, ok, err
+}
+
+// SaveDesiredVMs records the VMs placed on this host as last-honoured desired
+// state, replacing any previous copy. Like the host spec, this is what the agent
+// keeps enforcing when the centre is unreachable. An empty slice is stored
+// faithfully (the centre having removed every VM is itself intent to honour).
+func (s *Store) SaveDesiredVMs(vms []types.VM) error {
+	data, err := json.Marshal(vms)
+	if err != nil {
+		return fmt.Errorf("marshal desired vms: %w", err)
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketDesired).Put(keyVMs, data)
+	})
+}
+
+// LoadDesiredVMs returns the last-honoured VMs. ok is false when the agent has
+// never persisted a VM set (distinct from an empty set, which the centre may
+// legitimately have authored).
+func (s *Store) LoadDesiredVMs() (vms []types.VM, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketDesired).Get(keyVMs)
+		if data == nil {
+			return nil
+		}
+		if err := json.Unmarshal(data, &vms); err != nil {
+			return fmt.Errorf("unmarshal desired vms: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	return vms, ok, err
 }
 
 // AppendStatus records a status report in the journal, assigning it the next

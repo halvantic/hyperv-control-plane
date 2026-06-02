@@ -57,6 +57,11 @@ type runner struct {
 	// persists across cycles and across autonomy windows, and is what the agent
 	// reports as Status.ObservedGeneration.
 	observedGen int64
+
+	// vmObservedGen tracks, per VM name, the last desired Generation fully
+	// honoured for that VM. Like observedGen it persists across cycles and
+	// autonomy windows. Lazily initialised.
+	vmObservedGen map[string]int64
 }
 
 const agentVersion = "0.1.0-slice"
@@ -180,6 +185,16 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 				Cluster:  ballastpb.ClusterFromProto(ca.GetCluster()),
 			}
 		}
+		// Cache the VMs placed on this host as last-honoured intent, so the agent
+		// keeps enforcing them while the centre is offline. The centre always
+		// sends the full set, so this faithfully reflects additions and removals.
+		vms := make([]types.VM, 0, len(resp.GetVms()))
+		for _, pv := range resp.GetVms() {
+			vms = append(vms, ballastpb.VMFromProto(pv))
+		}
+		if serr := r.st.SaveDesiredVMs(vms); serr != nil {
+			r.log.Error("persist desired vms failed", "err", serr)
+		}
 	}
 
 	// Reconcile against the cached desired state. This runs whether or not the
@@ -213,6 +228,76 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 			r.log.Error("cluster reconcile incomplete", "err", cerr)
 		}
 		r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+	}
+
+	// VM reconcile, against the cached set. This runs whether or not the centre
+	// was reachable — the agent enforces the VMs it was last given, same as the
+	// host spec. Reporting is best-effort and skipped when autonomous.
+	r.reconcileVMs(ctx, client, autonomous)
+}
+
+// reconcileVMs drives every cached VM towards desired and reports the resulting
+// per-VM status. Each VM's ObservedGeneration advances only when its own
+// reconcile was fully honoured, so the centre can see exactly which VMs are
+// settled. When autonomous (centre unreachable) it still reconciles — that is
+// the point — but does not attempt to report.
+func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentServiceClient, autonomous bool) {
+	cached, ok, err := r.st.LoadDesiredVMs()
+	if err != nil {
+		r.log.Error("read cached desired vms failed", "err", err)
+		return
+	}
+	if !ok || len(cached) == 0 {
+		return
+	}
+
+	if r.vmObservedGen == nil {
+		r.vmObservedGen = make(map[string]int64)
+	}
+
+	results := r.reconciler.ReconcileVMs(ctx, cached)
+	byName := make(map[string]types.VM, len(cached))
+	for _, vm := range cached {
+		byName[vm.Meta.Name] = vm
+	}
+
+	var reports []*ballastpb.VMStatusReport
+	for _, res := range results {
+		gen := byName[res.Name].Meta.Generation
+		if res.Honoured && r.vmObservedGen[res.Name] != gen {
+			r.vmObservedGen[res.Name] = gen
+			r.log.Info("vm generation honoured", "vm", res.Name, "generation", gen)
+		}
+		reports = append(reports, &ballastpb.VMStatusReport{
+			Name:   res.Name,
+			Status: ballastpb.VMStatusToProto(r.buildVMStatus(res)),
+		})
+	}
+
+	if autonomous || len(reports) == 0 {
+		return
+	}
+	if _, err := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
+		HostName:   r.cfg.hostName,
+		Uid:        r.uid,
+		VmStatuses: reports,
+	}); err != nil {
+		r.log.Warn("vm status report failed", "err", err)
+	}
+}
+
+// buildVMStatus assembles a VM's reported status from its reconcile result. The
+// reported ObservedGeneration is the last generation fully honoured for that VM,
+// held in vmObservedGen so it survives an autonomy window.
+func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
+	return types.VMStatus{
+		Phase:               res.Phase,
+		ObservedGeneration:  r.vmObservedGen[res.Name],
+		PowerState:          res.PowerState,
+		AssignedMemoryBytes: res.AssignedMemoryBytes,
+		CPUUsagePercent:     res.CPUUsagePercent,
+		UptimeSeconds:       res.UptimeSeconds,
+		Conditions:          res.Conditions,
 	}
 }
 

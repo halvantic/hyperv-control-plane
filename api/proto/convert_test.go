@@ -101,4 +101,69 @@ func TestEnumsUnspecifiedForUnknown(t *testing.T) {
 	if r := rebootPolicyToProto(types.RebootPolicy("bogus")); r != RebootPolicy_REBOOT_POLICY_UNSPECIFIED {
 		t.Errorf("unknown reboot policy: want UNSPECIFIED, got %v", r)
 	}
+	if p := vmPowerStateToProto(types.VMPowerState("bogus")); p != VMPowerState_VM_POWER_STATE_UNSPECIFIED {
+		t.Errorf("unknown power state: want UNSPECIFIED, got %v", p)
+	}
+	if a := vmStartActionToProto(types.VMStartAction("bogus")); a != VMStartAction_VM_START_ACTION_UNSPECIFIED {
+		t.Errorf("unknown start action: want UNSPECIFIED, got %v", a)
+	}
+}
+
+// sampleVM is a fully-populated VM used to prove the conversion is lossless.
+func sampleVM() types.VM {
+	ts := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	return types.VM{
+		Meta: types.ObjectMeta{
+			Name:       "web01",
+			UID:        "vm-abc123",
+			Generation: 3,
+			Labels:     map[string]string{"tier": "web"},
+			CreatedAt:  ts,
+			UpdatedAt:  ts.Add(time.Hour),
+		},
+		Spec: types.VMSpec{
+			Placement:          types.VMPlacementSpec{HostName: "host01"},
+			HyperVGeneration:   2,
+			ProcessorCount:     4,
+			MemoryStartupBytes: 4_294_967_296,
+			DynamicMemory:      &types.DynamicMemorySpec{MinBytes: 2_147_483_648, MaxBytes: 8_589_934_592},
+			Disks: []types.VMDiskSpec{
+				{Path: `C:\ClusterStorage\Volume1\web01.vhdx`, SizeBytes: 137_438_953_472, Dynamic: true},
+			},
+			NetworkAdapters: []types.VMNetworkAdapterSpec{
+				{Name: "net0", SwitchName: "ConvergedSwitch", VLANID: 10, MACAddress: "00:15:5D:00:01:02"},
+			},
+			DesiredPowerState:    types.VMPowerRunning,
+			AutomaticStartAction: types.VMStartIfWasRunning,
+		},
+		Status: types.VMStatus{
+			Phase:               types.PhaseReady,
+			ObservedGeneration:  3,
+			PowerState:          types.VMPowerRunning,
+			AssignedMemoryBytes: 4_294_967_296,
+			CPUUsagePercent:     12,
+			UptimeSeconds:       3600,
+			Conditions: []types.Condition{{
+				Type:               "VMConfigured",
+				Status:             true,
+				Reason:             "Applied",
+				Message:            "VM matches desired state",
+				LastTransitionTime: ts,
+			}},
+		},
+	}
+}
+
+func TestVMRoundTrip(t *testing.T) {
+	in := sampleVM()
+	got := VMFromProto(VMToProto(in))
+	if !reflect.DeepEqual(in, got) {
+		t.Fatalf("round trip mismatch:\n in:  %#v\n got: %#v", in, got)
+	}
+}
+
+func TestVMFromProtoNil(t *testing.T) {
+	if got := VMFromProto(nil); !reflect.DeepEqual(got, types.VM{}) {
+		t.Fatalf("expected zero VM from nil, got %#v", got)
+	}
 }

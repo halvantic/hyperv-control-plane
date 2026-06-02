@@ -75,6 +75,10 @@ message PullDesiredStateResponse {
   // cluster_assignment tells the host whether it belongs to a cluster and
   // whether it is the designated former. Absent when the host is standalone.
   ClusterAssignment cluster_assignment = 4;
+  // vms are the virtual machines placed on this host (Spec.Placement.HostName
+  // == this host). Always sent in full — unlike host, it is not gated by
+  // known_generation, since VMs change independently of the host spec.
+  repeated VM vms = 5;
 }
 
 message ReportStatusRequest {
@@ -85,6 +89,16 @@ message ReportStatusRequest {
   // and has observed cluster state to report (typically from the former).
   string cluster_name = 4;
   ClusterStatus cluster_status = 5;
+  // vm_statuses reports the observed state of the VMs this host owns. Each
+  // entry is keyed by VM name. Empty when the host owns no VMs.
+  repeated VMStatusReport vm_statuses = 6;
+}
+
+// VMStatusReport pairs a VM's name with its reported status, so one host can
+// report on all the VMs it owns in a single call.
+message VMStatusReport {
+  string name = 1;
+  VMStatus status = 2;
 }
 
 message ReportStatusResponse {
@@ -292,4 +306,77 @@ message ClusterStatus {
   repeated string formed_members = 3;
   bool s2d_enabled = 4;
   repeated Condition conditions = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Virtual machine
+// ---------------------------------------------------------------------------
+
+enum VMPowerState {
+  VM_POWER_STATE_UNSPECIFIED = 0;
+  VM_POWER_STATE_RUNNING = 1;
+  VM_POWER_STATE_OFF = 2;
+  VM_POWER_STATE_PAUSED = 3;
+  VM_POWER_STATE_SAVED = 4;
+}
+
+enum VMStartAction {
+  VM_START_ACTION_UNSPECIFIED = 0;
+  VM_START_ACTION_NOTHING = 1;
+  VM_START_ACTION_START_IF_RUNNING = 2;
+  VM_START_ACTION_START = 3;
+}
+
+message VM {
+  ObjectMeta meta = 1;
+  VMSpec spec = 2;
+  VMStatus status = 3;
+}
+
+message VMSpec {
+  VMPlacementSpec placement = 1;
+  // hyperv_generation is 1 or 2; 0 is treated as 2 by the agent.
+  int32 hyperv_generation = 2;
+  int32 processor_count = 3;
+  uint64 memory_startup_bytes = 4;
+  // dynamic_memory absent means a fixed memory assignment.
+  DynamicMemorySpec dynamic_memory = 5;
+  repeated VMDiskSpec disks = 6;
+  repeated VMNetworkAdapterSpec network_adapters = 7;
+  VMPowerState desired_power_state = 8;
+  VMStartAction automatic_start_action = 9;
+}
+
+message VMPlacementSpec {
+  string host_name = 1;
+}
+
+message DynamicMemorySpec {
+  uint64 min_bytes = 1;
+  uint64 max_bytes = 2;
+}
+
+message VMDiskSpec {
+  string path = 1;
+  // size_bytes 0 means the VHDX already exists at path and is attached as-is.
+  uint64 size_bytes = 2;
+  bool dynamic = 3;
+}
+
+message VMNetworkAdapterSpec {
+  string name = 1;
+  string switch_name = 2;
+  int32 vlan_id = 3;
+  // mac_address empty means a dynamic, host-assigned MAC.
+  string mac_address = 4;
+}
+
+message VMStatus {
+  Phase phase = 1;
+  int64 observed_generation = 2;
+  VMPowerState power_state = 3;
+  uint64 assigned_memory_bytes = 4;
+  int32 cpu_usage_percent = 5;
+  int64 uptime_seconds = 6;
+  repeated Condition conditions = 7;
 }

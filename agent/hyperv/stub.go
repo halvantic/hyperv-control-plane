@@ -53,9 +53,20 @@ type Stub struct {
 	EnableS2DCalled bool
 	CSVs            []string
 
+	// FailVM, when set, makes EnsureVM for the matching VM name return an error,
+	// so tests can exercise the reconciler's VM failure path.
+	FailVM string
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
+	vms      map[string]*stubVM
+}
+
+// stubVM models a VM's configuration and power state in the stub.
+type stubVM struct {
+	spec  types.VMSpec
+	power types.VMPowerState
 }
 
 // CollectInventory returns the configured or default fixture inventory.
@@ -211,6 +222,70 @@ func (s *Stub) EnsureCSV(_ context.Context, spec CSVProvision) (Outcome, error) 
 	}
 	s.CSVs = append(s.CSVs, spec.Name)
 	return OutcomeCreated, nil
+}
+
+func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.vms[name]
+	if !ok {
+		return VMState{}, nil
+	}
+	return VMState{Exists: true, PowerState: vm.power}, nil
+}
+
+func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	name := vm.Meta.Name
+	if s.FailVM != "" && s.FailVM == name {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced failure ensuring VM %q", name)
+	}
+	// A VM adapter cannot attach to a switch that does not exist; mirror that so
+	// tests catch a reconciler that ensures VMs before their switches.
+	for _, a := range vm.Spec.NetworkAdapters {
+		if _, ok := s.switches[a.SwitchName]; !ok {
+			return OutcomeUnchanged, fmt.Errorf("stub: switch %q for VM %q adapter %q does not exist", a.SwitchName, name, a.Name)
+		}
+	}
+	if s.vms == nil {
+		s.vms = make(map[string]*stubVM)
+	}
+	cur, ok := s.vms[name]
+	switch {
+	case !ok:
+		// New VMs come up Off; SetVMPowerState drives them to desired.
+		s.vms[name] = &stubVM{spec: vm.Spec, power: types.VMPowerOff}
+		return OutcomeCreated, nil
+	case reflect.DeepEqual(cur.spec, vm.Spec):
+		return OutcomeUnchanged, nil
+	default:
+		cur.spec = vm.Spec
+		return OutcomeUpdated, nil
+	}
+}
+
+func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMPowerState) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.vms[name]
+	if !ok {
+		return OutcomeUnchanged, fmt.Errorf("stub: VM %q does not exist", name)
+	}
+	if vm.power == desired {
+		return OutcomeUnchanged, nil
+	}
+	vm.power = desired
+	return OutcomeUpdated, nil
+}
+
+// HasVM reports whether the stub currently models a VM by that name.
+func (s *Stub) HasVM(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.vms[name]
+	return ok
 }
 
 // HasSwitch reports whether the stub currently models a switch by that name.

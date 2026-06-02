@@ -567,3 +567,182 @@ func ClusterFromProto(c *Cluster) types.Cluster {
 		Status: ClusterStatusFromProto(c.GetStatus()),
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Virtual machine
+// ---------------------------------------------------------------------------
+
+func vmPowerStateToProto(p types.VMPowerState) VMPowerState {
+	switch p {
+	case types.VMPowerRunning:
+		return VMPowerState_VM_POWER_STATE_RUNNING
+	case types.VMPowerOff:
+		return VMPowerState_VM_POWER_STATE_OFF
+	case types.VMPowerPaused:
+		return VMPowerState_VM_POWER_STATE_PAUSED
+	case types.VMPowerSaved:
+		return VMPowerState_VM_POWER_STATE_SAVED
+	default:
+		return VMPowerState_VM_POWER_STATE_UNSPECIFIED
+	}
+}
+
+func vmPowerStateFromProto(p VMPowerState) types.VMPowerState {
+	switch p {
+	case VMPowerState_VM_POWER_STATE_RUNNING:
+		return types.VMPowerRunning
+	case VMPowerState_VM_POWER_STATE_OFF:
+		return types.VMPowerOff
+	case VMPowerState_VM_POWER_STATE_PAUSED:
+		return types.VMPowerPaused
+	case VMPowerState_VM_POWER_STATE_SAVED:
+		return types.VMPowerSaved
+	default:
+		return ""
+	}
+}
+
+func vmStartActionToProto(a types.VMStartAction) VMStartAction {
+	switch a {
+	case types.VMStartNothing:
+		return VMStartAction_VM_START_ACTION_NOTHING
+	case types.VMStartIfWasRunning:
+		return VMStartAction_VM_START_ACTION_START_IF_RUNNING
+	case types.VMStartAlways:
+		return VMStartAction_VM_START_ACTION_START
+	default:
+		return VMStartAction_VM_START_ACTION_UNSPECIFIED
+	}
+}
+
+func vmStartActionFromProto(a VMStartAction) types.VMStartAction {
+	switch a {
+	case VMStartAction_VM_START_ACTION_NOTHING:
+		return types.VMStartNothing
+	case VMStartAction_VM_START_ACTION_START_IF_RUNNING:
+		return types.VMStartIfWasRunning
+	case VMStartAction_VM_START_ACTION_START:
+		return types.VMStartAlways
+	default:
+		return ""
+	}
+}
+
+func vmSpecToProto(s types.VMSpec) *VMSpec {
+	out := &VMSpec{
+		Placement:            &VMPlacementSpec{HostName: s.Placement.HostName},
+		HypervGeneration:     int32(s.HyperVGeneration),
+		ProcessorCount:       int32(s.ProcessorCount),
+		MemoryStartupBytes:   s.MemoryStartupBytes,
+		DesiredPowerState:    vmPowerStateToProto(s.DesiredPowerState),
+		AutomaticStartAction: vmStartActionToProto(s.AutomaticStartAction),
+	}
+	if s.DynamicMemory != nil {
+		out.DynamicMemory = &DynamicMemorySpec{
+			MinBytes: s.DynamicMemory.MinBytes,
+			MaxBytes: s.DynamicMemory.MaxBytes,
+		}
+	}
+	for _, d := range s.Disks {
+		out.Disks = append(out.Disks, &VMDiskSpec{
+			Path:      d.Path,
+			SizeBytes: d.SizeBytes,
+			Dynamic:   d.Dynamic,
+		})
+	}
+	for _, a := range s.NetworkAdapters {
+		out.NetworkAdapters = append(out.NetworkAdapters, &VMNetworkAdapterSpec{
+			Name:       a.Name,
+			SwitchName: a.SwitchName,
+			VlanId:     int32(a.VLANID),
+			MacAddress: a.MACAddress,
+		})
+	}
+	return out
+}
+
+func vmSpecFromProto(s *VMSpec) types.VMSpec {
+	if s == nil {
+		return types.VMSpec{}
+	}
+	out := types.VMSpec{
+		Placement:            types.VMPlacementSpec{HostName: s.GetPlacement().GetHostName()},
+		HyperVGeneration:     int(s.GetHypervGeneration()),
+		ProcessorCount:       int(s.GetProcessorCount()),
+		MemoryStartupBytes:   s.GetMemoryStartupBytes(),
+		DesiredPowerState:    vmPowerStateFromProto(s.GetDesiredPowerState()),
+		AutomaticStartAction: vmStartActionFromProto(s.GetAutomaticStartAction()),
+	}
+	if dm := s.GetDynamicMemory(); dm != nil {
+		out.DynamicMemory = &types.DynamicMemorySpec{
+			MinBytes: dm.GetMinBytes(),
+			MaxBytes: dm.GetMaxBytes(),
+		}
+	}
+	for _, d := range s.GetDisks() {
+		out.Disks = append(out.Disks, types.VMDiskSpec{
+			Path:      d.GetPath(),
+			SizeBytes: d.GetSizeBytes(),
+			Dynamic:   d.GetDynamic(),
+		})
+	}
+	for _, a := range s.GetNetworkAdapters() {
+		out.NetworkAdapters = append(out.NetworkAdapters, types.VMNetworkAdapterSpec{
+			Name:       a.GetName(),
+			SwitchName: a.GetSwitchName(),
+			VLANID:     int(a.GetVlanId()),
+			MACAddress: a.GetMacAddress(),
+		})
+	}
+	return out
+}
+
+// VMStatusToProto converts an agent-reported VMStatus to the wire form.
+func VMStatusToProto(s types.VMStatus) *VMStatus {
+	return &VMStatus{
+		Phase:               phaseToProto(s.Phase),
+		ObservedGeneration:  s.ObservedGeneration,
+		PowerState:          vmPowerStateToProto(s.PowerState),
+		AssignedMemoryBytes: s.AssignedMemoryBytes,
+		CpuUsagePercent:     int32(s.CPUUsagePercent),
+		UptimeSeconds:       s.UptimeSeconds,
+		Conditions:          conditionsToProto(s.Conditions),
+	}
+}
+
+// VMStatusFromProto converts a wire VMStatus back to the schema type.
+func VMStatusFromProto(s *VMStatus) types.VMStatus {
+	if s == nil {
+		return types.VMStatus{}
+	}
+	return types.VMStatus{
+		Phase:               phaseFromProto(s.GetPhase()),
+		ObservedGeneration:  s.GetObservedGeneration(),
+		PowerState:          vmPowerStateFromProto(s.GetPowerState()),
+		AssignedMemoryBytes: s.GetAssignedMemoryBytes(),
+		CPUUsagePercent:     int(s.GetCpuUsagePercent()),
+		UptimeSeconds:       s.GetUptimeSeconds(),
+		Conditions:          conditionsFromProto(s.GetConditions()),
+	}
+}
+
+// VMToProto converts a schema VM to the wire form.
+func VMToProto(v types.VM) *VM {
+	return &VM{
+		Meta:   MetaToProto(v.Meta),
+		Spec:   vmSpecToProto(v.Spec),
+		Status: VMStatusToProto(v.Status),
+	}
+}
+
+// VMFromProto converts a wire VM back to the schema type.
+func VMFromProto(v *VM) types.VM {
+	if v == nil {
+		return types.VM{}
+	}
+	return types.VM{
+		Meta:   MetaFromProto(v.GetMeta()),
+		Spec:   vmSpecFromProto(v.GetSpec()),
+		Status: VMStatusFromProto(v.GetStatus()),
+	}
+}
