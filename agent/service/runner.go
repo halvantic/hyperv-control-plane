@@ -276,9 +276,18 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 			r.vmObservedGen[res.Name] = gen
 			r.log.Info("vm generation honoured", "vm", res.Name, "generation", gen)
 		}
+		st := r.buildVMStatus(res)
+		// Capture a console thumbnail for running VMs (best-effort, read-only).
+		if res.PowerState == types.VMPowerRunning {
+			if png, serr := r.hv.GetVMScreen(ctx, res.Name); serr != nil {
+				r.log.Warn("vm screen capture failed", "vm", res.Name, "err", serr)
+			} else {
+				st.ScreenPNG = png
+			}
+		}
 		reports = append(reports, &ballastpb.VMStatusReport{
 			Name:   res.Name,
-			Status: ballastpb.VMStatusToProto(r.buildVMStatus(res)),
+			Status: ballastpb.VMStatusToProto(st),
 		})
 	}
 

@@ -399,4 +399,5 @@ message VMStatus {
   int32 cpu_usage_percent = 5;
   int64 uptime_seconds = 6;
   repeated Condition conditions = 7;
+  bytes screen_png = 8;
 }

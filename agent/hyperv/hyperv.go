@@ -143,6 +143,11 @@ type Interface interface {
 	// Off). OutcomeUnchanged when it is already there. The reconciler only
 	// requests Running/Off; Paused/Saved are observed, never requested.
 	SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error)
+
+	// GetVMScreen returns a small PNG snapshot of the VM's console (the Hyper-V
+	// thumbnail). A pure read; returns nil (no error) when the VM has no screen
+	// to capture (e.g. it is off). Read-only — not an interactive console.
+	GetVMScreen(ctx context.Context, name string) ([]byte, error)
 }
 
 // VMEnsureResult is what EnsureVM did.

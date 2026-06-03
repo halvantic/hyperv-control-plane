@@ -2832,6 +2832,7 @@ type VMStatus struct {
 	CpuUsagePercent     int32                  `protobuf:"varint,5,opt,name=cpu_usage_percent,json=cpuUsagePercent,proto3" json:"cpu_usage_percent,omitempty"`
 	UptimeSeconds       int64                  `protobuf:"varint,6,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
 	Conditions          []*Condition           `protobuf:"bytes,7,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	ScreenPng           []byte                 `protobuf:"bytes,8,opt,name=screen_png,json=screenPng,proto3" json:"screen_png,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -2911,6 +2912,13 @@ func (x *VMStatus) GetUptimeSeconds() int64 {
 func (x *VMStatus) GetConditions() []*Condition {
 	if x != nil {
 		return x.Conditions
+	}
+	return nil
+}
+
+func (x *VMStatus) GetScreenPng() []byte {
+	if x != nil {
+		return x.ScreenPng
 	}
 	return nil
 }
@@ -3127,7 +3135,7 @@ const file_ballast_proto_rawDesc = "" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x12\x1f\n" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
-	"macAddress\"\xdd\x02\n" +
+	"macAddress\"\xfc\x02\n" +
 	"\bVMStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x129\n" +
@@ -3138,7 +3146,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\x0euptime_seconds\x18\x06 \x01(\x03R\ruptimeSeconds\x125\n" +
 	"\n" +
 	"conditions\x18\a \x03(\v2\x15.ballast.v1.ConditionR\n" +
-	"conditions*~\n" +
+	"conditions\x12\x1d\n" +
+	"\n" +
+	"screen_png\x18\b \x01(\fR\tscreenPng*~\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPHASE_PENDING\x10\x01\x12\x15\n" +

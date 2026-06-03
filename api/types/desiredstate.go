@@ -515,5 +515,11 @@ type VMStatus struct {
 	// UptimeSeconds is how long the VM has been running. Best effort.
 	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
 
+	// ScreenPNG is a small PNG snapshot of the VM's console (the Hyper-V
+	// thumbnail), present only when the VM is running. It is delivered with
+	// status but stripped from list/get responses to keep them small; the REST
+	// screen endpoint serves it. Read-only — there is no interactive console yet.
+	ScreenPNG []byte `json:"screenPng,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
 }

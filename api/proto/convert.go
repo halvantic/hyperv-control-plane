@@ -743,6 +743,7 @@ func VMStatusToProto(s types.VMStatus) *VMStatus {
 		CpuUsagePercent:     int32(s.CPUUsagePercent),
 		UptimeSeconds:       s.UptimeSeconds,
 		Conditions:          conditionsToProto(s.Conditions),
+		ScreenPng:           s.ScreenPNG,
 	}
 }
 
@@ -759,6 +760,7 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 		CPUUsagePercent:     int(s.GetCpuUsagePercent()),
 		UptimeSeconds:       s.GetUptimeSeconds(),
 		Conditions:          conditionsFromProto(s.GetConditions()),
+		ScreenPNG:           s.GetScreenPng(),
 	}
 }
 

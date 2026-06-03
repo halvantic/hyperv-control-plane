@@ -326,6 +326,9 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 	return OutcomeUpdated, nil
 }
 
+// GetVMScreen returns no screenshot in the stub.
+func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
+
 // HasVM reports whether the stub currently models a VM by that name.
 func (s *Stub) HasVM(name string) bool {
 	s.mu.Lock()

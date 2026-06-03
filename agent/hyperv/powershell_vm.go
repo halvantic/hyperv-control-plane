@@ -2,7 +2,9 @@ package hyperv
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/joshua-fourie/ballast/api/types"
 )
@@ -232,6 +234,55 @@ if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | Con
 		return OutcomeUpdated, nil
 	}
 	return OutcomeUnchanged, nil
+}
+
+// screenScript captures the VM's console thumbnail via WMI
+// (Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage), which
+// returns a 320x240 RGB565 buffer, and converts it to a PNG with System.Drawing,
+// returned base64. Empty output when the VM has no capturable screen.
+const screenW, screenH = 320, 240
+
+func (p *PowerShell) GetVMScreen(ctx context.Context, name string) ([]byte, error) {
+	// Note: this script must use only single-quoted strings — the agent runs
+	// scripts via powershell.exe -Command, where embedded double quotes get
+	// mangled by Windows argument parsing. The CIM filter's required single
+	// quotes around the value are built with [char]39.
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$ns = 'root\virtualization\v2'
+$q = [char]39
+$vm = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter ('ElementName=' + $q + %[1]s + $q)
+if (-not $vm -or $vm.EnabledState -ne 2) { return }  # 2 = Enabled (running)
+$vmms = Get-CimInstance -Namespace $ns -ClassName Msvm_VirtualSystemManagementService
+$sd = Get-CimAssociatedInstance -InputObject $vm -ResultClassName Msvm_VirtualSystemSettingData -Association Msvm_SettingsDefineState
+$res = Invoke-CimMethod -InputObject $vmms -MethodName GetVirtualSystemThumbnailImage -Arguments @{ TargetSystem = $sd; WidthPixels = [uint16]%[2]d; HeightPixels = [uint16]%[3]d }
+if ($res.ReturnValue -ne 0 -or -not $res.ImageData) { return }
+Add-Type -AssemblyName System.Drawing
+$w = %[2]d; $h = %[3]d
+$bmp = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format16bppRgb565)
+$rect = New-Object System.Drawing.Rectangle(0, 0, $w, $h)
+$bd = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::WriteOnly, $bmp.PixelFormat)
+[System.Runtime.InteropServices.Marshal]::Copy([byte[]]$res.ImageData, 0, $bd.Scan0, ($w * $h * 2))
+$bmp.UnlockBits($bd)
+$ms = New-Object System.IO.MemoryStream
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+[Convert]::ToBase64String($ms.ToArray())
+`, psQuote(name), screenW, screenH)
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("get vm screen %q: %w", name, err)
+	}
+	b64 := strings.TrimSpace(string(out))
+	if b64 == "" {
+		return nil, nil // no screen (VM off or no image)
+	}
+	png, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, fmt.Errorf("decode vm screen %q: %w", name, err)
+	}
+	return png, nil
 }
 
 // powerStateFromHyperV maps the Hyper-V VMState enum string to the schema power
