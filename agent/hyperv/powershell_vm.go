@@ -134,7 +134,11 @@ if (%[2]s) {
 			}
 			create = fmt.Sprintf("if (-not (Test-Path %[1]s)) { New-VHD -Path %[1]s %[2]s | Out-Null; $changed = $true }\n", path, sizeFlag)
 		}
-		disks += create + fmt.Sprintf(`if (-not (Get-VMHardDiskDrive -VMName %[1]s | Where-Object { $_.Path -eq %[2]s })) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
+		// Compare normalised full paths so a desired path written with forward
+		// slashes (or different casing) still matches what Hyper-V reports with
+		// backslashes — otherwise the disk is re-added every cycle and errors.
+		disks += create + fmt.Sprintf(`$want = [IO.Path]::GetFullPath(%[2]s)
+if (-not (Get-VMHardDiskDrive -VMName %[1]s | Where-Object { [IO.Path]::GetFullPath($_.Path) -ieq $want })) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
 `, name, path)
 	}
 
@@ -195,7 +199,7 @@ func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired t
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
-if (-not $vm) { throw 'VM %[1]s does not exist' }
+if (-not $vm) { throw 'VM does not exist' }
 if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 %[3]s | Out-Null
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
