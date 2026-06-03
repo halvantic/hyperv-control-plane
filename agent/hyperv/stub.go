@@ -33,6 +33,13 @@ type Stub struct {
 	HyperVInstalled bool
 	RebootPending   bool
 
+	// Identity: ComputerName / Domain seed GetHostIdentity. RenameCalled records
+	// that the reconciler renamed the host. hostIPs models assigned NIC IPs.
+	ComputerName string
+	Domain       string
+	RenameCalled bool
+	hostIPs      map[string]string
+
 	// EnsureRoleCalled / RebootCalled record that the reconciler drove these, so
 	// tests can assert reboot governance.
 	EnsureRoleCalled bool
@@ -166,6 +173,38 @@ func (s *Stub) EnsureMgmtVNIC(_ context.Context, spec types.ManagementVNICSpec) 
 		s.vnics[spec.Name] = spec
 		return OutcomeUpdated, nil
 	}
+}
+
+func (s *Stub) GetHostIdentity(_ context.Context) (HostIdentity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := s.ComputerName
+	if name == "" {
+		name = "WIN-UNCONFIGURED"
+	}
+	return HostIdentity{ComputerName: name, Domain: s.Domain, PartOfDomain: s.Domain != ""}, nil
+}
+
+func (s *Stub) RenameComputer(_ context.Context, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RenameCalled = true
+	s.ComputerName = newName
+	s.RebootPending = true // takes effect on reboot
+	return nil
+}
+
+func (s *Stub) EnsureHostIP(_ context.Context, spec types.PhysicalNICConfig) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hostIPs == nil {
+		s.hostIPs = make(map[string]string)
+	}
+	if s.hostIPs[spec.AdapterName] == spec.IPConfig.Address {
+		return OutcomeUnchanged, nil
+	}
+	s.hostIPs[spec.AdapterName] = spec.IPConfig.Address
+	return OutcomeUpdated, nil
 }
 
 func (s *Stub) GetHostRoleState(_ context.Context) (HostRoleState, error) {

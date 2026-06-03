@@ -160,6 +160,20 @@ message HostSpec {
   // cluster_membership is optional; absence means standalone.
   ClusterMembershipSpec cluster_membership = 5;
   RebootPolicy reboot_policy = 6;
+  string computer_name = 7;
+  PhysicalNICConfig management_nic = 8;
+  DomainJoinSpec domain_join = 9;
+}
+
+message PhysicalNICConfig {
+  string adapter_name = 1;
+  IPConfig ip_config = 2;
+}
+
+message DomainJoinSpec {
+  string domain_name = 1;
+  string ou_path = 2;
+  string credential_secret = 3;
 }
 
 message HostStatus {
@@ -173,6 +187,8 @@ message HostStatus {
   repeated Condition conditions = 8;
   HostMetrics metrics = 9;
   HostResources resources = 10;
+  string computer_name = 11;
+  string domain = 12;
 }
 
 message HostMetrics {

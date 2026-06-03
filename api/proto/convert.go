@@ -360,11 +360,21 @@ func specToProto(s types.HostSpec) *HostSpec {
 		Networking:       networkingToProto(s.Networking),
 		Storage:          storageToProto(s.Storage),
 		RebootPolicy:     rebootPolicyToProto(s.RebootPolicy),
+		ComputerName:     s.ComputerName,
 	}
 	if s.ClusterMembership != nil {
 		out.ClusterMembership = &ClusterMembershipSpec{
 			ClusterName: s.ClusterMembership.ClusterName,
 		}
+	}
+	if n := s.ManagementNIC; n != nil {
+		out.ManagementNic = &PhysicalNICConfig{
+			AdapterName: n.AdapterName,
+			IpConfig:    &IPConfig{Address: n.IPConfig.Address, Gateway: n.IPConfig.Gateway, DnsServers: n.IPConfig.DNSServers},
+		}
+	}
+	if d := s.DomainJoin; d != nil {
+		out.DomainJoin = &DomainJoinSpec{DomainName: d.DomainName, OuPath: d.OUPath, CredentialSecret: d.CredentialSecret}
 	}
 	return out
 }
@@ -379,11 +389,22 @@ func specFromProto(s *HostSpec) types.HostSpec {
 		Networking:       networkingFromProto(s.GetNetworking()),
 		Storage:          storageFromProto(s.GetStorage()),
 		RebootPolicy:     rebootPolicyFromProto(s.GetRebootPolicy()),
+		ComputerName:     s.GetComputerName(),
 	}
 	if cm := s.GetClusterMembership(); cm != nil {
 		out.ClusterMembership = &types.ClusterMembershipSpec{
 			ClusterName: cm.GetClusterName(),
 		}
+	}
+	if n := s.GetManagementNic(); n != nil {
+		ip := n.GetIpConfig()
+		out.ManagementNIC = &types.PhysicalNICConfig{
+			AdapterName: n.GetAdapterName(),
+			IPConfig:    types.IPConfig{Address: ip.GetAddress(), Gateway: ip.GetGateway(), DNSServers: ip.GetDnsServers()},
+		}
+	}
+	if d := s.GetDomainJoin(); d != nil {
+		out.DomainJoin = &types.DomainJoinSpec{DomainName: d.GetDomainName(), OUPath: d.GetOuPath(), CredentialSecret: d.GetCredentialSecret()}
 	}
 	return out
 }
@@ -394,6 +415,8 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		Phase:              phaseToProto(s.Phase),
 		ObservedGeneration: s.ObservedGeneration,
 		HypervInstalled:    s.HyperVInstalled,
+		ComputerName:       s.ComputerName,
+		Domain:             s.Domain,
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -436,6 +459,8 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		Phase:              phaseFromProto(s.GetPhase()),
 		ObservedGeneration: s.GetObservedGeneration(),
 		HyperVInstalled:    s.GetHypervInstalled(),
+		ComputerName:       s.GetComputerName(),
+		Domain:             s.GetDomain(),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),

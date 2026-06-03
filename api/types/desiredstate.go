@@ -83,6 +83,22 @@ type HostSpec struct {
 	// FQDN the agent should expect the host to be reachable as.
 	FQDN string `json:"fqdn"`
 
+	// ComputerName is the desired OS hostname. When it differs from the actual
+	// name the agent renames the host (a reboot, governed by RebootPolicy).
+	// Empty leaves the name as-is. This is distinct from the agent's stable
+	// registration identity, so a rename never changes the host's identity in
+	// the centre.
+	ComputerName string `json:"computerName,omitempty"`
+
+	// ManagementNIC, when set, assigns a static IP to a physical adapter — the
+	// day-0 management address, set before any Hyper-V switch exists. Distinct
+	// from a management-vNIC IP, which lives on a vSwitch.
+	ManagementNIC *PhysicalNICConfig `json:"managementNIC,omitempty"`
+
+	// DomainJoin, when set, joins the host to an Active Directory domain using
+	// the referenced credential secret. A reboot, governed by RebootPolicy.
+	DomainJoin *DomainJoinSpec `json:"domainJoin,omitempty"`
+
 	// EnableHyperVRole instructs the agent to install/enable the Hyper-V role
 	// if it is not already present. May require a reboot, which the agent
 	// schedules and reports rather than forcing.
@@ -104,6 +120,22 @@ type HostSpec struct {
 	RebootPolicy RebootPolicy `json:"rebootPolicy"`
 }
 
+// PhysicalNICConfig is a static IP assignment on a named physical adapter.
+type PhysicalNICConfig struct {
+	AdapterName string   `json:"adapterName"`
+	IPConfig    IPConfig `json:"ipConfig"`
+}
+
+// DomainJoinSpec joins the host to an AD domain. The credential is referenced
+// by the name of a stored Secret (type DomainCredential), never inline.
+type DomainJoinSpec struct {
+	DomainName string `json:"domainName"`
+	// OUPath optionally places the computer object in a specific OU.
+	OUPath string `json:"ouPath,omitempty"`
+	// CredentialSecret is the name of the Secret holding the join account.
+	CredentialSecret string `json:"credentialSecret"`
+}
+
 type RebootPolicy string
 
 const (
@@ -121,6 +153,11 @@ type HostStatus struct {
 
 	// HyperVInstalled reflects actual role presence.
 	HyperVInstalled bool `json:"hyperVInstalled"`
+
+	// ComputerName and Domain are the host's observed identity (OS hostname and
+	// AD domain, or empty/workgroup). Used to show rename / domain-join drift.
+	ComputerName string `json:"computerName,omitempty"`
+	Domain       string `json:"domain,omitempty"`
 
 	// RebootRequired is true when spec cannot be fully honoured until reboot
 	// and RebootPolicy forbids the agent doing it autonomously.

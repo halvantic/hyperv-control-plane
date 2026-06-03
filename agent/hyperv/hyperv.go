@@ -79,6 +79,21 @@ type Interface interface {
 	// switches before vNICs.
 	EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVNICSpec) (Outcome, error)
 
+	// GetHostIdentity observes the host's OS computer name and AD domain
+	// (or workgroup). A pure read.
+	GetHostIdentity(ctx context.Context) (HostIdentity, error)
+
+	// RenameComputer renames the OS to newName. It does not reboot — the rename
+	// takes effect on the next restart, which the reconciler drives per
+	// RebootPolicy. Idempotency is the caller's concern (only call when the name
+	// differs).
+	RenameComputer(ctx context.Context, newName string) error
+
+	// EnsureHostIP assigns the static IP in spec to its named physical adapter,
+	// idempotently: OutcomeUnchanged when the address is already present,
+	// OutcomeUpdated when it had to be (re)configured.
+	EnsureHostIP(ctx context.Context, spec types.PhysicalNICConfig) (Outcome, error)
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)
@@ -208,6 +223,16 @@ type ClusterFormation struct {
 	// ManagementIP is the cluster's static management address; empty asks
 	// Failover Clustering to obtain one via DHCP.
 	ManagementIP string
+}
+
+// HostIdentity is the observed OS identity of the host.
+type HostIdentity struct {
+	// ComputerName is the current OS hostname.
+	ComputerName string
+	// Domain is the AD domain the host is joined to, or the workgroup name.
+	Domain string
+	// PartOfDomain is true when Domain is an AD domain rather than a workgroup.
+	PartOfDomain bool
 }
 
 // HostRoleState is the observed state of the host's Hyper-V role.

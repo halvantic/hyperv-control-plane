@@ -152,6 +152,10 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	if resErr != nil {
 		r.log.Error("collect resources failed", "err", resErr)
 	}
+	identity, iderr := r.hv.GetHostIdentity(ctx)
+	if iderr != nil {
+		r.log.Error("get host identity failed", "err", iderr)
+	}
 
 	// Establish identity if we have not confirmed a registration yet. This never
 	// blocks: on failure we proceed on cached state and retry next cycle.
@@ -227,6 +231,8 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	}
 
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
+	st.ComputerName = identity.ComputerName
+	st.Domain = identity.Domain
 	r.reportStatus(ctx, client, st)
 
 	// Cluster reconcile, only when the centre gave us a current assignment.

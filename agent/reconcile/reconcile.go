@@ -15,6 +15,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -81,6 +82,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 		hyperVInstalled bool
 	)
 
+	// Identity comes first: the host should have its final name, management IP
+	// and domain before the role and networking are configured. Rename/domain
+	// changes need a reboot governed by RebootPolicy, so like the role step this
+	// may stop the pass early and resume after the host comes back.
+	if idRes, done, err := r.reconcileIdentity(ctx, desired); done || err != nil || len(idRes.Conditions) > 0 {
+		conds = append(conds, idRes.Conditions...)
+		changed = changed || idRes.Changed
+		if done || err != nil {
+			idRes.Conditions = conds
+			return idRes, err
+		}
+	}
+
 	// Host role comes first: virtual switches cannot exist without the Hyper-V
 	// role, and installing it may need a reboot governed by RebootPolicy. If the
 	// role is not yet active we cannot honour networking this pass, so we return
@@ -144,6 +158,56 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 		res.Phase = types.PhaseDegraded
 	}
 	return res, firstErr
+}
+
+// reconcileIdentity drives the host's day-0 identity towards desired: a static
+// management IP on a physical adapter (no reboot), then the computer name (a
+// reboot governed by RebootPolicy). It returns done == true when the caller
+// should stop and report the Result without proceeding to role/networking —
+// either a rename is awaiting/performing a reboot, or an error occurred.
+// done == false with no error means identity is settled.
+func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host) (Result, bool, error) {
+	spec := desired.Spec
+	var conds []types.Condition
+	var changed bool
+
+	if spec.ManagementNIC != nil {
+		out, err := r.hv.EnsureHostIP(ctx, *spec.ManagementNIC)
+		conds = append(conds, r.condition("ManagementNIC/"+spec.ManagementNIC.AdapterName, out, err))
+		if err != nil {
+			return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("ensure management IP: %w", err)
+		}
+		if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("management IP reconciled", "adapter", spec.ManagementNIC.AdapterName, "outcome", out)
+		}
+	}
+
+	if spec.ComputerName != "" {
+		id, err := r.hv.GetHostIdentity(ctx)
+		if err != nil {
+			conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, err))
+			return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("get host identity: %w", err)
+		}
+		if !strings.EqualFold(id.ComputerName, spec.ComputerName) {
+			if err := r.hv.RenameComputer(ctx, spec.ComputerName); err != nil {
+				conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, err))
+				return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("rename computer: %w", err)
+			}
+			conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUpdated, nil))
+			r.log.Info("computer renamed; reboot required to apply", "to", spec.ComputerName, "rebootPolicy", spec.RebootPolicy)
+			if spec.RebootPolicy == types.RebootIfNeeded {
+				if rerr := r.hv.RebootHost(ctx); rerr != nil {
+					return Result{Phase: types.PhaseDegraded, Changed: true, Conditions: conds}, true, fmt.Errorf("reboot after rename: %w", rerr)
+				}
+				return Result{Phase: types.PhaseProgressing, Changed: true, Conditions: conds}, true, nil
+			}
+			return Result{Phase: types.PhaseProgressing, Changed: true, RebootRequired: true, Conditions: conds}, true, nil
+		}
+		conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, nil))
+	}
+
+	return Result{Conditions: conds, Changed: changed}, false, nil
 }
 
 // reconcileHostRole drives the Hyper-V role towards desired. It returns
