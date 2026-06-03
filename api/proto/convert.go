@@ -789,6 +789,19 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 	}
 }
 
+// SecretToProto converts a schema Secret to the wire form (with its values).
+func SecretToProto(s types.Secret) *Secret {
+	return &Secret{Name: s.Name, Type: s.Type, Data: s.Data}
+}
+
+// SecretFromProto converts a wire Secret back to the schema type.
+func SecretFromProto(s *Secret) types.Secret {
+	if s == nil {
+		return types.Secret{}
+	}
+	return types.Secret{Name: s.GetName(), Type: s.GetType(), Data: s.GetData()}
+}
+
 // VMToProto converts a schema VM to the wire form.
 func VMToProto(v types.VM) *VM {
 	return &VM{

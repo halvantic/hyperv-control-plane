@@ -38,6 +38,7 @@ type Stub struct {
 	ComputerName string
 	Domain       string
 	RenameCalled bool
+	JoinCalled   bool
 	hostIPs      map[string]string
 
 	// EnsureRoleCalled / RebootCalled record that the reconciler drove these, so
@@ -190,6 +191,15 @@ func (s *Stub) RenameComputer(_ context.Context, newName string) error {
 	defer s.mu.Unlock()
 	s.RenameCalled = true
 	s.ComputerName = newName
+	s.RebootPending = true // takes effect on reboot
+	return nil
+}
+
+func (s *Stub) JoinDomain(_ context.Context, domain, _ouPath, _user, _pass string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.JoinCalled = true
+	s.Domain = domain
 	s.RebootPending = true // takes effect on reboot
 	return nil
 }

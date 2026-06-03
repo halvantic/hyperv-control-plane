@@ -60,7 +60,7 @@ func hostWithRole(policy types.RebootPolicy) types.Host {
 // reports HyperVInstalled.
 func TestReconcileRoleAlreadyInstalled(t *testing.T) {
 	stub := &hyperv.Stub{HyperVInstalled: true}
-	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever))
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestReconcileRoleAlreadyInstalled(t *testing.T) {
 // RebootRequired, does not honour the generation, and does not touch networking.
 func TestReconcileRoleNeedsRebootPolicyNever(t *testing.T) {
 	stub := &hyperv.Stub{HyperVInstalled: false}
-	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever))
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootNever), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestReconcileRoleNeedsRebootPolicyNever(t *testing.T) {
 // RebootIfNeeded: the agent installs and reboots to activate the role.
 func TestReconcileRoleNeedsRebootPolicyIfNeeded(t *testing.T) {
 	stub := &hyperv.Stub{HyperVInstalled: false}
-	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootIfNeeded))
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithRole(types.RebootIfNeeded), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestReconcileFreshThenIdempotent(t *testing.T) {
 	r := testReconciler(stub)
 	desired := hostWithNetworking()
 
-	res, err := r.Reconcile(context.Background(), desired)
+	res, err := r.Reconcile(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("first pass error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestReconcileFreshThenIdempotent(t *testing.T) {
 	}
 
 	// Second pass: no host mutation.
-	res2, err := r.Reconcile(context.Background(), desired)
+	res2, err := r.Reconcile(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatalf("second pass error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestReconcileFailureIsDegradedAndNotHonoured(t *testing.T) {
 	stub := &hyperv.Stub{FailSwitch: "ConvergedSwitch"}
 	r := testReconciler(stub)
 
-	res, err := r.Reconcile(context.Background(), hostWithNetworking())
+	res, err := r.Reconcile(context.Background(), hostWithNetworking(), nil)
 	if err == nil {
 		t.Fatal("expected an error when a switch fails")
 	}
@@ -179,7 +179,7 @@ func TestReconcileEnsuresSwitchesBeforeVNICs(t *testing.T) {
 	stub := &hyperv.Stub{}
 	r := testReconciler(stub)
 
-	res, err := r.Reconcile(context.Background(), hostWithNetworking())
+	res, err := r.Reconcile(context.Background(), hostWithNetworking(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error (vNIC ensured before its switch?): %v", err)
 	}
@@ -192,7 +192,7 @@ func TestReconcileEnsuresSwitchesBeforeVNICs(t *testing.T) {
 func TestReconcileEmptyIsHonoured(t *testing.T) {
 	r := testReconciler(&hyperv.Stub{})
 
-	res, err := r.Reconcile(context.Background(), types.Host{Meta: types.ObjectMeta{Generation: 1}})
+	res, err := r.Reconcile(context.Background(), types.Host{Meta: types.ObjectMeta{Generation: 1}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,12 +207,12 @@ func TestReconcileDetectsUpdate(t *testing.T) {
 	r := testReconciler(stub)
 
 	desired := hostWithNetworking()
-	if _, err := r.Reconcile(context.Background(), desired); err != nil {
+	if _, err := r.Reconcile(context.Background(), desired, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	desired.Spec.Networking.Switches[0].AllowManagementOS = true
-	res, err := r.Reconcile(context.Background(), desired)
+	res, err := r.Reconcile(context.Background(), desired, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

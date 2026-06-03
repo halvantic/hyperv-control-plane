@@ -52,6 +52,29 @@ func (p *PowerShell) RenameComputer(ctx context.Context, newName string) error {
 	return nil
 }
 
+// JoinDomain joins the host to domain using the given account, without
+// rebooting. The credentials are passed through environment variables to the
+// child powershell.exe (never interpolated into the script or the command
+// line) so they do not appear in process listings or logs.
+func (p *PowerShell) JoinDomain(ctx context.Context, domain, ouPath, username, password string) error {
+	ou := ""
+	if ouPath != "" {
+		ou = fmt.Sprintf(" -OUPath %s", psQuote(ouPath))
+	}
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$sec = ConvertTo-SecureString $env:BALLAST_JOIN_PW -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential($env:BALLAST_JOIN_USER, $sec)
+Add-Computer -DomainName %s -Credential $cred%s -Force | Out-Null
+`, psQuote(domain), ou)
+
+	env := []string{"BALLAST_JOIN_USER=" + username, "BALLAST_JOIN_PW=" + password}
+	if err := p.runWithEnv(ctx, script, env); err != nil {
+		return fmt.Errorf("join domain %q: %w", domain, err)
+	}
+	return nil
+}
+
 // EnsureHostIP assigns the static IPv4 in spec to its physical adapter. It is a
 // no-op when the address is already present; otherwise it clears the adapter's
 // existing IPv4 and sets the desired address, gateway and DNS servers.

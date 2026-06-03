@@ -165,6 +165,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 
 	autonomous := false
 	var assignment *reconcile.ClusterAssignment
+	var secrets map[string]types.Secret
 
 	// Pull desired state, sending the generation we already hold so the centre
 	// can answer "unchanged" cheaply.
@@ -207,6 +208,15 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 		if serr := r.st.SaveDesiredVMs(vms); serr != nil {
 			r.log.Error("persist desired vms failed", "err", serr)
 		}
+		// Secrets are delivered fresh each pull and used in this cycle's
+		// reconcile; they are never written to the local store.
+		if ss := resp.GetSecrets(); len(ss) > 0 {
+			secrets = make(map[string]types.Secret, len(ss))
+			for _, ps := range ss {
+				s := ballastpb.SecretFromProto(ps)
+				secrets[s.Name] = s
+			}
+		}
 	}
 
 	// Reconcile against the cached desired state. This runs whether or not the
@@ -218,7 +228,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
-		res, rerr := r.reconciler.Reconcile(ctx, cached)
+		res, rerr := r.reconciler.Reconcile(ctx, cached, secrets)
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		if rerr != nil {

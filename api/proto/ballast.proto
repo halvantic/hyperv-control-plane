@@ -79,6 +79,16 @@ message PullDesiredStateResponse {
   // == this host). Always sent in full — unlike host, it is not gated by
   // known_generation, since VMs change independently of the host spec.
   repeated VM vms = 5;
+  // secrets are the credentials this host's desired state references (e.g. a
+  // domain-join account), resolved and decrypted for delivery over this
+  // channel. Only the secrets the host actually needs are sent.
+  repeated Secret secrets = 6;
+}
+
+message Secret {
+  string name = 1;
+  string type = 2;
+  map<string, string> data = 3;
 }
 
 message ReportStatusRequest {

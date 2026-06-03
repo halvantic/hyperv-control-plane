@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -52,6 +53,23 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// runWithEnv executes a script via powershell.exe with extra environment
+// variables (used to pass secrets without putting them on the command line). It
+// bypasses the injectable run field — only the real host implementation needs
+// it, and it is never unit-tested through the stub.
+func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []string) error {
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // psQuote renders s as a PowerShell single-quoted string literal, escaping any

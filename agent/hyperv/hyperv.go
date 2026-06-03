@@ -89,6 +89,12 @@ type Interface interface {
 	// differs).
 	RenameComputer(ctx context.Context, newName string) error
 
+	// JoinDomain joins the host to the AD domain using the given account. It does
+	// not reboot — the join takes effect on the next restart, driven by the
+	// reconciler per RebootPolicy. The caller only invokes it when the host is
+	// not already in the desired domain. The credentials must never be logged.
+	JoinDomain(ctx context.Context, domain, ouPath, username, password string) error
+
 	// EnsureHostIP assigns the static IP in spec to its named physical adapter,
 	// idempotently: OutcomeUnchanged when the address is already present,
 	// OutcomeUpdated when it had to be (re)configured.

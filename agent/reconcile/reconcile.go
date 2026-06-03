@@ -73,7 +73,7 @@ type Result struct {
 // are ensured before the management vNICs that depend on them. It does not stop
 // at the first failure: it attempts every resource so status reflects the whole
 // host, and reports Honoured == false if any failed.
-func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (Result, error) {
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -86,7 +86,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 	// and domain before the role and networking are configured. Rename/domain
 	// changes need a reboot governed by RebootPolicy, so like the role step this
 	// may stop the pass early and resume after the host comes back.
-	if idRes, done, err := r.reconcileIdentity(ctx, desired); done || err != nil || len(idRes.Conditions) > 0 {
+	if idRes, done, err := r.reconcileIdentity(ctx, desired, secrets); done || err != nil || len(idRes.Conditions) > 0 {
 		conds = append(conds, idRes.Conditions...)
 		changed = changed || idRes.Changed
 		if done || err != nil {
@@ -166,7 +166,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host) (Result,
 // should stop and report the Result without proceeding to role/networking —
 // either a rename is awaiting/performing a reboot, or an error occurred.
 // done == false with no error means identity is settled.
-func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host) (Result, bool, error) {
+func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (Result, bool, error) {
 	spec := desired.Spec
 	var conds []types.Condition
 	var changed bool
@@ -183,12 +183,19 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host) 
 		}
 	}
 
-	if spec.ComputerName != "" {
-		id, err := r.hv.GetHostIdentity(ctx)
+	// Identity reads are needed for both rename and domain join.
+	var id hyperv.HostIdentity
+	if spec.ComputerName != "" || spec.DomainJoin != nil {
+		got, err := r.hv.GetHostIdentity(ctx)
 		if err != nil {
-			conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, err))
+			conds = append(conds, r.condition("HostIdentity", hyperv.OutcomeUnchanged, err))
 			return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("get host identity: %w", err)
 		}
+		id = got
+	}
+
+	// Rename first; it reboots, after which a later pass proceeds to domain join.
+	if spec.ComputerName != "" {
 		if !strings.EqualFold(id.ComputerName, spec.ComputerName) {
 			if err := r.hv.RenameComputer(ctx, spec.ComputerName); err != nil {
 				conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, err))
@@ -196,18 +203,51 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host) 
 			}
 			conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUpdated, nil))
 			r.log.Info("computer renamed; reboot required to apply", "to", spec.ComputerName, "rebootPolicy", spec.RebootPolicy)
-			if spec.RebootPolicy == types.RebootIfNeeded {
-				if rerr := r.hv.RebootHost(ctx); rerr != nil {
-					return Result{Phase: types.PhaseDegraded, Changed: true, Conditions: conds}, true, fmt.Errorf("reboot after rename: %w", rerr)
-				}
-				return Result{Phase: types.PhaseProgressing, Changed: true, Conditions: conds}, true, nil
-			}
-			return Result{Phase: types.PhaseProgressing, Changed: true, RebootRequired: true, Conditions: conds}, true, nil
+			return r.rebootResult(ctx, spec.RebootPolicy, conds, "reboot after rename")
 		}
 		conds = append(conds, r.condition("ComputerName", hyperv.OutcomeUnchanged, nil))
 	}
 
+	// Domain join, using the delivered credential.
+	if dj := spec.DomainJoin; dj != nil && dj.DomainName != "" {
+		ct := "DomainJoin/" + dj.DomainName
+		if !strings.EqualFold(id.Domain, dj.DomainName) {
+			sec, ok := secrets[dj.CredentialSecret]
+			if !ok {
+				// No credential delivered (centre offline, or secret not authored):
+				// can't join yet. Surface and wait — not an error.
+				conds = append(conds, types.Condition{
+					Type: ct, Status: false, Reason: "AwaitingCredential",
+					Message:            "waiting for credential " + dj.CredentialSecret,
+					LastTransitionTime: r.now(),
+				})
+				return Result{Phase: types.PhaseProgressing, Changed: changed, Conditions: conds}, true, nil
+			}
+			if err := r.hv.JoinDomain(ctx, dj.DomainName, dj.OUPath, sec.Data["username"], sec.Data["password"]); err != nil {
+				conds = append(conds, r.condition(ct, hyperv.OutcomeUnchanged, err))
+				return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("join domain: %w", err)
+			}
+			conds = append(conds, r.condition(ct, hyperv.OutcomeUpdated, nil))
+			r.log.Info("domain joined; reboot required to apply", "domain", dj.DomainName, "rebootPolicy", spec.RebootPolicy)
+			return r.rebootResult(ctx, spec.RebootPolicy, conds, "reboot after domain join")
+		}
+		conds = append(conds, r.condition(ct, hyperv.OutcomeUnchanged, nil))
+	}
+
 	return Result{Conditions: conds, Changed: changed}, false, nil
+}
+
+// rebootResult applies RebootPolicy after an identity change that needs a
+// reboot: IfNeeded reboots now (Progressing), Never surfaces RebootRequired and
+// waits. Either way the pass stops (done == true).
+func (r *Reconciler) rebootResult(ctx context.Context, policy types.RebootPolicy, conds []types.Condition, what string) (Result, bool, error) {
+	if policy == types.RebootIfNeeded {
+		if err := r.hv.RebootHost(ctx); err != nil {
+			return Result{Phase: types.PhaseDegraded, Changed: true, Conditions: conds}, true, fmt.Errorf("%s: %w", what, err)
+		}
+		return Result{Phase: types.PhaseProgressing, Changed: true, Conditions: conds}, true, nil
+	}
+	return Result{Phase: types.PhaseProgressing, Changed: true, RebootRequired: true, Conditions: conds}, true, nil
 }
 
 // reconcileHostRole drives the Hyper-V role towards desired. It returns
