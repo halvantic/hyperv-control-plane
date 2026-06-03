@@ -158,6 +158,19 @@ else { if ($ad.SwitchName -ne %[4]s) { Connect-VMNetworkAdapter -VMName %[1]s -N
 		}
 	}
 
+	// Boot ISO: ensure a DVD drive backed by the ISO exists (path-normalised so
+	// forward/backslash differences don't re-add it). Hot-pluggable, so safe
+	// while running.
+	iso := ""
+	if s.ISOPath != "" {
+		ip := psQuote(s.ISOPath)
+		iso = fmt.Sprintf(`$wantIso = [IO.Path]::GetFullPath(%[2]s)
+if (-not (Get-VMDvdDrive -VMName %[1]s | Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -ieq $wantIso) })) {
+  Add-VMDvdDrive -VMName %[1]s -Path %[2]s; $changed = $true
+}
+`, name, ip)
+	}
+
 	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $created = $false
@@ -173,9 +186,9 @@ $cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
-%[6]s%[7]s%[8]s
+%[6]s%[7]s%[8]s%[9]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

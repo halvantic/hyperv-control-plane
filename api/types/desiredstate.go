@@ -141,7 +141,35 @@ type HostStatus struct {
 	// each reconcile. Distinct from Inventory, which is the static hardware.
 	Metrics HostMetrics `json:"metrics,omitempty"`
 
+	// Resources are existing host objects the control plane and UI can offer as
+	// choices (vSwitches to attach vNICs to, storage volumes to place VHDXs on,
+	// ISO files to boot from). Observed each cycle; a pure read, never authored.
+	Resources HostResources `json:"resources,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// HostResources is the set of pre-existing host objects available for use when
+// authoring desired state (so the UI can offer real choices rather than free
+// text). All best-effort and observed, not desired.
+type HostResources struct {
+	// Switches are the names of virtual switches that already exist on the host.
+	Switches []string `json:"switches,omitempty"`
+	// Volumes are storage volumes (CSV mount points, fixed local volumes) a VM's
+	// disks can be placed on.
+	Volumes []StorageVolume `json:"volumes,omitempty"`
+	// ISOs are paths of ISO files discovered in conventional locations
+	// (each volume's ISOs folder, C:\ISOs), offered as boot media.
+	ISOs []string `json:"isos,omitempty"`
+}
+
+// StorageVolume is an observed place to put VM storage.
+type StorageVolume struct {
+	// Name is a human label (CSV resource name, or volume folder name).
+	Name string `json:"name"`
+	// Path is the mount point to build file paths under, e.g.
+	// C:\ClusterStorage\Volume1.
+	Path string `json:"path"`
 }
 
 // HostMetrics is observed, dynamic host utilisation. All fields are best-effort;
@@ -390,6 +418,11 @@ type VMSpec struct {
 	// NetworkAdapters are the VM's vNICs, each bound to a named vSwitch that is
 	// expected to exist on the placement host.
 	NetworkAdapters []VMNetworkAdapterSpec `json:"networkAdapters,omitempty"`
+
+	// ISOPath, when set, attaches a DVD drive backed by this ISO so the VM can
+	// boot from it. Empty means no boot media (or one already attached is left
+	// as-is). For a Generation 2 VM the agent also makes the DVD a boot entry.
+	ISOPath string `json:"isoPath,omitempty"`
 
 	// DesiredPowerState is the power state the agent should drive the VM to.
 	DesiredPowerState VMPowerState `json:"desiredPowerState"`

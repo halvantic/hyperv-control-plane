@@ -62,6 +62,11 @@ type Interface interface {
 	// reported in HostStatus.Metrics.
 	CollectMetrics(ctx context.Context) (types.HostMetrics, error)
 
+	// CollectResources observes pre-existing host objects the UI can offer as
+	// choices: virtual switches, storage volumes (CSV mount points / fixed
+	// volumes), and ISO files in conventional locations. A pure read.
+	CollectResources(ctx context.Context) (types.HostResources, error)
+
 	// EnsureSwitch makes the SET-backed virtual switch described by spec exist
 	// and match it: creating it (with the named team members, teaming mode and
 	// load-balancing algorithm) when absent, adjusting it when it differs, and

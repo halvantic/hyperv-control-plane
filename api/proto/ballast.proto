@@ -172,12 +172,24 @@ message HostStatus {
   HostInventory inventory = 7;
   repeated Condition conditions = 8;
   HostMetrics metrics = 9;
+  HostResources resources = 10;
 }
 
 message HostMetrics {
   int32 cpu_usage_percent = 1;
   uint64 memory_in_use_bytes = 2;
   int64 uptime_seconds = 3;
+}
+
+message HostResources {
+  repeated string switches = 1;
+  repeated StorageVolume volumes = 2;
+  repeated string isos = 3;
+}
+
+message StorageVolume {
+  string name = 1;
+  string path = 2;
 }
 
 message HostInventory {
@@ -352,6 +364,7 @@ message VMSpec {
   repeated VMNetworkAdapterSpec network_adapters = 7;
   VMPowerState desired_power_state = 8;
   VMStartAction automatic_start_action = 9;
+  string iso_path = 10;
 }
 
 message VMPlacementSpec {

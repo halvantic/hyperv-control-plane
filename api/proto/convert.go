@@ -404,7 +404,27 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 			MemoryInUseBytes: s.Metrics.MemoryInUseBytes,
 			UptimeSeconds:    s.Metrics.UptimeSeconds,
 		},
+		Resources: resourcesToProto(s.Resources),
 	}
+}
+
+func resourcesToProto(r types.HostResources) *HostResources {
+	out := &HostResources{Switches: r.Switches, Isos: r.ISOs}
+	for _, v := range r.Volumes {
+		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path})
+	}
+	return out
+}
+
+func resourcesFromProto(r *HostResources) types.HostResources {
+	if r == nil {
+		return types.HostResources{}
+	}
+	out := types.HostResources{Switches: r.GetSwitches(), ISOs: r.GetIsos()}
+	for _, v := range r.GetVolumes() {
+		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath()})
+	}
+	return out
 }
 
 // StatusFromProto converts a wire HostStatus back to the schema type.
@@ -429,6 +449,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 			UptimeSeconds:    m.GetUptimeSeconds(),
 		}
 	}
+	out.Resources = resourcesFromProto(s.GetResources())
 	return out
 }
 
@@ -649,6 +670,7 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		MemoryStartupBytes:   s.MemoryStartupBytes,
 		DesiredPowerState:    vmPowerStateToProto(s.DesiredPowerState),
 		AutomaticStartAction: vmStartActionToProto(s.AutomaticStartAction),
+		IsoPath:              s.ISOPath,
 	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
@@ -685,6 +707,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		MemoryStartupBytes:   s.GetMemoryStartupBytes(),
 		DesiredPowerState:    vmPowerStateFromProto(s.GetDesiredPowerState()),
 		AutomaticStartAction: vmStartActionFromProto(s.GetAutomaticStartAction()),
+		ISOPath:              s.GetIsoPath(),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{

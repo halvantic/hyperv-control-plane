@@ -156,5 +156,44 @@ func (p *PowerShell) CollectMetrics(ctx context.Context) (types.HostMetrics, err
 	return m, nil
 }
 
+// resourcesScript observes existing vSwitches, storage volumes (CSV mount points
+// when clustered, else fixed local volumes) and ISO files under each volume's
+// ISOs folder and C:\ISOs. JSON keys match types.HostResources. All lookups are
+// best-effort so a non-clustered or sparse host still returns what it can.
+const resourcesScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+$switches = @(Get-VMSwitch | Select-Object -ExpandProperty Name | Where-Object { $_ })
+$vols = @()
+$csv = Get-ClusterSharedVolume 2>$null
+if ($csv) {
+  $vols = @($csv | ForEach-Object {
+    [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName }
+  })
+} else {
+  $vols = @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
+    [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\" }
+  })
+}
+$roots = @($vols | ForEach-Object { Join-Path $_.path 'ISOs' }) + 'C:\ISOs'
+$isos = @()
+foreach ($r in $roots) {
+  if (Test-Path $r) { $isos += @((Get-ChildItem -Path $r -Filter *.iso -File -Recurse -Depth 1).FullName) }
+}
+[pscustomobject]@{ switches = @($switches); volumes = @($vols); isos = @($isos) } | ConvertTo-Json -Depth 4 -Compress
+`
+
+// CollectResources observes existing switches, storage volumes and ISO files.
+func (p *PowerShell) CollectResources(ctx context.Context) (types.HostResources, error) {
+	out, err := p.run(ctx, resourcesScript)
+	if err != nil {
+		return types.HostResources{}, fmt.Errorf("collect resources: %w", err)
+	}
+	var r types.HostResources
+	if err := decodeJSON(out, &r); err != nil {
+		return types.HostResources{}, fmt.Errorf("collect resources: %w", err)
+	}
+	return r, nil
+}
+
 // compile-time assertion that PowerShell satisfies the interface.
 var _ Interface = (*PowerShell)(nil)

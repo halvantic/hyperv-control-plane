@@ -98,6 +98,25 @@ func (s *Stub) CollectMetrics(_ context.Context) (types.HostMetrics, error) {
 	}, nil
 }
 
+// CollectResources returns fixtures (plus any switches the stub has created) so
+// the console shows real-looking choices when developing against the stub.
+func (s *Stub) CollectResources(_ context.Context) (types.HostResources, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switches := make([]string, 0, len(s.switches))
+	for name := range s.switches {
+		switches = append(switches, name)
+	}
+	return types.HostResources{
+		Switches: switches,
+		Volumes: []types.StorageVolume{
+			{Name: "CSV01-Perf", Path: `C:\ClusterStorage\CSV01-Perf`},
+			{Name: "CSV02-Cap", Path: `C:\ClusterStorage\CSV02-Cap`},
+		},
+		ISOs: []string{`C:\ClusterStorage\CSV01-Perf\ISOs\WinServer2025.iso`},
+	}, nil
+}
+
 func (s *Stub) EnsureSwitch(_ context.Context, spec types.VirtualSwitchSpec) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
