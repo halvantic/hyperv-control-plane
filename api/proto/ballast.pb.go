@@ -1167,6 +1167,7 @@ type HostStatus struct {
 	LastContact        *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_contact,json=lastContact,proto3" json:"last_contact,omitempty"`
 	Inventory          *HostInventory         `protobuf:"bytes,7,opt,name=inventory,proto3" json:"inventory,omitempty"`
 	Conditions         []*Condition           `protobuf:"bytes,8,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	Metrics            *HostMetrics           `protobuf:"bytes,9,opt,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1257,6 +1258,73 @@ func (x *HostStatus) GetConditions() []*Condition {
 	return nil
 }
 
+func (x *HostStatus) GetMetrics() *HostMetrics {
+	if x != nil {
+		return x.Metrics
+	}
+	return nil
+}
+
+type HostMetrics struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	CpuUsagePercent  int32                  `protobuf:"varint,1,opt,name=cpu_usage_percent,json=cpuUsagePercent,proto3" json:"cpu_usage_percent,omitempty"`
+	MemoryInUseBytes uint64                 `protobuf:"varint,2,opt,name=memory_in_use_bytes,json=memoryInUseBytes,proto3" json:"memory_in_use_bytes,omitempty"`
+	UptimeSeconds    int64                  `protobuf:"varint,3,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HostMetrics) Reset() {
+	*x = HostMetrics{}
+	mi := &file_ballast_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostMetrics) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostMetrics) ProtoMessage() {}
+
+func (x *HostMetrics) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostMetrics.ProtoReflect.Descriptor instead.
+func (*HostMetrics) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *HostMetrics) GetCpuUsagePercent() int32 {
+	if x != nil {
+		return x.CpuUsagePercent
+	}
+	return 0
+}
+
+func (x *HostMetrics) GetMemoryInUseBytes() uint64 {
+	if x != nil {
+		return x.MemoryInUseBytes
+	}
+	return 0
+}
+
+func (x *HostMetrics) GetUptimeSeconds() int64 {
+	if x != nil {
+		return x.UptimeSeconds
+	}
+	return 0
+}
+
 type HostInventory struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	PhysicalAdapters []*PhysicalAdapter     `protobuf:"bytes,1,rep,name=physical_adapters,json=physicalAdapters,proto3" json:"physical_adapters,omitempty"`
@@ -1269,7 +1337,7 @@ type HostInventory struct {
 
 func (x *HostInventory) Reset() {
 	*x = HostInventory{}
-	mi := &file_ballast_proto_msgTypes[12]
+	mi := &file_ballast_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1281,7 +1349,7 @@ func (x *HostInventory) String() string {
 func (*HostInventory) ProtoMessage() {}
 
 func (x *HostInventory) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[12]
+	mi := &file_ballast_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1294,7 +1362,7 @@ func (x *HostInventory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostInventory.ProtoReflect.Descriptor instead.
 func (*HostInventory) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{12}
+	return file_ballast_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *HostInventory) GetPhysicalAdapters() []*PhysicalAdapter {
@@ -1337,7 +1405,7 @@ type PhysicalAdapter struct {
 
 func (x *PhysicalAdapter) Reset() {
 	*x = PhysicalAdapter{}
-	mi := &file_ballast_proto_msgTypes[13]
+	mi := &file_ballast_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1349,7 +1417,7 @@ func (x *PhysicalAdapter) String() string {
 func (*PhysicalAdapter) ProtoMessage() {}
 
 func (x *PhysicalAdapter) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[13]
+	mi := &file_ballast_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1362,7 +1430,7 @@ func (x *PhysicalAdapter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhysicalAdapter.ProtoReflect.Descriptor instead.
 func (*PhysicalAdapter) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{13}
+	return file_ballast_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PhysicalAdapter) GetName() string {
@@ -1405,7 +1473,7 @@ type PhysicalDisk struct {
 
 func (x *PhysicalDisk) Reset() {
 	*x = PhysicalDisk{}
-	mi := &file_ballast_proto_msgTypes[14]
+	mi := &file_ballast_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1417,7 +1485,7 @@ func (x *PhysicalDisk) String() string {
 func (*PhysicalDisk) ProtoMessage() {}
 
 func (x *PhysicalDisk) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[14]
+	mi := &file_ballast_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1430,7 +1498,7 @@ func (x *PhysicalDisk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhysicalDisk.ProtoReflect.Descriptor instead.
 func (*PhysicalDisk) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{14}
+	return file_ballast_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PhysicalDisk) GetDeviceId() string {
@@ -1471,7 +1539,7 @@ type HostNetworkingSpec struct {
 
 func (x *HostNetworkingSpec) Reset() {
 	*x = HostNetworkingSpec{}
-	mi := &file_ballast_proto_msgTypes[15]
+	mi := &file_ballast_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1483,7 +1551,7 @@ func (x *HostNetworkingSpec) String() string {
 func (*HostNetworkingSpec) ProtoMessage() {}
 
 func (x *HostNetworkingSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[15]
+	mi := &file_ballast_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1496,7 +1564,7 @@ func (x *HostNetworkingSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostNetworkingSpec.ProtoReflect.Descriptor instead.
 func (*HostNetworkingSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{15}
+	return file_ballast_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *HostNetworkingSpec) GetSwitches() []*VirtualSwitchSpec {
@@ -1526,7 +1594,7 @@ type VirtualSwitchSpec struct {
 
 func (x *VirtualSwitchSpec) Reset() {
 	*x = VirtualSwitchSpec{}
-	mi := &file_ballast_proto_msgTypes[16]
+	mi := &file_ballast_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1538,7 +1606,7 @@ func (x *VirtualSwitchSpec) String() string {
 func (*VirtualSwitchSpec) ProtoMessage() {}
 
 func (x *VirtualSwitchSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[16]
+	mi := &file_ballast_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1551,7 +1619,7 @@ func (x *VirtualSwitchSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VirtualSwitchSpec.ProtoReflect.Descriptor instead.
 func (*VirtualSwitchSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{16}
+	return file_ballast_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *VirtualSwitchSpec) GetName() string {
@@ -1603,7 +1671,7 @@ type ManagementVNICSpec struct {
 
 func (x *ManagementVNICSpec) Reset() {
 	*x = ManagementVNICSpec{}
-	mi := &file_ballast_proto_msgTypes[17]
+	mi := &file_ballast_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1615,7 +1683,7 @@ func (x *ManagementVNICSpec) String() string {
 func (*ManagementVNICSpec) ProtoMessage() {}
 
 func (x *ManagementVNICSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[17]
+	mi := &file_ballast_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1628,7 +1696,7 @@ func (x *ManagementVNICSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagementVNICSpec.ProtoReflect.Descriptor instead.
 func (*ManagementVNICSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{17}
+	return file_ballast_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ManagementVNICSpec) GetName() string {
@@ -1677,7 +1745,7 @@ type IPConfig struct {
 
 func (x *IPConfig) Reset() {
 	*x = IPConfig{}
-	mi := &file_ballast_proto_msgTypes[18]
+	mi := &file_ballast_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1689,7 +1757,7 @@ func (x *IPConfig) String() string {
 func (*IPConfig) ProtoMessage() {}
 
 func (x *IPConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[18]
+	mi := &file_ballast_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1702,7 +1770,7 @@ func (x *IPConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IPConfig.ProtoReflect.Descriptor instead.
 func (*IPConfig) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{18}
+	return file_ballast_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *IPConfig) GetAddress() string {
@@ -1736,7 +1804,7 @@ type HostStorageSpec struct {
 
 func (x *HostStorageSpec) Reset() {
 	*x = HostStorageSpec{}
-	mi := &file_ballast_proto_msgTypes[19]
+	mi := &file_ballast_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1748,7 +1816,7 @@ func (x *HostStorageSpec) String() string {
 func (*HostStorageSpec) ProtoMessage() {}
 
 func (x *HostStorageSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[19]
+	mi := &file_ballast_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1761,7 +1829,7 @@ func (x *HostStorageSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostStorageSpec.ProtoReflect.Descriptor instead.
 func (*HostStorageSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{19}
+	return file_ballast_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *HostStorageSpec) GetContributeToS2D() bool {
@@ -1787,7 +1855,7 @@ type ClusterMembershipSpec struct {
 
 func (x *ClusterMembershipSpec) Reset() {
 	*x = ClusterMembershipSpec{}
-	mi := &file_ballast_proto_msgTypes[20]
+	mi := &file_ballast_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1799,7 +1867,7 @@ func (x *ClusterMembershipSpec) String() string {
 func (*ClusterMembershipSpec) ProtoMessage() {}
 
 func (x *ClusterMembershipSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[20]
+	mi := &file_ballast_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1812,7 +1880,7 @@ func (x *ClusterMembershipSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterMembershipSpec.ProtoReflect.Descriptor instead.
 func (*ClusterMembershipSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{20}
+	return file_ballast_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ClusterMembershipSpec) GetClusterName() string {
@@ -1837,7 +1905,7 @@ type ClusterAssignment struct {
 
 func (x *ClusterAssignment) Reset() {
 	*x = ClusterAssignment{}
-	mi := &file_ballast_proto_msgTypes[21]
+	mi := &file_ballast_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1849,7 +1917,7 @@ func (x *ClusterAssignment) String() string {
 func (*ClusterAssignment) ProtoMessage() {}
 
 func (x *ClusterAssignment) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[21]
+	mi := &file_ballast_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1862,7 +1930,7 @@ func (x *ClusterAssignment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterAssignment.ProtoReflect.Descriptor instead.
 func (*ClusterAssignment) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{21}
+	return file_ballast_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ClusterAssignment) GetIsMember() bool {
@@ -1897,7 +1965,7 @@ type Cluster struct {
 
 func (x *Cluster) Reset() {
 	*x = Cluster{}
-	mi := &file_ballast_proto_msgTypes[22]
+	mi := &file_ballast_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1909,7 +1977,7 @@ func (x *Cluster) String() string {
 func (*Cluster) ProtoMessage() {}
 
 func (x *Cluster) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[22]
+	mi := &file_ballast_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1922,7 +1990,7 @@ func (x *Cluster) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Cluster.ProtoReflect.Descriptor instead.
 func (*Cluster) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{22}
+	return file_ballast_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Cluster) GetMeta() *ObjectMeta {
@@ -1963,7 +2031,7 @@ type ClusterSpec struct {
 
 func (x *ClusterSpec) Reset() {
 	*x = ClusterSpec{}
-	mi := &file_ballast_proto_msgTypes[23]
+	mi := &file_ballast_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1975,7 +2043,7 @@ func (x *ClusterSpec) String() string {
 func (*ClusterSpec) ProtoMessage() {}
 
 func (x *ClusterSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[23]
+	mi := &file_ballast_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1988,7 +2056,7 @@ func (x *ClusterSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterSpec.ProtoReflect.Descriptor instead.
 func (*ClusterSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{23}
+	return file_ballast_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ClusterSpec) GetMembers() []string {
@@ -2039,7 +2107,7 @@ type CSVSpec struct {
 
 func (x *CSVSpec) Reset() {
 	*x = CSVSpec{}
-	mi := &file_ballast_proto_msgTypes[24]
+	mi := &file_ballast_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2051,7 +2119,7 @@ func (x *CSVSpec) String() string {
 func (*CSVSpec) ProtoMessage() {}
 
 func (x *CSVSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[24]
+	mi := &file_ballast_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2064,7 +2132,7 @@ func (x *CSVSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CSVSpec.ProtoReflect.Descriptor instead.
 func (*CSVSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{24}
+	return file_ballast_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CSVSpec) GetName() string {
@@ -2106,7 +2174,7 @@ type WitnessSpec struct {
 
 func (x *WitnessSpec) Reset() {
 	*x = WitnessSpec{}
-	mi := &file_ballast_proto_msgTypes[25]
+	mi := &file_ballast_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2118,7 +2186,7 @@ func (x *WitnessSpec) String() string {
 func (*WitnessSpec) ProtoMessage() {}
 
 func (x *WitnessSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[25]
+	mi := &file_ballast_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2131,7 +2199,7 @@ func (x *WitnessSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WitnessSpec.ProtoReflect.Descriptor instead.
 func (*WitnessSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{25}
+	return file_ballast_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *WitnessSpec) GetType() WitnessType {
@@ -2168,7 +2236,7 @@ type ClusterStatus struct {
 
 func (x *ClusterStatus) Reset() {
 	*x = ClusterStatus{}
-	mi := &file_ballast_proto_msgTypes[26]
+	mi := &file_ballast_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2180,7 +2248,7 @@ func (x *ClusterStatus) String() string {
 func (*ClusterStatus) ProtoMessage() {}
 
 func (x *ClusterStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[26]
+	mi := &file_ballast_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2193,7 +2261,7 @@ func (x *ClusterStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterStatus.ProtoReflect.Descriptor instead.
 func (*ClusterStatus) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{26}
+	return file_ballast_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ClusterStatus) GetPhase() Phase {
@@ -2242,7 +2310,7 @@ type VM struct {
 
 func (x *VM) Reset() {
 	*x = VM{}
-	mi := &file_ballast_proto_msgTypes[27]
+	mi := &file_ballast_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2254,7 +2322,7 @@ func (x *VM) String() string {
 func (*VM) ProtoMessage() {}
 
 func (x *VM) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[27]
+	mi := &file_ballast_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2267,7 +2335,7 @@ func (x *VM) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VM.ProtoReflect.Descriptor instead.
 func (*VM) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{27}
+	return file_ballast_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *VM) GetMeta() *ObjectMeta {
@@ -2310,7 +2378,7 @@ type VMSpec struct {
 
 func (x *VMSpec) Reset() {
 	*x = VMSpec{}
-	mi := &file_ballast_proto_msgTypes[28]
+	mi := &file_ballast_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2322,7 +2390,7 @@ func (x *VMSpec) String() string {
 func (*VMSpec) ProtoMessage() {}
 
 func (x *VMSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[28]
+	mi := &file_ballast_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2335,7 +2403,7 @@ func (x *VMSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMSpec.ProtoReflect.Descriptor instead.
 func (*VMSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{28}
+	return file_ballast_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *VMSpec) GetPlacement() *VMPlacementSpec {
@@ -2410,7 +2478,7 @@ type VMPlacementSpec struct {
 
 func (x *VMPlacementSpec) Reset() {
 	*x = VMPlacementSpec{}
-	mi := &file_ballast_proto_msgTypes[29]
+	mi := &file_ballast_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2422,7 +2490,7 @@ func (x *VMPlacementSpec) String() string {
 func (*VMPlacementSpec) ProtoMessage() {}
 
 func (x *VMPlacementSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[29]
+	mi := &file_ballast_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2435,7 +2503,7 @@ func (x *VMPlacementSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMPlacementSpec.ProtoReflect.Descriptor instead.
 func (*VMPlacementSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{29}
+	return file_ballast_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *VMPlacementSpec) GetHostName() string {
@@ -2455,7 +2523,7 @@ type DynamicMemorySpec struct {
 
 func (x *DynamicMemorySpec) Reset() {
 	*x = DynamicMemorySpec{}
-	mi := &file_ballast_proto_msgTypes[30]
+	mi := &file_ballast_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2467,7 +2535,7 @@ func (x *DynamicMemorySpec) String() string {
 func (*DynamicMemorySpec) ProtoMessage() {}
 
 func (x *DynamicMemorySpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[30]
+	mi := &file_ballast_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2480,7 +2548,7 @@ func (x *DynamicMemorySpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DynamicMemorySpec.ProtoReflect.Descriptor instead.
 func (*DynamicMemorySpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{30}
+	return file_ballast_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DynamicMemorySpec) GetMinBytes() uint64 {
@@ -2509,7 +2577,7 @@ type VMDiskSpec struct {
 
 func (x *VMDiskSpec) Reset() {
 	*x = VMDiskSpec{}
-	mi := &file_ballast_proto_msgTypes[31]
+	mi := &file_ballast_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2521,7 +2589,7 @@ func (x *VMDiskSpec) String() string {
 func (*VMDiskSpec) ProtoMessage() {}
 
 func (x *VMDiskSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[31]
+	mi := &file_ballast_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2534,7 +2602,7 @@ func (x *VMDiskSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMDiskSpec.ProtoReflect.Descriptor instead.
 func (*VMDiskSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{31}
+	return file_ballast_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *VMDiskSpec) GetPath() string {
@@ -2571,7 +2639,7 @@ type VMNetworkAdapterSpec struct {
 
 func (x *VMNetworkAdapterSpec) Reset() {
 	*x = VMNetworkAdapterSpec{}
-	mi := &file_ballast_proto_msgTypes[32]
+	mi := &file_ballast_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2583,7 +2651,7 @@ func (x *VMNetworkAdapterSpec) String() string {
 func (*VMNetworkAdapterSpec) ProtoMessage() {}
 
 func (x *VMNetworkAdapterSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[32]
+	mi := &file_ballast_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2596,7 +2664,7 @@ func (x *VMNetworkAdapterSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMNetworkAdapterSpec.ProtoReflect.Descriptor instead.
 func (*VMNetworkAdapterSpec) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{32}
+	return file_ballast_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *VMNetworkAdapterSpec) GetName() string {
@@ -2642,7 +2710,7 @@ type VMStatus struct {
 
 func (x *VMStatus) Reset() {
 	*x = VMStatus{}
-	mi := &file_ballast_proto_msgTypes[33]
+	mi := &file_ballast_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2654,7 +2722,7 @@ func (x *VMStatus) String() string {
 func (*VMStatus) ProtoMessage() {}
 
 func (x *VMStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ballast_proto_msgTypes[33]
+	mi := &file_ballast_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2667,7 +2735,7 @@ func (x *VMStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMStatus.ProtoReflect.Descriptor instead.
 func (*VMStatus) Descriptor() ([]byte, []int) {
-	return file_ballast_proto_rawDescGZIP(), []int{33}
+	return file_ballast_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *VMStatus) GetPhase() Phase {
@@ -2789,7 +2857,7 @@ const file_ballast_proto_rawDesc = "" +
 	"networking\x125\n" +
 	"\astorage\x18\x04 \x01(\v2\x1b.ballast.v1.HostStorageSpecR\astorage\x12P\n" +
 	"\x12cluster_membership\x18\x05 \x01(\v2!.ballast.v1.ClusterMembershipSpecR\x11clusterMembership\x12=\n" +
-	"\rreboot_policy\x18\x06 \x01(\x0e2\x18.ballast.v1.RebootPolicyR\frebootPolicy\"\x89\x03\n" +
+	"\rreboot_policy\x18\x06 \x01(\x0e2\x18.ballast.v1.RebootPolicyR\frebootPolicy\"\xbc\x03\n" +
 	"\n" +
 	"HostStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
@@ -2803,7 +2871,12 @@ const file_ballast_proto_rawDesc = "" +
 	"\tinventory\x18\a \x01(\v2\x19.ballast.v1.HostInventoryR\tinventory\x125\n" +
 	"\n" +
 	"conditions\x18\b \x03(\v2\x15.ballast.v1.ConditionR\n" +
-	"conditions\"\xeb\x01\n" +
+	"conditions\x121\n" +
+	"\ametrics\x18\t \x01(\v2\x17.ballast.v1.HostMetricsR\ametrics\"\x8f\x01\n" +
+	"\vHostMetrics\x12*\n" +
+	"\x11cpu_usage_percent\x18\x01 \x01(\x05R\x0fcpuUsagePercent\x12-\n" +
+	"\x13memory_in_use_bytes\x18\x02 \x01(\x04R\x10memoryInUseBytes\x12%\n" +
+	"\x0euptime_seconds\x18\x03 \x01(\x03R\ruptimeSeconds\"\xeb\x01\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +
@@ -2980,7 +3053,7 @@ func file_ballast_proto_rawDescGZIP() []byte {
 }
 
 var file_ballast_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_ballast_proto_goTypes = []any{
 	(Phase)(0),                       // 0: ballast.v1.Phase
 	(RebootPolicy)(0),                // 1: ballast.v1.RebootPolicy
@@ -3001,96 +3074,98 @@ var file_ballast_proto_goTypes = []any{
 	(*Host)(nil),                     // 16: ballast.v1.Host
 	(*HostSpec)(nil),                 // 17: ballast.v1.HostSpec
 	(*HostStatus)(nil),               // 18: ballast.v1.HostStatus
-	(*HostInventory)(nil),            // 19: ballast.v1.HostInventory
-	(*PhysicalAdapter)(nil),          // 20: ballast.v1.PhysicalAdapter
-	(*PhysicalDisk)(nil),             // 21: ballast.v1.PhysicalDisk
-	(*HostNetworkingSpec)(nil),       // 22: ballast.v1.HostNetworkingSpec
-	(*VirtualSwitchSpec)(nil),        // 23: ballast.v1.VirtualSwitchSpec
-	(*ManagementVNICSpec)(nil),       // 24: ballast.v1.ManagementVNICSpec
-	(*IPConfig)(nil),                 // 25: ballast.v1.IPConfig
-	(*HostStorageSpec)(nil),          // 26: ballast.v1.HostStorageSpec
-	(*ClusterMembershipSpec)(nil),    // 27: ballast.v1.ClusterMembershipSpec
-	(*ClusterAssignment)(nil),        // 28: ballast.v1.ClusterAssignment
-	(*Cluster)(nil),                  // 29: ballast.v1.Cluster
-	(*ClusterSpec)(nil),              // 30: ballast.v1.ClusterSpec
-	(*CSVSpec)(nil),                  // 31: ballast.v1.CSVSpec
-	(*WitnessSpec)(nil),              // 32: ballast.v1.WitnessSpec
-	(*ClusterStatus)(nil),            // 33: ballast.v1.ClusterStatus
-	(*VM)(nil),                       // 34: ballast.v1.VM
-	(*VMSpec)(nil),                   // 35: ballast.v1.VMSpec
-	(*VMPlacementSpec)(nil),          // 36: ballast.v1.VMPlacementSpec
-	(*DynamicMemorySpec)(nil),        // 37: ballast.v1.DynamicMemorySpec
-	(*VMDiskSpec)(nil),               // 38: ballast.v1.VMDiskSpec
-	(*VMNetworkAdapterSpec)(nil),     // 39: ballast.v1.VMNetworkAdapterSpec
-	(*VMStatus)(nil),                 // 40: ballast.v1.VMStatus
-	nil,                              // 41: ballast.v1.ObjectMeta.LabelsEntry
-	nil,                              // 42: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	(*timestamppb.Timestamp)(nil),    // 43: google.protobuf.Timestamp
+	(*HostMetrics)(nil),              // 19: ballast.v1.HostMetrics
+	(*HostInventory)(nil),            // 20: ballast.v1.HostInventory
+	(*PhysicalAdapter)(nil),          // 21: ballast.v1.PhysicalAdapter
+	(*PhysicalDisk)(nil),             // 22: ballast.v1.PhysicalDisk
+	(*HostNetworkingSpec)(nil),       // 23: ballast.v1.HostNetworkingSpec
+	(*VirtualSwitchSpec)(nil),        // 24: ballast.v1.VirtualSwitchSpec
+	(*ManagementVNICSpec)(nil),       // 25: ballast.v1.ManagementVNICSpec
+	(*IPConfig)(nil),                 // 26: ballast.v1.IPConfig
+	(*HostStorageSpec)(nil),          // 27: ballast.v1.HostStorageSpec
+	(*ClusterMembershipSpec)(nil),    // 28: ballast.v1.ClusterMembershipSpec
+	(*ClusterAssignment)(nil),        // 29: ballast.v1.ClusterAssignment
+	(*Cluster)(nil),                  // 30: ballast.v1.Cluster
+	(*ClusterSpec)(nil),              // 31: ballast.v1.ClusterSpec
+	(*CSVSpec)(nil),                  // 32: ballast.v1.CSVSpec
+	(*WitnessSpec)(nil),              // 33: ballast.v1.WitnessSpec
+	(*ClusterStatus)(nil),            // 34: ballast.v1.ClusterStatus
+	(*VM)(nil),                       // 35: ballast.v1.VM
+	(*VMSpec)(nil),                   // 36: ballast.v1.VMSpec
+	(*VMPlacementSpec)(nil),          // 37: ballast.v1.VMPlacementSpec
+	(*DynamicMemorySpec)(nil),        // 38: ballast.v1.DynamicMemorySpec
+	(*VMDiskSpec)(nil),               // 39: ballast.v1.VMDiskSpec
+	(*VMNetworkAdapterSpec)(nil),     // 40: ballast.v1.VMNetworkAdapterSpec
+	(*VMStatus)(nil),                 // 41: ballast.v1.VMStatus
+	nil,                              // 42: ballast.v1.ObjectMeta.LabelsEntry
+	nil,                              // 43: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	(*timestamppb.Timestamp)(nil),    // 44: google.protobuf.Timestamp
 }
 var file_ballast_proto_depIdxs = []int32{
-	19, // 0: ballast.v1.RegisterHostRequest.inventory:type_name -> ballast.v1.HostInventory
+	20, // 0: ballast.v1.RegisterHostRequest.inventory:type_name -> ballast.v1.HostInventory
 	16, // 1: ballast.v1.PullDesiredStateResponse.host:type_name -> ballast.v1.Host
-	28, // 2: ballast.v1.PullDesiredStateResponse.cluster_assignment:type_name -> ballast.v1.ClusterAssignment
-	34, // 3: ballast.v1.PullDesiredStateResponse.vms:type_name -> ballast.v1.VM
+	29, // 2: ballast.v1.PullDesiredStateResponse.cluster_assignment:type_name -> ballast.v1.ClusterAssignment
+	35, // 3: ballast.v1.PullDesiredStateResponse.vms:type_name -> ballast.v1.VM
 	18, // 4: ballast.v1.ReportStatusRequest.status:type_name -> ballast.v1.HostStatus
-	33, // 5: ballast.v1.ReportStatusRequest.cluster_status:type_name -> ballast.v1.ClusterStatus
+	34, // 5: ballast.v1.ReportStatusRequest.cluster_status:type_name -> ballast.v1.ClusterStatus
 	12, // 6: ballast.v1.ReportStatusRequest.vm_statuses:type_name -> ballast.v1.VMStatusReport
-	40, // 7: ballast.v1.VMStatusReport.status:type_name -> ballast.v1.VMStatus
-	41, // 8: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
-	43, // 9: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
-	43, // 10: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
-	43, // 11: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
+	41, // 7: ballast.v1.VMStatusReport.status:type_name -> ballast.v1.VMStatus
+	42, // 8: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
+	44, // 9: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
+	44, // 10: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
+	44, // 11: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
 	14, // 12: ballast.v1.Host.meta:type_name -> ballast.v1.ObjectMeta
 	17, // 13: ballast.v1.Host.spec:type_name -> ballast.v1.HostSpec
 	18, // 14: ballast.v1.Host.status:type_name -> ballast.v1.HostStatus
-	22, // 15: ballast.v1.HostSpec.networking:type_name -> ballast.v1.HostNetworkingSpec
-	26, // 16: ballast.v1.HostSpec.storage:type_name -> ballast.v1.HostStorageSpec
-	27, // 17: ballast.v1.HostSpec.cluster_membership:type_name -> ballast.v1.ClusterMembershipSpec
+	23, // 15: ballast.v1.HostSpec.networking:type_name -> ballast.v1.HostNetworkingSpec
+	27, // 16: ballast.v1.HostSpec.storage:type_name -> ballast.v1.HostStorageSpec
+	28, // 17: ballast.v1.HostSpec.cluster_membership:type_name -> ballast.v1.ClusterMembershipSpec
 	1,  // 18: ballast.v1.HostSpec.reboot_policy:type_name -> ballast.v1.RebootPolicy
 	0,  // 19: ballast.v1.HostStatus.phase:type_name -> ballast.v1.Phase
-	43, // 20: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
-	19, // 21: ballast.v1.HostStatus.inventory:type_name -> ballast.v1.HostInventory
+	44, // 20: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
+	20, // 21: ballast.v1.HostStatus.inventory:type_name -> ballast.v1.HostInventory
 	15, // 22: ballast.v1.HostStatus.conditions:type_name -> ballast.v1.Condition
-	20, // 23: ballast.v1.HostInventory.physical_adapters:type_name -> ballast.v1.PhysicalAdapter
-	21, // 24: ballast.v1.HostInventory.physical_disks:type_name -> ballast.v1.PhysicalDisk
-	23, // 25: ballast.v1.HostNetworkingSpec.switches:type_name -> ballast.v1.VirtualSwitchSpec
-	24, // 26: ballast.v1.HostNetworkingSpec.management_vnics:type_name -> ballast.v1.ManagementVNICSpec
-	2,  // 27: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
-	3,  // 28: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
-	25, // 29: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
-	42, // 30: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	29, // 31: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
-	14, // 32: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
-	30, // 33: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
-	33, // 34: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
-	32, // 35: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
-	31, // 36: ballast.v1.ClusterSpec.volumes:type_name -> ballast.v1.CSVSpec
-	4,  // 37: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
-	0,  // 38: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
-	15, // 39: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
-	14, // 40: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
-	35, // 41: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
-	40, // 42: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
-	36, // 43: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
-	37, // 44: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
-	38, // 45: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
-	39, // 46: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
-	5,  // 47: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
-	6,  // 48: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
-	0,  // 49: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
-	5,  // 50: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
-	15, // 51: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
-	7,  // 52: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	9,  // 53: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	11, // 54: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	8,  // 55: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	10, // 56: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	13, // 57: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	55, // [55:58] is the sub-list for method output_type
-	52, // [52:55] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	19, // 23: ballast.v1.HostStatus.metrics:type_name -> ballast.v1.HostMetrics
+	21, // 24: ballast.v1.HostInventory.physical_adapters:type_name -> ballast.v1.PhysicalAdapter
+	22, // 25: ballast.v1.HostInventory.physical_disks:type_name -> ballast.v1.PhysicalDisk
+	24, // 26: ballast.v1.HostNetworkingSpec.switches:type_name -> ballast.v1.VirtualSwitchSpec
+	25, // 27: ballast.v1.HostNetworkingSpec.management_vnics:type_name -> ballast.v1.ManagementVNICSpec
+	2,  // 28: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
+	3,  // 29: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
+	26, // 30: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
+	43, // 31: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	30, // 32: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
+	14, // 33: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
+	31, // 34: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
+	34, // 35: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
+	33, // 36: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
+	32, // 37: ballast.v1.ClusterSpec.volumes:type_name -> ballast.v1.CSVSpec
+	4,  // 38: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
+	0,  // 39: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
+	15, // 40: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
+	14, // 41: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
+	36, // 42: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
+	41, // 43: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
+	37, // 44: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
+	38, // 45: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
+	39, // 46: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
+	40, // 47: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
+	5,  // 48: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
+	6,  // 49: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
+	0,  // 50: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
+	5,  // 51: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
+	15, // 52: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
+	7,  // 53: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	9,  // 54: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	11, // 55: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	8,  // 56: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	10, // 57: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	13, // 58: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	56, // [56:59] is the sub-list for method output_type
+	53, // [53:56] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }
@@ -3104,7 +3179,7 @@ func file_ballast_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ballast_proto_rawDesc), len(file_ballast_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   36,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

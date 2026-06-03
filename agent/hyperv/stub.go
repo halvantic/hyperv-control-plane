@@ -88,6 +88,16 @@ func (s *Stub) CollectInventory(_ context.Context) (types.HostInventory, error) 
 	}, nil
 }
 
+// CollectMetrics returns a plausible fixture so the console shows non-zero
+// utilisation when developing against the stub.
+func (s *Stub) CollectMetrics(_ context.Context) (types.HostMetrics, error) {
+	return types.HostMetrics{
+		CPUUsagePercent:  7,
+		MemoryInUseBytes: 24 * 1024 * 1024 * 1024, // 24 GiB
+		UptimeSeconds:    4 * 24 * 3600,           // 4 days
+	}, nil
+}
+
 func (s *Stub) EnsureSwitch(_ context.Context, spec types.VirtualSwitchSpec) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

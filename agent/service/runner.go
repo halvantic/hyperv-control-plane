@@ -144,6 +144,10 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	if err != nil {
 		r.log.Error("collect inventory failed", "err", err)
 	}
+	metrics, merr := r.hv.CollectMetrics(ctx)
+	if merr != nil {
+		r.log.Error("collect metrics failed", "err", merr)
+	}
 
 	// Establish identity if we have not confirmed a registration yet. This never
 	// blocks: on failure we proceed on cached state and retry next cycle.
@@ -218,7 +222,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 		}
 	}
 
-	st := r.buildStatus(inv, autonomous, phase, conds, hyperVInstalled, rebootRequired)
+	st := r.buildStatus(inv, metrics, autonomous, phase, conds, hyperVInstalled, rebootRequired)
 	r.reportStatus(ctx, client, st)
 
 	// Cluster reconcile, only when the centre gave us a current assignment.
@@ -328,7 +332,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 // buildStatus assembles the status to report. ObservedGeneration carries the
 // last fully-honoured generation, so the centre can tell when the host is
 // settled even across an autonomy window.
-func (r *runner) buildStatus(inv types.HostInventory, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired bool) types.HostStatus {
+func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired bool) types.HostStatus {
 	return types.HostStatus{
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,
@@ -337,6 +341,7 @@ func (r *runner) buildStatus(inv types.HostInventory, autonomous bool, phase typ
 		Autonomous:         autonomous,
 		LastContact:        time.Now().UTC(),
 		Inventory:          inv,
+		Metrics:            metrics,
 		Conditions:         conds,
 	}
 }

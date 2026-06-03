@@ -171,6 +171,13 @@ message HostStatus {
   google.protobuf.Timestamp last_contact = 6;
   HostInventory inventory = 7;
   repeated Condition conditions = 8;
+  HostMetrics metrics = 9;
+}
+
+message HostMetrics {
+  int32 cpu_usage_percent = 1;
+  uint64 memory_in_use_bytes = 2;
+  int64 uptime_seconds = 3;
 }
 
 message HostInventory {

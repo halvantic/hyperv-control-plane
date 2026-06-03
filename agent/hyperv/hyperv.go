@@ -57,6 +57,11 @@ type Interface interface {
 	// It is a pure read; it must never mutate host state.
 	CollectInventory(ctx context.Context) (types.HostInventory, error)
 
+	// CollectMetrics observes live host utilisation — overall CPU load, physical
+	// memory in use, and uptime. A pure read, refreshed each reconcile cycle and
+	// reported in HostStatus.Metrics.
+	CollectMetrics(ctx context.Context) (types.HostMetrics, error)
+
 	// EnsureSwitch makes the SET-backed virtual switch described by spec exist
 	// and match it: creating it (with the named team members, teaming mode and
 	// load-balancing algorithm) when absent, adjusting it when it differs, and

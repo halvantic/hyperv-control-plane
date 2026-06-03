@@ -399,6 +399,11 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		LastContact:        tsToProto(s.LastContact),
 		Inventory:          InventoryToProto(s.Inventory),
 		Conditions:         conditionsToProto(s.Conditions),
+		Metrics: &HostMetrics{
+			CpuUsagePercent:  int32(s.Metrics.CPUUsagePercent),
+			MemoryInUseBytes: s.Metrics.MemoryInUseBytes,
+			UptimeSeconds:    s.Metrics.UptimeSeconds,
+		},
 	}
 }
 
@@ -407,7 +412,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 	if s == nil {
 		return types.HostStatus{}
 	}
-	return types.HostStatus{
+	out := types.HostStatus{
 		Phase:              phaseFromProto(s.GetPhase()),
 		ObservedGeneration: s.GetObservedGeneration(),
 		HyperVInstalled:    s.GetHypervInstalled(),
@@ -417,6 +422,14 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		Inventory:          InventoryFromProto(s.GetInventory()),
 		Conditions:         conditionsFromProto(s.GetConditions()),
 	}
+	if m := s.GetMetrics(); m != nil {
+		out.Metrics = types.HostMetrics{
+			CPUUsagePercent:  int(m.GetCpuUsagePercent()),
+			MemoryInUseBytes: m.GetMemoryInUseBytes(),
+			UptimeSeconds:    m.GetUptimeSeconds(),
+		}
+	}
+	return out
 }
 
 // HostToProto converts a schema Host (meta + spec + status) to the wire form.

@@ -137,7 +137,22 @@ type HostStatus struct {
 	// decisions (physical adapters, disks, memory, CPU).
 	Inventory HostInventory `json:"inventory,omitempty"`
 
+	// Metrics is live host utilisation (CPU, memory in use, uptime), refreshed
+	// each reconcile. Distinct from Inventory, which is the static hardware.
+	Metrics HostMetrics `json:"metrics,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// HostMetrics is observed, dynamic host utilisation. All fields are best-effort;
+// zero means not observed this cycle.
+type HostMetrics struct {
+	// CPUUsagePercent is the host's overall processor load, 0-100.
+	CPUUsagePercent int `json:"cpuUsagePercent,omitempty"`
+	// MemoryInUseBytes is physical memory currently in use (total minus free).
+	MemoryInUseBytes uint64 `json:"memoryInUseBytes,omitempty"`
+	// UptimeSeconds is how long the host has been up since last boot.
+	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
 }
 
 type HostInventory struct {

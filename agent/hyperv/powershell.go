@@ -128,5 +128,33 @@ func (p *PowerShell) CollectInventory(ctx context.Context) (types.HostInventory,
 	return inv, nil
 }
 
+// metricsScript reads live host utilisation: overall CPU load (averaged across
+// processors), physical memory in use (total visible minus free), and uptime
+// since last boot. JSON keys match types.HostMetrics.
+const metricsScript = `
+$ErrorActionPreference = 'Stop'
+$os = Get-CimInstance Win32_OperatingSystem
+$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+[pscustomobject]@{
+  cpuUsagePercent  = [int]$cpu
+  memoryInUseBytes = [uint64]((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)) * 1024)
+  uptimeSeconds    = [int64]((Get-Date) - $os.LastBootUpTime).TotalSeconds
+} | ConvertTo-Json -Compress
+`
+
+// CollectMetrics observes live CPU load, memory in use and uptime via CIM. It is
+// a pure read.
+func (p *PowerShell) CollectMetrics(ctx context.Context) (types.HostMetrics, error) {
+	out, err := p.run(ctx, metricsScript)
+	if err != nil {
+		return types.HostMetrics{}, fmt.Errorf("collect metrics: %w", err)
+	}
+	var m types.HostMetrics
+	if err := decodeJSON(out, &m); err != nil {
+		return types.HostMetrics{}, fmt.Errorf("collect metrics: %w", err)
+	}
+	return m, nil
+}
+
 // compile-time assertion that PowerShell satisfies the interface.
 var _ Interface = (*PowerShell)(nil)
