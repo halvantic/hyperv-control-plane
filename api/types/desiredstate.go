@@ -371,6 +371,30 @@ type ClusterStatus struct {
 }
 
 // ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+// Secret is a named bag of sensitive key/value data the control plane holds on
+// behalf of an operation that needs credentials — domain join, later iSCSI
+// CHAP. Desired-state specs reference a secret by name (never by value); the
+// centre stores the Data encrypted at rest and delivers it to the agent only
+// over the gRPC channel, only to the host that needs it. Data is never returned
+// on read APIs or written to logs.
+type Secret struct {
+	Name string `json:"name"`
+	// Type categorises the secret so consumers know its shape, e.g.
+	// "DomainCredential" expects keys "username" and "password".
+	Type string `json:"type"`
+	// Data holds the sensitive values. Omitted from any UI-facing serialisation.
+	Data map[string]string `json:"data,omitempty"`
+}
+
+const (
+	// SecretDomainCredential carries "username" + "password" for domain join.
+	SecretDomainCredential = "DomainCredential"
+)
+
+// ---------------------------------------------------------------------------
 // Virtual machine
 // ---------------------------------------------------------------------------
 
