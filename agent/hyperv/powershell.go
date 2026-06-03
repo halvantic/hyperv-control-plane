@@ -167,11 +167,12 @@ $vols = @()
 $csv = Get-ClusterSharedVolume 2>$null
 if ($csv) {
   $vols = @($csv | ForEach-Object {
-    [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName }
+    $p = $_.SharedVolumeInfo.Partition
+    [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace) }
   })
 } else {
   $vols = @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
-    [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\" }
+    [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining) }
   })
 }
 $roots = @($vols | ForEach-Object { Join-Path $_.path 'ISOs' }) + 'C:\ISOs'

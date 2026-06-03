@@ -411,7 +411,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 func resourcesToProto(r types.HostResources) *HostResources {
 	out := &HostResources{Switches: r.Switches, Isos: r.ISOs}
 	for _, v := range r.Volumes {
-		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path})
+		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path, SizeBytes: v.SizeBytes, UsedBytes: v.UsedBytes})
 	}
 	return out
 }
@@ -422,7 +422,7 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 	}
 	out := types.HostResources{Switches: r.GetSwitches(), ISOs: r.GetIsos()}
 	for _, v := range r.GetVolumes() {
-		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath()})
+		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath(), SizeBytes: v.GetSizeBytes(), UsedBytes: v.GetUsedBytes()})
 	}
 	return out
 }

@@ -170,6 +170,9 @@ type StorageVolume struct {
 	// Path is the mount point to build file paths under, e.g.
 	// C:\ClusterStorage\Volume1.
 	Path string `json:"path"`
+	// SizeBytes / UsedBytes are the volume's capacity and usage. Best effort.
+	SizeBytes uint64 `json:"sizeBytes,omitempty"`
+	UsedBytes uint64 `json:"usedBytes,omitempty"`
 }
 
 // HostMetrics is observed, dynamic host utilisation. All fields are best-effort;

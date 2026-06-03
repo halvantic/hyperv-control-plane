@@ -190,6 +190,8 @@ message HostResources {
 message StorageVolume {
   string name = 1;
   string path = 2;
+  uint64 size_bytes = 3;
+  uint64 used_bytes = 4;
 }
 
 message HostInventory {

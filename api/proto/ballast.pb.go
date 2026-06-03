@@ -1397,6 +1397,8 @@ type StorageVolume struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	SizeBytes     uint64                 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	UsedBytes     uint64                 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1443,6 +1445,20 @@ func (x *StorageVolume) GetPath() string {
 		return x.Path
 	}
 	return ""
+}
+
+func (x *StorageVolume) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *StorageVolume) GetUsedBytes() uint64 {
+	if x != nil {
+		return x.UsedBytes
+	}
+	return 0
 }
 
 type HostInventory struct {
@@ -3018,10 +3034,14 @@ const file_ballast_proto_rawDesc = "" +
 	"\rHostResources\x12\x1a\n" +
 	"\bswitches\x18\x01 \x03(\tR\bswitches\x123\n" +
 	"\avolumes\x18\x02 \x03(\v2\x19.ballast.v1.StorageVolumeR\avolumes\x12\x12\n" +
-	"\x04isos\x18\x03 \x03(\tR\x04isos\"7\n" +
+	"\x04isos\x18\x03 \x03(\tR\x04isos\"u\n" +
 	"\rStorageVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
-	"\x04path\x18\x02 \x01(\tR\x04path\"\xeb\x01\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1d\n" +
+	"\n" +
+	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\xeb\x01\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +
