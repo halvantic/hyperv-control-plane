@@ -272,13 +272,14 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 	for _, pj := range jobs {
 		job := ballastpb.JobFromProto(pj)
 		r.reportJob(ctx, client, job.ID, types.JobRunning, "")
-		if jerr := r.reconciler.ExecuteJob(ctx, job); jerr != nil {
+		msg, jerr := r.reconciler.ExecuteJob(ctx, job)
+		if jerr != nil {
 			r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
 			r.reportJob(ctx, client, job.ID, types.JobFailed, jerr.Error())
 			continue
 		}
-		r.log.Info("job done", "id", job.ID, "kind", job.Kind)
-		r.reportJob(ctx, client, job.ID, types.JobSucceeded, "")
+		r.log.Info("job done", "id", job.ID, "kind", job.Kind, "result", msg)
+		r.reportJob(ctx, client, job.ID, types.JobSucceeded, msg)
 	}
 }
 
