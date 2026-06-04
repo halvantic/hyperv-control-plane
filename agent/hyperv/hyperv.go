@@ -177,6 +177,12 @@ type Interface interface {
 	// ExportVM exports the VM (config + VHDs) to a directory. Imperative Job.
 	ExportVM(ctx context.Context, vmName, path string) error
 
+	// ApplyVMCheckpoint reverts the VM to a named checkpoint. Imperative Job.
+	ApplyVMCheckpoint(ctx context.Context, vmName, checkpointName string) error
+
+	// RemoveVMCheckpoint deletes a named checkpoint. Imperative Job.
+	RemoveVMCheckpoint(ctx context.Context, vmName, checkpointName string) error
+
 	// AddClusterNode adds node to the local failover cluster (run on a current
 	// member; local execution avoids the WinRM double-hop). Imperative Job.
 	AddClusterNode(ctx context.Context, node string) error

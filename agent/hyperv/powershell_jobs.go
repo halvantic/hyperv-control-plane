@@ -29,6 +29,22 @@ func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
 	return nil
 }
 
+func (p *PowerShell) ApplyVMCheckpoint(ctx context.Context, vmName, checkpointName string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Restore-VMCheckpoint -VMName %s -Name %s -Confirm:$false | Out-Null", psQuote(vmName), psQuote(checkpointName))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("apply checkpoint %q on %q: %w", checkpointName, vmName, err)
+	}
+	return nil
+}
+
+func (p *PowerShell) RemoveVMCheckpoint(ctx context.Context, vmName, checkpointName string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Remove-VMCheckpoint -VMName %s -Name %s -Confirm:$false | Out-Null", psQuote(vmName), psQuote(checkpointName))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove checkpoint %q on %q: %w", checkpointName, vmName, err)
+	}
+	return nil
+}
+
 func (p *PowerShell) AddClusterNode(ctx context.Context, node string) error {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Add-ClusterNode -Name %s | Out-Null", psQuote(node))
 	if err := p.run2(ctx, script); err != nil {

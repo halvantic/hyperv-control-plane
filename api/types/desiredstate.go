@@ -443,14 +443,16 @@ const (
 // Job kinds. Params carry the operands (e.g. "vm" for a VM name, "node" for a
 // cluster node, "target" for a migration destination).
 const (
-	JobVMStart        = "VMStart"        // params: vm
-	JobVMStop         = "VMStop"         // params: vm
-	JobVMCheckpoint   = "VMCheckpoint"   // params: vm, name
-	JobVMExport       = "VMExport"       // params: vm, path
-	JobClusterAddNode = "ClusterAddNode" // params: node
-	JobClusterEvict   = "ClusterEvict"   // params: node
-	JobNodeDrain      = "NodeDrain"      // params: node — pause + move roles off (maintenance)
-	JobNodeResume     = "NodeResume"     // params: node — resume into the cluster
+	JobVMStart        = "VMStart"            // params: vm
+	JobVMStop         = "VMStop"             // params: vm
+	JobVMCheckpoint   = "VMCheckpoint"       // params: vm, name
+	JobVMApplyCheck   = "VMApplyCheckpoint"  // params: vm, name
+	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name
+	JobVMExport       = "VMExport"           // params: vm, path
+	JobClusterAddNode = "ClusterAddNode"     // params: node
+	JobClusterEvict   = "ClusterEvict"       // params: node
+	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)
+	JobNodeResume     = "NodeResume"         // params: node — resume into the cluster
 )
 
 // ---------------------------------------------------------------------------

@@ -381,6 +381,8 @@ func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return
 // CreateVMCheckpoint / ExportVM / AddClusterNode / EvictClusterNode record the job ran.
 func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return nil }
 func (s *Stub) ExportVM(_ context.Context, _, _ string) error           { return nil }
+func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error  { return nil }
+func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error { return nil }
 
 func (s *Stub) AddClusterNode(_ context.Context, node string) error {
 	s.mu.Lock()

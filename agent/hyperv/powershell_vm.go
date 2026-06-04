@@ -136,11 +136,24 @@ if (%[2]s) {
 			}
 			create = fmt.Sprintf("if (-not (Test-Path %[1]s)) { New-VHD -Path %[1]s %[2]s | Out-Null; $changed = $true }\n", path, sizeFlag)
 		}
-		// Compare normalised full paths so a desired path written with forward
-		// slashes (or different casing) still matches what Hyper-V reports with
-		// backslashes — otherwise the disk is re-added every cycle and errors.
+		// Consider the desired disk present if it is the attached file OR an
+		// ancestor of an attached differencing disk — when the VM has a
+		// checkpoint it runs off an .avhdx whose parent chain leads back to this
+		// VHDX, so a naive exact-path match would wrongly try to re-attach the
+		// (locked) base. Paths are normalised so forward/backslash and casing
+		// differences still match.
 		disks += create + fmt.Sprintf(`$want = [IO.Path]::GetFullPath(%[2]s)
-if (-not (Get-VMHardDiskDrive -VMName %[1]s | Where-Object { [IO.Path]::GetFullPath($_.Path) -ieq $want })) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
+$present = $false
+foreach ($d in (Get-VMHardDiskDrive -VMName %[1]s)) {
+  $p = $d.Path
+  while ($p) {
+    if ([IO.Path]::GetFullPath($p) -ieq $want) { $present = $true; break }
+    $vhd = Get-VHD -Path $p -ErrorAction SilentlyContinue
+    if ($vhd) { $p = $vhd.ParentPath } else { $p = $null }
+  }
+  if ($present) { break }
+}
+if (-not $present) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
 `, name, path)
 	}
 
