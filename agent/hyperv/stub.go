@@ -403,6 +403,9 @@ func (s *Stub) EvictClusterNode(_ context.Context, node string) error {
 	return nil
 }
 
+func (s *Stub) DrainNode(_ context.Context, _ string) error  { return nil }
+func (s *Stub) ResumeNode(_ context.Context, _ string) error { return nil }
+
 // HasVM reports whether the stub currently models a VM by that name.
 func (s *Stub) HasVM(name string) bool {
 	s.mu.Lock()

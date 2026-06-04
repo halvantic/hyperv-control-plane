@@ -181,6 +181,13 @@ type Interface interface {
 	// EvictClusterNode removes node from the local failover cluster. Imperative
 	// Job, run locally on a member.
 	EvictClusterNode(ctx context.Context, node string) error
+
+	// DrainNode pauses a cluster node and moves its roles off (maintenance
+	// mode). Imperative Job.
+	DrainNode(ctx context.Context, node string) error
+
+	// ResumeNode brings a paused cluster node back into service. Imperative Job.
+	ResumeNode(ctx context.Context, node string) error
 }
 
 // VMEnsureResult is what EnsureVM did.

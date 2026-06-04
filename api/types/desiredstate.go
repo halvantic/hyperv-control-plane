@@ -448,6 +448,8 @@ const (
 	JobVMCheckpoint   = "VMCheckpoint"   // params: vm, name
 	JobClusterAddNode = "ClusterAddNode" // params: node
 	JobClusterEvict   = "ClusterEvict"   // params: node
+	JobNodeDrain      = "NodeDrain"      // params: node — pause + move roles off (maintenance)
+	JobNodeResume     = "NodeResume"     // params: node — resume into the cluster
 )
 
 // ---------------------------------------------------------------------------

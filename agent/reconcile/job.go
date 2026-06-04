@@ -25,6 +25,10 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) error {
 		return r.hv.AddClusterNode(ctx, p["node"])
 	case types.JobClusterEvict:
 		return r.hv.EvictClusterNode(ctx, p["node"])
+	case types.JobNodeDrain:
+		return r.hv.DrainNode(ctx, p["node"])
+	case types.JobNodeResume:
+		return r.hv.ResumeNode(ctx, p["node"])
 	default:
 		return fmt.Errorf("unknown job kind %q", job.Kind)
 	}

@@ -36,3 +36,19 @@ func (p *PowerShell) EvictClusterNode(ctx context.Context, node string) error {
 	}
 	return nil
 }
+
+func (p *PowerShell) DrainNode(ctx context.Context, node string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Suspend-ClusterNode -Name %s -Drain | Out-Null", psQuote(node))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("drain node %q: %w", node, err)
+	}
+	return nil
+}
+
+func (p *PowerShell) ResumeNode(ctx context.Context, node string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Resume-ClusterNode -Name %s | Out-Null", psQuote(node))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("resume node %q: %w", node, err)
+	}
+	return nil
+}
