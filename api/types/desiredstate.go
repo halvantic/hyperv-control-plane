@@ -446,6 +446,7 @@ const (
 	JobVMStart        = "VMStart"        // params: vm
 	JobVMStop         = "VMStop"         // params: vm
 	JobVMCheckpoint   = "VMCheckpoint"   // params: vm, name
+	JobVMExport       = "VMExport"       // params: vm, path
 	JobClusterAddNode = "ClusterAddNode" // params: node
 	JobClusterEvict   = "ClusterEvict"   // params: node
 	JobNodeDrain      = "NodeDrain"      // params: node — pause + move roles off (maintenance)

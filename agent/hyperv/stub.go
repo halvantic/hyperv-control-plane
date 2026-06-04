@@ -378,8 +378,9 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 // GetVMScreen returns no screenshot in the stub.
 func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 
-// CreateVMCheckpoint / AddClusterNode / EvictClusterNode record the job ran.
+// CreateVMCheckpoint / ExportVM / AddClusterNode / EvictClusterNode record the job ran.
 func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return nil }
+func (s *Stub) ExportVM(_ context.Context, _, _ string) error           { return nil }
 
 func (s *Stub) AddClusterNode(_ context.Context, node string) error {
 	s.mu.Lock()

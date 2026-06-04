@@ -21,6 +21,14 @@ func (p *PowerShell) CreateVMCheckpoint(ctx context.Context, vmName, checkpointN
 	return nil
 }
 
+func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; if (-not (Test-Path %[2]s)) { New-Item -ItemType Directory -Path %[2]s -Force | Out-Null }; Export-VM -Name %[1]s -Path %[2]s", psQuote(vmName), psQuote(path))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("export vm %q to %q: %w", vmName, path, err)
+	}
+	return nil
+}
+
 func (p *PowerShell) AddClusterNode(ctx context.Context, node string) error {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Add-ClusterNode -Name %s | Out-Null", psQuote(node))
 	if err := p.run2(ctx, script); err != nil {

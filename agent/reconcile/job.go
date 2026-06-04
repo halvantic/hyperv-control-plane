@@ -21,6 +21,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) error {
 		return err
 	case types.JobVMCheckpoint:
 		return r.hv.CreateVMCheckpoint(ctx, p["vm"], p["name"])
+	case types.JobVMExport:
+		return r.hv.ExportVM(ctx, p["vm"], p["path"])
 	case types.JobClusterAddNode:
 		return r.hv.AddClusterNode(ctx, p["node"])
 	case types.JobClusterEvict:
