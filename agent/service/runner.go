@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -15,6 +16,10 @@ import (
 	ballastpb "github.com/joshua-fourie/ballast/api/proto"
 	"github.com/joshua-fourie/ballast/api/types"
 )
+
+// jobTimeout caps a single imperative job. A job that exceeds it is cancelled
+// and reported Failed, so a stuck host operation can never wedge the agent.
+const jobTimeout = 10 * time.Minute
 
 // runnerConfig is the agent's runtime configuration, independent of how the
 // process was started (Windows service or console).
@@ -62,6 +67,12 @@ type runner struct {
 	// honoured for that VM. Like observedGen it persists across cycles and
 	// autonomy windows. Lazily initialised.
 	vmObservedGen map[string]int64
+
+	// jobsInflight dedups jobs that are executing in the background so a later
+	// cycle (which still sees them Pending until the agent reports Running) does
+	// not launch them twice. Guarded by jobsMu.
+	jobsMu       sync.Mutex
+	jobsInflight map[string]struct{}
 }
 
 const agentVersion = "0.1.0-slice"
@@ -266,20 +277,42 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	}
 }
 
-// runJobs executes each pending job locally and reports its outcome. It marks
-// the job Running before executing so the centre stops re-delivering it.
+// runJobs launches each pending job in the background so a long or stuck host
+// operation never blocks the reconcile/report cycle (a synchronous hung job
+// would otherwise stop the heartbeat and the host would look offline). Each job
+// runs under a timeout, is deduped while in flight, and reports its own outcome.
 func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClient, jobs []*ballastpb.Job) {
 	for _, pj := range jobs {
 		job := ballastpb.JobFromProto(pj)
-		r.reportJob(ctx, client, job.ID, types.JobRunning, "")
-		msg, jerr := r.reconciler.ExecuteJob(ctx, job)
-		if jerr != nil {
-			r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
-			r.reportJob(ctx, client, job.ID, types.JobFailed, jerr.Error())
+		r.jobsMu.Lock()
+		if r.jobsInflight == nil {
+			r.jobsInflight = make(map[string]struct{})
+		}
+		if _, busy := r.jobsInflight[job.ID]; busy {
+			r.jobsMu.Unlock()
 			continue
 		}
-		r.log.Info("job done", "id", job.ID, "kind", job.Kind, "result", msg)
-		r.reportJob(ctx, client, job.ID, types.JobSucceeded, msg)
+		r.jobsInflight[job.ID] = struct{}{}
+		r.jobsMu.Unlock()
+
+		go func(job types.Job) {
+			defer func() {
+				r.jobsMu.Lock()
+				delete(r.jobsInflight, job.ID)
+				r.jobsMu.Unlock()
+			}()
+			jctx, cancel := context.WithTimeout(ctx, jobTimeout)
+			defer cancel()
+			r.reportJob(jctx, client, job.ID, types.JobRunning, "")
+			msg, jerr := r.reconciler.ExecuteJob(jctx, job)
+			if jerr != nil {
+				r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
+				r.reportJob(jctx, client, job.ID, types.JobFailed, jerr.Error())
+				return
+			}
+			r.log.Info("job done", "id", job.ID, "kind", job.Kind, "result", msg)
+			r.reportJob(jctx, client, job.ID, types.JobSucceeded, msg)
+		}(job)
 	}
 }
 
