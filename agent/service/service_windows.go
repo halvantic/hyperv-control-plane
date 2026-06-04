@@ -77,7 +77,7 @@ func (w *winService) Execute(_ []string, req <-chan svc.ChangeRequest, status ch
 
 // installService registers the agent with the SCM. args are appended to the
 // service binary path so the installed service starts with the same flags.
-func installService(name, displayName, desc, exePath string, args []string) error {
+func installService(name, displayName, desc, exePath string, args []string, user, password string) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
@@ -89,12 +89,19 @@ func installService(name, displayName, desc, exePath string, args []string) erro
 		return fmt.Errorf("service %q already exists", name)
 	}
 
-	s, err := m.CreateService(name, exePath, mgr.Config{
+	cfg := mgr.Config{
 		DisplayName:  displayName,
 		Description:  desc,
 		StartType:    mgr.StartAutomatic,
 		ErrorControl: mgr.ErrorNormal,
-	}, args...)
+	}
+	// Run as a domain account when given, so cluster/domain operations have the
+	// rights they need; otherwise LocalSystem.
+	if user != "" {
+		cfg.ServiceStartName = user
+		cfg.Password = password
+	}
+	s, err := m.CreateService(name, exePath, cfg, args...)
 	if err != nil {
 		return err
 	}

@@ -18,6 +18,6 @@ func runAgent(ctx context.Context, r *runner, _ bool) error {
 	return r.run(ctx)
 }
 
-func installService(_, _, _, _ string, _ []string) error { return errWindowsOnly }
+func installService(_, _, _, _ string, _ []string, _, _ string) error { return errWindowsOnly }
 
 func removeService(_ string) error { return errWindowsOnly }

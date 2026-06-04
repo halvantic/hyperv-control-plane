@@ -36,6 +36,8 @@ func main() {
 		debug      = flag.Bool("debug", false, "run in the console even when started by the SCM")
 		install    = flag.Bool("install", false, "install the Windows service and exit")
 		uninstall  = flag.Bool("uninstall", false, "remove the Windows service and exit")
+		svcUser    = flag.String("service-user", "", "run the service as this account (e.g. DOMAIN\\user); empty = LocalSystem. Cluster/domain operations need a domain admin.")
+		svcPass    = flag.String("service-password", "", "password for -service-user")
 	)
 	flag.Parse()
 
@@ -55,7 +57,7 @@ func main() {
 			"-heartbeat", heartbeat.String(),
 			"-hyperv", *hypervKind,
 		}
-		if err := installService(serviceName, serviceDisplayName, serviceDescription, exe, args); err != nil {
+		if err := installService(serviceName, serviceDisplayName, serviceDescription, exe, args, *svcUser, *svcPass); err != nil {
 			log.Error("install service failed", "err", err)
 			os.Exit(1)
 		}
