@@ -53,6 +53,7 @@ func main() {
 			"-host", *hostName,
 			"-store", *storePath,
 			"-heartbeat", heartbeat.String(),
+			"-hyperv", *hypervKind,
 		}
 		if err := installService(serviceName, serviceDisplayName, serviceDescription, exe, args); err != nil {
 			log.Error("install service failed", "err", err)

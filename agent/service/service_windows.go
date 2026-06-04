@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -98,6 +99,17 @@ func installService(name, displayName, desc, exePath string, args []string) erro
 		return err
 	}
 	defer s.Close()
+
+	// Auto-restart on crash so a flaky reconcile or transient host fault does not
+	// leave the host unmanaged — the centre depends on the agent always running.
+	// The reset period counts a clean run; repeated crashes keep restarting.
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+	}, uint32((24 * time.Hour).Seconds())); err != nil {
+		return fmt.Errorf("set recovery actions: %w", err)
+	}
 	return nil
 }
 
