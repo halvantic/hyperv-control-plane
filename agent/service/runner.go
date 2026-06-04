@@ -258,6 +258,36 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// was reachable — the agent enforces the VMs it was last given, same as the
 	// host spec. Reporting is best-effort and skipped when autonomous.
 	r.reconcileVMs(ctx, client, autonomous)
+
+	// Imperative jobs the centre queued for this host. Only run when the centre
+	// is reachable — jobs are one-shot actions, never cached or replayed.
+	if err == nil {
+		r.runJobs(ctx, client, resp.GetJobs())
+	}
+}
+
+// runJobs executes each pending job locally and reports its outcome. It marks
+// the job Running before executing so the centre stops re-delivering it.
+func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClient, jobs []*ballastpb.Job) {
+	for _, pj := range jobs {
+		job := ballastpb.JobFromProto(pj)
+		r.reportJob(ctx, client, job.ID, types.JobRunning, "")
+		if jerr := r.reconciler.ExecuteJob(ctx, job); jerr != nil {
+			r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
+			r.reportJob(ctx, client, job.ID, types.JobFailed, jerr.Error())
+			continue
+		}
+		r.log.Info("job done", "id", job.ID, "kind", job.Kind)
+		r.reportJob(ctx, client, job.ID, types.JobSucceeded, "")
+	}
+}
+
+func (r *runner) reportJob(ctx context.Context, client ballastpb.AgentServiceClient, id string, state types.JobState, msg string) {
+	if _, err := client.ReportJobResult(ctx, &ballastpb.ReportJobResultRequest{
+		HostName: r.cfg.hostName, Uid: r.uid, JobId: id, State: string(state), Message: msg,
+	}); err != nil {
+		r.log.Warn("report job result failed", "id", id, "err", err)
+	}
 }
 
 // reconcileVMs drives every cached VM towards desired and reports the resulting

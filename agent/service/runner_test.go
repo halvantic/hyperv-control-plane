@@ -58,6 +58,13 @@ func (f *fakeClient) ReportStatus(_ context.Context, in *ballastpb.ReportStatusR
 	return &ballastpb.ReportStatusResponse{Accepted: true}, nil
 }
 
+func (f *fakeClient) ReportJobResult(_ context.Context, _ *ballastpb.ReportJobResultRequest, _ ...grpc.CallOption) (*ballastpb.ReportJobResultResponse, error) {
+	if f.errAll {
+		return nil, errUnreachable
+	}
+	return &ballastpb.ReportJobResultResponse{Accepted: true}, nil
+}
+
 func newTestRunner(t *testing.T) *runner {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))

@@ -378,6 +378,31 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 // GetVMScreen returns no screenshot in the stub.
 func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 
+// CreateVMCheckpoint / AddClusterNode / EvictClusterNode record the job ran.
+func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return nil }
+
+func (s *Stub) AddClusterNode(_ context.Context, node string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ClusterExists {
+		s.ClusterMembers = append(s.ClusterMembers, node)
+	}
+	return nil
+}
+
+func (s *Stub) EvictClusterNode(_ context.Context, node string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.ClusterMembers[:0]
+	for _, m := range s.ClusterMembers {
+		if m != node {
+			out = append(out, m)
+		}
+	}
+	s.ClusterMembers = out
+	return nil
+}
+
 // HasVM reports whether the stub currently models a VM by that name.
 func (s *Stub) HasVM(name string) bool {
 	s.mu.Lock()

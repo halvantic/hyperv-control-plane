@@ -789,6 +789,25 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 	}
 }
 
+// JobToProto converts a schema Job to the wire form.
+func JobToProto(j types.Job) *Job {
+	return &Job{
+		Id: j.ID, HostName: j.HostName, Kind: j.Kind, Params: j.Params,
+		State: string(j.State), Message: j.Message,
+	}
+}
+
+// JobFromProto converts a wire Job back to the schema type.
+func JobFromProto(j *Job) types.Job {
+	if j == nil {
+		return types.Job{}
+	}
+	return types.Job{
+		ID: j.GetId(), HostName: j.GetHostName(), Kind: j.GetKind(), Params: j.GetParams(),
+		State: types.JobState(j.GetState()), Message: j.GetMessage(),
+	}
+}
+
 // SecretToProto converts a schema Secret to the wire form (with its values).
 func SecretToProto(s types.Secret) *Secret {
 	return &Secret{Name: s.Name, Type: s.Type, Data: s.Data}

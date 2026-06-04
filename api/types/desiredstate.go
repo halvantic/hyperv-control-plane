@@ -408,6 +408,49 @@ type ClusterStatus struct {
 }
 
 // ---------------------------------------------------------------------------
+// Jobs (imperative actions)
+// ---------------------------------------------------------------------------
+
+// Job is a one-shot imperative action the centre asks a host's agent to perform
+// — the complement to declarative desired state. Where desired state says "this
+// should be true" and is reconciled continuously, a Job says "do this now"
+// (start/stop a VM, checkpoint, evict/add a cluster node, live-migrate). The
+// agent executes it LOCALLY (no WinRM double-hop) and reports the outcome.
+//
+// Jobs are not part of desired state and are never reconciled: a failed Job is
+// not retried by the loop; the operator re-issues it. This keeps the autonomy
+// model clean — only declarative state is enforced when the centre is offline.
+type Job struct {
+	ID        string            `json:"id"`
+	HostName  string            `json:"hostName"` // target host whose agent runs it
+	Kind      string            `json:"kind"`
+	Params    map[string]string `json:"params,omitempty"`
+	State     JobState          `json:"state"`
+	Message   string            `json:"message,omitempty"` // result detail / error
+	CreatedAt time.Time         `json:"createdAt"`
+	UpdatedAt time.Time         `json:"updatedAt"`
+}
+
+type JobState string
+
+const (
+	JobPending   JobState = "Pending"   // enqueued, not yet picked up
+	JobRunning   JobState = "Running"   // agent claimed and is executing
+	JobSucceeded JobState = "Succeeded" // completed successfully
+	JobFailed    JobState = "Failed"    // failed, see Message
+)
+
+// Job kinds. Params carry the operands (e.g. "vm" for a VM name, "node" for a
+// cluster node, "target" for a migration destination).
+const (
+	JobVMStart        = "VMStart"        // params: vm
+	JobVMStop         = "VMStop"         // params: vm
+	JobVMCheckpoint   = "VMCheckpoint"   // params: vm, name
+	JobClusterAddNode = "ClusterAddNode" // params: node
+	JobClusterEvict   = "ClusterEvict"   // params: node
+)
+
+// ---------------------------------------------------------------------------
 // Secrets
 // ---------------------------------------------------------------------------
 

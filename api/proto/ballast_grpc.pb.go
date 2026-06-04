@@ -29,6 +29,7 @@ const (
 	AgentService_RegisterHost_FullMethodName     = "/ballast.v1.AgentService/RegisterHost"
 	AgentService_PullDesiredState_FullMethodName = "/ballast.v1.AgentService/PullDesiredState"
 	AgentService_ReportStatus_FullMethodName     = "/ballast.v1.AgentService/ReportStatus"
+	AgentService_ReportJobResult_FullMethodName  = "/ballast.v1.AgentService/ReportJobResult"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -54,6 +55,9 @@ type AgentServiceClient interface {
 	// ObservedGeneration and the Autonomous flag so the centre can tell whether
 	// an object is settled and whether the agent is running on cached state.
 	ReportStatus(ctx context.Context, in *ReportStatusRequest, opts ...grpc.CallOption) (*ReportStatusResponse, error)
+	// ReportJobResult reports the outcome of an imperative Job the agent ran
+	// locally (Running while in flight, then Succeeded/Failed).
+	ReportJobResult(ctx context.Context, in *ReportJobResultRequest, opts ...grpc.CallOption) (*ReportJobResultResponse, error)
 }
 
 type agentServiceClient struct {
@@ -94,6 +98,16 @@ func (c *agentServiceClient) ReportStatus(ctx context.Context, in *ReportStatusR
 	return out, nil
 }
 
+func (c *agentServiceClient) ReportJobResult(ctx context.Context, in *ReportJobResultRequest, opts ...grpc.CallOption) (*ReportJobResultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportJobResultResponse)
+	err := c.cc.Invoke(ctx, AgentService_ReportJobResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -117,6 +131,9 @@ type AgentServiceServer interface {
 	// ObservedGeneration and the Autonomous flag so the centre can tell whether
 	// an object is settled and whether the agent is running on cached state.
 	ReportStatus(context.Context, *ReportStatusRequest) (*ReportStatusResponse, error)
+	// ReportJobResult reports the outcome of an imperative Job the agent ran
+	// locally (Running while in flight, then Succeeded/Failed).
+	ReportJobResult(context.Context, *ReportJobResultRequest) (*ReportJobResultResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -135,6 +152,9 @@ func (UnimplementedAgentServiceServer) PullDesiredState(context.Context, *PullDe
 }
 func (UnimplementedAgentServiceServer) ReportStatus(context.Context, *ReportStatusRequest) (*ReportStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportStatus not implemented")
+}
+func (UnimplementedAgentServiceServer) ReportJobResult(context.Context, *ReportJobResultRequest) (*ReportJobResultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportJobResult not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -211,6 +231,24 @@ func _AgentService_ReportStatus_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_ReportJobResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportJobResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ReportJobResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ReportJobResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ReportJobResult(ctx, req.(*ReportJobResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -229,6 +267,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportStatus",
 			Handler:    _AgentService_ReportStatus_Handler,
+		},
+		{
+			MethodName: "ReportJobResult",
+			Handler:    _AgentService_ReportJobResult_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

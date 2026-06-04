@@ -37,6 +37,10 @@ service AgentService {
   // ObservedGeneration and the Autonomous flag so the centre can tell whether
   // an object is settled and whether the agent is running on cached state.
   rpc ReportStatus(ReportStatusRequest) returns (ReportStatusResponse);
+
+  // ReportJobResult reports the outcome of an imperative Job the agent ran
+  // locally (Running while in flight, then Succeeded/Failed).
+  rpc ReportJobResult(ReportJobResultRequest) returns (ReportJobResultResponse);
 }
 
 message RegisterHostRequest {
@@ -83,6 +87,29 @@ message PullDesiredStateResponse {
   // domain-join account), resolved and decrypted for delivery over this
   // channel. Only the secrets the host actually needs are sent.
   repeated Secret secrets = 6;
+  // jobs are pending imperative actions for this host to execute locally.
+  repeated Job jobs = 7;
+}
+
+message Job {
+  string id = 1;
+  string host_name = 2;
+  string kind = 3;
+  map<string, string> params = 4;
+  string state = 5;
+  string message = 6;
+}
+
+message ReportJobResultRequest {
+  string host_name = 1;
+  string uid = 2;
+  string job_id = 3;
+  string state = 4;   // Running / Succeeded / Failed
+  string message = 5;
+}
+
+message ReportJobResultResponse {
+  bool accepted = 1;
 }
 
 message Secret {

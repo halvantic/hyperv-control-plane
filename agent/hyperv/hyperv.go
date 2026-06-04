@@ -169,6 +169,18 @@ type Interface interface {
 	// thumbnail). A pure read; returns nil (no error) when the VM has no screen
 	// to capture (e.g. it is off). Read-only — not an interactive console.
 	GetVMScreen(ctx context.Context, name string) ([]byte, error)
+
+	// CreateVMCheckpoint takes a checkpoint of the VM. An imperative one-shot
+	// action (Job), not part of reconcile.
+	CreateVMCheckpoint(ctx context.Context, vmName, checkpointName string) error
+
+	// AddClusterNode adds node to the local failover cluster (run on a current
+	// member; local execution avoids the WinRM double-hop). Imperative Job.
+	AddClusterNode(ctx context.Context, node string) error
+
+	// EvictClusterNode removes node from the local failover cluster. Imperative
+	// Job, run locally on a member.
+	EvictClusterNode(ctx context.Context, node string) error
 }
 
 // VMEnsureResult is what EnsureVM did.
