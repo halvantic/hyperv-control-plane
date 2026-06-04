@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,6 +39,7 @@ func main() {
 		uninstall  = flag.Bool("uninstall", false, "remove the Windows service and exit")
 		svcUser    = flag.String("service-user", "", "run the service as this account (e.g. DOMAIN\\user); empty = LocalSystem. Cluster/domain operations need a domain admin.")
 		svcPass    = flag.String("service-password", "", "password for -service-user")
+		logPath    = flag.String("log", defaultLogPath(), "agent log file (stdout is discarded when run as a service)")
 	)
 	flag.Parse()
 
@@ -56,6 +58,7 @@ func main() {
 			"-store", *storePath,
 			"-heartbeat", heartbeat.String(),
 			"-hyperv", *hypervKind,
+			"-log", *logPath,
 		}
 		if err := installService(serviceName, serviceDisplayName, serviceDescription, exe, args, *svcUser, *svcPass); err != nil {
 			log.Error("install service failed", "err", err)
@@ -71,6 +74,11 @@ func main() {
 		log.Info("service removed", "name", serviceName)
 		return
 	}
+
+	// Switch to the file logger for the running agent: as a Windows service its
+	// stdout is discarded, so without this there is no diagnosis. In console /
+	// debug runs it still mirrors to stdout.
+	log = slog.New(slog.NewTextHandler(openLog(*logPath, *debug), &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	st, err := store.Open(*storePath)
 	if err != nil {
@@ -129,4 +137,32 @@ func defaultStorePath() string {
 		return filepath.Join(pd, "Ballast", "agent.db")
 	}
 	return "ballast-agent.db"
+}
+
+func defaultLogPath() string {
+	if pd := os.Getenv("ProgramData"); pd != "" {
+		return filepath.Join(pd, "Ballast", "agent.log")
+	}
+	return "ballast-agent.log"
+}
+
+// openLog returns the writer for the running agent's logs: a log file (created,
+// appended), with a simple size-based rotation, mirrored to stdout in console/
+// debug runs. On any failure it falls back to stdout so logging never blocks
+// the agent from starting.
+func openLog(path string, debug bool) io.Writer {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return os.Stdout
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 10<<20 {
+		_ = os.Rename(path, path+".1") // keep one previous file
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return os.Stdout
+	}
+	if debug {
+		return io.MultiWriter(os.Stdout, f)
+	}
+	return f
 }
