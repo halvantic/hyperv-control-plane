@@ -335,6 +335,16 @@ type HostStorageSpec struct {
 	// EligibleDiskSelector picks which physical disks may be claimed for S2D.
 	// Empty means all poolable disks.
 	EligibleDiskSelector map[string]string `json:"eligibleDiskSelector,omitempty"`
+
+	// DefaultVMPath is the default directory for new VM configuration files
+	// (Set-VMHost -VirtualMachinePath). On a cluster this should point at a CSV
+	// so VMs land on shared storage and can migrate. Empty leaves the host
+	// default unchanged.
+	DefaultVMPath string `json:"defaultVMPath,omitempty"`
+
+	// DefaultVHDPath is the default directory for new virtual hard disks
+	// (Set-VMHost -VirtualHardDiskPath). Empty leaves the host default unchanged.
+	DefaultVHDPath string `json:"defaultVHDPath,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +391,12 @@ type ClusterSpec struct {
 	// own chosen physical NICs. The centre fans each one into the member hosts'
 	// HostSpec.Networking, where the existing per-host SET reconciler builds it.
 	Switches []ClusterSwitchSpec `json:"switches,omitempty"`
+
+	// DefaultStoragePath is the cluster-wide default directory for VM config and
+	// VHDs — typically a CSV (e.g. C:\ClusterStorage\Vol01) so VMs land on shared
+	// storage and can migrate. The centre fans it into each member host's
+	// HostSpec.Storage default paths. Empty leaves host defaults unchanged.
+	DefaultStoragePath string `json:"defaultStoragePath,omitempty"`
 }
 
 // ClusterSwitchSpec is a virtual switch defined once at the cluster and created

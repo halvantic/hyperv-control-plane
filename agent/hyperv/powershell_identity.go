@@ -117,6 +117,32 @@ New-NetIPAddress -InterfaceAlias %[1]s -IPAddress %[2]s -PrefixLength %[3]d%[4]s
 	return OutcomeUnchanged, nil
 }
 
+// EnsureVMHostPaths sets the host's default VM config and VHD directories,
+// idempotently — only the ones that differ are changed. Distinct output tokens
+// avoid the "unchanged" / "changed" substring trap.
+func (p *PowerShell) EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath string) (Outcome, error) {
+	if vmPath == "" && vhdPath == "" {
+		return OutcomeUnchanged, nil
+	}
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference='Stop'; $h=Get-VMHost; $u=$false; ")
+	if vmPath != "" {
+		b.WriteString(fmt.Sprintf("if ($h.VirtualMachinePath -ne %s) { Set-VMHost -VirtualMachinePath %s; $u=$true }; ", psQuote(vmPath), psQuote(vmPath)))
+	}
+	if vhdPath != "" {
+		b.WriteString(fmt.Sprintf("if ($h.VirtualHardDiskPath -ne %s) { Set-VMHost -VirtualHardDiskPath %s; $u=$true }; ", psQuote(vhdPath), psQuote(vhdPath)))
+	}
+	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
+	out, err := p.run(ctx, b.String())
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("set vm host paths: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 // splitCIDR splits "10.0.0.5/24" into ip and prefix length.
 func splitCIDR(cidr string) (string, int, error) {
 	parts := strings.SplitN(cidr, "/", 2)

@@ -2370,8 +2370,12 @@ type HostStorageSpec struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	ContributeToS2D      bool                   `protobuf:"varint,1,opt,name=contribute_to_s2d,json=contributeToS2d,proto3" json:"contribute_to_s2d,omitempty"`
 	EligibleDiskSelector map[string]string      `protobuf:"bytes,2,rep,name=eligible_disk_selector,json=eligibleDiskSelector,proto3" json:"eligible_disk_selector,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// default_vm_path / default_vhd_path set the host's default VM config and VHD
+	// directories (Set-VMHost); a CSV path makes VMs migration-ready.
+	DefaultVmPath  string `protobuf:"bytes,3,opt,name=default_vm_path,json=defaultVmPath,proto3" json:"default_vm_path,omitempty"`
+	DefaultVhdPath string `protobuf:"bytes,4,opt,name=default_vhd_path,json=defaultVhdPath,proto3" json:"default_vhd_path,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *HostStorageSpec) Reset() {
@@ -2416,6 +2420,20 @@ func (x *HostStorageSpec) GetEligibleDiskSelector() map[string]string {
 		return x.EligibleDiskSelector
 	}
 	return nil
+}
+
+func (x *HostStorageSpec) GetDefaultVmPath() string {
+	if x != nil {
+		return x.DefaultVmPath
+	}
+	return ""
+}
+
+func (x *HostStorageSpec) GetDefaultVhdPath() string {
+	if x != nil {
+		return x.DefaultVhdPath
+	}
+	return ""
 }
 
 type ClusterMembershipSpec struct {
@@ -3776,10 +3794,12 @@ const file_ballast_proto_rawDesc = "" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x18\n" +
 	"\agateway\x18\x02 \x01(\tR\agateway\x12\x1f\n" +
 	"\vdns_servers\x18\x03 \x03(\tR\n" +
-	"dnsServers\"\xf3\x01\n" +
+	"dnsServers\"\xc5\x02\n" +
 	"\x0fHostStorageSpec\x12*\n" +
 	"\x11contribute_to_s2d\x18\x01 \x01(\bR\x0fcontributeToS2d\x12k\n" +
-	"\x16eligible_disk_selector\x18\x02 \x03(\v25.ballast.v1.HostStorageSpec.EligibleDiskSelectorEntryR\x14eligibleDiskSelector\x1aG\n" +
+	"\x16eligible_disk_selector\x18\x02 \x03(\v25.ballast.v1.HostStorageSpec.EligibleDiskSelectorEntryR\x14eligibleDiskSelector\x12&\n" +
+	"\x0fdefault_vm_path\x18\x03 \x01(\tR\rdefaultVmPath\x12(\n" +
+	"\x10default_vhd_path\x18\x04 \x01(\tR\x0edefaultVhdPath\x1aG\n" +
 	"\x19EligibleDiskSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\":\n" +

@@ -110,6 +110,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		changed = changed || res.Changed
 	}
 
+	// Default VM/VHD storage paths. Pointing these at a CSV makes VMs land on
+	// shared storage so they can migrate. Needs the Hyper-V role, so it follows
+	// the role step.
+	if st := desired.Spec.Storage; st.DefaultVMPath != "" || st.DefaultVHDPath != "" {
+		out, err := r.hv.EnsureVMHostPaths(ctx, st.DefaultVMPath, st.DefaultVHDPath)
+		conds = append(conds, r.condition("VMHostPaths", out, err))
+		if err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("set vm host paths: %w", err)
+			}
+			r.log.Error("set vm host paths failed", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("vm host paths reconciled", "vmPath", st.DefaultVMPath, "vhdPath", st.DefaultVHDPath, "outcome", out)
+		}
+	}
+
 	net := desired.Spec.Networking
 
 	for _, sw := range net.Switches {

@@ -336,6 +336,8 @@ func storageToProto(s types.HostStorageSpec) *HostStorageSpec {
 	return &HostStorageSpec{
 		ContributeToS2D:      s.ContributeToS2D,
 		EligibleDiskSelector: s.EligibleDiskSelector,
+		DefaultVmPath:        s.DefaultVMPath,
+		DefaultVhdPath:       s.DefaultVHDPath,
 	}
 }
 
@@ -346,6 +348,8 @@ func storageFromProto(s *HostStorageSpec) types.HostStorageSpec {
 	return types.HostStorageSpec{
 		ContributeToS2D:      s.GetContributeToS2D(),
 		EligibleDiskSelector: s.GetEligibleDiskSelector(),
+		DefaultVMPath:        s.GetDefaultVmPath(),
+		DefaultVHDPath:       s.GetDefaultVhdPath(),
 	}
 }
 
