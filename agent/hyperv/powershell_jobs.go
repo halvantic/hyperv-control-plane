@@ -112,6 +112,18 @@ func (p *PowerShell) MoveClusterSharedVolume(ctx context.Context, volume, node s
 	return nil
 }
 
+// MoveClusterVM moves a clustered VM role to node. The default migration type is
+// used deliberately: Failover Clustering live-migrates it when the VM is running
+// (no downtime) and does a quick move when it is stopped, rather than forcing
+// Live (which errors on a stopped VM).
+func (p *PowerShell) MoveClusterVM(ctx context.Context, vm, node string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Move-ClusterVirtualMachineRole -Name %s -Node %s | Out-Null", psQuote(vm), psQuote(node))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("migrate VM %q to %q: %w", vm, node, err)
+	}
+	return nil
+}
+
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests
 // are excluded by default because they can be disruptive on an in-use CSV; the
 // caller can opt into a different category set via include.

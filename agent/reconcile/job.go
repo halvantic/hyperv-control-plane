@@ -41,6 +41,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
+	case types.JobClusterMoveVM:
+		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"]), "live-migrated "+p["vm"]+" to "+p["node"])
 	case types.JobClusterValidate:
 		return r.hv.ValidateCluster(ctx, splitList(p["nodes"]), splitList(p["include"]))
 	default:
