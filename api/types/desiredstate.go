@@ -374,6 +374,35 @@ type ClusterSpec struct {
 
 	// Volumes are Cluster Shared Volumes to provision on the S2D pool.
 	Volumes []CSVSpec `json:"volumes,omitempty"`
+
+	// Switches are cluster-wide virtual switches: one SET switch, identical in
+	// name on every member (a requirement for VM migration — a VM's vNIC
+	// reconnects by switch name on the destination host), backed by each host's
+	// own chosen physical NICs. The centre fans each one into the member hosts'
+	// HostSpec.Networking, where the existing per-host SET reconciler builds it.
+	Switches []ClusterSwitchSpec `json:"switches,omitempty"`
+}
+
+// ClusterSwitchSpec is a virtual switch defined once at the cluster and created
+// identically on every member, with per-host physical NIC backing.
+type ClusterSwitchSpec struct {
+	// Name of the switch, identical on every member.
+	Name string `json:"name"`
+
+	// TeamingMode for SET (switch-independent only). Empty defaults to
+	// SwitchIndependent.
+	TeamingMode SETTeamingMode `json:"teamingMode,omitempty"`
+
+	// LoadBalancing algorithm. Empty defaults to Dynamic.
+	LoadBalancing SETLoadBalancing `json:"loadBalancing,omitempty"`
+
+	// AllowManagementOS shares the switch for host management traffic when true.
+	AllowManagementOS bool `json:"allowManagementOS,omitempty"`
+
+	// HostNICs maps each member host name to the physical adapter names that
+	// back the switch on that host. A host with no entry is skipped (the switch
+	// is not created there until NICs are chosen for it).
+	HostNICs map[string][]string `json:"hostNICs"`
 }
 
 type WitnessSpec struct {
