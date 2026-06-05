@@ -384,6 +384,8 @@ message ClusterStatus {
   repeated ClusterGroup groups = 6;
   // csvs are the Cluster Shared Volumes and their current owner node.
   repeated ClusterCSV csvs = 7;
+  // cluster_vms are the highly-available VM roles and their current owner node.
+  repeated ClusterVM cluster_vms = 8;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.
@@ -395,6 +397,13 @@ message ClusterGroup {
 
 // ClusterCSV is one Cluster Shared Volume as observed by the cluster.
 message ClusterCSV {
+  string name = 1;
+  string owner_node = 2;
+  string state = 3;
+}
+
+// ClusterVM is one highly-available VM role as observed by the cluster.
+message ClusterVM {
   string name = 1;
   string owner_node = 2;
   string state = 3;
@@ -442,6 +451,9 @@ message VMSpec {
 
 message VMPlacementSpec {
   string host_name = 1;
+  // cluster_name, when set, places the VM as an HA cluster role instead of on a
+  // single host. Mutually exclusive with host_name.
+  string cluster_name = 2;
 }
 
 message DynamicMemorySpec {

@@ -407,6 +407,16 @@ type ClusterStatus struct {
 	Conditions         []Condition          `json:"conditions,omitempty"`
 	Groups             []ClusterGroupStatus `json:"groups,omitempty"`
 	CSVs               []CSVStatus          `json:"csvs,omitempty"`
+	VMs                []ClusterVMStatus    `json:"vms,omitempty"`
+}
+
+// ClusterVMStatus is one highly-available VM role observed on the cluster and its
+// current owner node. Reported by the former so the UI can show clustered VMs in
+// the VM section regardless of which node currently runs them.
+type ClusterVMStatus struct {
+	Name      string `json:"name"`
+	OwnerNode string `json:"ownerNode,omitempty"`
+	State     string `json:"state,omitempty"`
 }
 
 // ClusterGroupStatus is one clustered role/group and its current owner node, as
@@ -569,8 +579,16 @@ type VMSpec struct {
 // VMPlacementSpec assigns a VM to a host. It is the only link between a VM and
 // the agent that reconciles it.
 type VMPlacementSpec struct {
-	// HostName is the host the VM runs on. The matching agent owns it.
-	HostName string `json:"hostName"`
+	// HostName is the host the VM runs on. The matching agent owns it. Set for a
+	// VM on a standalone host (traditional placement).
+	HostName string `json:"hostName,omitempty"`
+
+	// ClusterName, when set, places the VM as a highly-available cluster role on
+	// the named cluster instead of a single host. The centre routes the VM to the
+	// current owner node's agent (auto-picking an initial owner at creation), and
+	// the agent registers it with Failover Clustering. Mutually exclusive with
+	// HostName.
+	ClusterName string `json:"clusterName,omitempty"`
 }
 
 // DynamicMemorySpec bounds dynamic memory. MemoryStartupBytes must lie within

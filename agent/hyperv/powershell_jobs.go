@@ -78,6 +78,24 @@ func (p *PowerShell) ResumeNode(ctx context.Context, node string) error {
 	return nil
 }
 
+// EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
+// group already exists for it, it is left alone. The new role's group is named
+// after the VM, which is what the discovery observation keys on.
+func (p *PowerShell) EnsureClusterVMRole(ctx context.Context, vmName string) (Outcome, error) {
+	q := psQuote(vmName)
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; "+
+		"$g = Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' -and $_.Name -eq %s }; "+
+		"if ($g) { 'unchanged' } else { Add-ClusterVirtualMachineRole -VirtualMachine %s -Name %s | Out-Null; 'created' }", q, q, q)
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure cluster vm role %q: %w", vmName, err)
+	}
+	if strings.Contains(string(out), "created") {
+		return OutcomeCreated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 func (p *PowerShell) MoveClusterGroup(ctx context.Context, group, node string) error {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Move-ClusterGroup -Name %s -Node %s | Out-Null", psQuote(group), psQuote(node))
 	if err := p.run2(ctx, script); err != nil {

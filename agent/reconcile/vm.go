@@ -56,6 +56,22 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		res.Changed = true
 		r.log.Info("vm reconciled", "vm", vm.Meta.Name, "outcome", ensured.Outcome)
 	}
+	// A clustered VM must be registered as a highly-available role so Failover
+	// Clustering owns its placement and failover. Idempotent: a no-op once the
+	// role exists.
+	if vm.Spec.Placement.ClusterName != "" {
+		hout, herr := r.hv.EnsureClusterVMRole(ctx, vm.Meta.Name)
+		res.Conditions = append(res.Conditions, r.condition("VMClusterRole/"+vm.Meta.Name, hout, herr))
+		if herr != nil {
+			r.log.Error("ensure cluster vm role failed", "vm", vm.Meta.Name, "err", herr)
+			res.Phase = types.PhaseDegraded
+			return res
+		}
+		if hout != hyperv.OutcomeUnchanged {
+			res.Changed = true
+			r.log.Info("vm registered as cluster role", "vm", vm.Meta.Name)
+		}
+	}
 	// A processor-count or static-memory change cannot apply while the VM runs;
 	// surface it and hold ObservedGeneration back (Progressing, not Degraded)
 	// until the VM is stopped, rather than failing every cycle.

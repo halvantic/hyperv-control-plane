@@ -198,6 +198,12 @@ type Interface interface {
 	// ResumeNode brings a paused cluster node back into service. Imperative Job.
 	ResumeNode(ctx context.Context, node string) error
 
+	// EnsureClusterVMRole registers an existing VM as a highly-available cluster
+	// role (Add-ClusterVirtualMachineRole), so Failover Clustering owns its
+	// placement and failover. Idempotent: a no-op once the role exists. Run on the
+	// VM's owner node.
+	EnsureClusterVMRole(ctx context.Context, vmName string) (Outcome, error)
+
 	// MoveClusterGroup moves (fails over) a clustered role/group to node. Run
 	// locally on a member. Imperative Job.
 	MoveClusterGroup(ctx context.Context, group, node string) error
@@ -263,6 +269,15 @@ type ClusterState struct {
 	Groups []ClusterGroup
 	// CSVs are the Cluster Shared Volumes and their current owner node.
 	CSVs []ClusterCSV
+	// VMs are the highly-available VM roles and their current owner node.
+	VMs []ClusterVM
+}
+
+// ClusterVM is one highly-available VM role and its current owner.
+type ClusterVM struct {
+	Name      string
+	OwnerNode string
+	State     string
 }
 
 // ClusterGroup is one clustered role/group and its current owner.

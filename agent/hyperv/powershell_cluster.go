@@ -13,11 +13,12 @@ type clusterOwnedObs struct {
 }
 
 type clusterObservation struct {
-	Exists  bool              `json:"exists"`
-	Name    string            `json:"name"`
-	Members []string          `json:"members"`
-	Groups  []clusterOwnedObs `json:"groups"`
-	CSVs    []clusterOwnedObs `json:"csvs"`
+	Exists     bool              `json:"exists"`
+	Name       string            `json:"name"`
+	Members    []string          `json:"members"`
+	Groups     []clusterOwnedObs `json:"groups"`
+	CSVs       []clusterOwnedObs `json:"csvs"`
+	ClusterVMs []clusterOwnedObs `json:"clustervms"`
 }
 
 // clusterStateScript observes membership plus clustered groups/roles and CSV
@@ -32,7 +33,9 @@ $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
-[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); groups = @($groups); csvs = @($csvs) } | ConvertTo-Json -Compress -Depth 4
+$cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
+  [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
+[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); groups = @($groups); csvs = @($csvs); clustervms = @($cvms) } | ConvertTo-Json -Compress -Depth 4
 `
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
@@ -52,7 +55,11 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, v := range obs.CSVs {
 		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State})
 	}
-	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Groups: groups, CSVs: csvs}, nil
+	cvms := make([]ClusterVM, 0, len(obs.ClusterVMs))
+	for _, v := range obs.ClusterVMs {
+		cvms = append(cvms, ClusterVM{Name: v.Name, OwnerNode: v.Owner, State: v.State})
+	}
+	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Groups: groups, CSVs: csvs, VMs: cvms}, nil
 }
 
 const installClusteringScript = `
