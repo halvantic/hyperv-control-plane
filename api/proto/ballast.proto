@@ -380,6 +380,24 @@ message ClusterStatus {
   repeated string formed_members = 3;
   bool s2d_enabled = 4;
   repeated Condition conditions = 5;
+  // groups are the clustered roles/groups and their current owner node.
+  repeated ClusterGroup groups = 6;
+  // csvs are the Cluster Shared Volumes and their current owner node.
+  repeated ClusterCSV csvs = 7;
+}
+
+// ClusterGroup is one clustered role/group as observed by the cluster.
+message ClusterGroup {
+  string name = 1;
+  string owner_node = 2;
+  string state = 3;
+}
+
+// ClusterCSV is one Cluster Shared Volume as observed by the cluster.
+message ClusterCSV {
+  string name = 1;
+  string owner_node = 2;
+  string state = 3;
 }
 
 // ---------------------------------------------------------------------------

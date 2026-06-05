@@ -6,18 +6,33 @@ import (
 	"strings"
 )
 
-type clusterObservation struct {
-	Exists  bool     `json:"exists"`
-	Name    string   `json:"name"`
-	Members []string `json:"members"`
+type clusterOwnedObs struct {
+	Name  string `json:"name"`
+	Owner string `json:"owner"`
+	State string `json:"state"`
 }
 
+type clusterObservation struct {
+	Exists  bool              `json:"exists"`
+	Name    string            `json:"name"`
+	Members []string          `json:"members"`
+	Groups  []clusterOwnedObs `json:"groups"`
+	CSVs    []clusterOwnedObs `json:"csvs"`
+}
+
+// clusterStateScript observes membership plus clustered groups/roles and CSV
+// ownership. @(...) guards a single element collapsing to an object, and -Depth
+// keeps the nested arrays in the JSON.
 const clusterStateScript = `
 $ErrorActionPreference = 'Stop'
 $c = Get-Cluster -ErrorAction SilentlyContinue
 if (-not $c) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress; return }
 $nodes = @((Get-ClusterNode -ErrorAction SilentlyContinue).Name)
-[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes) } | ConvertTo-Json -Compress
+$groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
+  [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
+$csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object {
+  [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
+[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); groups = @($groups); csvs = @($csvs) } | ConvertTo-Json -Compress -Depth 4
 `
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
@@ -29,7 +44,15 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	if err := decodeJSON(out, &obs); err != nil {
 		return ClusterState{}, fmt.Errorf("get cluster state: %w", err)
 	}
-	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members}, nil
+	groups := make([]ClusterGroup, 0, len(obs.Groups))
+	for _, g := range obs.Groups {
+		groups = append(groups, ClusterGroup{Name: g.Name, OwnerNode: g.Owner, State: g.State})
+	}
+	csvs := make([]ClusterCSV, 0, len(obs.CSVs))
+	for _, v := range obs.CSVs {
+		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State})
+	}
+	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Groups: groups, CSVs: csvs}, nil
 }
 
 const installClusteringScript = `

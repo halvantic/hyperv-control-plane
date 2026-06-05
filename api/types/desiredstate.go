@@ -400,11 +400,29 @@ type CSVSpec struct {
 }
 
 type ClusterStatus struct {
-	Phase              Phase       `json:"phase"`
-	ObservedGeneration int64       `json:"observedGeneration"`
-	FormedMembers      []string    `json:"formedMembers,omitempty"`
-	S2DEnabled         bool        `json:"s2dEnabled,omitempty"`
-	Conditions         []Condition `json:"conditions,omitempty"`
+	Phase              Phase                `json:"phase"`
+	ObservedGeneration int64                `json:"observedGeneration"`
+	FormedMembers      []string             `json:"formedMembers,omitempty"`
+	S2DEnabled         bool                 `json:"s2dEnabled,omitempty"`
+	Conditions         []Condition          `json:"conditions,omitempty"`
+	Groups             []ClusterGroupStatus `json:"groups,omitempty"`
+	CSVs               []CSVStatus          `json:"csvs,omitempty"`
+}
+
+// ClusterGroupStatus is one clustered role/group and its current owner node, as
+// observed by the cluster (reported by the former). Lets the UI show and move
+// roles without the operator typing names.
+type ClusterGroupStatus struct {
+	Name      string `json:"name"`
+	OwnerNode string `json:"ownerNode,omitempty"`
+	State     string `json:"state,omitempty"`
+}
+
+// CSVStatus is one Cluster Shared Volume and its current owner node.
+type CSVStatus struct {
+	Name      string `json:"name"`
+	OwnerNode string `json:"ownerNode,omitempty"`
+	State     string `json:"state,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
