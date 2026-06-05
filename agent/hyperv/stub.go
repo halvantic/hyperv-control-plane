@@ -409,6 +409,12 @@ func (s *Stub) EvictClusterNode(_ context.Context, node string) error {
 func (s *Stub) DrainNode(_ context.Context, _ string) error  { return nil }
 func (s *Stub) ResumeNode(_ context.Context, _ string) error { return nil }
 
+func (s *Stub) MoveClusterGroup(_ context.Context, _, _ string) error        { return nil }
+func (s *Stub) MoveClusterSharedVolume(_ context.Context, _, _ string) error { return nil }
+func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {
+	return "validation ok (stub)", nil
+}
+
 // HasVM reports whether the stub currently models a VM by that name.
 func (s *Stub) HasVM(name string) bool {
 	s.mu.Lock()

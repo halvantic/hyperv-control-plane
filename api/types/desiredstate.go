@@ -453,6 +453,10 @@ const (
 	JobClusterEvict   = "ClusterEvict"       // params: node
 	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)
 	JobNodeResume     = "NodeResume"         // params: node — resume into the cluster
+
+	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
+	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
+	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
 )
 
 // ---------------------------------------------------------------------------
