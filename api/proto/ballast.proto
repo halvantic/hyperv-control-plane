@@ -451,6 +451,9 @@ message VMSpec {
 
 message VMPlacementSpec {
   string host_name = 1;
+  // cluster_name, when set, places the VM as an HA cluster role instead of on a
+  // single host. Mutually exclusive with host_name.
+  string cluster_name = 2;
 }
 
 message DynamicMemorySpec {

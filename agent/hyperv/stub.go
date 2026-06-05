@@ -409,6 +409,9 @@ func (s *Stub) EvictClusterNode(_ context.Context, node string) error {
 func (s *Stub) DrainNode(_ context.Context, _ string) error  { return nil }
 func (s *Stub) ResumeNode(_ context.Context, _ string) error { return nil }
 
+func (s *Stub) EnsureClusterVMRole(_ context.Context, _ string) (Outcome, error) {
+	return OutcomeUnchanged, nil
+}
 func (s *Stub) MoveClusterGroup(_ context.Context, _, _ string) error        { return nil }
 func (s *Stub) MoveClusterSharedVolume(_ context.Context, _, _ string) error { return nil }
 func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {

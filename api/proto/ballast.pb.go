@@ -3260,8 +3260,11 @@ func (x *VMSpec) GetIsoPath() string {
 }
 
 type VMPlacementSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	HostName      string                 `protobuf:"bytes,1,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	HostName string                 `protobuf:"bytes,1,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
+	// cluster_name, when set, places the VM as an HA cluster role instead of on a
+	// single host. Mutually exclusive with host_name.
+	ClusterName   string `protobuf:"bytes,2,opt,name=cluster_name,json=clusterName,proto3" json:"cluster_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3299,6 +3302,13 @@ func (*VMPlacementSpec) Descriptor() ([]byte, []int) {
 func (x *VMPlacementSpec) GetHostName() string {
 	if x != nil {
 		return x.HostName
+	}
+	return ""
+}
+
+func (x *VMPlacementSpec) GetClusterName() string {
+	if x != nil {
+		return x.ClusterName
 	}
 	return ""
 }
@@ -3844,9 +3854,10 @@ const file_ballast_proto_rawDesc = "" +
 	"\x13desired_power_state\x18\b \x01(\x0e2\x18.ballast.v1.VMPowerStateR\x11desiredPowerState\x12O\n" +
 	"\x16automatic_start_action\x18\t \x01(\x0e2\x19.ballast.v1.VMStartActionR\x14automaticStartAction\x12\x19\n" +
 	"\biso_path\x18\n" +
-	" \x01(\tR\aisoPath\".\n" +
+	" \x01(\tR\aisoPath\"Q\n" +
 	"\x0fVMPlacementSpec\x12\x1b\n" +
-	"\thost_name\x18\x01 \x01(\tR\bhostName\"M\n" +
+	"\thost_name\x18\x01 \x01(\tR\bhostName\x12!\n" +
+	"\fcluster_name\x18\x02 \x01(\tR\vclusterName\"M\n" +
 	"\x11DynamicMemorySpec\x12\x1b\n" +
 	"\tmin_bytes\x18\x01 \x01(\x04R\bminBytes\x12\x1b\n" +
 	"\tmax_bytes\x18\x02 \x01(\x04R\bmaxBytes\"Y\n" +

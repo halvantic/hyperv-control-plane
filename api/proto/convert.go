@@ -743,7 +743,7 @@ func vmStartActionFromProto(a VMStartAction) types.VMStartAction {
 
 func vmSpecToProto(s types.VMSpec) *VMSpec {
 	out := &VMSpec{
-		Placement:            &VMPlacementSpec{HostName: s.Placement.HostName},
+		Placement:            &VMPlacementSpec{HostName: s.Placement.HostName, ClusterName: s.Placement.ClusterName},
 		HypervGeneration:     int32(s.HyperVGeneration),
 		ProcessorCount:       int32(s.ProcessorCount),
 		MemoryStartupBytes:   s.MemoryStartupBytes,
@@ -780,7 +780,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		return types.VMSpec{}
 	}
 	out := types.VMSpec{
-		Placement:            types.VMPlacementSpec{HostName: s.GetPlacement().GetHostName()},
+		Placement:            types.VMPlacementSpec{HostName: s.GetPlacement().GetHostName(), ClusterName: s.GetPlacement().GetClusterName()},
 		HyperVGeneration:     int(s.GetHypervGeneration()),
 		ProcessorCount:       int(s.GetProcessorCount()),
 		MemoryStartupBytes:   s.GetMemoryStartupBytes(),
