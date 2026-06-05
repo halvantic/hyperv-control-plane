@@ -591,7 +591,24 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		Conditions:         conditionsToProto(s.Conditions),
 		Groups:             clusterGroupsToProto(s.Groups),
 		Csvs:               clusterCSVsToProto(s.CSVs),
+		ClusterVms:         clusterVMsToProto(s.VMs),
 	}
+}
+
+func clusterVMsToProto(vs []types.ClusterVMStatus) []*ClusterVM {
+	out := make([]*ClusterVM, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, &ClusterVM{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State})
+	}
+	return out
+}
+
+func clusterVMsFromProto(vs []*ClusterVM) []types.ClusterVMStatus {
+	out := make([]types.ClusterVMStatus, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, types.ClusterVMStatus{Name: v.GetName(), OwnerNode: v.GetOwnerNode(), State: v.GetState()})
+	}
+	return out
 }
 
 func clusterGroupsToProto(gs []types.ClusterGroupStatus) []*ClusterGroup {
@@ -623,6 +640,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		Conditions:         conditionsFromProto(s.GetConditions()),
 		Groups:             clusterGroupsFromProto(s.GetGroups()),
 		CSVs:               clusterCSVsFromProto(s.GetCsvs()),
+		VMs:                clusterVMsFromProto(s.GetClusterVms()),
 	}
 }
 

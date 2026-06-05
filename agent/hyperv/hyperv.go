@@ -263,6 +263,15 @@ type ClusterState struct {
 	Groups []ClusterGroup
 	// CSVs are the Cluster Shared Volumes and their current owner node.
 	CSVs []ClusterCSV
+	// VMs are the highly-available VM roles and their current owner node.
+	VMs []ClusterVM
+}
+
+// ClusterVM is one highly-available VM role and its current owner.
+type ClusterVM struct {
+	Name      string
+	OwnerNode string
+	State     string
 }
 
 // ClusterGroup is one clustered role/group and its current owner.

@@ -384,6 +384,8 @@ message ClusterStatus {
   repeated ClusterGroup groups = 6;
   // csvs are the Cluster Shared Volumes and their current owner node.
   repeated ClusterCSV csvs = 7;
+  // cluster_vms are the highly-available VM roles and their current owner node.
+  repeated ClusterVM cluster_vms = 8;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.
@@ -395,6 +397,13 @@ message ClusterGroup {
 
 // ClusterCSV is one Cluster Shared Volume as observed by the cluster.
 message ClusterCSV {
+  string name = 1;
+  string owner_node = 2;
+  string state = 3;
+}
+
+// ClusterVM is one highly-available VM role as observed by the cluster.
+message ClusterVM {
   string name = 1;
   string owner_node = 2;
   string state = 3;
