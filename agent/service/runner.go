@@ -407,6 +407,8 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		FormedMembers:      res.FormedMembers,
 		S2DEnabled:         res.S2DEnabled,
 		Conditions:         res.Conditions,
+		Groups:             res.Groups,
+		CSVs:               res.CSVs,
 	}
 	if !res.Honoured {
 		cs.ObservedGeneration = 0

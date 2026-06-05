@@ -24,6 +24,8 @@ type ClusterResult struct {
 	FormedMembers []string
 	S2DEnabled    bool
 	Conditions    []types.Condition
+	Groups        []types.ClusterGroupStatus
+	CSVs          []types.CSVStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -104,7 +106,24 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	return ClusterResult{
 		Phase: phase, Honoured: honoured, Changed: changed,
 		FormedMembers: state.Members, S2DEnabled: s2dEnabled, Conditions: conds,
+		Groups: clusterGroupsToStatus(state.Groups), CSVs: clusterCSVsToStatus(state.CSVs),
 	}, storageErr
+}
+
+func clusterGroupsToStatus(gs []hyperv.ClusterGroup) []types.ClusterGroupStatus {
+	out := make([]types.ClusterGroupStatus, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, types.ClusterGroupStatus{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State})
+	}
+	return out
+}
+
+func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
+	out := make([]types.CSVStatus, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, types.CSVStatus{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State})
+	}
+	return out
 }
 
 // reconcileStorage enables S2D (if requested and not already on) and provisions

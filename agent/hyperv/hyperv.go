@@ -259,6 +259,24 @@ type ClusterState struct {
 	Name string
 	// Members are the node names currently in the cluster.
 	Members []string
+	// Groups are the clustered roles/groups and their current owner node.
+	Groups []ClusterGroup
+	// CSVs are the Cluster Shared Volumes and their current owner node.
+	CSVs []ClusterCSV
+}
+
+// ClusterGroup is one clustered role/group and its current owner.
+type ClusterGroup struct {
+	Name      string
+	OwnerNode string
+	State     string
+}
+
+// ClusterCSV is one Cluster Shared Volume and its current owner.
+type ClusterCSV struct {
+	Name      string
+	OwnerNode string
+	State     string
 }
 
 // ClusterFormation is the input to New-Cluster: the cluster to create and the
