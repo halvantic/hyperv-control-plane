@@ -118,6 +118,28 @@ type HostSpec struct {
 	// RebootPolicy governs whether the agent may reboot autonomously to
 	// honour spec (role install, driver changes) or must wait for approval.
 	RebootPolicy RebootPolicy `json:"rebootPolicy"`
+
+	// LiveMigration, when set, configures Hyper-V live migration on the host
+	// (enable, authentication type, concurrency, and which networks to use).
+	// Cluster-wide intent is fanned here from ClusterSpec.LiveMigration.
+	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
+}
+
+// LiveMigrationSpec configures host live migration. On a cluster all members get
+// the same settings so a VM can migrate between any of them.
+type LiveMigrationSpec struct {
+	// Enabled turns live migration on (Enable-VMMigration) when true.
+	Enabled bool `json:"enabled"`
+
+	// AuthenticationType is CredSSP or Kerberos. Empty leaves it unchanged.
+	AuthenticationType string `json:"authenticationType,omitempty"`
+
+	// MaxConcurrent caps simultaneous live migrations. Zero leaves it unchanged.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+
+	// Networks restricts migration to these CIDR subnets (e.g. the IPv4
+	// management subnet, avoiding a bad IPv6 listener). Empty means any network.
+	Networks []string `json:"networks,omitempty"`
 }
 
 // PhysicalNICConfig is a static IP assignment on a named physical adapter.
@@ -397,6 +419,10 @@ type ClusterSpec struct {
 	// storage and can migrate. The centre fans it into each member host's
 	// HostSpec.Storage default paths. Empty leaves host defaults unchanged.
 	DefaultStoragePath string `json:"defaultStoragePath,omitempty"`
+
+	// LiveMigration is cluster-wide live-migration configuration fanned into
+	// every member's HostSpec so a VM can migrate between any of them.
+	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
 }
 
 // ClusterSwitchSpec is a virtual switch defined once at the cluster and created

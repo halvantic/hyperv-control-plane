@@ -43,6 +43,7 @@ type Stub struct {
 
 	vmHostVMPath  string
 	vmHostVHDPath string
+	liveMigration string
 
 	// EnsureRoleCalled / RebootCalled record that the reconciler drove these, so
 	// tests can assert reboot governance.
@@ -227,6 +228,17 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 		return OutcomeUnchanged, nil
 	}
 	s.vmHostVMPath, s.vmHostVHDPath = vmPath, vhdPath
+	return OutcomeUpdated, nil
+}
+
+func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%v|%s|%d|%v", spec.Enabled, spec.AuthenticationType, spec.MaxConcurrent, spec.Networks)
+	if s.liveMigration == key {
+		return OutcomeUnchanged, nil
+	}
+	s.liveMigration = key
 	return OutcomeUpdated, nil
 }
 

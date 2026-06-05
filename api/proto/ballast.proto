@@ -200,6 +200,15 @@ message HostSpec {
   string computer_name = 7;
   PhysicalNICConfig management_nic = 8;
   DomainJoinSpec domain_join = 9;
+  LiveMigrationSpec live_migration = 10;
+}
+
+// LiveMigrationSpec configures host live migration.
+message LiveMigrationSpec {
+  bool enabled = 1;
+  string authentication_type = 2;
+  int32 max_concurrent = 3;
+  repeated string networks = 4;
 }
 
 message PhysicalNICConfig {

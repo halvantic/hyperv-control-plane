@@ -128,6 +128,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Live-migration configuration (enable/auth/networks). A VM only migrates
+	// cleanly when this is set up on every host.
+	if lm := desired.Spec.LiveMigration; lm != nil {
+		out, err := r.hv.EnsureLiveMigration(ctx, *lm)
+		conds = append(conds, r.condition("LiveMigration", out, err))
+		if err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("configure live migration: %w", err)
+			}
+			r.log.Error("configure live migration failed", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("live migration reconciled", "outcome", out)
+		}
+	}
+
 	net := desired.Spec.Networking
 
 	for _, sw := range net.Switches {

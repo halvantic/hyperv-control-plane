@@ -105,6 +105,11 @@ type Interface interface {
 	// leaves that default unchanged.
 	EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath string) (Outcome, error)
 
+	// EnsureLiveMigration configures host live migration (enable, auth type,
+	// concurrency, and which networks to use). Idempotent: a no-op when the host
+	// already matches.
+	EnsureLiveMigration(ctx context.Context, spec types.LiveMigrationSpec) (Outcome, error)
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)
