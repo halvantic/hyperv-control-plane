@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/joshua-fourie/ballast/api/types"
 )
@@ -36,9 +37,31 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobClusterMoveGroup:
+		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
+	case types.JobClusterMoveCSV:
+		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
+	case types.JobClusterValidate:
+		return r.hv.ValidateCluster(ctx, splitList(p["nodes"]), splitList(p["include"]))
 	default:
 		return "", fmt.Errorf("unknown job kind %q", job.Kind)
 	}
+}
+
+// splitList parses a comma-separated job param into a trimmed, non-empty slice.
+// An empty param yields nil so callers can apply their own default.
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // done pairs an op error with its success message.

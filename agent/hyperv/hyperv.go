@@ -197,6 +197,19 @@ type Interface interface {
 
 	// ResumeNode brings a paused cluster node back into service. Imperative Job.
 	ResumeNode(ctx context.Context, node string) error
+
+	// MoveClusterGroup moves (fails over) a clustered role/group to node. Run
+	// locally on a member. Imperative Job.
+	MoveClusterGroup(ctx context.Context, group, node string) error
+
+	// MoveClusterSharedVolume moves ownership of a CSV to node. Run locally on a
+	// member. Imperative Job.
+	MoveClusterSharedVolume(ctx context.Context, volume, node string) error
+
+	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
+	// members) for the named test categories (empty = a safe non-disruptive
+	// default) and returns a short result summary. Imperative Job.
+	ValidateCluster(ctx context.Context, nodes, include []string) (string, error)
 }
 
 // VMEnsureResult is what EnsureVM did.

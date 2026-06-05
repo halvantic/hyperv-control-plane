@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // PowerShell backing for imperative Jobs. These run locally on the host (the
@@ -75,4 +76,44 @@ func (p *PowerShell) ResumeNode(ctx context.Context, node string) error {
 		return fmt.Errorf("resume node %q: %w", node, err)
 	}
 	return nil
+}
+
+func (p *PowerShell) MoveClusterGroup(ctx context.Context, group, node string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Move-ClusterGroup -Name %s -Node %s | Out-Null", psQuote(group), psQuote(node))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("move cluster group %q to %q: %w", group, node, err)
+	}
+	return nil
+}
+
+func (p *PowerShell) MoveClusterSharedVolume(ctx context.Context, volume, node string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Move-ClusterSharedVolume -Name %s -Node %s | Out-Null", psQuote(volume), psQuote(node))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("move CSV %q to %q: %w", volume, node, err)
+	}
+	return nil
+}
+
+// ValidateCluster runs Test-Cluster and returns the report path. Storage tests
+// are excluded by default because they can be disruptive on an in-use CSV; the
+// caller can opt into a different category set via include.
+func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []string) (string, error) {
+	if len(include) == 0 {
+		include = []string{"Inventory", "Network", "System Configuration"}
+	}
+	nodeClause := ""
+	if len(nodes) > 0 {
+		nodeClause = "-Node " + psStringList(nodes) + " "
+	}
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; (Test-Cluster %s-Include %s -WarningAction SilentlyContinue).FullName",
+		nodeClause, psStringList(include))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("validate cluster: %w", err)
+	}
+	report := strings.TrimSpace(string(out))
+	if report == "" {
+		return "validation ran (no report path returned)", nil
+	}
+	return "validation report: " + report, nil
 }
