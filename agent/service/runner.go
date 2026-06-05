@@ -256,13 +256,19 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	st.Domain = identity.Domain
 	r.reportStatus(ctx, client, st)
 
-	// Cluster reconcile, only when the centre gave us a current assignment.
+	// Cluster reconcile, only when the centre gave us a current assignment. Every
+	// member reconciles (so the clustering feature is ensured on all of them), but
+	// only the former REPORTS cluster status: it is the single authority, which
+	// avoids a last-writer-wins race between members clobbering each other's view
+	// (e.g. one member observing groups, another reporting none).
 	if assignment != nil {
 		cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
 		if cerr != nil {
 			r.log.Error("cluster reconcile incomplete", "err", cerr)
 		}
-		r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+		if assignment.IsFormer {
+			r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+		}
 	}
 
 	// VM reconcile, against the cached set. This runs whether or not the centre
