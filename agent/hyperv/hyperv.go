@@ -100,6 +100,16 @@ type Interface interface {
 	// OutcomeUpdated when it had to be (re)configured.
 	EnsureHostIP(ctx context.Context, spec types.PhysicalNICConfig) (Outcome, error)
 
+	// EnsureVMHostPaths sets the host's default VM config and VHD directories
+	// (Set-VMHost). Idempotent: a no-op when they already match. An empty path
+	// leaves that default unchanged.
+	EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath string) (Outcome, error)
+
+	// EnsureLiveMigration configures host live migration (enable, auth type,
+	// concurrency, and which networks to use). Idempotent: a no-op when the host
+	// already matches.
+	EnsureLiveMigration(ctx context.Context, spec types.LiveMigrationSpec) (Outcome, error)
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)

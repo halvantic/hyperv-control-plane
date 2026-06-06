@@ -200,6 +200,15 @@ message HostSpec {
   string computer_name = 7;
   PhysicalNICConfig management_nic = 8;
   DomainJoinSpec domain_join = 9;
+  LiveMigrationSpec live_migration = 10;
+}
+
+// LiveMigrationSpec configures host live migration.
+message LiveMigrationSpec {
+  bool enabled = 1;
+  string authentication_type = 2;
+  int32 max_concurrent = 3;
+  repeated string networks = 4;
 }
 
 message PhysicalNICConfig {
@@ -318,6 +327,10 @@ message IPConfig {
 message HostStorageSpec {
   bool contribute_to_s2d = 1;
   map<string, string> eligible_disk_selector = 2;
+  // default_vm_path / default_vhd_path set the host's default VM config and VHD
+  // directories (Set-VMHost); a CSV path makes VMs migration-ready.
+  string default_vm_path = 3;
+  string default_vhd_path = 4;
 }
 
 message ClusterMembershipSpec {

@@ -117,6 +117,67 @@ New-NetIPAddress -InterfaceAlias %[1]s -IPAddress %[2]s -PrefixLength %[3]d%[4]s
 	return OutcomeUnchanged, nil
 }
 
+// EnsureVMHostPaths sets the host's default VM config and VHD directories,
+// idempotently — only the ones that differ are changed. Distinct output tokens
+// avoid the "unchanged" / "changed" substring trap.
+func (p *PowerShell) EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath string) (Outcome, error) {
+	if vmPath == "" && vhdPath == "" {
+		return OutcomeUnchanged, nil
+	}
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference='Stop'; $h=Get-VMHost; $u=$false; ")
+	if vmPath != "" {
+		b.WriteString(fmt.Sprintf("if ($h.VirtualMachinePath -ne %s) { Set-VMHost -VirtualMachinePath %s; $u=$true }; ", psQuote(vmPath), psQuote(vmPath)))
+	}
+	if vhdPath != "" {
+		b.WriteString(fmt.Sprintf("if ($h.VirtualHardDiskPath -ne %s) { Set-VMHost -VirtualHardDiskPath %s; $u=$true }; ", psQuote(vhdPath), psQuote(vhdPath)))
+	}
+	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
+	out, err := p.run(ctx, b.String())
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("set vm host paths: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
+// EnsureLiveMigration configures host live migration idempotently: enable/auth/
+// concurrency via Set-VMHost, and (when networks are given) restrict migration
+// to those subnets — exactly the fix for a bad IPv6 migration listener.
+func (p *PowerShell) EnsureLiveMigration(ctx context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference='Stop'; $u=$false; $h=Get-VMHost; ")
+	if spec.Enabled {
+		b.WriteString("if (-not $h.VirtualMachineMigrationEnabled) { Enable-VMMigration; $u=$true }; ")
+	} else {
+		b.WriteString("if ($h.VirtualMachineMigrationEnabled) { Disable-VMMigration; $u=$true }; ")
+	}
+	if spec.AuthenticationType != "" {
+		b.WriteString(fmt.Sprintf("if ($h.VirtualMachineMigrationAuthenticationType -ne %s) { Set-VMHost -VirtualMachineMigrationAuthenticationType %s; $u=$true }; ",
+			psQuote(spec.AuthenticationType), psQuote(spec.AuthenticationType)))
+	}
+	if spec.MaxConcurrent > 0 {
+		b.WriteString(fmt.Sprintf("if ($h.MaximumVirtualMachineMigrations -ne %d) { Set-VMHost -MaximumVirtualMachineMigrations %d; $u=$true }; ", spec.MaxConcurrent, spec.MaxConcurrent))
+	}
+	if len(spec.Networks) > 0 {
+		b.WriteString("if ($h.UseAnyNetworkForMigration) { Set-VMHost -UseAnyNetworkForMigration $false; $u=$true }; ")
+		b.WriteString(fmt.Sprintf("$want=@(%s); $cur=@((Get-VMMigrationNetwork -ErrorAction SilentlyContinue).Subnet); "+
+			"if (@(Compare-Object $want $cur).Count -gt 0) { Get-VMMigrationNetwork -ErrorAction SilentlyContinue | Remove-VMMigrationNetwork -ErrorAction SilentlyContinue; "+
+			"foreach ($n in $want) { Add-VMMigrationNetwork -Subnet $n | Out-Null }; $u=$true }; ", psStringList(spec.Networks)))
+	}
+	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
+	out, err := p.run(ctx, b.String())
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("configure live migration: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 // splitCIDR splits "10.0.0.5/24" into ip and prefix length.
 func splitCIDR(cidr string) (string, int, error) {
 	parts := strings.SplitN(cidr, "/", 2)

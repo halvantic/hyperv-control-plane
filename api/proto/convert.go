@@ -336,6 +336,8 @@ func storageToProto(s types.HostStorageSpec) *HostStorageSpec {
 	return &HostStorageSpec{
 		ContributeToS2D:      s.ContributeToS2D,
 		EligibleDiskSelector: s.EligibleDiskSelector,
+		DefaultVmPath:        s.DefaultVMPath,
+		DefaultVhdPath:       s.DefaultVHDPath,
 	}
 }
 
@@ -346,6 +348,8 @@ func storageFromProto(s *HostStorageSpec) types.HostStorageSpec {
 	return types.HostStorageSpec{
 		ContributeToS2D:      s.GetContributeToS2D(),
 		EligibleDiskSelector: s.GetEligibleDiskSelector(),
+		DefaultVMPath:        s.GetDefaultVmPath(),
+		DefaultVHDPath:       s.GetDefaultVhdPath(),
 	}
 }
 
@@ -376,6 +380,14 @@ func specToProto(s types.HostSpec) *HostSpec {
 	if d := s.DomainJoin; d != nil {
 		out.DomainJoin = &DomainJoinSpec{DomainName: d.DomainName, OuPath: d.OUPath, CredentialSecret: d.CredentialSecret}
 	}
+	if m := s.LiveMigration; m != nil {
+		out.LiveMigration = &LiveMigrationSpec{
+			Enabled:            m.Enabled,
+			AuthenticationType: m.AuthenticationType,
+			MaxConcurrent:      int32(m.MaxConcurrent),
+			Networks:           m.Networks,
+		}
+	}
 	return out
 }
 
@@ -405,6 +417,14 @@ func specFromProto(s *HostSpec) types.HostSpec {
 	}
 	if d := s.GetDomainJoin(); d != nil {
 		out.DomainJoin = &types.DomainJoinSpec{DomainName: d.GetDomainName(), OUPath: d.GetOuPath(), CredentialSecret: d.GetCredentialSecret()}
+	}
+	if m := s.GetLiveMigration(); m != nil {
+		out.LiveMigration = &types.LiveMigrationSpec{
+			Enabled:            m.GetEnabled(),
+			AuthenticationType: m.GetAuthenticationType(),
+			MaxConcurrent:      int(m.GetMaxConcurrent()),
+			Networks:           m.GetNetworks(),
+		}
 	}
 	return out
 }

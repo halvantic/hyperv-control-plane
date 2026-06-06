@@ -41,6 +41,10 @@ type Stub struct {
 	JoinCalled   bool
 	hostIPs      map[string]string
 
+	vmHostVMPath  string
+	vmHostVHDPath string
+	liveMigration string
+
 	// EnsureRoleCalled / RebootCalled record that the reconciler drove these, so
 	// tests can assert reboot governance.
 	EnsureRoleCalled bool
@@ -214,6 +218,27 @@ func (s *Stub) EnsureHostIP(_ context.Context, spec types.PhysicalNICConfig) (Ou
 		return OutcomeUnchanged, nil
 	}
 	s.hostIPs[spec.AdapterName] = spec.IPConfig.Address
+	return OutcomeUpdated, nil
+}
+
+func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vmHostVMPath == vmPath && s.vmHostVHDPath == vhdPath {
+		return OutcomeUnchanged, nil
+	}
+	s.vmHostVMPath, s.vmHostVHDPath = vmPath, vhdPath
+	return OutcomeUpdated, nil
+}
+
+func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%v|%s|%d|%v", spec.Enabled, spec.AuthenticationType, spec.MaxConcurrent, spec.Networks)
+	if s.liveMigration == key {
+		return OutcomeUnchanged, nil
+	}
+	s.liveMigration = key
 	return OutcomeUpdated, nil
 }
 

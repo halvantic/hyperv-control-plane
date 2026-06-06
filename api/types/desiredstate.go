@@ -118,6 +118,28 @@ type HostSpec struct {
 	// RebootPolicy governs whether the agent may reboot autonomously to
 	// honour spec (role install, driver changes) or must wait for approval.
 	RebootPolicy RebootPolicy `json:"rebootPolicy"`
+
+	// LiveMigration, when set, configures Hyper-V live migration on the host
+	// (enable, authentication type, concurrency, and which networks to use).
+	// Cluster-wide intent is fanned here from ClusterSpec.LiveMigration.
+	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
+}
+
+// LiveMigrationSpec configures host live migration. On a cluster all members get
+// the same settings so a VM can migrate between any of them.
+type LiveMigrationSpec struct {
+	// Enabled turns live migration on (Enable-VMMigration) when true.
+	Enabled bool `json:"enabled"`
+
+	// AuthenticationType is CredSSP or Kerberos. Empty leaves it unchanged.
+	AuthenticationType string `json:"authenticationType,omitempty"`
+
+	// MaxConcurrent caps simultaneous live migrations. Zero leaves it unchanged.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+
+	// Networks restricts migration to these CIDR subnets (e.g. the IPv4
+	// management subnet, avoiding a bad IPv6 listener). Empty means any network.
+	Networks []string `json:"networks,omitempty"`
 }
 
 // PhysicalNICConfig is a static IP assignment on a named physical adapter.
@@ -335,6 +357,16 @@ type HostStorageSpec struct {
 	// EligibleDiskSelector picks which physical disks may be claimed for S2D.
 	// Empty means all poolable disks.
 	EligibleDiskSelector map[string]string `json:"eligibleDiskSelector,omitempty"`
+
+	// DefaultVMPath is the default directory for new VM configuration files
+	// (Set-VMHost -VirtualMachinePath). On a cluster this should point at a CSV
+	// so VMs land on shared storage and can migrate. Empty leaves the host
+	// default unchanged.
+	DefaultVMPath string `json:"defaultVMPath,omitempty"`
+
+	// DefaultVHDPath is the default directory for new virtual hard disks
+	// (Set-VMHost -VirtualHardDiskPath). Empty leaves the host default unchanged.
+	DefaultVHDPath string `json:"defaultVHDPath,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +406,45 @@ type ClusterSpec struct {
 
 	// Volumes are Cluster Shared Volumes to provision on the S2D pool.
 	Volumes []CSVSpec `json:"volumes,omitempty"`
+
+	// Switches are cluster-wide virtual switches: one SET switch, identical in
+	// name on every member (a requirement for VM migration — a VM's vNIC
+	// reconnects by switch name on the destination host), backed by each host's
+	// own chosen physical NICs. The centre fans each one into the member hosts'
+	// HostSpec.Networking, where the existing per-host SET reconciler builds it.
+	Switches []ClusterSwitchSpec `json:"switches,omitempty"`
+
+	// DefaultStoragePath is the cluster-wide default directory for VM config and
+	// VHDs — typically a CSV (e.g. C:\ClusterStorage\Vol01) so VMs land on shared
+	// storage and can migrate. The centre fans it into each member host's
+	// HostSpec.Storage default paths. Empty leaves host defaults unchanged.
+	DefaultStoragePath string `json:"defaultStoragePath,omitempty"`
+
+	// LiveMigration is cluster-wide live-migration configuration fanned into
+	// every member's HostSpec so a VM can migrate between any of them.
+	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
+}
+
+// ClusterSwitchSpec is a virtual switch defined once at the cluster and created
+// identically on every member, with per-host physical NIC backing.
+type ClusterSwitchSpec struct {
+	// Name of the switch, identical on every member.
+	Name string `json:"name"`
+
+	// TeamingMode for SET (switch-independent only). Empty defaults to
+	// SwitchIndependent.
+	TeamingMode SETTeamingMode `json:"teamingMode,omitempty"`
+
+	// LoadBalancing algorithm. Empty defaults to Dynamic.
+	LoadBalancing SETLoadBalancing `json:"loadBalancing,omitempty"`
+
+	// AllowManagementOS shares the switch for host management traffic when true.
+	AllowManagementOS bool `json:"allowManagementOS,omitempty"`
+
+	// HostNICs maps each member host name to the physical adapter names that
+	// back the switch on that host. A host with no entry is skipped (the switch
+	// is not created there until NICs are chosen for it).
+	HostNICs map[string][]string `json:"hostNICs"`
 }
 
 type WitnessSpec struct {
