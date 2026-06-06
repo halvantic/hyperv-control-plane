@@ -222,6 +222,11 @@ type Interface interface {
 	// member. Imperative Job.
 	MoveClusterSharedVolume(ctx context.Context, volume, node string) error
 
+	// MoveClusterVM live-migrates a highly-available VM role to node with no
+	// downtime (Move-ClusterVirtualMachineRole -MigrationType Live). Run locally
+	// on a member. Imperative Job.
+	MoveClusterVM(ctx context.Context, vm, node string) error
+
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive
 	// default) and returns a short result summary. Imperative Job.
