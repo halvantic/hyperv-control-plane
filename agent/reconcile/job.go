@@ -43,6 +43,10 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"]), "live-migrated "+p["vm"]+" to "+p["node"])
+	case types.JobRemoveSwitch:
+		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
+	case types.JobRemoveVM:
+		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
 	case types.JobClusterValidate:
 		return r.hv.ValidateCluster(ctx, splitList(p["nodes"]), splitList(p["include"]))
 	default:
