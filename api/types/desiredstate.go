@@ -445,6 +445,30 @@ type ClusterSwitchSpec struct {
 	// back the switch on that host. A host with no entry is skipped (the switch
 	// is not created there until NICs are chosen for it).
 	HostNICs map[string][]string `json:"hostNICs"`
+
+	// ManagementVNICs are host management OS vNICs to create on this switch,
+	// each tagged to a VLAN — the converged-networking pattern (a Management,
+	// Cluster and Live-Migration vNIC, each on its own VLAN). Fanned into every
+	// member's HostSpec.Networking.ManagementVNICs. This is where a VLAN is
+	// "assigned" for a switch: Hyper-V tags the port (vNIC), not the switch.
+	ManagementVNICs []ClusterMgmtVNIC `json:"managementVNICs,omitempty"`
+}
+
+// ClusterMgmtVNIC defines a management OS vNIC on a cluster switch: a name, its
+// VLAN, optional QoS weight, and optional per-host IPs (empty = DHCP).
+type ClusterMgmtVNIC struct {
+	Name string `json:"name"`
+
+	// VLANID 0 means untagged (access to the native VLAN).
+	VLANID int `json:"vlanID,omitempty"`
+
+	// MinBandwidthWeight is the QoS weight (1-100) when the switch uses
+	// weight-based bandwidth management.
+	MinBandwidthWeight int `json:"minBandwidthWeight,omitempty"`
+
+	// HostIPs maps a member host to this vNIC's IP (CIDR) on that host. A host
+	// with no entry gets DHCP.
+	HostIPs map[string]string `json:"hostIPs,omitempty"`
 }
 
 type WitnessSpec struct {
