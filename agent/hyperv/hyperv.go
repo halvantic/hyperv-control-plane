@@ -110,6 +110,14 @@ type Interface interface {
 	// already matches.
 	EnsureLiveMigration(ctx context.Context, spec types.LiveMigrationSpec) (Outcome, error)
 
+	// RemoveSwitch deletes a virtual switch from the host (Remove-VMSwitch).
+	// Imperative Job. A no-op (no error) when the switch does not exist.
+	RemoveSwitch(ctx context.Context, name string) error
+
+	// RemoveVM stops and deletes a VM from the host (hard delete). Imperative
+	// Job. A no-op (no error) when the VM does not exist.
+	RemoveVM(ctx context.Context, name string) error
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)

@@ -78,6 +78,27 @@ func (p *PowerShell) ResumeNode(ctx context.Context, node string) error {
 	return nil
 }
 
+// RemoveSwitch deletes a virtual switch from the host. Idempotent: absent switch
+// is a no-op. -Force suppresses the confirmation prompt.
+func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; if (Get-VMSwitch -Name %s -ErrorAction SilentlyContinue) { Remove-VMSwitch -Name %s -Force }", psQuote(name), psQuote(name))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove switch %q: %w", name, err)
+	}
+	return nil
+}
+
+// RemoveVM stops (if running) and deletes a VM from the host. The VHDX files are
+// left on disk. Idempotent: absent VM is a no-op.
+func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; $vm = Get-VM -Name %s -ErrorAction SilentlyContinue; "+
+		"if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -Name %s -TurnOff -Force }; Remove-VM -Name %s -Force }", psQuote(name), psQuote(name), psQuote(name))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove vm %q: %w", name, err)
+	}
+	return nil
+}
+
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
 // group already exists for it, it is left alone. The new role's group is named
 // after the VM, which is what the discovery observation keys on.

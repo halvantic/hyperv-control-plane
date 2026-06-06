@@ -231,6 +231,9 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 	return OutcomeUpdated, nil
 }
 
+func (s *Stub) RemoveSwitch(_ context.Context, _ string) error { return nil }
+func (s *Stub) RemoveVM(_ context.Context, _ string) error     { return nil }
+
 func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
