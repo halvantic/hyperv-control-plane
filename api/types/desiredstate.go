@@ -264,6 +264,9 @@ type PhysicalDisk struct {
 	SizeBytes uint64 `json:"sizeBytes"`
 	MediaType string `json:"mediaType,omitempty"` // SSD/HDD/SCM
 	CanPool   bool   `json:"canPool,omitempty"`
+	// IsOSDisk is true for the disk backing the host's boot/system volume, so the
+	// UI can exclude it from the data disks available for S2D.
+	IsOSDisk bool `json:"isOSDisk,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

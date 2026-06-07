@@ -120,8 +120,10 @@ $ErrorActionPreference = 'Stop'
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up') }
 }
+$osIds = @()
+try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
 $disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
-  [pscustomobject]@{ deviceId = [string]$_.DeviceId; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool }
+  [pscustomobject]@{ deviceId = [string]$_.DeviceId; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ([string]$_.DeviceId -in $osIds) }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 [pscustomobject]@{
