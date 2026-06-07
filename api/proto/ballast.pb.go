@@ -1668,6 +1668,7 @@ type HostStatus struct {
 	Resources          *HostResources         `protobuf:"bytes,10,opt,name=resources,proto3" json:"resources,omitempty"`
 	ComputerName       string                 `protobuf:"bytes,11,opt,name=computer_name,json=computerName,proto3" json:"computer_name,omitempty"`
 	Domain             string                 `protobuf:"bytes,12,opt,name=domain,proto3" json:"domain,omitempty"`
+	AgentVersion       string                 `protobuf:"bytes,13,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1782,6 +1783,13 @@ func (x *HostStatus) GetComputerName() string {
 func (x *HostStatus) GetDomain() string {
 	if x != nil {
 		return x.Domain
+	}
+	return ""
+}
+
+func (x *HostStatus) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
 	}
 	return ""
 }
@@ -1980,6 +1988,7 @@ type HostInventory struct {
 	PhysicalDisks    []*PhysicalDisk        `protobuf:"bytes,2,rep,name=physical_disks,json=physicalDisks,proto3" json:"physical_disks,omitempty"`
 	TotalMemoryBytes uint64                 `protobuf:"varint,3,opt,name=total_memory_bytes,json=totalMemoryBytes,proto3" json:"total_memory_bytes,omitempty"`
 	LogicalCpus      int32                  `protobuf:"varint,4,opt,name=logical_cpus,json=logicalCpus,proto3" json:"logical_cpus,omitempty"`
+	OsVersion        string                 `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3" json:"os_version,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -2040,6 +2049,13 @@ func (x *HostInventory) GetLogicalCpus() int32 {
 		return x.LogicalCpus
 	}
 	return 0
+}
+
+func (x *HostInventory) GetOsVersion() string {
+	if x != nil {
+		return x.OsVersion
+	}
+	return ""
 }
 
 type PhysicalAdapter struct {
@@ -3814,7 +3830,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x17\n" +
 	"\aou_path\x18\x02 \x01(\tR\x06ouPath\x12+\n" +
-	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xb2\x04\n" +
+	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xd7\x04\n" +
 	"\n" +
 	"HostStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
@@ -3833,7 +3849,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\tresources\x18\n" +
 	" \x01(\v2\x19.ballast.v1.HostResourcesR\tresources\x12#\n" +
 	"\rcomputer_name\x18\v \x01(\tR\fcomputerName\x12\x16\n" +
-	"\x06domain\x18\f \x01(\tR\x06domain\"\x8f\x01\n" +
+	"\x06domain\x18\f \x01(\tR\x06domain\x12#\n" +
+	"\ragent_version\x18\r \x01(\tR\fagentVersion\"\x8f\x01\n" +
 	"\vHostMetrics\x12*\n" +
 	"\x11cpu_usage_percent\x18\x01 \x01(\x05R\x0fcpuUsagePercent\x12-\n" +
 	"\x13memory_in_use_bytes\x18\x02 \x01(\x04R\x10memoryInUseBytes\x12%\n" +
@@ -3848,12 +3865,14 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
-	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\xeb\x01\n" +
+	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\x8a\x02\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +
 	"\x12total_memory_bytes\x18\x03 \x01(\x04R\x10totalMemoryBytes\x12!\n" +
-	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\"m\n" +
+	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
+	"\n" +
+	"os_version\x18\x05 \x01(\tR\tosVersion\"m\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +

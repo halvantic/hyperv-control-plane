@@ -206,6 +206,7 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 	out := &HostInventory{
 		TotalMemoryBytes: inv.TotalMemoryBytes,
 		LogicalCpus:      int32(inv.LogicalCPUs),
+		OsVersion:        inv.OSVersion,
 	}
 	for _, a := range inv.PhysicalAdapters {
 		out.PhysicalAdapters = append(out.PhysicalAdapters, &PhysicalAdapter{
@@ -234,6 +235,7 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 	out := types.HostInventory{
 		TotalMemoryBytes: inv.GetTotalMemoryBytes(),
 		LogicalCPUs:      int(inv.GetLogicalCpus()),
+		OSVersion:        inv.GetOsVersion(),
 	}
 	for _, a := range inv.GetPhysicalAdapters() {
 		out.PhysicalAdapters = append(out.PhysicalAdapters, types.PhysicalAdapter{
@@ -439,6 +441,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		HypervInstalled:    s.HyperVInstalled,
 		ComputerName:       s.ComputerName,
 		Domain:             s.Domain,
+		AgentVersion:       s.AgentVersion,
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -483,6 +486,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		HyperVInstalled:    s.GetHypervInstalled(),
 		ComputerName:       s.GetComputerName(),
 		Domain:             s.GetDomain(),
+		AgentVersion:       s.GetAgentVersion(),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),
