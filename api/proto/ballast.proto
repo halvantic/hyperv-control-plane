@@ -235,6 +235,7 @@ message HostStatus {
   HostResources resources = 10;
   string computer_name = 11;
   string domain = 12;
+  string agent_version = 13;
 }
 
 message HostMetrics {
@@ -261,6 +262,7 @@ message HostInventory {
   repeated PhysicalDisk physical_disks = 2;
   uint64 total_memory_bytes = 3;
   int32 logical_cpus = 4;
+  string os_version = 5;
 }
 
 message PhysicalAdapter {

@@ -189,6 +189,9 @@ type HostStatus struct {
 	// last-honoured cached state because the control plane is unreachable.
 	Autonomous bool `json:"autonomous"`
 
+	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
+	AgentVersion string `json:"agentVersion,omitempty"`
+
 	// LastContact is when the agent last reached the control plane.
 	LastContact time.Time `json:"lastContact"`
 
@@ -250,6 +253,9 @@ type HostInventory struct {
 	PhysicalDisks    []PhysicalDisk    `json:"physicalDisks,omitempty"`
 	TotalMemoryBytes uint64            `json:"totalMemoryBytes,omitempty"`
 	LogicalCPUs      int               `json:"logicalCPUs,omitempty"`
+	// OSVersion is the host OS caption/version (e.g. "Microsoft Windows Server
+	// 2025 Datacenter 10.0.26100").
+	OSVersion string `json:"osVersion,omitempty"`
 }
 
 type PhysicalAdapter struct {

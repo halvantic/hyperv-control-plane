@@ -126,11 +126,13 @@ $disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ deviceId = [string]$_.DeviceId; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ([string]$_.DeviceId -in $osIds) }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
+$os = Get-CimInstance Win32_OperatingSystem
 [pscustomobject]@{
   physicalAdapters = @($adapters)
   physicalDisks    = @($disks)
   totalMemoryBytes = [uint64]$cs.TotalPhysicalMemory
   logicalCPUs      = [int]$cs.NumberOfLogicalProcessors
+  osVersion        = [string]($os.Caption + ' ' + $os.Version).Trim()
 } | ConvertTo-Json -Depth 5 -Compress
 `
 
