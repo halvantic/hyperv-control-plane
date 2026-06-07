@@ -248,6 +248,14 @@ message HostResources {
   repeated string switches = 1;
   repeated StorageVolume volumes = 2;
   repeated string isos = 3;
+  repeated VirtualSwitchInfo switch_details = 4;
+}
+
+message VirtualSwitchInfo {
+  string name = 1;
+  repeated string net_adapters = 2;
+  bool allow_management_os = 3;
+  int32 vlan_id = 4;
 }
 
 message StorageVolume {

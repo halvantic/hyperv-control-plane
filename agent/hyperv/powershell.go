@@ -184,7 +184,22 @@ func (p *PowerShell) CollectMetrics(ctx context.Context) (types.HostMetrics, err
 // best-effort so a non-clustered or sparse host still returns what it can.
 const resourcesScript = `
 $ErrorActionPreference = 'SilentlyContinue'
-$switches = @(Get-VMSwitch | Select-Object -ExpandProperty Name | Where-Object { $_ })
+$switchDetails = @(Get-VMSwitch | ForEach-Object {
+  $sw = $_
+  $descs = @()
+  if ($sw.NetAdapterInterfaceDescriptions) { $descs = @($sw.NetAdapterInterfaceDescriptions) }
+  elseif ($sw.NetAdapterInterfaceDescription) { $descs = @($sw.NetAdapterInterfaceDescription) }
+  $nics = @($descs | ForEach-Object { (Get-NetAdapter -InterfaceDescription $_ -ErrorAction SilentlyContinue).Name } | Where-Object { $_ })
+  if (-not $nics) { $nics = @($descs | Where-Object { $_ }) }
+  $vlan = 0
+  $mgmt = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue | Where-Object { $_.SwitchName -eq $sw.Name })
+  if ($mgmt.Count -gt 0) {
+    $v = $mgmt | Get-VMNetworkAdapterVlan -ErrorAction SilentlyContinue | Where-Object { $_.OperationMode -eq 'Access' } | Select-Object -First 1
+    if ($v) { $vlan = [int]$v.AccessVlanId }
+  }
+  [pscustomobject]@{ name = [string]$sw.Name; netAdapters = @($nics); allowManagementOS = [bool]$sw.AllowManagementOS; vlanId = [int]$vlan }
+})
+$switches = @($switchDetails | ForEach-Object { $_.name } | Where-Object { $_ })
 $vols = @()
 $csv = Get-ClusterSharedVolume 2>$null
 if ($csv) {
@@ -202,7 +217,7 @@ $isos = @()
 foreach ($r in $roots) {
   if (Test-Path $r) { $isos += @((Get-ChildItem -Path $r -Filter *.iso -File -Recurse -Depth 1).FullName) }
 }
-[pscustomobject]@{ switches = @($switches); volumes = @($vols); isos = @($isos) } | ConvertTo-Json -Depth 4 -Compress
+[pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos) } | ConvertTo-Json -Depth 4 -Compress
 `
 
 // CollectResources observes existing switches, storage volumes and ISO files.

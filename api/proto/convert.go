@@ -461,6 +461,11 @@ func resourcesToProto(r types.HostResources) *HostResources {
 	for _, v := range r.Volumes {
 		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path, SizeBytes: v.SizeBytes, UsedBytes: v.UsedBytes})
 	}
+	for _, s := range r.SwitchDetails {
+		out.SwitchDetails = append(out.SwitchDetails, &VirtualSwitchInfo{
+			Name: s.Name, NetAdapters: s.NetAdapters, AllowManagementOs: s.AllowManagementOS, VlanId: int32(s.VLANID),
+		})
+	}
 	return out
 }
 
@@ -471,6 +476,11 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 	out := types.HostResources{Switches: r.GetSwitches(), ISOs: r.GetIsos()}
 	for _, v := range r.GetVolumes() {
 		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath(), SizeBytes: v.GetSizeBytes(), UsedBytes: v.GetUsedBytes()})
+	}
+	for _, s := range r.GetSwitchDetails() {
+		out.SwitchDetails = append(out.SwitchDetails, types.VirtualSwitchInfo{
+			Name: s.GetName(), NetAdapters: s.GetNetAdapters(), AllowManagementOS: s.GetAllowManagementOs(), VLANID: int(s.GetVlanId()),
+		})
 	}
 	return out
 }
