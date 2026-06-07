@@ -109,7 +109,7 @@ func TestReconcileClusterEnablesS2DAndCSVs(t *testing.T) {
 // A converged storage state (S2D on, CSVs present) makes no changes.
 func TestReconcileClusterStorageIdempotent(t *testing.T) {
 	stub := &hyperv.Stub{
-		ClusteringInstalled: true, ClusterExists: true,
+		ClusteringInstalled: true, ClusterFirewallOpen: true, ClusterExists: true,
 		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
 		S2DEnabled: true, CSVs: []string{"Vol01", "Vol02"},
 	}

@@ -141,6 +141,12 @@ type Interface interface {
 	// and its tools if absent. The feature install does not require a reboot.
 	EnsureFailoverClusteringFeature(ctx context.Context) (Outcome, error)
 
+	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
+	// member needs for node-to-node coordination — Failover Clusters and WMI
+	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and
+	// similar make to peer nodes). Idempotent: a no-op when already enabled.
+	EnsureClusterFirewall(ctx context.Context) (Outcome, error)
+
 	// FormCluster creates the failover cluster described by f, with this node as
 	// the former. It uses New-Cluster (never hand-rolled quorum) and coordinates
 	// with the Failover Clustering service. Idempotency is the caller's

@@ -56,6 +56,18 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	}
 	changed = changed || out != hyperv.OutcomeUnchanged
 
+	// 1b. The firewall rule groups a cluster member needs for node-to-node
+	// coordination (Failover Clusters + WMI). Without WMI, cross-node operations
+	// like Add-ClusterVirtualMachineRole fail with "RPC server unavailable". A
+	// failure here is surfaced but does not stop the pass.
+	fwOut, fwErr := r.hv.EnsureClusterFirewall(ctx)
+	conds = append(conds, r.condition("ClusterFirewall", fwOut, fwErr))
+	if fwErr != nil {
+		r.log.Error("ensure cluster firewall failed", "err", fwErr)
+	} else {
+		changed = changed || fwOut != hyperv.OutcomeUnchanged
+	}
+
 	// 2. Observe whether this node is already in the cluster.
 	state, err := r.hv.GetClusterState(ctx)
 	if err != nil {

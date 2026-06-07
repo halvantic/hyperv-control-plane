@@ -54,6 +54,7 @@ type Stub struct {
 	// ClusterMembers model an existing cluster. FormCalled records that the
 	// reconciler formed one, so tests can assert the former actually acted.
 	ClusteringInstalled bool
+	ClusterFirewallOpen bool
 	ClusterExists       bool
 	ClusterName         string
 	ClusterMembers      []string
@@ -289,6 +290,16 @@ func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, erro
 	}
 	s.ClusteringInstalled = true
 	return OutcomeCreated, nil
+}
+
+func (s *Stub) EnsureClusterFirewall(_ context.Context) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ClusterFirewallOpen {
+		return OutcomeUnchanged, nil
+	}
+	s.ClusterFirewallOpen = true
+	return OutcomeUpdated, nil
 }
 
 func (s *Stub) FormCluster(_ context.Context, f ClusterFormation) error {
