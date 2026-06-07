@@ -21,6 +21,11 @@ import (
 // and reported Failed, so a stuck host operation can never wedge the agent.
 const jobTimeout = 10 * time.Minute
 
+// fullResyncEvery forces a full desired-state pull (ignoring the cached
+// generation) every N cycles, so the agent self-heals from a reused/colliding
+// generation rather than trusting an "unchanged" answer indefinitely.
+const fullResyncEvery = 20
+
 // runnerConfig is the agent's runtime configuration, independent of how the
 // process was started (Windows service or console).
 type runnerConfig struct {
@@ -52,6 +57,9 @@ type runner struct {
 	// desired state on boot and refreshed by a successful registration, so the
 	// agent has an identity to report under even before it can reach the centre.
 	uid string
+
+	// cycles counts heartbeat cycles, used to schedule a periodic full resync.
+	cycles int
 
 	// registered is true once a registration round-trip has been confirmed.
 	// Until then each cycle retries registration; the retry never blocks the
@@ -151,6 +159,7 @@ func (r *runner) tryRegister(ctx context.Context, client ballastpb.AgentServiceC
 // is best-effort: a failure flips the agent to Autonomous and journals status
 // locally for later replay, but the cycle still completes.
 func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient) {
+	r.cycles++
 	inv, err := r.hv.CollectInventory(ctx)
 	if err != nil {
 		r.log.Error("collect inventory failed", "err", err)
@@ -179,12 +188,20 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	var secrets map[string]types.Secret
 
 	// Pull desired state, sending the generation we already hold so the centre
-	// can answer "unchanged" cheaply.
+	// can answer "unchanged" cheaply. Periodically force a full pull
+	// (KnownGeneration=0) so the agent self-heals if a generation is ever reused
+	// with different content — e.g. an in-memory centre restart resets the
+	// generation counter while the agent still caches the old content at that
+	// number. Without this the agent would trust the "unchanged" answer forever.
 	known, _, _ := r.st.LoadDesiredHost()
+	knownGen := known.Meta.Generation
+	if r.cycles%fullResyncEvery == 0 {
+		knownGen = 0
+	}
 	resp, err := client.PullDesiredState(ctx, &ballastpb.PullDesiredStateRequest{
 		HostName:        r.cfg.hostName,
 		Uid:             r.uid,
-		KnownGeneration: known.Meta.Generation,
+		KnownGeneration: knownGen,
 	})
 	switch {
 	case err != nil:
