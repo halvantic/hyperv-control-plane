@@ -216,13 +216,33 @@ type HostStatus struct {
 // text). All best-effort and observed, not desired.
 type HostResources struct {
 	// Switches are the names of virtual switches that already exist on the host.
+	// Kept as a flat name list for pickers; SwitchDetails carries the full state.
 	Switches []string `json:"switches,omitempty"`
+	// SwitchDetails is the observed per-switch state: uplink NICs, whether the
+	// management OS shares the switch, and the management vNIC VLAN.
+	SwitchDetails []VirtualSwitchInfo `json:"switchDetails,omitempty"`
 	// Volumes are storage volumes (CSV mount points, fixed local volumes) a VM's
 	// disks can be placed on.
 	Volumes []StorageVolume `json:"volumes,omitempty"`
 	// ISOs are paths of ISO files discovered in conventional locations
 	// (each volume's ISOs folder, C:\ISOs), offered as boot media.
 	ISOs []string `json:"isos,omitempty"`
+}
+
+// VirtualSwitchInfo is the observed state of an existing virtual switch on a
+// host. All fields are best-effort, reported by the agent.
+type VirtualSwitchInfo struct {
+	// Name is the vSwitch name.
+	Name string `json:"name"`
+	// NetAdapters are the physical uplink NIC names backing the switch. More than
+	// one means a SET team.
+	NetAdapters []string `json:"netAdapters,omitempty"`
+	// AllowManagementOS is true when the management OS shares the switch (a
+	// management vNIC exists on it).
+	AllowManagementOS bool `json:"allowManagementOS,omitempty"`
+	// VLANID is the access VLAN of the management OS vNIC on this switch; 0 means
+	// untagged or no management vNIC.
+	VLANID int `json:"vlanId,omitempty"`
 }
 
 // StorageVolume is an observed place to put VM storage.
