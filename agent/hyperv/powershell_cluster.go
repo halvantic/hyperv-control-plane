@@ -69,6 +69,38 @@ $changed = (@($r.FeatureResult) | Measure-Object).Count -gt 0
 [pscustomobject]@{ changed = $changed } | ConvertTo-Json -Compress
 `
 
+// clusterFirewallScript enables the inbound firewall rule groups a cluster node
+// needs to coordinate with peers. WMI carries the RPC calls cross-node cluster
+// operations make (e.g. Add-ClusterVirtualMachineRole); without it they fail
+// "RPC server unavailable". Enabling an already-enabled rule is a no-op.
+const clusterFirewallScript = `
+$ErrorActionPreference = 'Stop'
+$groups = @('Failover Clusters','Windows Management Instrumentation (WMI)')
+$changed = 0
+foreach ($g in $groups) {
+  $off = Get-NetFirewallRule -DisplayGroup $g -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -ne 'True' }
+  if ($off) { $off | Enable-NetFirewallRule -ErrorAction SilentlyContinue; $changed += @($off).Count }
+}
+[pscustomobject]@{ changed = ($changed -gt 0) } | ConvertTo-Json -Compress
+`
+
+func (p *PowerShell) EnsureClusterFirewall(ctx context.Context) (Outcome, error) {
+	out, err := p.run(ctx, clusterFirewallScript)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure cluster firewall: %w", err)
+	}
+	var res struct {
+		Changed bool `json:"changed"`
+	}
+	if err := decodeJSON(out, &res); err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure cluster firewall: %w", err)
+	}
+	if res.Changed {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 func (p *PowerShell) EnsureFailoverClusteringFeature(ctx context.Context) (Outcome, error) {
 	out, err := p.run(ctx, installClusteringScript)
 	if err != nil {
