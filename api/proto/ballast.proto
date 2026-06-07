@@ -275,6 +275,7 @@ message PhysicalDisk {
   uint64 size_bytes = 2;
   string media_type = 3;
   bool can_pool = 4;
+  bool is_os_disk = 5;
 }
 
 // ---------------------------------------------------------------------------

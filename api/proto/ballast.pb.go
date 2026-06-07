@@ -2116,6 +2116,7 @@ type PhysicalDisk struct {
 	SizeBytes     uint64                 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	MediaType     string                 `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
 	CanPool       bool                   `protobuf:"varint,4,opt,name=can_pool,json=canPool,proto3" json:"can_pool,omitempty"`
+	IsOsDisk      bool                   `protobuf:"varint,5,opt,name=is_os_disk,json=isOsDisk,proto3" json:"is_os_disk,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2174,6 +2175,13 @@ func (x *PhysicalDisk) GetMediaType() string {
 func (x *PhysicalDisk) GetCanPool() bool {
 	if x != nil {
 		return x.CanPool
+	}
+	return false
+}
+
+func (x *PhysicalDisk) GetIsOsDisk() bool {
+	if x != nil {
+		return x.IsOsDisk
 	}
 	return false
 }
@@ -3850,14 +3858,16 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
 	"\x0elink_speed_bps\x18\x03 \x01(\x04R\flinkSpeedBps\x12\x0e\n" +
-	"\x02up\x18\x04 \x01(\bR\x02up\"\x84\x01\n" +
+	"\x02up\x18\x04 \x01(\bR\x02up\"\xa2\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
 	"media_type\x18\x03 \x01(\tR\tmediaType\x12\x19\n" +
-	"\bcan_pool\x18\x04 \x01(\bR\acanPool\"\x9a\x01\n" +
+	"\bcan_pool\x18\x04 \x01(\bR\acanPool\x12\x1c\n" +
+	"\n" +
+	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\"\x9a\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\"\xfe\x01\n" +

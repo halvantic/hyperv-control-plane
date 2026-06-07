@@ -221,6 +221,7 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			SizeBytes: d.SizeBytes,
 			MediaType: d.MediaType,
 			CanPool:   d.CanPool,
+			IsOsDisk:  d.IsOSDisk,
 		})
 	}
 	return out
@@ -248,6 +249,7 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			SizeBytes: d.GetSizeBytes(),
 			MediaType: d.GetMediaType(),
 			CanPool:   d.GetCanPool(),
+			IsOSDisk:  d.GetIsOsDisk(),
 		})
 	}
 	return out
