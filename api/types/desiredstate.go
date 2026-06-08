@@ -554,6 +554,10 @@ type ClusterGroupStatus struct {
 	Name      string `json:"name"`
 	OwnerNode string `json:"ownerNode,omitempty"`
 	State     string `json:"state,omitempty"`
+	// GroupType is the failover-cluster group type (VirtualMachine, Cluster,
+	// AvailableStorage, CoreSddc, ClusterStoragePool, ...). The UI uses it to
+	// separate user roles from the cluster's own infrastructure groups.
+	GroupType string `json:"groupType,omitempty"`
 }
 
 // CSVStatus is one Cluster Shared Volume and its current owner node.
