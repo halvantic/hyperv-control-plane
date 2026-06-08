@@ -49,6 +49,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
+	case types.JobClusterDestroy:
+		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:
 		return r.hv.ValidateCluster(ctx, splitList(p["nodes"]), splitList(p["include"]))
 	default:

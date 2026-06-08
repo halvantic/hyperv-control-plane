@@ -623,6 +623,8 @@ const (
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 
 	JobFormatDisk = "FormatDisk" // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
+
+	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 )
 
 // ---------------------------------------------------------------------------
