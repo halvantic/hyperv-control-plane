@@ -117,11 +117,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		out, err := r.hv.EnsureVMHostPaths(ctx, st.DefaultVMPath, st.DefaultVHDPath)
 		conds = append(conds, r.condition("VMHostPaths", out, err))
 		if err != nil {
-			failures++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("set vm host paths: %w", err)
-			}
-			r.log.Error("set vm host paths failed", "err", err)
+			// Best-effort: the default VM/VHD path is a convenience for where new
+			// VMs land — VMs themselves carry explicit paths. Some hosts can't set
+			// it to a CSV they don't coordinate (Set-VMHost rejects the path on a
+			// non-owner node), so a failure is surfaced as a condition but does NOT
+			// degrade the host or hold its generation back.
+			r.log.Warn("set vm host paths failed (best-effort, not degrading)", "err", err)
 		} else if out != hyperv.OutcomeUnchanged {
 			changed = true
 			r.log.Info("vm host paths reconciled", "vmPath", st.DefaultVMPath, "vhdPath", st.DefaultVHDPath, "outcome", out)

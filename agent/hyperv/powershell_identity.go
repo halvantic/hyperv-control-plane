@@ -126,10 +126,14 @@ func (p *PowerShell) EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath stri
 	}
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference='Stop'; $h=Get-VMHost; $u=$false; ")
+	// Create each target directory first — Set-VMHost rejects a path that does
+	// not exist, and on a CSV the path is most reliably set to a real folder.
 	if vmPath != "" {
+		b.WriteString(fmt.Sprintf("if (-not (Test-Path %s)) { New-Item -ItemType Directory -Path %s -Force | Out-Null }; ", psQuote(vmPath), psQuote(vmPath)))
 		b.WriteString(fmt.Sprintf("if ($h.VirtualMachinePath -ne %s) { Set-VMHost -VirtualMachinePath %s; $u=$true }; ", psQuote(vmPath), psQuote(vmPath)))
 	}
 	if vhdPath != "" {
+		b.WriteString(fmt.Sprintf("if (-not (Test-Path %s)) { New-Item -ItemType Directory -Path %s -Force | Out-Null }; ", psQuote(vhdPath), psQuote(vhdPath)))
 		b.WriteString(fmt.Sprintf("if ($h.VirtualHardDiskPath -ne %s) { Set-VMHost -VirtualHardDiskPath %s; $u=$true }; ", psQuote(vhdPath), psQuote(vhdPath)))
 	}
 	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
