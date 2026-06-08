@@ -122,6 +122,25 @@ func (p *PowerShell) EnsureFailoverClusteringFeature(ctx context.Context) (Outco
 // FormCluster runs New-Cluster on this node, the designated former. -NoStorage
 // keeps formation independent of S2D (a later increment). The members are added
 // in the same call, so a single former brings up the whole cluster.
+// DestroyCluster tears the cluster down from this node (the former): it removes
+// every clustered VM role, disables Storage Spaces Direct (destroying the pool
+// and CSVs), and removes the failover cluster along with its AD computer object.
+// Destructive and idempotent — a no-op when no cluster exists. Runs agent-local
+// (cluster cmdlets cannot run over a remote WinRM double-hop).
+func (p *PowerShell) DestroyCluster(ctx context.Context) error {
+	script := "$ErrorActionPreference='Stop'; Import-Module FailoverClusters; " +
+		"if (-not (Get-Cluster -ErrorAction SilentlyContinue)) { 'no cluster'; return }; " +
+		"Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object { " +
+		"Stop-ClusterGroup -Name $_.Name -ErrorAction SilentlyContinue | Out-Null; " +
+		"Remove-ClusterGroup -Name $_.Name -RemoveResources -Force -ErrorAction SilentlyContinue }; " +
+		"Disable-ClusterStorageSpacesDirect -Confirm:$false -ErrorAction SilentlyContinue; " +
+		"Remove-Cluster -Force -CleanupAD; 'destroyed'"
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("destroy cluster: %w", err)
+	}
+	return nil
+}
+
 func (p *PowerShell) FormCluster(ctx context.Context, f ClusterFormation) error {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")

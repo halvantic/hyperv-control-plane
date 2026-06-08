@@ -122,6 +122,11 @@ type Interface interface {
 	// poolable state. Destructive imperative Job; refuses the boot/system disk.
 	FormatDisk(ctx context.Context, deviceID string) error
 
+	// DestroyCluster tears the cluster down from this node (the former): remove VM
+	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;
+	// a no-op when no cluster exists.
+	DestroyCluster(ctx context.Context) error
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)
