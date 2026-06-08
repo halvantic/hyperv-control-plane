@@ -613,6 +613,8 @@ const (
 
 	JobRemoveSwitch = "RemoveSwitch" // params: switch — delete a virtual switch from the host
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
+
+	JobFormatDisk = "FormatDisk" // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 )
 
 // ---------------------------------------------------------------------------

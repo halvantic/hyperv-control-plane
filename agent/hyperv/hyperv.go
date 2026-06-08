@@ -118,6 +118,10 @@ type Interface interface {
 	// Job. A no-op (no error) when the VM does not exist.
 	RemoveVM(ctx context.Context, name string) error
 
+	// FormatDisk wipes a physical disk (by PhysicalDisk DeviceId) back to a raw,
+	// poolable state. Destructive imperative Job; refuses the boot/system disk.
+	FormatDisk(ctx context.Context, deviceID string) error
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)

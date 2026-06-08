@@ -99,6 +99,31 @@ func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
 	return nil
 }
 
+// FormatDisk wipes a physical disk back to a raw, poolable state: it clears any
+// partitions/data and resets the disk if it was retained in a storage pool.
+// Destructive and deliberately guarded — it refuses the boot/system disk. The
+// disk is identified by its PhysicalDisk DeviceId (as reported in inventory).
+// Idempotent: a disk that is already raw simply ends up raw again.
+func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
+	id := psQuote(deviceID)
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
+		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
+		"if (-not $pd) { throw 'no physical disk with DeviceId ' + %[1]s }; "+
+		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; "+
+		"if ($disk) { "+
+		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "+
+		"Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; "+
+		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; "+
+		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue } }; "+
+		"Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue; "+
+		"$after = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
+		"if ($after.CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }", id)
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("format disk %q: %w", deviceID, err)
+	}
+	return nil
+}
+
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
 // group already exists for it, it is left alone. The new role's group is named
 // after the VM, which is what the discovery observation keys on.
