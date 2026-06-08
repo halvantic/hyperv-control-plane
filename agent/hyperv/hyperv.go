@@ -318,6 +318,7 @@ type ClusterGroup struct {
 	Name      string
 	OwnerNode string
 	State     string
+	GroupType string
 }
 
 // ClusterCSV is one Cluster Shared Volume and its current owner.

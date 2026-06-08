@@ -3107,6 +3107,7 @@ type ClusterGroup struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	OwnerNode     string                 `protobuf:"bytes,2,opt,name=owner_node,json=ownerNode,proto3" json:"owner_node,omitempty"`
 	State         string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	GroupType     string                 `protobuf:"bytes,4,opt,name=group_type,json=groupType,proto3" json:"group_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3158,6 +3159,13 @@ func (x *ClusterGroup) GetOwnerNode() string {
 func (x *ClusterGroup) GetState() string {
 	if x != nil {
 		return x.State
+	}
+	return ""
+}
+
+func (x *ClusterGroup) GetGroupType() string {
+	if x != nil {
+		return x.GroupType
 	}
 	return ""
 }
@@ -4046,12 +4054,14 @@ const file_ballast_proto_rawDesc = "" +
 	"\x06groups\x18\x06 \x03(\v2\x18.ballast.v1.ClusterGroupR\x06groups\x12*\n" +
 	"\x04csvs\x18\a \x03(\v2\x16.ballast.v1.ClusterCSVR\x04csvs\x126\n" +
 	"\vcluster_vms\x18\b \x03(\v2\x15.ballast.v1.ClusterVMR\n" +
-	"clusterVms\"W\n" +
+	"clusterVms\"v\n" +
 	"\fClusterGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"owner_node\x18\x02 \x01(\tR\townerNode\x12\x14\n" +
-	"\x05state\x18\x03 \x01(\tR\x05state\"U\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x1d\n" +
+	"\n" +
+	"group_type\x18\x04 \x01(\tR\tgroupType\"U\n" +
 	"\n" +
 	"ClusterCSV\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +

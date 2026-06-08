@@ -652,7 +652,7 @@ func clusterVMsFromProto(vs []*ClusterVM) []types.ClusterVMStatus {
 func clusterGroupsToProto(gs []types.ClusterGroupStatus) []*ClusterGroup {
 	out := make([]*ClusterGroup, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, &ClusterGroup{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State})
+		out = append(out, &ClusterGroup{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType})
 	}
 	return out
 }
@@ -685,7 +685,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 func clusterGroupsFromProto(gs []*ClusterGroup) []types.ClusterGroupStatus {
 	out := make([]types.ClusterGroupStatus, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, types.ClusterGroupStatus{Name: g.GetName(), OwnerNode: g.GetOwnerNode(), State: g.GetState()})
+		out = append(out, types.ClusterGroupStatus{Name: g.GetName(), OwnerNode: g.GetOwnerNode(), State: g.GetState(), GroupType: g.GetGroupType()})
 	}
 	return out
 }

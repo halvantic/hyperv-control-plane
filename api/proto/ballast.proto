@@ -418,6 +418,7 @@ message ClusterGroup {
   string name = 1;
   string owner_node = 2;
   string state = 3;
+  string group_type = 4;
 }
 
 // ClusterCSV is one Cluster Shared Volume as observed by the cluster.

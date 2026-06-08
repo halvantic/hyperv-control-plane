@@ -135,7 +135,7 @@ func clusterVMsToStatus(vs []hyperv.ClusterVM) []types.ClusterVMStatus {
 func clusterGroupsToStatus(gs []hyperv.ClusterGroup) []types.ClusterGroupStatus {
 	out := make([]types.ClusterGroupStatus, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, types.ClusterGroupStatus{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State})
+		out = append(out, types.ClusterGroupStatus{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType})
 	}
 	return out
 }
