@@ -139,7 +139,16 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
-$disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+# In an S2D cluster Get-PhysicalDisk returns the whole cluster pool, so a host
+# would report every node's disks. Restrict to the disks physically connected to
+# this node via its storage node; fall back to all disks when not clustered.
+$pdisks = $null
+try {
+  $sn = Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') } | Select-Object -First 1
+  if ($sn) { $pdisks = @($sn | Get-PhysicalDisk -PhysicallyConnected -ErrorAction SilentlyContinue) }
+} catch {}
+if (-not $pdisks -or $pdisks.Count -eq 0) { $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue) }
+$disks = $pdisks | ForEach-Object {
   [pscustomobject]@{ deviceId = [string]$_.DeviceId; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ([string]$_.DeviceId -in $osIds) }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
