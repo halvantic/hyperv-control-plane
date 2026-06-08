@@ -162,9 +162,14 @@ func (p *PowerShell) EnsureLiveMigration(ctx context.Context, spec types.LiveMig
 		b.WriteString(fmt.Sprintf("if ($h.MaximumVirtualMachineMigrations -ne %d) { Set-VMHost -MaximumVirtualMachineMigrations %d; $u=$true }; ", spec.MaxConcurrent, spec.MaxConcurrent))
 	}
 	if len(spec.Networks) > 0 {
+		// Compare desired vs current migration subnets by sorted join (not
+		// Compare-Object, which rejects a null DifferenceObject when no migration
+		// networks exist yet). Setting UseAnyNetworkForMigration=$false without a
+		// configured network leaves migration with nowhere to run, so the add must
+		// be robust on a host that has none.
 		b.WriteString("if ($h.UseAnyNetworkForMigration) { Set-VMHost -UseAnyNetworkForMigration $false; $u=$true }; ")
-		b.WriteString(fmt.Sprintf("$want=@(%s); $cur=@((Get-VMMigrationNetwork -ErrorAction SilentlyContinue).Subnet); "+
-			"if (@(Compare-Object $want $cur).Count -gt 0) { Get-VMMigrationNetwork -ErrorAction SilentlyContinue | Remove-VMMigrationNetwork -ErrorAction SilentlyContinue; "+
+		b.WriteString(fmt.Sprintf("$want=@(%s); $cur=@(Get-VMMigrationNetwork -ErrorAction SilentlyContinue | ForEach-Object { $_.Subnet }); "+
+			"if ((($want | Sort-Object) -join ',') -ne (($cur | Sort-Object) -join ',')) { Get-VMMigrationNetwork -ErrorAction SilentlyContinue | Remove-VMMigrationNetwork -ErrorAction SilentlyContinue; "+
 			"foreach ($n in $want) { Add-VMMigrationNetwork -Subnet $n | Out-Null }; $u=$true }; ", psStringList(spec.Networks)))
 	}
 	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
