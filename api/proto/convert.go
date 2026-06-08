@@ -214,6 +214,7 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			Mac:          a.MAC,
 			LinkSpeedBps: a.LinkSpeedBps,
 			Up:           a.Up,
+			IsManagement: a.IsManagement,
 		})
 	}
 	for _, d := range inv.PhysicalDisks {
@@ -243,6 +244,7 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			MAC:          a.GetMac(),
 			LinkSpeedBps: a.GetLinkSpeedBps(),
 			Up:           a.GetUp(),
+			IsManagement: a.GetIsManagement(),
 		})
 	}
 	for _, d := range inv.GetPhysicalDisks() {

@@ -283,6 +283,10 @@ type PhysicalAdapter struct {
 	MAC          string `json:"mac"`
 	LinkSpeedBps uint64 `json:"linkSpeedBps,omitempty"`
 	Up           bool   `json:"up"`
+	// IsManagement is true for the adapter carrying the host's route to the
+	// centre (its management path). The centre uses this to avoid teaming the
+	// management NIC when auto-building default switches.
+	IsManagement bool `json:"isManagement,omitempty"`
 }
 
 type PhysicalDisk struct {

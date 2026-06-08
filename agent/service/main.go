@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -95,7 +96,13 @@ func main() {
 	case "stub":
 		hv = &hyperv.Stub{}
 	case "powershell":
-		hv = hyperv.NewPowerShell(log)
+		ps := hyperv.NewPowerShell(log)
+		// Mark the management NIC (the adapter on the route to the centre) in
+		// inventory so the centre can avoid teaming it.
+		if host, _, found := strings.Cut(*centreAddr, ":"); found && host != "" {
+			ps.SetManagementProbe(host)
+		}
+		hv = ps
 	default:
 		log.Error("unknown -hyperv backend", "value", *hypervKind, "valid", "stub|powershell")
 		os.Exit(1)

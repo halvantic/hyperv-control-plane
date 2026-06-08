@@ -278,6 +278,7 @@ message PhysicalAdapter {
   string mac = 2;
   uint64 link_speed_bps = 3;
   bool up = 4;
+  bool is_management = 5;
 }
 
 message PhysicalDisk {
