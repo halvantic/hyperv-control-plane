@@ -287,6 +287,10 @@ type PhysicalAdapter struct {
 	// centre (its management path). The centre uses this to avoid teaming the
 	// management NIC when auto-building default switches.
 	IsManagement bool `json:"isManagement,omitempty"`
+	// IPv4 is the host IPv4 address bound to this adapter, if any (empty when the
+	// NIC has no host IP — e.g. it's free or already bound to a vSwitch). The UI
+	// uses it to mark a NIC that carries host connectivity and must not be teamed.
+	IPv4 string `json:"ipv4,omitempty"`
 }
 
 type PhysicalDisk struct {
