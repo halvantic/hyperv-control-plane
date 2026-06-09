@@ -633,7 +633,22 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		Csvs:               clusterCSVsToProto(s.CSVs),
 		ClusterVms:         clusterVMsToProto(s.VMs),
 		Nodes:              clusterNodesToProto(s.Nodes),
+		Pool:               clusterPoolToProto(s.Pool),
 	}
+}
+
+func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
+	if p == nil {
+		return nil
+	}
+	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes}
+}
+
+func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
+	if p == nil {
+		return nil
+	}
+	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes()}
 }
 
 func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {
@@ -699,6 +714,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		CSVs:               clusterCSVsFromProto(s.GetCsvs()),
 		VMs:                clusterVMsFromProto(s.GetClusterVms()),
 		Nodes:              clusterNodesFromProto(s.GetNodes()),
+		Pool:               clusterPoolFromProto(s.GetPool()),
 	}
 }
 

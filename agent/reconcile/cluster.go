@@ -28,6 +28,7 @@ type ClusterResult struct {
 	CSVs          []types.CSVStatus
 	VMs           []types.ClusterVMStatus
 	Nodes         []types.ClusterNodeStatus
+	Pool          *types.ClusterPoolStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -122,7 +123,15 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		FormedMembers: state.Members, S2DEnabled: s2dEnabled, Conditions: conds,
 		Groups: clusterGroupsToStatus(state.Groups), CSVs: clusterCSVsToStatus(state.CSVs),
 		VMs: clusterVMsToStatus(state.VMs), Nodes: clusterNodesToStatus(state.Nodes),
+		Pool: clusterPoolToStatus(state.Pool),
 	}, storageErr
+}
+
+func clusterPoolToStatus(p *hyperv.ClusterPool) *types.ClusterPoolStatus {
+	if p == nil {
+		return nil
+	}
+	return &types.ClusterPoolStatus{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes}
 }
 
 func clusterNodesToStatus(ns []hyperv.ClusterNodeState) []types.ClusterNodeStatus {

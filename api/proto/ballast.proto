@@ -414,11 +414,19 @@ message ClusterStatus {
   repeated ClusterVM cluster_vms = 8;
   // nodes are the cluster nodes with their state (Up/Paused/Down).
   repeated ClusterNode nodes = 9;
+  // pool is the S2D storage pool capacity, when one exists.
+  ClusterPool pool = 10;
 }
 
 message ClusterNode {
   string name = 1;
   string state = 2;
+}
+
+message ClusterPool {
+  string name = 1;
+  uint64 raw_bytes = 2;
+  uint64 allocated_bytes = 3;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.

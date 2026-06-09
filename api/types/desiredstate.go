@@ -555,6 +555,15 @@ type ClusterStatus struct {
 	CSVs               []CSVStatus          `json:"csvs,omitempty"`
 	VMs                []ClusterVMStatus    `json:"vms,omitempty"`
 	Nodes              []ClusterNodeStatus  `json:"nodes,omitempty"`
+	Pool               *ClusterPoolStatus   `json:"pool,omitempty"`
+}
+
+// ClusterPoolStatus is the S2D storage pool's capacity. Free is RawBytes minus
+// AllocatedBytes; volumes' three-way mirror copies count against AllocatedBytes.
+type ClusterPoolStatus struct {
+	Name           string `json:"name,omitempty"`
+	RawBytes       uint64 `json:"rawBytes,omitempty"`
+	AllocatedBytes uint64 `json:"allocatedBytes,omitempty"`
 }
 
 // ClusterNodeStatus is a cluster node and its observed state — Up, Paused (the

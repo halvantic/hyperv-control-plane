@@ -21,6 +21,13 @@ type clusterObservation struct {
 	Groups     []clusterOwnedObs `json:"groups"`
 	CSVs       []clusterOwnedObs `json:"csvs"`
 	ClusterVMs []clusterOwnedObs `json:"clustervms"`
+	Pool       *clusterPoolObs   `json:"pool"`
+}
+
+type clusterPoolObs struct {
+	Name           string `json:"name"`
+	RawBytes       uint64 `json:"rawBytes"`
+	AllocatedBytes uint64 `json:"allocatedBytes"`
 }
 
 // clusterStateScript observes membership plus clustered groups/roles and CSV
@@ -39,7 +46,9 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
-[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms) } | ConvertTo-Json -Compress -Depth 4
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$pool = if ($sp) { [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize } } else { $null }
+[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool } | ConvertTo-Json -Compress -Depth 4
 `
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
@@ -67,7 +76,11 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, n := range obs.Nodes {
 		nodes = append(nodes, ClusterNodeState{Name: n.Name, State: n.State})
 	}
-	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms}, nil
+	var pool *ClusterPool
+	if obs.Pool != nil {
+		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes}
+	}
+	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool}, nil
 }
 
 const installClusteringScript = `

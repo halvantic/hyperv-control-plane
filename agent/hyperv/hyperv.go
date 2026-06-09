@@ -311,6 +311,16 @@ type ClusterState struct {
 	CSVs []ClusterCSV
 	// VMs are the highly-available VM roles and their current owner node.
 	VMs []ClusterVM
+	// Pool is the S2D storage pool's capacity, when one exists.
+	Pool *ClusterPool
+}
+
+// ClusterPool is the S2D storage pool's name and capacity (raw total and the
+// portion already allocated to volumes); free is Raw - Allocated.
+type ClusterPool struct {
+	Name           string
+	RawBytes       uint64
+	AllocatedBytes uint64
 }
 
 // ClusterVM is one highly-available VM role and its current owner.
