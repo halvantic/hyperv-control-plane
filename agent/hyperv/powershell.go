@@ -135,7 +135,8 @@ if ('` + probe + `' -ne '') {
   try { $mgmtIdx = [int]((Find-NetRoute -RemoteIPAddress '` + probe + `' -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex) } catch {}
 }
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = ($mgmtIdx -ge 0 -and [int]$_.ifIndex -eq $mgmtIdx) }
+  $ip = (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = ($mgmtIdx -ge 0 -and [int]$_.ifIndex -eq $mgmtIdx); ipv4 = [string]$ip }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}

@@ -2141,6 +2141,7 @@ type PhysicalAdapter struct {
 	LinkSpeedBps  uint64                 `protobuf:"varint,3,opt,name=link_speed_bps,json=linkSpeedBps,proto3" json:"link_speed_bps,omitempty"`
 	Up            bool                   `protobuf:"varint,4,opt,name=up,proto3" json:"up,omitempty"`
 	IsManagement  bool                   `protobuf:"varint,5,opt,name=is_management,json=isManagement,proto3" json:"is_management,omitempty"`
+	Ipv4          string                 `protobuf:"bytes,6,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2208,6 +2209,13 @@ func (x *PhysicalAdapter) GetIsManagement() bool {
 		return x.IsManagement
 	}
 	return false
+}
+
+func (x *PhysicalAdapter) GetIpv4() string {
+	if x != nil {
+		return x.Ipv4
+	}
+	return ""
 }
 
 type PhysicalDisk struct {
@@ -4031,13 +4039,14 @@ const file_ballast_proto_rawDesc = "" +
 	"\x12total_memory_bytes\x18\x03 \x01(\x04R\x10totalMemoryBytes\x12!\n" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
-	"os_version\x18\x05 \x01(\tR\tosVersion\"\x92\x01\n" +
+	"os_version\x18\x05 \x01(\tR\tosVersion\"\xa6\x01\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
 	"\x0elink_speed_bps\x18\x03 \x01(\x04R\flinkSpeedBps\x12\x0e\n" +
 	"\x02up\x18\x04 \x01(\bR\x02up\x12#\n" +
-	"\ris_management\x18\x05 \x01(\bR\fisManagement\"\xa2\x01\n" +
+	"\ris_management\x18\x05 \x01(\bR\fisManagement\x12\x12\n" +
+	"\x04ipv4\x18\x06 \x01(\tR\x04ipv4\"\xa2\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +

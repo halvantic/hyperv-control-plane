@@ -279,6 +279,7 @@ message PhysicalAdapter {
   uint64 link_speed_bps = 3;
   bool up = 4;
   bool is_management = 5;
+  string ipv4 = 6;
 }
 
 message PhysicalDisk {
