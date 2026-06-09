@@ -303,6 +303,8 @@ type ClusterState struct {
 	Name string
 	// Members are the node names currently in the cluster.
 	Members []string
+	// Nodes are the cluster nodes with their current state (Up/Paused/Down).
+	Nodes []ClusterNodeState
 	// Groups are the clustered roles/groups and their current owner node.
 	Groups []ClusterGroup
 	// CSVs are the Cluster Shared Volumes and their current owner node.
@@ -324,6 +326,13 @@ type ClusterGroup struct {
 	OwnerNode string
 	State     string
 	GroupType string
+}
+
+// ClusterNodeState is a cluster node and its current state (Up, Paused — i.e.
+// drained/maintenance — or Down).
+type ClusterNodeState struct {
+	Name  string
+	State string
 }
 
 // ClusterCSV is one Cluster Shared Volume and its current owner.
