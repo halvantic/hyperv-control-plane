@@ -422,6 +422,20 @@ type Cluster struct {
 	Status ClusterStatus `json:"status,omitempty"`
 }
 
+// Site is an organisational container that groups clusters and standalone hosts,
+// analogous to a vCenter datacentre but Hyper-V-native in name. It is a centre /
+// console concept only — never sent to agents and not reconciled. A cluster or
+// host joins a site via the "site" label on its ObjectMeta.
+type Site struct {
+	Name        string `json:"name"`
+	Location    string `json:"location,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// SiteLabel is the ObjectMeta label key by which clusters and hosts declare the
+// site they belong to.
+const SiteLabel = "site"
+
 type ClusterSpec struct {
 	// Members are the host names that should form the cluster.
 	Members []string `json:"members"`
