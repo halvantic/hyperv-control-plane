@@ -27,15 +27,7 @@ import (
 type PowerShell struct {
 	run runFunc
 	log *slog.Logger
-	// mgmtProbe is the centre's IP; the inventory marks the adapter on the route
-	// to it as the management NIC so the centre never teams it. Empty disables
-	// the marking (no adapter is reported as management).
-	mgmtProbe string
 }
-
-// SetManagementProbe sets the target IP (the centre) used to identify the host's
-// management NIC during inventory. Call once at startup.
-func (p *PowerShell) SetManagementProbe(target string) { p.mgmtProbe = target }
 
 // runFunc executes a PowerShell script and returns its stdout. It is a field so
 // tests can inject canned output in place of a real shell-out.
@@ -123,20 +115,23 @@ func startsWithJSON(b []byte) bool {
 // inventoryScript collects physical adapters, physical disks, memory and CPU in
 // one invocation. The JSON keys match the api/types json tags so the result
 // unmarshals straight into types.HostInventory.
-// inventoryScript builds the inventory query. probe is the centre IP; when set,
-// the adapter on the route to it is marked isManagement so the centre can avoid
-// teaming the management NIC. probe is a bare IPv4/IPv6 literal (host part of the
-// centre address), so it is safe to embed in the single-quoted script.
-func inventoryScript(probe string) string {
+//
+// A physical adapter is reported as management when it carries a statically
+// configured (Manual) IPv4 address — that is the host's management identity (the
+// address it is known by in DNS), and such a NIC must never be teamed into a
+// vSwitch. A DHCP-assigned address does not make a NIC management: it is free to
+// assign to a switch, so its IP is not reported (the frontend treats a NIC with
+// no host IP and no switch as free). A NIC bound to a vSwitch carries no IP here
+// (the address lives on its management-OS vNIC), so it is naturally not flagged.
+func inventoryScript() string {
 	return `
 $ErrorActionPreference = 'Stop'
-$mgmtIdx = -1
-if ('` + probe + `' -ne '') {
-  try { $mgmtIdx = [int]((Find-NetRoute -RemoteIPAddress '` + probe + `' -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex) } catch {}
-}
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  $ip = (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = ($mgmtIdx -ge 0 -and [int]$_.ifIndex -eq $mgmtIdx); ipv4 = [string]$ip }
+  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+  $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
+  $ip = ''
+  if ($static) { $ip = [string]$a.IPAddress }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
@@ -169,7 +164,7 @@ $os = Get-CimInstance Win32_OperatingSystem
 // CollectInventory observes host hardware via Get-NetAdapter, Get-PhysicalDisk
 // and Win32_ComputerSystem. It is a pure read.
 func (p *PowerShell) CollectInventory(ctx context.Context) (types.HostInventory, error) {
-	out, err := p.run(ctx, inventoryScript(p.mgmtProbe))
+	out, err := p.run(ctx, inventoryScript())
 	if err != nil {
 		return types.HostInventory{}, fmt.Errorf("collect inventory: %w", err)
 	}
