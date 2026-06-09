@@ -176,6 +176,12 @@ type Interface interface {
 	// OutcomeCreated when it had to be provisioned.
 	EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome, error)
 
+	// RemoveCSV deletes the Cluster Shared Volume backed by the virtual disk of
+	// the given name from the S2D pool (Remove-VirtualDisk, which also removes its
+	// cluster resource). Destructive imperative Job run on the former; a no-op
+	// (no error) when no such volume exists.
+	RemoveCSV(ctx context.Context, name string) error
+
 	// GetVMState observes the named VM: whether it exists and, if so, its power
 	// state and best-effort runtime metrics. Pure read.
 	GetVMState(ctx context.Context, name string) (VMState, error)

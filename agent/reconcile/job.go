@@ -47,6 +47,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveVM:
 		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
+	case types.JobRemoveCSV:
+		return done(r.hv.RemoveCSV(ctx, p["volume"]), "removed volume "+p["volume"])
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
 	case types.JobClusterDestroy:

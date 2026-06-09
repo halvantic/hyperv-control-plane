@@ -72,3 +72,22 @@ New-Volume -StoragePoolFriendlyName $pool -FriendlyName %[1]s -FileSystem CSVFS_
 	}
 	return OutcomeUnchanged, nil
 }
+
+// RemoveCSV deletes the Cluster Shared Volume backed by the virtual disk of the
+// given name. On an S2D cluster Remove-VirtualDisk also removes the associated
+// cluster physical-disk resource, taking the CSV offline and out of the cluster.
+// A no-op (no error) when no virtual disk of that name exists, so the job is
+// idempotent and safe to retry.
+func (p *PowerShell) RemoveCSV(ctx context.Context, name string) error {
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$vd = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
+if (-not $vd) { 'RESULT=NOOP'; return }
+$vd | Remove-VirtualDisk -Confirm:$false
+'RESULT=REMOVED'
+`, psQuote(name))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove CSV %q: %w", name, err)
+	}
+	return nil
+}
