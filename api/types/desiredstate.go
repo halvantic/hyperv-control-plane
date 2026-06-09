@@ -550,6 +550,14 @@ type ClusterStatus struct {
 	Groups             []ClusterGroupStatus `json:"groups,omitempty"`
 	CSVs               []CSVStatus          `json:"csvs,omitempty"`
 	VMs                []ClusterVMStatus    `json:"vms,omitempty"`
+	Nodes              []ClusterNodeStatus  `json:"nodes,omitempty"`
+}
+
+// ClusterNodeStatus is a cluster node and its observed state — Up, Paused (the
+// node is drained / in maintenance), or Down. The UI greys a drained/down node.
+type ClusterNodeStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state,omitempty"`
 }
 
 // ClusterVMStatus is one highly-available VM role observed on the cluster and its

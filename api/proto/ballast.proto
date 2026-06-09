@@ -411,6 +411,13 @@ message ClusterStatus {
   repeated ClusterCSV csvs = 7;
   // cluster_vms are the highly-available VM roles and their current owner node.
   repeated ClusterVM cluster_vms = 8;
+  // nodes are the cluster nodes with their state (Up/Paused/Down).
+  repeated ClusterNode nodes = 9;
+}
+
+message ClusterNode {
+  string name = 1;
+  string state = 2;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.
