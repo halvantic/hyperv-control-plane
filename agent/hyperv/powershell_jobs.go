@@ -165,9 +165,11 @@ func (p *PowerShell) MoveClusterSharedVolume(ctx context.Context, volume, node s
 func (p *PowerShell) MoveClusterVM(ctx context.Context, vm, node string) error {
 	// On failure Move-ClusterVirtualMachineRole only says "check the event log",
 	// which is useless from the console. Catch the failure and fold the recent
-	// Hyper-V-VMMS and FailoverClustering error/warning events into the message so
-	// the operator sees the real cause (e.g. a migration-transport listener
-	// problem) without opening Event Viewer. The migration type is left to
+	// error/warning events into the message so the operator sees the real cause
+	// (e.g. a migration-transport listener problem) without opening Event Viewer.
+	// A clustered VM logs to the Hyper-V High-Availability channel and, for the
+	// cluster side, to FailoverClustering/Operational and the System log — query
+	// all of them, including Critical level. The migration type is left to
 	// Hyper-V (live when the VM is running, quick when it is off).
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 Import-Module FailoverClusters
@@ -177,11 +179,12 @@ try {
   $msg = $_.Exception.Message
   $since = (Get-Date).AddMinutes(-5)
   $ev = @()
-  foreach ($l in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')) {
-    try { $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=2,3 } -MaxEvents 4 -ErrorAction SilentlyContinue } catch {}
+  foreach ($l in @('Microsoft-Windows-Hyper-V-High-Availability-Admin','Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')) {
+    try { $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue } catch {}
   }
-  $detail = ($ev | Sort-Object TimeCreated | ForEach-Object { '[' + $_.TimeCreated.ToString('HH:mm:ss') + ' id=' + $_.Id + '] ' + (($_.Message -split [Environment]::NewLine)[0]) }) -join ' | '
-  if (-not $detail) { $detail = 'no related Hyper-V/clustering events in the last 5 minutes' }
+  try { $ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } } catch {}
+  $detail = ($ev | Sort-Object TimeCreated -Unique | ForEach-Object { '[' + $_.TimeCreated.ToString('HH:mm:ss') + ' id=' + $_.Id + '] ' + (($_.Message -split [Environment]::NewLine)[0]) }) -join ' | '
+  if (-not $detail) { $detail = 'no related Hyper-V/clustering events in the last 5 minutes (the move likely failed before logging; run Get-ClusterLog on ' + $env:COMPUTERNAME + ' for detail)' }
   throw ($msg + ' -- recent events: ' + $detail)
 }`, psQuote(vm), psQuote(node))
 	if err := p.run2(ctx, script); err != nil {
