@@ -178,14 +178,32 @@ try {
 } catch {
   $msg = $_.Exception.Message
   $since = (Get-Date).AddMinutes(-5)
-  $ev = @()
-  foreach ($l in @('Microsoft-Windows-Hyper-V-High-Availability-Admin','Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')) {
-    try { $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue } catch {}
+  $logs = @('Microsoft-Windows-Hyper-V-High-Availability-Admin','Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')
+  # A clustered live migration fails on the DESTINATION node (the receive-side
+  # listen-socket / transport error lands there), so gather events from both the
+  # source (local) and the target node. The agent runs as a domain admin, so a
+  # remote read of the target's log is a single hop (no delegation).
+  $rows = @()
+  foreach ($pair in @(@{ n = $env:COMPUTERNAME; remote = $false }, @{ n = %[2]s; remote = $true })) {
+    $node = $pair.n
+    $ev = @()
+    foreach ($l in $logs) {
+      try {
+        if ($pair.remote) { $ev += Get-WinEvent -ComputerName $node -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue }
+        else { $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue }
+      } catch {}
+    }
+    try {
+      if ($pair.remote) { $ev += Get-WinEvent -ComputerName $node -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } }
+      else { $ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } }
+    } catch {}
+    foreach ($e in ($ev | Sort-Object TimeCreated -Unique)) {
+      $rows += '[' + $node + ' ' + $e.TimeCreated.ToString('HH:mm:ss') + ' id=' + $e.Id + '] ' + (($e.Message -split [Environment]::NewLine)[0])
+    }
   }
-  try { $ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } } catch {}
-  $detail = ($ev | Sort-Object TimeCreated -Unique | ForEach-Object { '[' + $_.TimeCreated.ToString('HH:mm:ss') + ' id=' + $_.Id + '] ' + (($_.Message -split [Environment]::NewLine)[0]) }) -join ' | '
-  if (-not $detail) { $detail = 'no related Hyper-V/clustering events in the last 5 minutes (the move likely failed before logging; run Get-ClusterLog on ' + $env:COMPUTERNAME + ' for detail)' }
-  throw ($msg + ' -- recent events: ' + $detail)
+  $detail = ($rows -join ' | ')
+  if (-not $detail) { $detail = 'no related events on source or destination in the last 5 minutes; run Get-ClusterLog for detail' }
+  throw ($msg + ' -- events: ' + $detail)
 }`, psQuote(vm), psQuote(node))
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("migrate VM %q to %q: %w", vm, node, err)

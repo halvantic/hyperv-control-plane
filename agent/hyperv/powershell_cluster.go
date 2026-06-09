@@ -96,7 +96,7 @@ $changed = (@($r.FeatureResult) | Measure-Object).Count -gt 0
 // "RPC server unavailable". Enabling an already-enabled rule is a no-op.
 const clusterFirewallScript = `
 $ErrorActionPreference = 'Stop'
-$groups = @('Failover Clusters','Windows Management Instrumentation (WMI)')
+$groups = @('Failover Clusters','Windows Management Instrumentation (WMI)','Remote Event Log Management')
 $changed = 0
 foreach ($g in $groups) {
   # Enable the rule group AND make it apply on every profile: a cluster node's
