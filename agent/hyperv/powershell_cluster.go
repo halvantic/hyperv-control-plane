@@ -86,8 +86,17 @@ $ErrorActionPreference = 'Stop'
 $groups = @('Failover Clusters','Windows Management Instrumentation (WMI)')
 $changed = 0
 foreach ($g in $groups) {
-  $off = Get-NetFirewallRule -DisplayGroup $g -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -ne 'True' }
-  if ($off) { $off | Enable-NetFirewallRule -ErrorAction SilentlyContinue; $changed += @($off).Count }
+  # Enable the rule group AND make it apply on every profile: a cluster node's
+  # management NIC sometimes sits on the Public profile (e.g. when the DC isn't
+  # detected on it), and Domain/Private-scoped rules then don't apply, so cross-
+  # node RPC/WMI (Add-ClusterVirtualMachineRole etc.) fails 'RPC server unavailable'.
+  $rules = Get-NetFirewallRule -DisplayGroup $g -ErrorAction SilentlyContinue
+  foreach ($r in $rules) {
+    if ($r.Enabled -ne 'True' -or $r.Profile -ne 'Any') {
+      Set-NetFirewallRule -Name $r.Name -Enabled True -Profile Any -ErrorAction SilentlyContinue
+      $changed++
+    }
+  }
 }
 [pscustomobject]@{ changed = ($changed -gt 0) } | ConvertTo-Json -Compress
 `
