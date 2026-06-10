@@ -246,34 +246,50 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 	return "validation report: " + report, nil
 }
 
-// RepairHostDNS fixes the multi-homed-host DNS problem: the management NIC (the
-// one with a static IPv4) carries the correct domain-controller DNS, but a DHCP
-// secondary NIC is often handed the router as DNS and still registers in DNS —
-// which breaks AD/DNS registration (event 1196) and can make Kerberos-dependent
-// operations (live migration) flaky. This copies the management NIC's DNS onto
-// every other physical NIC and turns off DNS registration on those NICs, then
-// re-registers. Idempotent.
-func (p *PowerShell) RepairHostDNS(ctx context.Context) (string, error) {
-	script := `$ErrorActionPreference='Stop'
-$mgmt = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
-  Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }
-} | Select-Object -First 1
-if (-not $mgmt) { throw 'no management NIC with a static IPv4 found; cannot determine the correct DNS server' }
-$dcDns = @((Get-DnsClientServerAddress -InterfaceIndex $mgmt.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-if (-not $dcDns) { throw 'management NIC has no DNS server configured' }
+// RepairHostDNS fixes the multi-homed-host DNS problem: a DHCP secondary NIC is
+// often handed the router as DNS and still registers in DNS, which breaks
+// AD/DNS registration (event 1196) and makes Kerberos-dependent operations (live
+// migration) flaky. It sets every physical NIC's DNS to the domain controller
+// and registers only on the NIC that routes to the DC.
+//
+// The DC's DNS is determined by VERIFICATION, not by guessing the "management"
+// NIC — a guess is fooled by a floating cluster IP (which is also a static
+// address). The DC DNS is the configured DNS server that actually resolves the
+// AD domain's SOA. dns, when non-empty, overrides this (used to recover a host
+// whose NICs no longer point at the DC). Idempotent.
+func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$domain = (Get-CimInstance Win32_ComputerSystem).Domain
+if (-not $domain -or $domain -eq 'WORKGROUP') { throw 'host is not domain-joined' }
+$forced = %[1]s
+$dc = $null
+if ($forced) { $dc = $forced }
+else {
+  $cands = @()
+  foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+    $cands += @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  }
+  $cands = @($cands | Where-Object { $_ } | Select-Object -Unique)
+  foreach ($c in $cands) { try { if (Resolve-DnsName -Server $c -Name $domain -Type SOA -ErrorAction Stop) { $dc = $c; break } } catch {} }
+  if (-not $dc) { throw ('no configured DNS server resolves domain ' + $domain + ' (candidates: ' + ($cands -join ',') + '); pass the DC DNS explicitly') }
+}
+# The NIC that routes to the DC keeps DNS registration; everyone else does not.
+$mgmtIdx = -1
+try { $mgmtIdx = [int]((Find-NetRoute -RemoteIPAddress $dc -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex) } catch {}
 $fixed = @()
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.ifIndex -ne $mgmt.ifIndex })) {
+foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
-  $needs = $reg -or (($cur -join ',') -ne ($dcDns -join ','))
-  if (-not $needs) { continue }
-  try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue } catch {}
-  try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $dcDns -ErrorAction Stop } catch {}
-  $fixed += ($n.Name + ' (was ' + (($cur -join ',')) + ', reg=' + $reg + ')')
+  $wantReg = ([int]$n.ifIndex -eq $mgmtIdx)
+  $needDns = (($cur -join ',') -ne $dc)
+  if ((-not $needDns) -and ($reg -eq $wantReg)) { continue }
+  if ($needDns) { try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $dc -ErrorAction Stop } catch {} }
+  try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $wantReg -ErrorAction SilentlyContinue } catch {}
+  $fixed += ($n.Name + ' (dns was ' + ($cur -join ',') + ', reg ' + $reg + '->' + $wantReg + ')')
 }
 Register-DnsClient -ErrorAction SilentlyContinue | Out-Null
-if ($fixed.Count -eq 0) { 'no change: all non-management NICs already use ' + ($dcDns -join ',') + ' and do not register' }
-else { 'pointed DNS at ' + ($dcDns -join ',') + ' and disabled registration on: ' + ($fixed -join '; ') }`
+if ($fixed.Count -eq 0) { 'no change: DC DNS ' + $dc + ' already on all NICs (register only on mgmt)' }
+else { 'DC DNS = ' + $dc + ' (mgmt ifIndex ' + $mgmtIdx + '); ' + ($fixed -join '; ') }`, psQuote(dns))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return "", fmt.Errorf("repair host DNS: %w", err)

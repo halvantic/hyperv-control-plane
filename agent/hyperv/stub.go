@@ -477,7 +477,7 @@ func (s *Stub) ClusterLog(_ context.Context, _, _ string) (string, error) {
 	return "cluster log (stub)", nil
 }
 
-func (s *Stub) RepairHostDNS(_ context.Context) (string, error) {
+func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 	return "dns repaired (stub)", nil
 }
 

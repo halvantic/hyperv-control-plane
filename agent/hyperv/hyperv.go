@@ -126,8 +126,9 @@ type Interface interface {
 	// every non-management NIC's DNS at the domain controller (the management
 	// NIC's DNS) and disables DNS registration on those NICs, so a DHCP NIC handed
 	// the router as DNS no longer breaks AD/DNS registration (event 1196) or
-	// resolution. Returns a short summary of what changed. Imperative Job.
-	RepairHostDNS(ctx context.Context) (string, error)
+	// resolution. dns, when non-empty, forces the DC's DNS address (recovery).
+	// Returns a short summary of what changed. Imperative Job.
+	RepairHostDNS(ctx context.Context, dns string) (string, error)
 
 	// DestroyCluster tears the cluster down from this node (the former): remove VM
 	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;
