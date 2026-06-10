@@ -421,6 +421,15 @@ message ClusterStatus {
   repeated ClusterNode nodes = 9;
   // pool is the S2D storage pool capacity, when one exists.
   ClusterPool pool = 10;
+  // networks are the cluster's networks (subnet, role, state).
+  repeated ClusterNetwork networks = 11;
+}
+
+message ClusterNetwork {
+  string name = 1;
+  string cidr = 2;
+  string role = 3;
+  string state = 4;
 }
 
 message ClusterNode {

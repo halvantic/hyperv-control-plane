@@ -14,20 +14,28 @@ type clusterOwnedObs struct {
 }
 
 type clusterObservation struct {
-	Exists     bool              `json:"exists"`
-	Name       string            `json:"name"`
-	Members    []string          `json:"members"`
-	Nodes      []clusterOwnedObs `json:"nodes"`
-	Groups     []clusterOwnedObs `json:"groups"`
-	CSVs       []clusterOwnedObs `json:"csvs"`
-	ClusterVMs []clusterOwnedObs `json:"clustervms"`
-	Pool       *clusterPoolObs   `json:"pool"`
+	Exists     bool                `json:"exists"`
+	Name       string              `json:"name"`
+	Members    []string            `json:"members"`
+	Nodes      []clusterOwnedObs   `json:"nodes"`
+	Groups     []clusterOwnedObs   `json:"groups"`
+	CSVs       []clusterOwnedObs   `json:"csvs"`
+	ClusterVMs []clusterOwnedObs   `json:"clustervms"`
+	Pool       *clusterPoolObs     `json:"pool"`
+	Networks   []clusterNetworkObs `json:"networks"`
 }
 
 type clusterPoolObs struct {
 	Name           string `json:"name"`
 	RawBytes       uint64 `json:"rawBytes"`
 	AllocatedBytes uint64 `json:"allocatedBytes"`
+}
+
+type clusterNetworkObs struct {
+	Name  string `json:"name"`
+	CIDR  string `json:"cidr"`
+	Role  string `json:"role"`
+	State string `json:"state"`
 }
 
 // clusterStateScript observes membership plus clustered groups/roles and CSV
@@ -48,7 +56,11 @@ $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.Gro
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
 $pool = if ($sp) { [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize } } else { $null }
-[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool } | ConvertTo-Json -Compress -Depth 4
+$nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
+  $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
+  $role = switch ([int]$_.Role) { 0 { 'None' } 1 { 'Cluster' } 3 { 'ClusterAndClient' } default { [string]$_.Role } }
+  [pscustomobject]@{ name = [string]$_.Name; cidr = ([string]$_.Address + '/' + $bits); role = $role; state = [string]$_.State } })
+[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets) } | ConvertTo-Json -Compress -Depth 4
 `
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
@@ -80,7 +92,11 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	if obs.Pool != nil {
 		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes}
 	}
-	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool}, nil
+	netw := make([]ClusterNetworkInfo, 0, len(obs.Networks))
+	for _, n := range obs.Networks {
+		netw = append(netw, ClusterNetworkInfo{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State})
+	}
+	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw}, nil
 }
 
 const installClusteringScript = `

@@ -333,6 +333,10 @@ type ClusterState struct {
 	VMs []ClusterVM
 	// Pool is the S2D storage pool's capacity, when one exists.
 	Pool *ClusterPool
+	// Networks are the cluster's networks (Get-ClusterNetwork) with their subnet,
+	// role and state — used to select a live-migration network and to surface a
+	// partitioned/down network.
+	Networks []ClusterNetworkInfo
 }
 
 // ClusterPool is the S2D storage pool's name and capacity (raw total and the
@@ -341,6 +345,15 @@ type ClusterPool struct {
 	Name           string
 	RawBytes       uint64
 	AllocatedBytes uint64
+}
+
+// ClusterNetworkInfo is one cluster network: its name, subnet (CIDR), role
+// (None/Cluster/ClusterAndClient) and state (Up/Down/Partitioned/Unavailable).
+type ClusterNetworkInfo struct {
+	Name  string
+	CIDR  string
+	Role  string
+	State string
 }
 
 // ClusterVM is one highly-available VM role and its current owner.

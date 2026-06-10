@@ -555,16 +555,27 @@ type CSVSpec struct {
 }
 
 type ClusterStatus struct {
-	Phase              Phase                `json:"phase"`
-	ObservedGeneration int64                `json:"observedGeneration"`
-	FormedMembers      []string             `json:"formedMembers,omitempty"`
-	S2DEnabled         bool                 `json:"s2dEnabled,omitempty"`
-	Conditions         []Condition          `json:"conditions,omitempty"`
-	Groups             []ClusterGroupStatus `json:"groups,omitempty"`
-	CSVs               []CSVStatus          `json:"csvs,omitempty"`
-	VMs                []ClusterVMStatus    `json:"vms,omitempty"`
-	Nodes              []ClusterNodeStatus  `json:"nodes,omitempty"`
-	Pool               *ClusterPoolStatus   `json:"pool,omitempty"`
+	Phase              Phase                  `json:"phase"`
+	ObservedGeneration int64                  `json:"observedGeneration"`
+	FormedMembers      []string               `json:"formedMembers,omitempty"`
+	S2DEnabled         bool                   `json:"s2dEnabled,omitempty"`
+	Conditions         []Condition            `json:"conditions,omitempty"`
+	Groups             []ClusterGroupStatus   `json:"groups,omitempty"`
+	CSVs               []CSVStatus            `json:"csvs,omitempty"`
+	VMs                []ClusterVMStatus      `json:"vms,omitempty"`
+	Nodes              []ClusterNodeStatus    `json:"nodes,omitempty"`
+	Pool               *ClusterPoolStatus     `json:"pool,omitempty"`
+	Networks           []ClusterNetworkStatus `json:"networks,omitempty"`
+}
+
+// ClusterNetworkStatus is one cluster network: subnet (CIDR), role
+// (None/Cluster/ClusterAndClient) and state (Up/Down/Partitioned/Unavailable).
+// The console uses it to pick a live-migration network and flag a bad one.
+type ClusterNetworkStatus struct {
+	Name  string `json:"name"`
+	CIDR  string `json:"cidr,omitempty"`
+	Role  string `json:"role,omitempty"`
+	State string `json:"state,omitempty"`
 }
 
 // ClusterPoolStatus is the S2D storage pool's capacity. Free is RawBytes minus

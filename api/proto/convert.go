@@ -638,7 +638,24 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		ClusterVms:         clusterVMsToProto(s.VMs),
 		Nodes:              clusterNodesToProto(s.Nodes),
 		Pool:               clusterPoolToProto(s.Pool),
+		Networks:           clusterNetworksToProto(s.Networks),
 	}
+}
+
+func clusterNetworksToProto(ns []types.ClusterNetworkStatus) []*ClusterNetwork {
+	out := make([]*ClusterNetwork, 0, len(ns))
+	for _, n := range ns {
+		out = append(out, &ClusterNetwork{Name: n.Name, Cidr: n.CIDR, Role: n.Role, State: n.State})
+	}
+	return out
+}
+
+func clusterNetworksFromProto(ns []*ClusterNetwork) []types.ClusterNetworkStatus {
+	out := make([]types.ClusterNetworkStatus, 0, len(ns))
+	for _, n := range ns {
+		out = append(out, types.ClusterNetworkStatus{Name: n.GetName(), CIDR: n.GetCidr(), Role: n.GetRole(), State: n.GetState()})
+	}
+	return out
 }
 
 func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
@@ -719,6 +736,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		VMs:                clusterVMsFromProto(s.GetClusterVms()),
 		Nodes:              clusterNodesFromProto(s.GetNodes()),
 		Pool:               clusterPoolFromProto(s.GetPool()),
+		Networks:           clusterNetworksFromProto(s.GetNetworks()),
 	}
 }
 
