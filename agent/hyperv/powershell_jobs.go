@@ -188,6 +188,8 @@ Import-Module FailoverClusters
 # (no downtime); a stopped/saved VM gets a Quick move (ownership change). The
 # cmdlet defaults to Live, which is rejected on a stopped VM with "not in an
 # appropriate state", so the type must be chosen explicitly.
+$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+if ($grp -and $grp.OwnerNode.Name -eq %[2]s) { 'already on ' + %[2]s + '; no move needed'; return }
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 $mt = 'Quick'
 if ($vm -and $vm.State -eq 'Running') { $mt = 'Live' }
