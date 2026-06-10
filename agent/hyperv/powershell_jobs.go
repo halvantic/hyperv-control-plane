@@ -273,9 +273,21 @@ else {
   foreach ($c in $cands) { try { if (Resolve-DnsName -Server $c -Name $domain -Type SOA -ErrorAction Stop) { $dc = $c; break } } catch {} }
   if (-not $dc) { throw ('no configured DNS server resolves domain ' + $domain + ' (candidates: ' + ($cands -join ',') + '); pass the DC DNS explicitly') }
 }
-# The NIC that routes to the DC keeps DNS registration; everyone else does not.
+# The management NIC keeps DNS registration; everyone else does not. It is the
+# NIC carrying the host's own static IPv4 — NOT a DHCP NIC (whose default gateway
+# would otherwise win a route-based guess) and NOT the floating cluster IP (also
+# a static address). Cluster IPs are excluded so a node owning the cluster VIP is
+# not mistaken for management.
+$clusterIps = @()
+try {
+  Import-Module FailoverClusters -ErrorAction SilentlyContinue
+  $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
+} catch {}
 $mgmtIdx = -1
-try { $mgmtIdx = [int]((Find-NetRoute -RemoteIPAddress $dc -ErrorAction SilentlyContinue | Select-Object -First 1).InterfaceIndex) } catch {}
+foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+  $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
+  if ($ips) { $mgmtIdx = [int]$n.ifIndex; break }
+}
 $fixed = @()
 foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
