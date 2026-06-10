@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -114,6 +115,21 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	s2dEnabled, storageConds, storageChanged, storageErr := r.reconcileStorage(ctx, a)
 	conds = append(conds, storageConds...)
 	changed = changed || storageChanged
+
+	// 5. Kerberos live migration needs constrained delegation between the nodes'
+	// computer accounts. The former (a domain admin) configures it once when the
+	// cluster's live-migration auth is Kerberos — so provisioning a cluster with
+	// Kerberos migration sets this up automatically, no manual AD step. A failure
+	// is surfaced but does not fail the pass.
+	if lm := a.Cluster.Spec.LiveMigration; a.IsFormer && lm != nil && lm.Enabled && strings.EqualFold(lm.AuthenticationType, "Kerberos") {
+		dOut, dErr := r.hv.EnsureMigrationDelegation(ctx, a.Cluster.Spec.Members)
+		conds = append(conds, r.condition("MigrationDelegation", dOut, dErr))
+		if dErr != nil {
+			r.log.Error("ensure migration delegation failed", "err", dErr)
+		} else {
+			changed = changed || dOut != hyperv.OutcomeUnchanged
+		}
+	}
 
 	phase, honoured := types.PhaseReady, true
 	if storageErr != nil {

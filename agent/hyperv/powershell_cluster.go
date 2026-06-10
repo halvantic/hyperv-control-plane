@@ -147,6 +147,58 @@ func (p *PowerShell) EnsureClusterFirewall(ctx context.Context) (Outcome, error)
 	return OutcomeUnchanged, nil
 }
 
+// EnsureMigrationDelegation sets Kerberos constrained delegation (the migration
+// + cifs SPNs) between cluster nodes' computer accounts, which cluster-initiated
+// live migration needs when the host auth type is Kerberos. Idempotent: it reads
+// each computer's existing msDS-AllowedToDelegateTo and only adds what is
+// missing. Run on the former as a domain admin. Installs the AD module if absent.
+func (p *PowerShell) EnsureMigrationDelegation(ctx context.Context, nodes []string) (Outcome, error) {
+	nodeExpr := "@(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Name })"
+	if len(nodes) > 0 {
+		nodeExpr = "@(" + psStringList(nodes) + ")"
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+  try { Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null }
+  catch { try { Add-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0' -ErrorAction Stop | Out-Null } catch {} }
+}
+Import-Module ActiveDirectory -ErrorAction Stop
+$dom = (Get-CimInstance Win32_ComputerSystem).Domain
+$nodes = %[1]s | Where-Object { $_ }
+$changed = @()
+foreach ($src in $nodes) {
+  $want = @()
+  foreach ($dst in ($nodes | Where-Object { $_ -ne $src })) {
+    $want += 'Microsoft Virtual System Migration Service/' + $dst + '.' + $dom
+    $want += 'Microsoft Virtual System Migration Service/' + $dst
+    $want += 'cifs/' + $dst + '.' + $dom
+    $want += 'cifs/' + $dst
+  }
+  $comp = Get-ADComputer -Identity $src -Properties 'msDS-AllowedToDelegateTo'
+  $cur = @($comp.'msDS-AllowedToDelegateTo')
+  $missing = @($want | Where-Object { $cur -notcontains $_ })
+  if ($missing.Count -gt 0) {
+    Set-ADComputer -Identity $src -Add @{ 'msDS-AllowedToDelegateTo' = $missing }
+    $changed += $src
+  }
+}
+[pscustomobject]@{ changed = ($changed.Count -gt 0) } | ConvertTo-Json -Compress`, nodeExpr)
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure migration delegation: %w", err)
+	}
+	var res struct {
+		Changed bool `json:"changed"`
+	}
+	if err := decodeJSON(out, &res); err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure migration delegation: %w", err)
+	}
+	if res.Changed {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 func (p *PowerShell) EnsureFailoverClusteringFeature(ctx context.Context) (Outcome, error) {
 	out, err := p.run(ctx, installClusteringScript)
 	if err != nil {

@@ -164,6 +164,14 @@ type Interface interface {
 	// similar make to peer nodes). Idempotent: a no-op when already enabled.
 	EnsureClusterFirewall(ctx context.Context) (Outcome, error)
 
+	// EnsureMigrationDelegation configures Kerberos constrained delegation in AD
+	// between the given cluster nodes' computer accounts (the migration + cifs
+	// services), which cluster-initiated live migration requires when the host
+	// migration auth is Kerberos. Run on the former (a domain admin). Installs the
+	// AD PowerShell module if absent. Idempotent: only adds missing delegations.
+	// nodes empty = discover via Get-ClusterNode.
+	EnsureMigrationDelegation(ctx context.Context, nodes []string) (Outcome, error)
+
 	// FormCluster creates the failover cluster described by f, with this node as
 	// the former. It uses New-Cluster (never hand-rolled quorum) and coordinates
 	// with the Failover Clustering service. Idempotency is the caller's

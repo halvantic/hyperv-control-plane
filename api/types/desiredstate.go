@@ -669,11 +669,12 @@ const (
 	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)
 	JobNodeResume     = "NodeResume"         // params: node — resume into the cluster
 
-	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
-	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
-	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
-	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
-	JobClusterLog       = "ClusterLog"       // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
+	JobClusterMoveGroup    = "ClusterMoveGroup"    // params: group, node — move/fail over a clustered role to node
+	JobClusterMoveCSV      = "ClusterMoveCSV"      // params: volume, node — move CSV ownership to node
+	JobClusterValidate     = "ClusterValidate"     // params: nodes (optional, comma list), include (optional) — Test-Cluster
+	JobClusterMoveVM       = "ClusterMoveVM"       // params: vm, node — live-migrate a clustered VM role to node
+	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
+	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 
 	JobRemoveSwitch = "RemoveSwitch" // params: switch — delete a virtual switch from the host
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
