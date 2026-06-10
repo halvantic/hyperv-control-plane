@@ -684,6 +684,8 @@ const (
 
 	JobRepairHostDNS = "RepairHostDNS" // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 
+	JobRebootHost = "RebootHost" // no params — restart the host now (Restart-Computer -Force)
+
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 )
 

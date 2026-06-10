@@ -53,6 +53,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])
+	case types.JobRebootHost:
+		return done(r.hv.RebootHost(ctx), "reboot initiated")
 	case types.JobClusterDestroy:
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:
