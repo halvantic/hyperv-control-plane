@@ -184,8 +184,15 @@ func (p *PowerShell) MoveClusterVM(ctx context.Context, vm, node string) error {
 	// Hyper-V (live when the VM is running, quick when it is off).
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 Import-Module FailoverClusters
+# Pick the migration type by the VM's actual state: a running VM live-migrates
+# (no downtime); a stopped/saved VM gets a Quick move (ownership change). The
+# cmdlet defaults to Live, which is rejected on a stopped VM with "not in an
+# appropriate state", so the type must be chosen explicitly.
+$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+$mt = 'Quick'
+if ($vm -and $vm.State -eq 'Running') { $mt = 'Live' }
 try {
-  Move-ClusterVirtualMachineRole -Name %[1]s -Node %[2]s -ErrorAction Stop | Out-Null
+  Move-ClusterVirtualMachineRole -Name %[1]s -Node %[2]s -MigrationType $mt -ErrorAction Stop | Out-Null
 } catch {
   $msg = $_.Exception.Message
   $since = (Get-Date).AddMinutes(-5)
@@ -214,7 +221,7 @@ try {
   }
   $detail = ($rows -join ' | ')
   if (-not $detail) { $detail = 'no related events on source or destination in the last 5 minutes; run Get-ClusterLog for detail' }
-  throw ($msg + ' -- events: ' + $detail)
+  throw ('(' + $mt + ' migration) ' + $msg + ' -- events: ' + $detail)
 }`, psQuote(vm), psQuote(node))
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("migrate VM %q to %q: %w", vm, node, err)
