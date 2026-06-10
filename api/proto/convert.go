@@ -216,6 +216,8 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			Up:           a.Up,
 			IsManagement: a.IsManagement,
 			Ipv4:         a.IPv4,
+			DnsServers:   a.DNSServers,
+			RegistersDns: a.RegistersDNS,
 		})
 	}
 	for _, d := range inv.PhysicalDisks {
@@ -247,6 +249,8 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			Up:           a.GetUp(),
 			IsManagement: a.GetIsManagement(),
 			IPv4:         a.GetIpv4(),
+			DNSServers:   a.GetDnsServers(),
+			RegistersDNS: a.GetRegistersDns(),
 		})
 	}
 	for _, d := range inv.GetPhysicalDisks() {

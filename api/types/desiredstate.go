@@ -291,6 +291,15 @@ type PhysicalAdapter struct {
 	// NIC has no host IP — e.g. it's free or already bound to a vSwitch). The UI
 	// uses it to mark a NIC that carries host connectivity and must not be teamed.
 	IPv4 string `json:"ipv4,omitempty"`
+	// DNSServers are the IPv4 DNS servers configured on this adapter. On a
+	// domain-joined host a NIC whose DNS does not include the domain controller
+	// (e.g. a DHCP NIC handed the router as DNS) breaks AD/DNS registration and
+	// Kerberos; the UI flags it.
+	DNSServers []string `json:"dnsServers,omitempty"`
+	// RegistersDNS is whether this adapter registers its address in DNS
+	// (RegisterThisConnectionsAddress). A secondary/DHCP NIC that registers can
+	// publish a wrong A record for the host.
+	RegistersDNS bool `json:"registersDNS,omitempty"`
 }
 
 type PhysicalDisk struct {

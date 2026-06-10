@@ -131,7 +131,9 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''
   if ($static) { $ip = [string]$a.IPAddress }
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip }
+  $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}

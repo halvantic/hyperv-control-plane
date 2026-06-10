@@ -2135,13 +2135,18 @@ func (x *HostInventory) GetOsVersion() string {
 }
 
 type PhysicalAdapter struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Mac           string                 `protobuf:"bytes,2,opt,name=mac,proto3" json:"mac,omitempty"`
-	LinkSpeedBps  uint64                 `protobuf:"varint,3,opt,name=link_speed_bps,json=linkSpeedBps,proto3" json:"link_speed_bps,omitempty"`
-	Up            bool                   `protobuf:"varint,4,opt,name=up,proto3" json:"up,omitempty"`
-	IsManagement  bool                   `protobuf:"varint,5,opt,name=is_management,json=isManagement,proto3" json:"is_management,omitempty"`
-	Ipv4          string                 `protobuf:"bytes,6,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Mac          string                 `protobuf:"bytes,2,opt,name=mac,proto3" json:"mac,omitempty"`
+	LinkSpeedBps uint64                 `protobuf:"varint,3,opt,name=link_speed_bps,json=linkSpeedBps,proto3" json:"link_speed_bps,omitempty"`
+	Up           bool                   `protobuf:"varint,4,opt,name=up,proto3" json:"up,omitempty"`
+	IsManagement bool                   `protobuf:"varint,5,opt,name=is_management,json=isManagement,proto3" json:"is_management,omitempty"`
+	Ipv4         string                 `protobuf:"bytes,6,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
+	// dns_servers are the IPv4 DNS servers configured on this adapter; registers_dns
+	// is whether the adapter registers its address in DNS. Used to flag a NIC whose
+	// DNS does not point at the domain controller (a domain-join/registration risk).
+	DnsServers    []string `protobuf:"bytes,7,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	RegistersDns  bool     `protobuf:"varint,8,opt,name=registers_dns,json=registersDns,proto3" json:"registers_dns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2216,6 +2221,20 @@ func (x *PhysicalAdapter) GetIpv4() string {
 		return x.Ipv4
 	}
 	return ""
+}
+
+func (x *PhysicalAdapter) GetDnsServers() []string {
+	if x != nil {
+		return x.DnsServers
+	}
+	return nil
+}
+
+func (x *PhysicalAdapter) GetRegistersDns() bool {
+	if x != nil {
+		return x.RegistersDns
+	}
+	return false
 }
 
 type PhysicalDisk struct {
@@ -4108,14 +4127,17 @@ const file_ballast_proto_rawDesc = "" +
 	"\x12total_memory_bytes\x18\x03 \x01(\x04R\x10totalMemoryBytes\x12!\n" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
-	"os_version\x18\x05 \x01(\tR\tosVersion\"\xa6\x01\n" +
+	"os_version\x18\x05 \x01(\tR\tosVersion\"\xec\x01\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
 	"\x0elink_speed_bps\x18\x03 \x01(\x04R\flinkSpeedBps\x12\x0e\n" +
 	"\x02up\x18\x04 \x01(\bR\x02up\x12#\n" +
 	"\ris_management\x18\x05 \x01(\bR\fisManagement\x12\x12\n" +
-	"\x04ipv4\x18\x06 \x01(\tR\x04ipv4\"\xa2\x01\n" +
+	"\x04ipv4\x18\x06 \x01(\tR\x04ipv4\x12\x1f\n" +
+	"\vdns_servers\x18\a \x03(\tR\n" +
+	"dnsServers\x12#\n" +
+	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\"\xa2\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +

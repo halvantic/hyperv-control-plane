@@ -280,6 +280,11 @@ message PhysicalAdapter {
   bool up = 4;
   bool is_management = 5;
   string ipv4 = 6;
+  // dns_servers are the IPv4 DNS servers configured on this adapter; registers_dns
+  // is whether the adapter registers its address in DNS. Used to flag a NIC whose
+  // DNS does not point at the domain controller (a domain-join/registration risk).
+  repeated string dns_servers = 7;
+  bool registers_dns = 8;
 }
 
 message PhysicalDisk {
