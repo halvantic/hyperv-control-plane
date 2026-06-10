@@ -97,14 +97,25 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 
 	// Processor count and static startup memory cannot change on a running VM, so
 	// each is applied only when it differs from actual, and skipped (flagging
-	// $pending) when the VM is running. The set commands run against $name.
-	procScript := fmt.Sprintf(`if ((Get-VMProcessor -VMName %[1]s).Count -ne %[2]d) {
+	// $pending) when the VM is running. The set commands run against $name. A
+	// ProcessorCount of 0 means "do not manage the processor" — used when adopting
+	// an existing VM whose CPU/memory the operator has not (yet) declared, so the
+	// reconcile never reconfigures what was not asked for.
+	procScript := ""
+	if s.ProcessorCount > 0 {
+		procScript = fmt.Sprintf(`if ((Get-VMProcessor -VMName %[1]s).Count -ne %[2]d) {
   if ($running) { $pending = $true } else { Set-VMProcessor -VMName %[1]s -Count %[2]d; $changed = $true }
 }`, name, s.ProcessorCount)
+	}
 
-	// Memory diff and apply: static unless dynamic memory is configured.
+	// Memory diff and apply: static unless dynamic memory is configured. A
+	// startup of 0 with no dynamic-memory block means "do not manage memory"
+	// (same adoption semantics as ProcessorCount above).
 	var memDiff, memApply string
-	if s.DynamicMemory != nil {
+	memScript := ""
+	if s.DynamicMemory == nil && s.MemoryStartupBytes == 0 {
+		// unmanaged memory: leave memScript empty
+	} else if s.DynamicMemory != nil {
 		memDiff = fmt.Sprintf("(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne %d) -or ($m.Minimum -ne %d) -or ($m.Maximum -ne %d)",
 			s.MemoryStartupBytes, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
 		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $true -StartupBytes %[2]d -MinimumBytes %[3]d -MaximumBytes %[4]d",
@@ -113,10 +124,12 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 		memDiff = fmt.Sprintf("$m.DynamicMemoryEnabled -or ($m.Startup -ne %d)", s.MemoryStartupBytes)
 		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $false -StartupBytes %[2]d", name, s.MemoryStartupBytes)
 	}
-	memScript := fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
+	if memDiff != "" {
+		memScript = fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
 if (%[2]s) {
   if ($running) { $pending = $true } else { %[3]s; $changed = $true }
 }`, name, memDiff, memApply)
+	}
 
 	// Set-VM only when there is an automatic-start-action to apply; calling it
 	// with just -Name is rejected.

@@ -88,11 +88,21 @@ func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) error {
 	return nil
 }
 
-// RemoveVM stops (if running) and deletes a VM from the host. The VHDX files are
-// left on disk. Idempotent: absent VM is a no-op.
+// RemoveVM stops (if running) and deletes a VM from the host. If the VM is a
+// clustered (highly-available) role, its cluster group is removed first so the
+// delete does not leave an orphaned role behind; this makes the job work for a
+// clustered VM regardless of which member it ran on. The VHDX files are left on
+// disk. Idempotent: absent VM/role is a no-op.
 func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; $vm = Get-VM -Name %s -ErrorAction SilentlyContinue; "+
-		"if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -Name %s -TurnOff -Force }; Remove-VM -Name %s -Force }", psQuote(name), psQuote(name), psQuote(name))
+	q := psQuote(name)
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+if ($g) {
+  Stop-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue | Out-Null
+  Remove-ClusterGroup -Name %[1]s -RemoveResources -Force -ErrorAction SilentlyContinue
+}
+$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -Name %[1]s -TurnOff -Force }; Remove-VM -Name %[1]s -Force }`, q)
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("remove vm %q: %w", name, err)
 	}
