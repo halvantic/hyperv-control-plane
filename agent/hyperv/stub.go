@@ -473,6 +473,10 @@ func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error)
 	return "validation ok (stub)", nil
 }
 
+func (s *Stub) ClusterLog(_ context.Context, _, _ string) (string, error) {
+	return "cluster log (stub)", nil
+}
+
 // HasVM reports whether the stub currently models a VM by that name.
 func (s *Stub) HasVM(name string) bool {
 	s.mu.Lock()

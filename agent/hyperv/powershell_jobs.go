@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -243,4 +244,42 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 		return "validation ran (no report path returned)", nil
 	}
 	return "validation report: " + report, nil
+}
+
+// ClusterLog generates Get-ClusterLog for the recent window on this node and
+// returns the lines relevant to migration/errors (and any operator filter, e.g.
+// a VM name) — the cluster.log carries per-operation detail the Windows event
+// log does not. It writes to a temp dir, greps, and cleans up. The result is
+// capped so it stays a usable job message.
+func (p *PowerShell) ClusterLog(ctx context.Context, span, filter string) (string, error) {
+	mins := 15
+	if n, err := strconv.Atoi(strings.TrimSpace(span)); err == nil && n > 0 && n <= 1440 {
+		mins = n
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+Import-Module FailoverClusters
+$dir = Join-Path $env:TEMP ('blog_' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+try {
+  Get-ClusterLog -Node $env:COMPUTERNAME -TimeSpan %[1]d -Destination $dir -ErrorAction Stop | Out-Null
+  $f = Get-ChildItem -Path $dir -Filter *.log -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $f) { 'no cluster log generated'; return }
+  $pat = 'migrat|live migration|0x8007|0x800|fail|error|warn|rejected|denied|listen|kerberos|21111|20406|22038'
+  $flt = %[2]s
+  if ($flt) { $pat = $pat + '|' + [regex]::Escape($flt) }
+  $hits = Select-String -Path $f.FullName -Pattern $pat -AllMatches -ErrorAction SilentlyContinue | Select-Object -Last 60 | ForEach-Object { $_.Line.Trim() }
+  if (-not $hits) { 'cluster log generated; no migration/error lines in the last %[1]d min' ; return }
+  ($hits -join [Environment]::NewLine)
+} finally {
+  Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+}`, mins, psQuote(filter))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("cluster log: %w", err)
+	}
+	res := strings.TrimSpace(string(out))
+	if len(res) > 12000 {
+		res = res[len(res)-12000:]
+	}
+	return res, nil
 }

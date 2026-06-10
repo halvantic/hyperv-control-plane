@@ -55,6 +55,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:
 		return r.hv.ValidateCluster(ctx, splitList(p["nodes"]), splitList(p["include"]))
+	case types.JobClusterLog:
+		return r.hv.ClusterLog(ctx, p["span"], p["filter"])
 	default:
 		return "", fmt.Errorf("unknown job kind %q", job.Kind)
 	}

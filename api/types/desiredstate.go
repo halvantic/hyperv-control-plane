@@ -653,6 +653,7 @@ const (
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
 	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
+	JobClusterLog       = "ClusterLog"       // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 
 	JobRemoveSwitch = "RemoveSwitch" // params: switch — delete a virtual switch from the host
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)

@@ -260,6 +260,12 @@ type Interface interface {
 	// members) for the named test categories (empty = a safe non-disruptive
 	// default) and returns a short result summary. Imperative Job.
 	ValidateCluster(ctx context.Context, nodes, include []string) (string, error)
+
+	// ClusterLog runs Get-ClusterLog for the recent window (span minutes) on this
+	// node and returns the lines relevant to migration/errors (optionally also
+	// matching filter, e.g. a VM name) — the per-operation detail the Windows
+	// event log does not fully capture. Imperative Job.
+	ClusterLog(ctx context.Context, span, filter string) (string, error)
 }
 
 // VMEnsureResult is what EnsureVM did.
