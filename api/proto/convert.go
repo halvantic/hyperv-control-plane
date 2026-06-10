@@ -595,6 +595,14 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 			NumberOfCopies: int32(v.NumberOfCopies),
 		})
 	}
+	if m := s.LiveMigration; m != nil {
+		out.LiveMigration = &LiveMigrationSpec{
+			Enabled:            m.Enabled,
+			AuthenticationType: m.AuthenticationType,
+			MaxConcurrent:      int32(m.MaxConcurrent),
+			Networks:           m.Networks,
+		}
+	}
 	return out
 }
 
@@ -621,6 +629,14 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 			ResiliencyType: v.GetResiliencyType(),
 			NumberOfCopies: int(v.GetNumberOfCopies()),
 		})
+	}
+	if m := s.GetLiveMigration(); m != nil {
+		out.LiveMigration = &types.LiveMigrationSpec{
+			Enabled:            m.GetEnabled(),
+			AuthenticationType: m.GetAuthenticationType(),
+			MaxConcurrent:      int(m.GetMaxConcurrent()),
+			Networks:           m.GetNetworks(),
+		}
 	}
 	return out
 }

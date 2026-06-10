@@ -2826,7 +2826,10 @@ type ClusterSpec struct {
 	// enable_s2d requests Storage Spaces Direct once the cluster is formed.
 	EnableS2D bool `protobuf:"varint,4,opt,name=enable_s2d,json=enableS2d,proto3" json:"enable_s2d,omitempty"`
 	// volumes are the Cluster Shared Volumes to provision on the S2D pool.
-	Volumes       []*CSVSpec `protobuf:"bytes,5,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	Volumes []*CSVSpec `protobuf:"bytes,5,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	// live_migration is the cluster-wide live-migration config, delivered to the
+	// former so it can configure Kerberos constrained delegation between nodes.
+	LiveMigration *LiveMigrationSpec `protobuf:"bytes,6,opt,name=live_migration,json=liveMigration,proto3" json:"live_migration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2892,6 +2895,13 @@ func (x *ClusterSpec) GetEnableS2D() bool {
 func (x *ClusterSpec) GetVolumes() []*CSVSpec {
 	if x != nil {
 		return x.Volumes
+	}
+	return nil
+}
+
+func (x *ClusterSpec) GetLiveMigration() *LiveMigrationSpec {
+	if x != nil {
+		return x.LiveMigration
 	}
 	return nil
 }
@@ -4262,14 +4272,15 @@ const file_ballast_proto_rawDesc = "" +
 	"\aCluster\x12*\n" +
 	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12+\n" +
 	"\x04spec\x18\x02 \x01(\v2\x17.ballast.v1.ClusterSpecR\x04spec\x121\n" +
-	"\x06status\x18\x03 \x01(\v2\x19.ballast.v1.ClusterStatusR\x06status\"\xcd\x01\n" +
+	"\x06status\x18\x03 \x01(\v2\x19.ballast.v1.ClusterStatusR\x06status\"\x93\x02\n" +
 	"\vClusterSpec\x12\x18\n" +
 	"\amembers\x18\x01 \x03(\tR\amembers\x12#\n" +
 	"\rmanagement_ip\x18\x02 \x01(\tR\fmanagementIp\x121\n" +
 	"\awitness\x18\x03 \x01(\v2\x17.ballast.v1.WitnessSpecR\awitness\x12\x1d\n" +
 	"\n" +
 	"enable_s2d\x18\x04 \x01(\bR\tenableS2d\x12-\n" +
-	"\avolumes\x18\x05 \x03(\v2\x13.ballast.v1.CSVSpecR\avolumes\"\x8f\x01\n" +
+	"\avolumes\x18\x05 \x03(\v2\x13.ballast.v1.CSVSpecR\avolumes\x12D\n" +
+	"\x0elive_migration\x18\x06 \x01(\v2\x1d.ballast.v1.LiveMigrationSpecR\rliveMigration\"\x8f\x01\n" +
 	"\aCSVSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -4545,40 +4556,41 @@ var file_ballast_proto_depIdxs = []int32{
 	44, // 46: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
 	43, // 47: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
 	42, // 48: ballast.v1.ClusterSpec.volumes:type_name -> ballast.v1.CSVSpec
-	4,  // 49: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
-	0,  // 50: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
-	19, // 51: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
-	48, // 52: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
-	49, // 53: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
-	50, // 54: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
-	46, // 55: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
-	47, // 56: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
-	45, // 57: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
-	18, // 58: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
-	52, // 59: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
-	57, // 60: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
-	53, // 61: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
-	54, // 62: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
-	55, // 63: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
-	56, // 64: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
-	5,  // 65: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
-	6,  // 66: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
-	0,  // 67: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
-	5,  // 68: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
-	19, // 69: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
-	7,  // 70: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	9,  // 71: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	15, // 72: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	12, // 73: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
-	8,  // 74: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	10, // 75: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	17, // 76: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	13, // 77: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
-	74, // [74:78] is the sub-list for method output_type
-	70, // [70:74] is the sub-list for method input_type
-	70, // [70:70] is the sub-list for extension type_name
-	70, // [70:70] is the sub-list for extension extendee
-	0,  // [0:70] is the sub-list for field type_name
+	22, // 49: ballast.v1.ClusterSpec.live_migration:type_name -> ballast.v1.LiveMigrationSpec
+	4,  // 50: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
+	0,  // 51: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
+	19, // 52: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
+	48, // 53: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
+	49, // 54: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
+	50, // 55: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
+	46, // 56: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
+	47, // 57: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
+	45, // 58: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
+	18, // 59: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
+	52, // 60: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
+	57, // 61: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
+	53, // 62: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
+	54, // 63: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
+	55, // 64: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
+	56, // 65: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
+	5,  // 66: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
+	6,  // 67: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
+	0,  // 68: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
+	5,  // 69: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
+	19, // 70: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
+	7,  // 71: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	9,  // 72: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	15, // 73: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	12, // 74: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
+	8,  // 75: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	10, // 76: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	17, // 77: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	13, // 78: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
+	75, // [75:79] is the sub-list for method output_type
+	71, // [71:75] is the sub-list for method input_type
+	71, // [71:71] is the sub-list for extension type_name
+	71, // [71:71] is the sub-list for extension extendee
+	0,  // [0:71] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }

@@ -381,6 +381,9 @@ message ClusterSpec {
   bool enable_s2d = 4;
   // volumes are the Cluster Shared Volumes to provision on the S2D pool.
   repeated CSVSpec volumes = 5;
+  // live_migration is the cluster-wide live-migration config, delivered to the
+  // former so it can configure Kerberos constrained delegation between nodes.
+  LiveMigrationSpec live_migration = 6;
 }
 
 message CSVSpec {
