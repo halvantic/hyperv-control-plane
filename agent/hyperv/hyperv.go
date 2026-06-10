@@ -122,6 +122,13 @@ type Interface interface {
 	// poolable state. Destructive imperative Job; refuses the boot/system disk.
 	FormatDisk(ctx context.Context, deviceID string) error
 
+	// RepairHostDNS fixes a common multi-homed-host misconfiguration: it points
+	// every non-management NIC's DNS at the domain controller (the management
+	// NIC's DNS) and disables DNS registration on those NICs, so a DHCP NIC handed
+	// the router as DNS no longer breaks AD/DNS registration (event 1196) or
+	// resolution. Returns a short summary of what changed. Imperative Job.
+	RepairHostDNS(ctx context.Context) (string, error)
+
 	// DestroyCluster tears the cluster down from this node (the former): remove VM
 	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;
 	// a no-op when no cluster exists.

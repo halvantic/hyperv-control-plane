@@ -51,6 +51,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.RemoveCSV(ctx, p["volume"]), "removed volume "+p["volume"])
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
+	case types.JobRepairHostDNS:
+		return r.hv.RepairHostDNS(ctx)
 	case types.JobClusterDestroy:
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:

@@ -246,6 +246,41 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 	return "validation report: " + report, nil
 }
 
+// RepairHostDNS fixes the multi-homed-host DNS problem: the management NIC (the
+// one with a static IPv4) carries the correct domain-controller DNS, but a DHCP
+// secondary NIC is often handed the router as DNS and still registers in DNS —
+// which breaks AD/DNS registration (event 1196) and can make Kerberos-dependent
+// operations (live migration) flaky. This copies the management NIC's DNS onto
+// every other physical NIC and turns off DNS registration on those NICs, then
+// re-registers. Idempotent.
+func (p *PowerShell) RepairHostDNS(ctx context.Context) (string, error) {
+	script := `$ErrorActionPreference='Stop'
+$mgmt = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {
+  Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }
+} | Select-Object -First 1
+if (-not $mgmt) { throw 'no management NIC with a static IPv4 found; cannot determine the correct DNS server' }
+$dcDns = @((Get-DnsClientServerAddress -InterfaceIndex $mgmt.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+if (-not $dcDns) { throw 'management NIC has no DNS server configured' }
+$fixed = @()
+foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.ifIndex -ne $mgmt.ifIndex })) {
+  $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  $reg = [bool](Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
+  $needs = $reg -or (($cur -join ',') -ne ($dcDns -join ','))
+  if (-not $needs) { continue }
+  try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue } catch {}
+  try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $dcDns -ErrorAction Stop } catch {}
+  $fixed += ($n.Name + ' (was ' + (($cur -join ',')) + ', reg=' + $reg + ')')
+}
+Register-DnsClient -ErrorAction SilentlyContinue | Out-Null
+if ($fixed.Count -eq 0) { 'no change: all non-management NICs already use ' + ($dcDns -join ',') + ' and do not register' }
+else { 'pointed DNS at ' + ($dcDns -join ',') + ' and disabled registration on: ' + ($fixed -join '; ') }`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("repair host DNS: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // ClusterLog generates Get-ClusterLog for the recent window on this node and
 // returns the lines relevant to migration/errors (and any operator filter, e.g.
 // a VM name) — the cluster.log carries per-operation detail the Windows event

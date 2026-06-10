@@ -670,6 +670,8 @@ const (
 
 	JobFormatDisk = "FormatDisk" // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 
+	JobRepairHostDNS = "RepairHostDNS" // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
+
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 )
 
