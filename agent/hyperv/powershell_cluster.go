@@ -175,8 +175,8 @@ foreach ($src in $nodes) {
     $want += 'cifs/' + $dst
   }
   $comp = Get-ADComputer -Identity $src -Properties 'msDS-AllowedToDelegateTo'
-  $cur = @($comp.'msDS-AllowedToDelegateTo')
-  $missing = @($want | Where-Object { $cur -notcontains $_ })
+  $cur = @($comp.'msDS-AllowedToDelegateTo' | ForEach-Object { [string]$_ })
+  [string[]]$missing = @($want | Where-Object { $cur -notcontains $_ } | ForEach-Object { [string]$_ })
   if ($missing.Count -gt 0) {
     Set-ADComputer -Identity $src -Add @{ 'msDS-AllowedToDelegateTo' = $missing }
     $changed += $src
