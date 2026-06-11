@@ -241,9 +241,16 @@ func (p *PowerShell) DestroyCluster(ctx context.Context) error {
 func (p *PowerShell) FormCluster(ctx context.Context, f ClusterFormation) error {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
-	// -AdministrativeAccessPoint Dns avoids requiring an Active Directory
-	// computer object, so this works for workgroup as well as domain hosts.
-	fmt.Fprintf(&b, "New-Cluster -Name %s -Node %s -NoStorage -AdministrativeAccessPoint Dns -Force",
+	// Domain-joined hosts form the cluster with an Active Directory access point
+	// (a real cluster name object, the CNO). Clustered Hyper-V live migration is
+	// cluster-initiated and so must authenticate with Kerberos against the cluster
+	// name; an AD-detached (DNS-only) cluster has no CNO and falls back to NTLM for
+	// the cluster name, which makes Kerberos live migration unsupported (the
+	// migration fails at "register cluster name in the local user groups", event
+	// 20501). The access point is immutable after creation, so it must be chosen
+	// correctly here. Workgroup hosts have no AD and fall back to DNS-only.
+	b.WriteString("$aap = if ((Get-CimInstance Win32_ComputerSystem).PartOfDomain) { 'ActiveDirectoryAndDns' } else { 'Dns' }\n")
+	fmt.Fprintf(&b, "New-Cluster -Name %s -Node %s -NoStorage -AdministrativeAccessPoint $aap -Force",
 		psQuote(f.Name), psStringList(f.Members))
 	if f.ManagementIP != "" {
 		fmt.Fprintf(&b, " -StaticAddress %s", psQuote(f.ManagementIP))
