@@ -27,6 +27,16 @@ type VMResult struct {
 	// PowerState is the observed power state after reconciling.
 	PowerState types.VMPowerState
 
+	// VMID is the VM's Hyper-V GUID, used by the centre as the console
+	// preconnection-blob. Empty when the VM does not yet exist.
+	VMID string
+
+	// GuestOS / IPAddress / GuestFQDN are observed guest details (integration
+	// services).
+	GuestOS   string
+	IPAddress string
+	GuestFQDN string
+
 	// AssignedMemoryBytes / CPUUsagePercent / UptimeSeconds are best-effort
 	// observed runtime metrics.
 	AssignedMemoryBytes uint64
@@ -107,6 +117,10 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		r.log.Warn("get vm state failed; reporting without runtime metrics", "vm", vm.Meta.Name, "err", serr)
 	} else {
 		res.PowerState = state.PowerState
+		res.VMID = state.ID
+		res.GuestOS = state.GuestOS
+		res.IPAddress = state.IPAddress
+		res.GuestFQDN = state.GuestFQDN
 		res.AssignedMemoryBytes = state.AssignedMemoryBytes
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds

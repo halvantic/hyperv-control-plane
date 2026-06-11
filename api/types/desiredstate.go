@@ -687,6 +687,11 @@ const (
 	JobRebootHost = "RebootHost" // no params — restart the host now (Restart-Computer -Force)
 
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
+
+	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
+
+	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
+	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
 )
 
 // ---------------------------------------------------------------------------
@@ -857,6 +862,25 @@ type VMStatus struct {
 
 	// PowerState is the actual observed power state of the VM.
 	PowerState VMPowerState `json:"powerState,omitempty"`
+
+	// VMID is the VM's Hyper-V GUID (Get-VM .Id). The centre uses it as the
+	// console preconnection-blob to open the VM's VMConnect console over RDP.
+	VMID string `json:"vmId,omitempty"`
+
+	// GuestOS is the guest operating system name reported by the integration
+	// services KVP exchange (e.g. "Windows Server 2025 Datacenter"). Empty until
+	// an OS is installed and integration services are running.
+	GuestOS string `json:"guestOS,omitempty"`
+
+	// IPAddress is the guest's IP address(es) as reported by Hyper-V (comma-
+	// separated when more than one). Empty until the guest has integration
+	// services and an address.
+	IPAddress string `json:"ipAddress,omitempty"`
+
+	// GuestFQDN is the guest's fully-qualified domain name from the integration-
+	// services KVP exchange — "host.domain" when domain-joined, just "host" in a
+	// workgroup. The UI derives domain membership from it.
+	GuestFQDN string `json:"guestFQDN,omitempty"`
 
 	// AssignedMemoryBytes is the memory currently assigned (meaningful under
 	// dynamic memory). Best effort; zero when not observed.

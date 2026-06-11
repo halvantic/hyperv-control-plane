@@ -544,4 +544,8 @@ message VMStatus {
   int64 uptime_seconds = 6;
   repeated Condition conditions = 7;
   bytes screen_png = 8;
+  string vm_id = 9;
+  string guest_os = 10;
+  string ip_address = 11;
+  string guest_fqdn = 12;
 }

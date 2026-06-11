@@ -31,6 +31,23 @@ func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
 	return nil
 }
 
+func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) error {
+	// Idempotent: skip when the ISO is already present. Download to a temporary
+	// file then move into place so an interrupted transfer never looks complete.
+	// ProgressPreference off makes Invoke-WebRequest stream large files quickly.
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "+
+		"$dest=%[1]s; $url=%[2]s; "+
+		"if (Test-Path $dest) { return }; "+
+		"$dir=Split-Path -Parent $dest; if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; "+
+		"$tmp=$dest + [char]46 + 'download'; "+
+		"Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing; "+
+		"Move-Item -Force -Path $tmp -Destination $dest", psQuote(dest), psQuote(url))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("fetch iso to %q: %w", dest, err)
+	}
+	return nil
+}
+
 func (p *PowerShell) ApplyVMCheckpoint(ctx context.Context, vmName, checkpointName string) error {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Restore-VMCheckpoint -VMName %s -Name %s -Confirm:$false | Out-Null", psQuote(vmName), psQuote(checkpointName))
 	if err := p.run2(ctx, script); err != nil {

@@ -232,6 +232,22 @@ type Interface interface {
 	// ExportVM exports the VM (config + VHDs) to a directory. Imperative Job.
 	ExportVM(ctx context.Context, vmName, path string) error
 
+	// FetchISO downloads an ISO from url (the centre's ISO library over HTTP) to
+	// dest on this host, creating dest's parent folder. Used to place an uploaded
+	// ISO onto a CSV so any node can boot a VM from it. Agent-local (no WinRM) and
+	// idempotent: a no-op when dest already exists. Imperative Job.
+	FetchISO(ctx context.Context, url, dest string) error
+
+	// GuestJoinDomain joins the VM's guest OS to domain (then reboots the guest)
+	// via PowerShell Direct. guestUser/guestPass authenticate into the guest;
+	// domainUser/domainPass authorise the join. Credentials must never be logged.
+	GuestJoinDomain(ctx context.Context, vmName, domain, ouPath, guestUser, guestPass, domainUser, domainPass string) error
+
+	// GuestSetIP sets a static IPv4 (addr in CIDR) on the guest's adapter via
+	// PowerShell Direct. iface empty picks the first connected adapter; gateway
+	// and dns (comma-separated) are optional.
+	GuestSetIP(ctx context.Context, vmName, iface, addr, gateway, dns, guestUser, guestPass string) error
+
 	// ApplyVMCheckpoint reverts the VM to a named checkpoint. Imperative Job.
 	ApplyVMCheckpoint(ctx context.Context, vmName, checkpointName string) error
 
@@ -298,6 +314,18 @@ type VMEnsureResult struct {
 type VMState struct {
 	// Exists is true when a VM by that name is present on the host.
 	Exists bool
+	// ID is the VM's Hyper-V GUID (Get-VM .Id). The centre uses it as the
+	// preconnection-blob to open the VM's console over RDP (VMConnect). Empty
+	// when the VM does not exist.
+	ID string
+	// GuestOS is the guest OS name (integration-services KVP); IPAddress is the
+	// guest's address(es), comma-separated. Both empty until the guest is up with
+	// integration services.
+	GuestOS   string
+	IPAddress string
+	// GuestFQDN is the guest's fully-qualified domain name from the KVP exchange
+	// (e.g. "host.ballast.local" when domain-joined, just "host" in a workgroup).
+	GuestFQDN string
 	// PowerState is the actual power state; empty when Exists is false.
 	PowerState types.VMPowerState
 	// AssignedMemoryBytes, CPUUsagePercent and UptimeSeconds are best-effort

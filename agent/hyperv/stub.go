@@ -433,10 +433,13 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 
 // CreateVMCheckpoint / ExportVM / AddClusterNode / EvictClusterNode record the job ran.
-func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return nil }
-func (s *Stub) ExportVM(_ context.Context, _, _ string) error           { return nil }
-func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error  { return nil }
-func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error { return nil }
+func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
+func (s *Stub) ExportVM(_ context.Context, _, _ string) error                       { return nil }
+func (s *Stub) FetchISO(_ context.Context, _, _ string) error                       { return nil }
+func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
+func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
+func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error              { return nil }
+func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
 
 func (s *Stub) AddClusterNode(_ context.Context, node string) error {
 	s.mu.Lock()

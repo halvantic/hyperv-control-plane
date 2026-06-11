@@ -3960,6 +3960,10 @@ type VMStatus struct {
 	UptimeSeconds       int64                  `protobuf:"varint,6,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
 	Conditions          []*Condition           `protobuf:"bytes,7,rep,name=conditions,proto3" json:"conditions,omitempty"`
 	ScreenPng           []byte                 `protobuf:"bytes,8,opt,name=screen_png,json=screenPng,proto3" json:"screen_png,omitempty"`
+	VmId                string                 `protobuf:"bytes,9,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	GuestOs             string                 `protobuf:"bytes,10,opt,name=guest_os,json=guestOs,proto3" json:"guest_os,omitempty"`
+	IpAddress           string                 `protobuf:"bytes,11,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	GuestFqdn           string                 `protobuf:"bytes,12,opt,name=guest_fqdn,json=guestFqdn,proto3" json:"guest_fqdn,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -4048,6 +4052,34 @@ func (x *VMStatus) GetScreenPng() []byte {
 		return x.ScreenPng
 	}
 	return nil
+}
+
+func (x *VMStatus) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *VMStatus) GetGuestOs() string {
+	if x != nil {
+		return x.GuestOs
+	}
+	return ""
+}
+
+func (x *VMStatus) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *VMStatus) GetGuestFqdn() string {
+	if x != nil {
+		return x.GuestFqdn
+	}
+	return ""
 }
 
 var File_ballast_proto protoreflect.FileDescriptor
@@ -4372,7 +4404,7 @@ const file_ballast_proto_rawDesc = "" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x12\x1f\n" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
-	"macAddress\"\xfc\x02\n" +
+	"macAddress\"\xea\x03\n" +
 	"\bVMStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x129\n" +
@@ -4385,7 +4417,14 @@ const file_ballast_proto_rawDesc = "" +
 	"conditions\x18\a \x03(\v2\x15.ballast.v1.ConditionR\n" +
 	"conditions\x12\x1d\n" +
 	"\n" +
-	"screen_png\x18\b \x01(\fR\tscreenPng*~\n" +
+	"screen_png\x18\b \x01(\fR\tscreenPng\x12\x13\n" +
+	"\x05vm_id\x18\t \x01(\tR\x04vmId\x12\x19\n" +
+	"\bguest_os\x18\n" +
+	" \x01(\tR\aguestOs\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\v \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"guest_fqdn\x18\f \x01(\tR\tguestFqdn*~\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPHASE_PENDING\x10\x01\x12\x15\n" +

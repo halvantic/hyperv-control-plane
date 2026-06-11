@@ -17,23 +17,51 @@ import (
 
 type vmObservation struct {
 	Exists              bool   `json:"exists"`
+	ID                  string `json:"id"`
 	PowerState          string `json:"powerState"`
 	AssignedMemoryBytes uint64 `json:"assignedMemoryBytes"`
 	CPUUsagePercent     int    `json:"cpuUsagePercent"`
 	UptimeSeconds       int64  `json:"uptimeSeconds"`
+	GuestOS             string `json:"guestOS"`
+	IPAddress           string `json:"ipAddress"`
+	GuestFQDN           string `json:"guestFQDN"`
 }
 
 func (p *PowerShell) GetVMState(ctx context.Context, name string) (VMState, error) {
+	// Single-quoted strings only (-Command quoting); the CIM filter's quotes are
+	// built with [char]39. Guest OS comes from the integration-services KVP
+	// exchange (Msvm_KvpExchangeComponent), IPs from the VM's network adapters.
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if (-not $vm) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress; return }
+$ips = ''
+try { $ips = (@($vm | Get-VMNetworkAdapter | Select-Object -ExpandProperty IPAddresses | Where-Object { $_ -and $_ -notlike 'fe80*' -and $_ -ne '127.0.0.1' }) -join ', ') } catch {}
+$os = ''
+$fqdn = ''
+try {
+  $ns = 'root\virtualization\v2'; $q = [char]39
+  $cs = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter ('ElementName=' + $q + %[1]s + $q)
+  if ($cs) {
+    $kvp = Get-CimAssociatedInstance -InputObject $cs -ResultClassName Msvm_KvpExchangeComponent
+    foreach ($item in @($kvp.GuestIntrinsicExchangeItems)) {
+      $xml = [xml]$item
+      $nm = ($xml.INSTANCE.PROPERTY | Where-Object { $_.NAME -eq 'Name' }).VALUE
+      if ($nm -eq 'OSName') { $os = ($xml.INSTANCE.PROPERTY | Where-Object { $_.NAME -eq 'Data' }).VALUE }
+      if ($nm -eq 'FullyQualifiedDomainName') { $fqdn = ($xml.INSTANCE.PROPERTY | Where-Object { $_.NAME -eq 'Data' }).VALUE }
+    }
+  }
+} catch {}
 [pscustomobject]@{
   exists              = $true
+  id                  = [string]$vm.Id
   powerState          = [string]$vm.State
   assignedMemoryBytes = [uint64]$vm.MemoryAssigned
   cpuUsagePercent     = [int]$vm.CPUUsage
   uptimeSeconds       = [int64]$vm.Uptime.TotalSeconds
+  guestOS             = [string]$os
+  ipAddress           = [string]$ips
+  guestFQDN           = [string]$fqdn
 } | ConvertTo-Json -Compress
 `, psQuote(name))
 
@@ -47,10 +75,14 @@ if (-not $vm) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress;
 	}
 	return VMState{
 		Exists:              obs.Exists,
+		ID:                  obs.ID,
 		PowerState:          powerStateFromHyperV(obs.PowerState),
 		AssignedMemoryBytes: obs.AssignedMemoryBytes,
 		CPUUsagePercent:     obs.CPUUsagePercent,
 		UptimeSeconds:       obs.UptimeSeconds,
+		GuestOS:             obs.GuestOS,
+		IPAddress:           obs.IPAddress,
+		GuestFQDN:           obs.GuestFQDN,
 	}, nil
 }
 

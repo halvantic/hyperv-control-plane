@@ -935,6 +935,10 @@ func VMStatusToProto(s types.VMStatus) *VMStatus {
 		UptimeSeconds:       s.UptimeSeconds,
 		Conditions:          conditionsToProto(s.Conditions),
 		ScreenPng:           s.ScreenPNG,
+		VmId:                s.VMID,
+		GuestOs:             s.GuestOS,
+		IpAddress:           s.IPAddress,
+		GuestFqdn:           s.GuestFQDN,
 	}
 }
 
@@ -952,6 +956,10 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 		UptimeSeconds:       s.GetUptimeSeconds(),
 		Conditions:          conditionsFromProto(s.GetConditions()),
 		ScreenPNG:           s.GetScreenPng(),
+		VMID:                s.GetVmId(),
+		GuestOS:             s.GetGuestOs(),
+		IPAddress:           s.GetIpAddress(),
+		GuestFQDN:           s.GetGuestFqdn(),
 	}
 }
 

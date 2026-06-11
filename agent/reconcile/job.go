@@ -25,6 +25,14 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.CreateVMCheckpoint(ctx, p["vm"], p["name"]), "checkpoint created")
 	case types.JobVMExport:
 		return done(r.hv.ExportVM(ctx, p["vm"], p["path"]), "exported to "+p["path"])
+	case types.JobFetchISO:
+		return done(r.hv.FetchISO(ctx, p["url"], p["dest"]), "downloaded ISO "+p["name"])
+	case types.JobGuestJoinDomain:
+		return done(r.hv.GuestJoinDomain(ctx, p["vm"], p["domain"], p["ou"], p["guestUser"], p["guestPass"], p["domainUser"], p["domainPass"]),
+			"joined "+p["vm"]+" to "+p["domain"]+" (guest rebooting)")
+	case types.JobGuestSetIP:
+		return done(r.hv.GuestSetIP(ctx, p["vm"], p["interface"], p["address"], p["gateway"], p["dns"], p["guestUser"], p["guestPass"]),
+			"set guest IP "+p["address"]+" on "+p["vm"])
 	case types.JobVMApplyCheck:
 		return done(r.hv.ApplyVMCheckpoint(ctx, p["vm"], p["name"]), "applied checkpoint "+p["name"])
 	case types.JobVMRemoveCheck:
