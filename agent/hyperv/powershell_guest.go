@@ -26,6 +26,25 @@ Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $e
   param($du, $dp, $dom, $ou)
   $ds = ConvertTo-SecureString $dp -AsPlainText -Force
   $dc = New-Object System.Management.Automation.PSCredential($du, $ds)
+
+  # "Could not be contacted" from Add-Computer is almost always a domain-locator
+  # failure: the guest must resolve the domain's SRV records and reach a DC. Probe
+  # those first so the reported error names the real cause instead of being vague.
+  $dnsServers = (Get-DnsClientServerAddress -AddressFamily IPv4 |
+    Where-Object { $_.ServerAddresses } | ForEach-Object { $_.ServerAddresses }) -join ','
+  $srvName = '_ldap._tcp.dc._msdcs.' + $dom
+  try {
+    $srv = Resolve-DnsName -Name $srvName -Type SRV -DnsOnly -ErrorAction Stop
+  } catch {
+    throw "domain locator failed: cannot resolve $srvName via DNS server(s) [$dnsServers]. " +
+          "The guest's DNS server must be an AD DNS server for '$dom' and the guest must have an L2 path to it. ($($_.Exception.Message))"
+  }
+  $dcHost = ($srv | Where-Object { $_.Type -eq 'SRV' -and $_.NameTarget } | Select-Object -First 1).NameTarget
+  if (-not $dcHost) { throw "domain locator failed: no SRV target returned for $srvName via DNS server(s) [$dnsServers]." }
+  if (-not (Test-NetConnection -ComputerName $dcHost -Port 389 -InformationLevel Quiet)) {
+    throw "domain controller $dcHost resolved but is unreachable on LDAP/389 from the guest (check VLAN/firewall between the guest's dvport and the DC)."
+  }
+
   if ($ou) { Add-Computer -DomainName $dom -Credential $dc -OUPath $ou -Force }
   else { Add-Computer -DomainName $dom -Credential $dc -Force }
   Restart-Computer -Force
