@@ -198,7 +198,16 @@ foreach ($d in (Get-VMHardDiskDrive -VMName %[1]s)) {
   }
   if ($present) { break }
 }
-if (-not $present) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
+if (-not $present) {
+  try { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
+  catch {
+    # During a live migration the VHDX is held open by the running VM, so a node
+    # reconciling mid-migration can transiently see the disk as unattached and
+    # fail to (re)attach it with "being used by another process". That is expected
+    # and settles once migration completes — treat it as transient, not a failure.
+    if ($_.Exception.Message -notlike '*another process*' -and $_.Exception.Message -notlike '*being used*') { throw }
+  }
+}
 `, name, path)
 	}
 
@@ -210,12 +219,34 @@ if (-not $present) { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $
 if (-not $ad) { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s; $changed = $true }
 else { if ($ad.SwitchName -ne %[4]s) { Connect-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s; $changed = $true } }
 `, name, an, sw, psQuote(a.SwitchName))
+		// Always drive the VLAN to the desired value: a positive VLAN tags the port
+		// (Access mode); VLAN 0 means native/untagged, which must actively clear any
+		// existing tag (e.g. when a VM moves from a VLAN-100 dvport to a VLAN-0 one).
+		// Both are idempotent no-ops when already in that state.
 		if a.VLANID > 0 {
 			adapters += fmt.Sprintf("Set-VMNetworkAdapterVlan -VMName %[1]s -VMNetworkAdapterName %[2]s -Access -VlanId %[3]d\n", name, an, a.VLANID)
+		} else {
+			adapters += fmt.Sprintf("Set-VMNetworkAdapterVlan -VMName %[1]s -VMNetworkAdapterName %[2]s -Untagged\n", name, an)
 		}
 		if a.MACAddress != "" {
 			adapters += fmt.Sprintf("Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -StaticMacAddress %[3]s\n", name, an, psQuote(a.MACAddress))
 		}
+	}
+	// Remove any adapter not in the declared set — New-VM always creates a default
+	// "Network Adapter" (unconnected) and the operator should see only the declared
+	// NICs (e.g. in Failover Cluster Manager). Idempotent: steady state has exactly
+	// the declared adapters, so nothing is removed. Only done when at least one
+	// adapter is declared, so a VM with unmanaged networking is left untouched.
+	if len(s.NetworkAdapters) > 0 {
+		keep := make([]string, len(s.NetworkAdapters))
+		for i, a := range s.NetworkAdapters {
+			keep[i] = a.Name
+		}
+		adapters += fmt.Sprintf(`$keep = @(%[1]s)
+foreach ($ad in (Get-VMNetworkAdapter -VMName %[2]s)) {
+  if ($keep -notcontains $ad.Name) { Remove-VMNetworkAdapter -VMNetworkAdapter $ad; $changed = $true }
+}
+`, psStringList(keep), name)
 	}
 
 	// Boot ISO: ensure a DVD drive backed by the ISO exists (path-normalised so
@@ -229,6 +260,24 @@ if (-not (Get-VMDvdDrive -VMName %[1]s | Where-Object { $_.Path -and ([IO.Path]:
   Add-VMDvdDrive -VMName %[1]s -Path %[2]s; $changed = $true
 }
 `, name, ip)
+	} else {
+		// No ISO desired: eject any media from the DVD drives (declarative eject;
+		// clearing the VM's isoPath removes the disc on the next reconcile). The
+		// drive is kept, just emptied. Idempotent — only ejects when a disc is in.
+		iso = fmt.Sprintf(`foreach ($dvd in (Get-VMDvdDrive -VMName %[1]s)) {
+  if ($dvd.Path) { Set-VMDvdDrive -VMName %[1]s -ControllerNumber $dvd.ControllerNumber -ControllerLocation $dvd.ControllerLocation -Path $null; $changed = $true }
+}
+`, name)
+	}
+
+	// For a clustered VM, never create it locally if it already exists as a cluster
+	// role: during a migration the centre may deliver the VM to a node that does not
+	// currently hold it (ownership is mid-transition), and an unconditional New-VM
+	// there spawns an empty orphan (new GUID, no disk, not clustered). If the role
+	// exists, the VM lives on its owner — this node has nothing to do, so bail out.
+	clusterGuard := ""
+	if vm.Spec.Placement.ClusterName != "" {
+		clusterGuard = fmt.Sprintf("  try { if (Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue) { $ownedElsewhere = $true } } catch {}\n", name)
 	}
 
 	return fmt.Sprintf(`
@@ -238,6 +287,11 @@ $changed = $false
 $pending = $false
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if (-not $vm) {
+  $ownedElsewhere = $false
+%[10]s  if ($ownedElsewhere) {
+    [pscustomobject]@{ created = $false; changed = $false; pendingPowerOff = $false } | ConvertTo-Json -Compress
+    return
+  }
   New-VM -Name %[1]s -Generation %[2]d -MemoryStartupBytes %[3]d -NoVHD | Out-Null
   $created = $true
 }
@@ -248,7 +302,7 @@ if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[5]s
 %[6]s%[7]s%[8]s%[9]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

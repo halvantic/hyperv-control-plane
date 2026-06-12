@@ -445,6 +445,19 @@ type Site struct {
 	Description string `json:"description,omitempty"`
 }
 
+// Dvport is a distributed virtual port: a user-named pairing of a vSwitch and a
+// VLAN, giving operators a stable abstraction to attach VM NICs to instead of
+// juggling raw switch names and VLAN IDs. It is centre-only metadata; a VM NIC
+// references it by name and the centre resolves it to the NIC's SwitchName and
+// VLANID, which the existing per-VM reconciler applies. The name is globally
+// unique; SwitchName is immutable after creation.
+type Dvport struct {
+	Name        string `json:"name"`
+	SwitchName  string `json:"switchName"`
+	VLANID      int    `json:"vlanId"`
+	Description string `json:"description,omitempty"`
+}
+
 // SiteLabel is the ObjectMeta label key by which clusters and hosts declare the
 // site they belong to.
 const SiteLabel = "site"
@@ -829,6 +842,13 @@ type VMNetworkAdapterSpec struct {
 
 	// VLANID 0 means untagged/access to the native VLAN.
 	VLANID int `json:"vlanID,omitempty"`
+
+	// DvportName, when set, binds this adapter to a named distributed virtual port
+	// (a vSwitch + VLAN abstraction). The centre resolves it to SwitchName and
+	// VLANID at author time and re-resolves every VM using it when the dvport's
+	// VLAN changes, so the agent only ever sees the resolved switch + VLAN. It is
+	// centre-only metadata (kept for display and re-resolution), never on the wire.
+	DvportName string `json:"dvportName,omitempty"`
 
 	// MACAddress, when empty, means the host assigns a dynamic MAC.
 	MACAddress string `json:"macAddress,omitempty"`
