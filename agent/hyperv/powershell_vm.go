@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/joshua-fourie/ballast/api/types"
 )
@@ -15,16 +16,44 @@ import (
 // script is idempotent and ends in a single-line ConvertTo-Json result the Go
 // side decodes.
 
+type vmCheckpointObs struct {
+	Name       string `json:"name"`
+	ParentName string `json:"parentName"`
+	Type       string `json:"type"`
+	CreatedAt  string `json:"createdAt"`
+	IsCurrent  bool   `json:"isCurrent"`
+}
+
+type vmDiskObs struct {
+	Path      string `json:"path"`
+	SizeBytes uint64 `json:"sizeBytes"`
+}
+
+type vmNicObs struct {
+	Name       string `json:"name"`
+	SwitchName string `json:"switchName"`
+	VLANID     int    `json:"vlanID"`
+}
+
 type vmObservation struct {
-	Exists              bool   `json:"exists"`
-	ID                  string `json:"id"`
-	PowerState          string `json:"powerState"`
-	AssignedMemoryBytes uint64 `json:"assignedMemoryBytes"`
-	CPUUsagePercent     int    `json:"cpuUsagePercent"`
-	UptimeSeconds       int64  `json:"uptimeSeconds"`
-	GuestOS             string `json:"guestOS"`
-	IPAddress           string `json:"ipAddress"`
-	GuestFQDN           string `json:"guestFQDN"`
+	Exists              bool              `json:"exists"`
+	ID                  string            `json:"id"`
+	PowerState          string            `json:"powerState"`
+	AssignedMemoryBytes uint64            `json:"assignedMemoryBytes"`
+	CPUUsagePercent     int               `json:"cpuUsagePercent"`
+	UptimeSeconds       int64             `json:"uptimeSeconds"`
+	GuestOS             string            `json:"guestOS"`
+	IPAddress           string            `json:"ipAddress"`
+	GuestFQDN           string            `json:"guestFQDN"`
+	Checkpoints         []vmCheckpointObs `json:"checkpoints"`
+	ProcessorCount      int               `json:"processorCount"`
+	MemoryStartup       uint64            `json:"memoryStartup"`
+	DynamicMemory       bool              `json:"dynamicMemory"`
+	MemMin              uint64            `json:"memMin"`
+	MemMax              uint64            `json:"memMax"`
+	Generation          int               `json:"generation"`
+	Disks               []vmDiskObs       `json:"disks"`
+	Nics                []vmNicObs        `json:"nics"`
 }
 
 func (p *PowerShell) GetVMState(ctx context.Context, name string) (VMState, error) {
@@ -52,6 +81,33 @@ try {
     }
   }
 } catch {}
+$cps = @()
+try {
+  $cur = [string]$vm.ParentSnapshotName
+  foreach ($s in @(Get-VMSnapshot -VMName %[1]s -ErrorAction SilentlyContinue)) {
+    $cps += [pscustomobject]@{
+      name       = [string]$s.Name
+      parentName = [string]$s.ParentSnapshotName
+      type       = [string]$s.SnapshotType
+      createdAt  = $s.CreationTime.ToString('o')
+      isCurrent  = ([string]$s.Name -eq $cur)
+    }
+  }
+} catch {}
+# Actual VM configuration — disks (with paths), adapters and memory — so the
+# centre can show and adopt VMs Ballast did not create.
+$disks = @()
+try { foreach ($d in @(Get-VMHardDiskDrive -VMName %[1]s -ErrorAction SilentlyContinue)) {
+  $sz = 0; try { $sz = [uint64]((Get-VHD -Path $d.Path -ErrorAction Stop).Size) } catch {}
+  $disks += [pscustomobject]@{ path = [string]$d.Path; sizeBytes = [uint64]$sz }
+} } catch {}
+$nics = @()
+try { foreach ($a in @(Get-VMNetworkAdapter -VMName %[1]s -ErrorAction SilentlyContinue)) {
+  $vl = 0; try { $vv = Get-VMNetworkAdapterVlan -VMNetworkAdapter $a -ErrorAction SilentlyContinue; if ($vv -and $vv.OperationMode -eq 'Access') { $vl = [int]$vv.AccessVlanId } } catch {}
+  $nics += [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = [int]$vl }
+} } catch {}
+$dm = $false; $mmin = [uint64]0; $mmax = [uint64]0
+try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $mmax = [uint64]$vm.MemoryMaximum } catch {}
 [pscustomobject]@{
   exists              = $true
   id                  = [string]$vm.Id
@@ -62,7 +118,16 @@ try {
   guestOS             = [string]$os
   ipAddress           = [string]$ips
   guestFQDN           = [string]$fqdn
-} | ConvertTo-Json -Compress
+  checkpoints         = @($cps)
+  processorCount      = [int]$vm.ProcessorCount
+  memoryStartup       = [uint64]$vm.MemoryStartup
+  dynamicMemory       = $dm
+  memMin              = $mmin
+  memMax              = $mmax
+  generation          = [int]$vm.Generation
+  disks               = @($disks)
+  nics                = @($nics)
+} | ConvertTo-Json -Compress -Depth 6
 `, psQuote(name))
 
 	out, err := p.run(ctx, script)
@@ -72,6 +137,34 @@ try {
 	var obs vmObservation
 	if err := decodeJSON(out, &obs); err != nil {
 		return VMState{}, fmt.Errorf("get vm state %q: %w", name, err)
+	}
+	var cps []types.VMCheckpoint
+	for _, c := range obs.Checkpoints {
+		var t time.Time
+		if c.CreatedAt != "" {
+			if pt, perr := time.Parse(time.RFC3339, c.CreatedAt); perr == nil {
+				t = pt
+			}
+		}
+		cps = append(cps, types.VMCheckpoint{Name: c.Name, ParentName: c.ParentName, Type: c.Type, CreatedAt: t, IsCurrent: c.IsCurrent})
+	}
+	var observed *types.VMObserved
+	if obs.Exists {
+		o := &types.VMObserved{
+			ProcessorCount:     obs.ProcessorCount,
+			MemoryStartupBytes: obs.MemoryStartup,
+			DynamicMemory:      obs.DynamicMemory,
+			MinBytes:           obs.MemMin,
+			MaxBytes:           obs.MemMax,
+			Generation:         obs.Generation,
+		}
+		for _, d := range obs.Disks {
+			o.Disks = append(o.Disks, types.VMDiskSpec{Path: d.Path, SizeBytes: d.SizeBytes})
+		}
+		for _, n := range obs.Nics {
+			o.NetworkAdapters = append(o.NetworkAdapters, types.VMNetworkAdapterSpec{Name: n.Name, SwitchName: n.SwitchName, VLANID: n.VLANID})
+		}
+		observed = o
 	}
 	return VMState{
 		Exists:              obs.Exists,
@@ -83,6 +176,8 @@ try {
 		GuestOS:             obs.GuestOS,
 		IPAddress:           obs.IPAddress,
 		GuestFQDN:           obs.GuestFQDN,
+		Checkpoints:         cps,
+		Observed:            observed,
 	}, nil
 }
 

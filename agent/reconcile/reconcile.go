@@ -146,6 +146,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Host DNS servers (typically the DCs), fanned from the centre's Domain & DNS
+	// setting. Best-effort and applied before a join so the host can resolve the
+	// domain's SRV records; a failure surfaces as a condition without degrading.
+	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
+		out, err := r.hv.EnsureHostDNS(ctx, dns)
+		conds = append(conds, r.condition("HostDNS", out, err))
+		if err != nil {
+			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("host dns reconciled", "dns", dns, "outcome", out)
+		}
+	}
+
 	net := desired.Spec.Networking
 
 	for _, sw := range net.Switches {
@@ -278,7 +292,7 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host, 
 // waits. Either way the pass stops (done == true).
 func (r *Reconciler) rebootResult(ctx context.Context, policy types.RebootPolicy, conds []types.Condition, what string) (Result, bool, error) {
 	if policy == types.RebootIfNeeded {
-		if err := r.hv.RebootHost(ctx); err != nil {
+		if err := r.hv.RebootHost(ctx, false); err != nil {
 			return Result{Phase: types.PhaseDegraded, Changed: true, Conditions: conds}, true, fmt.Errorf("%s: %w", what, err)
 		}
 		return Result{Phase: types.PhaseProgressing, Changed: true, Conditions: conds}, true, nil
@@ -315,7 +329,7 @@ func (r *Reconciler) reconcileHostRole(ctx context.Context, desired types.Host) 
 	// it is governed strictly by RebootPolicy.
 	if desired.Spec.RebootPolicy == types.RebootIfNeeded {
 		r.log.Info("rebooting to activate Hyper-V role (RebootPolicy=IfNeeded)")
-		if rerr := r.hv.RebootHost(ctx); rerr != nil {
+		if rerr := r.hv.RebootHost(ctx, false); rerr != nil {
 			return Result{Phase: types.PhaseDegraded, Conditions: []types.Condition{c}}, true, fmt.Errorf("reboot host: %w", rerr)
 		}
 		// Host is restarting; not honoured yet, will resume after boot.

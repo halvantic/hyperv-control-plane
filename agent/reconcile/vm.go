@@ -37,6 +37,12 @@ type VMResult struct {
 	IPAddress string
 	GuestFQDN string
 
+	// Checkpoints is the VM's current Hyper-V checkpoints (snapshots).
+	Checkpoints []types.VMCheckpoint
+
+	// Observed is the VM's actual config (for showing/adopting unmanaged VMs).
+	Observed *types.VMObserved
+
 	// AssignedMemoryBytes / CPUUsagePercent / UptimeSeconds are best-effort
 	// observed runtime metrics.
 	AssignedMemoryBytes uint64
@@ -121,6 +127,8 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		res.GuestOS = state.GuestOS
 		res.IPAddress = state.IPAddress
 		res.GuestFQDN = state.GuestFQDN
+		res.Checkpoints = state.Checkpoints
+		res.Observed = state.Observed
 		res.AssignedMemoryBytes = state.AssignedMemoryBytes
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds

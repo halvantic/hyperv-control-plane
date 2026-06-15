@@ -418,6 +418,8 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 		GuestOS:             res.GuestOS,
 		IPAddress:           res.IPAddress,
 		GuestFQDN:           res.GuestFQDN,
+		Checkpoints:         res.Checkpoints,
+		Observed:            res.Observed,
 		AssignedMemoryBytes: res.AssignedMemoryBytes,
 		CPUUsagePercent:     res.CPUUsagePercent,
 		UptimeSeconds:       res.UptimeSeconds,

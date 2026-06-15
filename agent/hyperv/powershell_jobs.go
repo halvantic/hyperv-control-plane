@@ -283,6 +283,36 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 // address). The DC DNS is the configured DNS server that actually resolves the
 // AD domain's SOA. dns, when non-empty, overrides this (used to recover a host
 // whose NICs no longer point at the DC). Idempotent.
+// EnsureHostDNS sets every up physical NIC's IPv4 DNS to the given servers,
+// idempotently. Unlike RepairHostDNS it does not require domain membership, so
+// it can run before a join. Reports UPDATED/NOOP via a distinct token so the
+// outcome doesn't depend on substring-matching arbitrary cmdlet output.
+func (p *PowerShell) EnsureHostDNS(ctx context.Context, dns []string) (Outcome, error) {
+	if len(dns) == 0 {
+		return OutcomeUnchanged, nil
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$servers = @(%[1]s.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if (-not $servers) { 'RESULT=NOOP'; return }
+$want = ($servers -join ',')
+$changed = $false
+foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+  $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  if (($cur -join ',') -ne $want) {
+    try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $servers -ErrorAction Stop; $changed = $true } catch {}
+  }
+}
+if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join(dns, ",")))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure host dns: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $domain = (Get-CimInstance Win32_ComputerSystem).Domain

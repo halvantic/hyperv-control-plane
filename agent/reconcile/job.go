@@ -62,7 +62,9 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])
 	case types.JobRebootHost:
-		return done(r.hv.RebootHost(ctx), "reboot initiated")
+		return done(r.hv.RebootHost(ctx, p["drain"] == "true"), "reboot initiated")
+	case types.JobShutdownHost:
+		return done(r.hv.ShutdownHost(ctx, p["drain"] == "true"), "shutdown initiated")
 	case types.JobClusterDestroy:
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:

@@ -105,6 +105,12 @@ type Interface interface {
 	// leaves that default unchanged.
 	EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath string) (Outcome, error)
 
+	// EnsureHostDNS sets the host's physical NIC IPv4 DNS servers to the given
+	// list (idempotent; OutcomeUnchanged when already set). Works regardless of
+	// domain membership, so it can run before a domain join to let the host
+	// resolve the domain's SRV records.
+	EnsureHostDNS(ctx context.Context, dns []string) (Outcome, error)
+
 	// EnsureLiveMigration configures host live migration (enable, auth type,
 	// concurrency, and which networks to use). Idempotent: a no-op when the host
 	// already matches.
@@ -147,8 +153,15 @@ type Interface interface {
 	EnsureHyperVRole(ctx context.Context) (Outcome, error)
 
 	// RebootHost restarts the host. The agent only calls this when RebootPolicy
-	// permits it; it is never invoked speculatively.
-	RebootHost(ctx context.Context) error
+	// permits it; it is never invoked speculatively. When drain is set the node
+	// is gracefully drained (roles live-migrated off, S2D storage suspended)
+	// before the restart.
+	RebootHost(ctx context.Context, drain bool) error
+
+	// ShutdownHost powers the host off now. Only ever invoked from an explicit
+	// operator job, never speculatively. drain has the same meaning as for
+	// RebootHost.
+	ShutdownHost(ctx context.Context, drain bool) error
 
 	// GetClusterState observes the failover cluster this node belongs to, if
 	// any. It is a pure read.
@@ -333,6 +346,11 @@ type VMState struct {
 	AssignedMemoryBytes uint64
 	CPUUsagePercent     int
 	UptimeSeconds       int64
+	// Checkpoints is the VM's current set of Hyper-V checkpoints (snapshots).
+	Checkpoints []types.VMCheckpoint
+	// Observed is the VM's actual configuration (CPU/memory/disks/adapters), for
+	// showing and adopting VMs Ballast did not create.
+	Observed *types.VMObserved
 }
 
 // StorageState is the observed S2D/CSV state on the cluster.

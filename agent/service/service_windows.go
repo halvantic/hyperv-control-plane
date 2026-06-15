@@ -20,6 +20,10 @@ import (
 const grantLogonRightScript = `
 param([Parameter(Mandatory=$true)][string]$Account)
 $ErrorActionPreference = 'Stop'
+# ".\user" (local-machine notation) is valid for the service logon account but
+# NTAccount cannot translate the literal ".\"; rewrite it to "<COMPUTERNAME>\user"
+# so the SID lookup resolves the local account.
+if ($Account -like '.\*') { $Account = "$env:COMPUTERNAME\" + $Account.Substring(2) }
 $sid = (New-Object System.Security.Principal.NTAccount($Account)).Translate([System.Security.Principal.SecurityIdentifier])
 $sidBytes = New-Object byte[] $sid.BinaryLength
 $sid.GetBinaryForm($sidBytes, 0)

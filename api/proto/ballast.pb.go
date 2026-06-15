@@ -2317,6 +2317,7 @@ type HostNetworkingSpec struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Switches        []*VirtualSwitchSpec   `protobuf:"bytes,1,rep,name=switches,proto3" json:"switches,omitempty"`
 	ManagementVnics []*ManagementVNICSpec  `protobuf:"bytes,2,rep,name=management_vnics,json=managementVnics,proto3" json:"management_vnics,omitempty"`
+	DnsServers      []string               `protobuf:"bytes,3,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2361,6 +2362,13 @@ func (x *HostNetworkingSpec) GetSwitches() []*VirtualSwitchSpec {
 func (x *HostNetworkingSpec) GetManagementVnics() []*ManagementVNICSpec {
 	if x != nil {
 		return x.ManagementVnics
+	}
+	return nil
+}
+
+func (x *HostNetworkingSpec) GetDnsServers() []string {
+	if x != nil {
+		return x.DnsServers
 	}
 	return nil
 }
@@ -3964,6 +3972,8 @@ type VMStatus struct {
 	GuestOs             string                 `protobuf:"bytes,10,opt,name=guest_os,json=guestOs,proto3" json:"guest_os,omitempty"`
 	IpAddress           string                 `protobuf:"bytes,11,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
 	GuestFqdn           string                 `protobuf:"bytes,12,opt,name=guest_fqdn,json=guestFqdn,proto3" json:"guest_fqdn,omitempty"`
+	Checkpoints         []*VMCheckpoint        `protobuf:"bytes,13,rep,name=checkpoints,proto3" json:"checkpoints,omitempty"`
+	ObservedJson        string                 `protobuf:"bytes,14,opt,name=observed_json,json=observedJson,proto3" json:"observed_json,omitempty"` // VMObserved marshalled as JSON (CPU/mem/disks/adapters)
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -4080,6 +4090,96 @@ func (x *VMStatus) GetGuestFqdn() string {
 		return x.GuestFqdn
 	}
 	return ""
+}
+
+func (x *VMStatus) GetCheckpoints() []*VMCheckpoint {
+	if x != nil {
+		return x.Checkpoints
+	}
+	return nil
+}
+
+func (x *VMStatus) GetObservedJson() string {
+	if x != nil {
+		return x.ObservedJson
+	}
+	return ""
+}
+
+type VMCheckpoint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ParentName    string                 `protobuf:"bytes,2,opt,name=parent_name,json=parentName,proto3" json:"parent_name,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC3339
+	IsCurrent     bool                   `protobuf:"varint,5,opt,name=is_current,json=isCurrent,proto3" json:"is_current,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VMCheckpoint) Reset() {
+	*x = VMCheckpoint{}
+	mi := &file_ballast_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VMCheckpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VMCheckpoint) ProtoMessage() {}
+
+func (x *VMCheckpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_ballast_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VMCheckpoint.ProtoReflect.Descriptor instead.
+func (*VMCheckpoint) Descriptor() ([]byte, []int) {
+	return file_ballast_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *VMCheckpoint) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *VMCheckpoint) GetParentName() string {
+	if x != nil {
+		return x.ParentName
+	}
+	return ""
+}
+
+func (x *VMCheckpoint) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *VMCheckpoint) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *VMCheckpoint) GetIsCurrent() bool {
+	if x != nil {
+		return x.IsCurrent
+	}
+	return false
 }
 
 var File_ballast_proto protoreflect.FileDescriptor
@@ -4265,10 +4365,12 @@ const file_ballast_proto_rawDesc = "" +
 	"media_type\x18\x03 \x01(\tR\tmediaType\x12\x19\n" +
 	"\bcan_pool\x18\x04 \x01(\bR\acanPool\x12\x1c\n" +
 	"\n" +
-	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\"\x9a\x01\n" +
+	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\"\xbb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
-	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\"\xfe\x01\n" +
+	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +
+	"\vdns_servers\x18\x03 \x03(\tR\n" +
+	"dnsServers\"\xfe\x01\n" +
 	"\x11VirtualSwitchSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fteam_members\x18\x02 \x03(\tR\vteamMembers\x12=\n" +
@@ -4404,7 +4506,7 @@ const file_ballast_proto_rawDesc = "" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x12\x1f\n" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
-	"macAddress\"\xea\x03\n" +
+	"macAddress\"\xcb\x04\n" +
 	"\bVMStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x129\n" +
@@ -4424,7 +4526,18 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"ip_address\x18\v \x01(\tR\tipAddress\x12\x1d\n" +
 	"\n" +
-	"guest_fqdn\x18\f \x01(\tR\tguestFqdn*~\n" +
+	"guest_fqdn\x18\f \x01(\tR\tguestFqdn\x12:\n" +
+	"\vcheckpoints\x18\r \x03(\v2\x18.ballast.v1.VMCheckpointR\vcheckpoints\x12#\n" +
+	"\robserved_json\x18\x0e \x01(\tR\fobservedJson\"\x95\x01\n" +
+	"\fVMCheckpoint\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
+	"\vparent_name\x18\x02 \x01(\tR\n" +
+	"parentName\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"is_current\x18\x05 \x01(\bR\tisCurrent*~\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPHASE_PENDING\x10\x01\x12\x15\n" +
@@ -4479,7 +4592,7 @@ func file_ballast_proto_rawDescGZIP() []byte {
 }
 
 var file_ballast_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
+var file_ballast_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_ballast_proto_goTypes = []any{
 	(Phase)(0),                       // 0: ballast.v1.Phase
 	(RebootPolicy)(0),                // 1: ballast.v1.RebootPolicy
@@ -4539,11 +4652,12 @@ var file_ballast_proto_goTypes = []any{
 	(*VMDiskSpec)(nil),               // 55: ballast.v1.VMDiskSpec
 	(*VMNetworkAdapterSpec)(nil),     // 56: ballast.v1.VMNetworkAdapterSpec
 	(*VMStatus)(nil),                 // 57: ballast.v1.VMStatus
-	nil,                              // 58: ballast.v1.Job.ParamsEntry
-	nil,                              // 59: ballast.v1.Secret.DataEntry
-	nil,                              // 60: ballast.v1.ObjectMeta.LabelsEntry
-	nil,                              // 61: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	(*timestamppb.Timestamp)(nil),    // 62: google.protobuf.Timestamp
+	(*VMCheckpoint)(nil),             // 58: ballast.v1.VMCheckpoint
+	nil,                              // 59: ballast.v1.Job.ParamsEntry
+	nil,                              // 60: ballast.v1.Secret.DataEntry
+	nil,                              // 61: ballast.v1.ObjectMeta.LabelsEntry
+	nil,                              // 62: ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	(*timestamppb.Timestamp)(nil),    // 63: google.protobuf.Timestamp
 }
 var file_ballast_proto_depIdxs = []int32{
 	30, // 0: ballast.v1.RegisterHostRequest.inventory:type_name -> ballast.v1.HostInventory
@@ -4552,16 +4666,16 @@ var file_ballast_proto_depIdxs = []int32{
 	51, // 3: ballast.v1.PullDesiredStateResponse.vms:type_name -> ballast.v1.VM
 	14, // 4: ballast.v1.PullDesiredStateResponse.secrets:type_name -> ballast.v1.Secret
 	11, // 5: ballast.v1.PullDesiredStateResponse.jobs:type_name -> ballast.v1.Job
-	58, // 6: ballast.v1.Job.params:type_name -> ballast.v1.Job.ParamsEntry
-	59, // 7: ballast.v1.Secret.data:type_name -> ballast.v1.Secret.DataEntry
+	59, // 6: ballast.v1.Job.params:type_name -> ballast.v1.Job.ParamsEntry
+	60, // 7: ballast.v1.Secret.data:type_name -> ballast.v1.Secret.DataEntry
 	25, // 8: ballast.v1.ReportStatusRequest.status:type_name -> ballast.v1.HostStatus
 	44, // 9: ballast.v1.ReportStatusRequest.cluster_status:type_name -> ballast.v1.ClusterStatus
 	16, // 10: ballast.v1.ReportStatusRequest.vm_statuses:type_name -> ballast.v1.VMStatusReport
 	57, // 11: ballast.v1.VMStatusReport.status:type_name -> ballast.v1.VMStatus
-	60, // 12: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
-	62, // 13: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
-	62, // 14: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
-	62, // 15: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
+	61, // 12: ballast.v1.ObjectMeta.labels:type_name -> ballast.v1.ObjectMeta.LabelsEntry
+	63, // 13: ballast.v1.ObjectMeta.created_at:type_name -> google.protobuf.Timestamp
+	63, // 14: ballast.v1.ObjectMeta.updated_at:type_name -> google.protobuf.Timestamp
+	63, // 15: ballast.v1.Condition.last_transition_time:type_name -> google.protobuf.Timestamp
 	18, // 16: ballast.v1.Host.meta:type_name -> ballast.v1.ObjectMeta
 	21, // 17: ballast.v1.Host.spec:type_name -> ballast.v1.HostSpec
 	25, // 18: ballast.v1.Host.status:type_name -> ballast.v1.HostStatus
@@ -4574,7 +4688,7 @@ var file_ballast_proto_depIdxs = []int32{
 	22, // 25: ballast.v1.HostSpec.live_migration:type_name -> ballast.v1.LiveMigrationSpec
 	36, // 26: ballast.v1.PhysicalNICConfig.ip_config:type_name -> ballast.v1.IPConfig
 	0,  // 27: ballast.v1.HostStatus.phase:type_name -> ballast.v1.Phase
-	62, // 28: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
+	63, // 28: ballast.v1.HostStatus.last_contact:type_name -> google.protobuf.Timestamp
 	30, // 29: ballast.v1.HostStatus.inventory:type_name -> ballast.v1.HostInventory
 	19, // 30: ballast.v1.HostStatus.conditions:type_name -> ballast.v1.Condition
 	26, // 31: ballast.v1.HostStatus.metrics:type_name -> ballast.v1.HostMetrics
@@ -4588,7 +4702,7 @@ var file_ballast_proto_depIdxs = []int32{
 	2,  // 39: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
 	3,  // 40: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
 	36, // 41: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
-	61, // 42: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	62, // 42: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
 	40, // 43: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
 	18, // 44: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
 	41, // 45: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
@@ -4617,19 +4731,20 @@ var file_ballast_proto_depIdxs = []int32{
 	0,  // 68: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
 	5,  // 69: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
 	19, // 70: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
-	7,  // 71: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	9,  // 72: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	15, // 73: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	12, // 74: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
-	8,  // 75: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	10, // 76: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	17, // 77: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	13, // 78: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
-	75, // [75:79] is the sub-list for method output_type
-	71, // [71:75] is the sub-list for method input_type
-	71, // [71:71] is the sub-list for extension type_name
-	71, // [71:71] is the sub-list for extension extendee
-	0,  // [0:71] is the sub-list for field type_name
+	58, // 71: ballast.v1.VMStatus.checkpoints:type_name -> ballast.v1.VMCheckpoint
+	7,  // 72: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	9,  // 73: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	15, // 74: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	12, // 75: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
+	8,  // 76: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	10, // 77: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	17, // 78: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	13, // 79: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
+	76, // [76:80] is the sub-list for method output_type
+	72, // [72:76] is the sub-list for method input_type
+	72, // [72:72] is the sub-list for extension type_name
+	72, // [72:72] is the sub-list for extension extendee
+	0,  // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }
@@ -4643,7 +4758,7 @@ func file_ballast_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ballast_proto_rawDesc), len(file_ballast_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   55,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

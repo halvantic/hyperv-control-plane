@@ -302,6 +302,7 @@ message PhysicalDisk {
 message HostNetworkingSpec {
   repeated VirtualSwitchSpec switches = 1;
   repeated ManagementVNICSpec management_vnics = 2;
+  repeated string dns_servers = 3;
 }
 
 enum SETTeamingMode {
@@ -548,4 +549,14 @@ message VMStatus {
   string guest_os = 10;
   string ip_address = 11;
   string guest_fqdn = 12;
+  repeated VMCheckpoint checkpoints = 13;
+  string observed_json = 14; // VMObserved marshalled as JSON (CPU/mem/disks/adapters)
+}
+
+message VMCheckpoint {
+  string name = 1;
+  string parent_name = 2;
+  string type = 3;
+  string created_at = 4; // RFC3339
+  bool is_current = 5;
 }

@@ -36,8 +36,13 @@ type ObjectMeta struct {
 	Generation int64 `json:"generation"`
 
 	// Labels are free-form key/value tags used for selection and grouping
-	// (for example, "rack=R12", "role=storage").
+	// (for example, "rack=R12", "role=storage"). Reserved keys: "site" and,
+	// for VMs, "folder". Other keys are user tags.
 	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations hold non-identifying metadata such as a free-text "notes"
+	// field. Centre-only; not used for selection and not sent to agents.
+	Annotations map[string]string `json:"annotations,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -330,6 +335,12 @@ type HostNetworkingSpec struct {
 	// intent (VLAN, QoS) lives on the vNIC and on VMNetworkAdapter port
 	// profiles, expressed here per-vNIC.
 	ManagementVNICs []ManagementVNICSpec `json:"managementVNICs,omitempty"`
+
+	// DNSServers are the IPv4 DNS servers (typically the domain controllers) the
+	// agent sets on the host's physical NICs. Fanned from the centre's global
+	// Domain & DNS setting. Empty leaves DNS untouched. Setting this before a
+	// domain join is what lets the host resolve the domain's SRV records.
+	DNSServers []string `json:"dnsServers,omitempty"`
 }
 
 type VirtualSwitchSpec struct {
@@ -655,8 +666,12 @@ type Job struct {
 	Params    map[string]string `json:"params,omitempty"`
 	State     JobState          `json:"state"`
 	Message   string            `json:"message,omitempty"` // result detail / error
-	CreatedAt time.Time         `json:"createdAt"`
-	UpdatedAt time.Time         `json:"updatedAt"`
+	// CreatedBy is the operator who triggered the job (the authenticated REST
+	// session's username), or "system" for centre-initiated jobs. Centre-only
+	// metadata for the activity log; never sent to agents.
+	CreatedBy string    `json:"createdBy,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type JobState string
@@ -699,6 +714,8 @@ const (
 
 	JobRebootHost = "RebootHost" // no params — restart the host now (Restart-Computer -Force)
 
+	JobShutdownHost = "ShutdownHost" // no params — power the host off now (Stop-Computer -Force)
+
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
@@ -729,6 +746,30 @@ type Secret struct {
 const (
 	// SecretDomainCredential carries "username" + "password" for domain join.
 	SecretDomainCredential = "DomainCredential"
+)
+
+// User is an operator account that can sign in to the centre's UI/REST surface.
+// Authentication is a centre-only concern — agents never use it (they keep their
+// own identity, so the autonomy story is unaffected) — so it lives alongside the
+// other centre-managed records. The plaintext password is never stored or
+// returned; only its bcrypt hash is persisted.
+type User struct {
+	Username string `json:"username"`
+	// PasswordHash is the bcrypt hash of the user's password. Never serialised to
+	// any UI/automation surface.
+	PasswordHash string `json:"-"`
+	// Role governs what the user may do: RoleAdmin or RoleOperator.
+	Role string `json:"role"`
+	// Source is UserSourceLocal for built-in accounts; AD/LDAP users (a later
+	// phase) will carry a different source.
+	Source    string    `json:"source"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+const (
+	RoleAdmin       = "admin"
+	RoleOperator    = "operator"
+	UserSourceLocal = "local"
 )
 
 // ---------------------------------------------------------------------------
@@ -919,5 +960,41 @@ type VMStatus struct {
 	// screen endpoint serves it. Read-only — there is no interactive console yet.
 	ScreenPNG []byte `json:"screenPng,omitempty"`
 
+	// Checkpoints is the VM's current set of Hyper-V checkpoints (snapshots) as
+	// reported by the owning agent. Read-only here; created/applied/removed via
+	// the checkpoint jobs.
+	Checkpoints []VMCheckpoint `json:"checkpoints,omitempty"`
+
+	// Observed is the VM's actual configuration (CPU/memory/disks/adapters/
+	// generation) read from the host. It lets the centre show and adopt a VM's
+	// real config — in particular where its VHDX(s) live — for VMs Ballast did
+	// not create. Read-only.
+	Observed *VMObserved `json:"observed,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// VMObserved is a VM's actual configuration as read from the host, used to show
+// and adopt VMs created outside Ballast. Disks reuse VMDiskSpec with SizeBytes
+// left zero so an adopt attaches the existing VHDX rather than recreating it.
+type VMObserved struct {
+	ProcessorCount     int                    `json:"processorCount,omitempty"`
+	MemoryStartupBytes uint64                 `json:"memoryStartupBytes,omitempty"`
+	DynamicMemory      bool                   `json:"dynamicMemory,omitempty"`
+	MinBytes           uint64                 `json:"minBytes,omitempty"`
+	MaxBytes           uint64                 `json:"maxBytes,omitempty"`
+	Generation         int                    `json:"generation,omitempty"`
+	Disks              []VMDiskSpec           `json:"disks,omitempty"`
+	NetworkAdapters    []VMNetworkAdapterSpec `json:"networkAdapters,omitempty"`
+}
+
+// VMCheckpoint is one Hyper-V checkpoint (snapshot) of a VM. Checkpoints form a
+// tree — ParentName links a child to its parent ("" for a root). IsCurrent marks
+// the checkpoint the VM's running state currently derives from.
+type VMCheckpoint struct {
+	Name       string    `json:"name"`
+	ParentName string    `json:"parentName,omitempty"`
+	Type       string    `json:"type,omitempty"` // Standard or Production
+	CreatedAt  time.Time `json:"createdAt,omitempty"`
+	IsCurrent  bool      `json:"isCurrent,omitempty"`
 }

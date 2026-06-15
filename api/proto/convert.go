@@ -10,6 +10,7 @@ package ballastpb
 // wire -> schema. Nil-safe throughout.
 
 import (
+	"encoding/json"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -283,6 +284,7 @@ func networkingToProto(n types.HostNetworkingSpec) *HostNetworkingSpec {
 	for _, v := range n.ManagementVNICs {
 		out.ManagementVnics = append(out.ManagementVnics, mgmtVNICToProto(v))
 	}
+	out.DnsServers = n.DNSServers
 	return out
 }
 
@@ -303,6 +305,7 @@ func networkingFromProto(n *HostNetworkingSpec) types.HostNetworkingSpec {
 	for _, v := range n.GetManagementVnics() {
 		out.ManagementVNICs = append(out.ManagementVNICs, mgmtVNICFromProto(v))
 	}
+	out.DNSServers = n.GetDnsServers()
 	return out
 }
 
@@ -939,7 +942,61 @@ func VMStatusToProto(s types.VMStatus) *VMStatus {
 		GuestOs:             s.GuestOS,
 		IpAddress:           s.IPAddress,
 		GuestFqdn:           s.GuestFQDN,
+		Checkpoints:         checkpointsToProto(s.Checkpoints),
+		ObservedJson:        marshalObserved(s.Observed),
 	}
+}
+
+func marshalObserved(o *types.VMObserved) string {
+	if o == nil {
+		return ""
+	}
+	b, err := json.Marshal(o)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func unmarshalObserved(s string) *types.VMObserved {
+	if s == "" {
+		return nil
+	}
+	var o types.VMObserved
+	if err := json.Unmarshal([]byte(s), &o); err != nil {
+		return nil
+	}
+	return &o
+}
+
+func checkpointsToProto(cs []types.VMCheckpoint) []*VMCheckpoint {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]*VMCheckpoint, 0, len(cs))
+	for _, c := range cs {
+		created := ""
+		if !c.CreatedAt.IsZero() {
+			created = c.CreatedAt.Format(time.RFC3339)
+		}
+		out = append(out, &VMCheckpoint{Name: c.Name, ParentName: c.ParentName, Type: c.Type, CreatedAt: created, IsCurrent: c.IsCurrent})
+	}
+	return out
+}
+
+func checkpointsFromProto(cs []*VMCheckpoint) []types.VMCheckpoint {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]types.VMCheckpoint, 0, len(cs))
+	for _, c := range cs {
+		var created time.Time
+		if t, err := time.Parse(time.RFC3339, c.GetCreatedAt()); err == nil {
+			created = t
+		}
+		out = append(out, types.VMCheckpoint{Name: c.GetName(), ParentName: c.GetParentName(), Type: c.GetType(), CreatedAt: created, IsCurrent: c.GetIsCurrent()})
+	}
+	return out
 }
 
 // VMStatusFromProto converts a wire VMStatus back to the schema type.
@@ -960,6 +1017,8 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 		GuestOS:             s.GetGuestOs(),
 		IPAddress:           s.GetIpAddress(),
 		GuestFQDN:           s.GetGuestFqdn(),
+		Checkpoints:         checkpointsFromProto(s.GetCheckpoints()),
+		Observed:            unmarshalObserved(s.GetObservedJson()),
 	}
 }
 

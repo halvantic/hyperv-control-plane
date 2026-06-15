@@ -49,6 +49,7 @@ type Stub struct {
 	// tests can assert reboot governance.
 	EnsureRoleCalled bool
 	RebootCalled     bool
+	ShutdownCalled   bool
 
 	// Clustering: ClusteringInstalled seeds the feature state; ClusterExists and
 	// ClusterMembers model an existing cluster. FormCalled records that the
@@ -266,7 +267,7 @@ func (s *Stub) EnsureHyperVRole(_ context.Context) (Outcome, error) {
 	return OutcomeCreated, nil
 }
 
-func (s *Stub) RebootHost(_ context.Context) error {
+func (s *Stub) RebootHost(_ context.Context, _ bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.RebootCalled = true
@@ -275,6 +276,13 @@ func (s *Stub) RebootHost(_ context.Context) error {
 		s.HyperVInstalled = true
 		s.RebootPending = false
 	}
+	return nil
+}
+
+func (s *Stub) ShutdownHost(_ context.Context, _ bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ShutdownCalled = true
 	return nil
 }
 
@@ -482,6 +490,10 @@ func (s *Stub) ClusterLog(_ context.Context, _, _ string) (string, error) {
 
 func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 	return "dns repaired (stub)", nil
+}
+
+func (s *Stub) EnsureHostDNS(_ context.Context, _ []string) (Outcome, error) {
+	return OutcomeUnchanged, nil
 }
 
 func (s *Stub) EnsureMigrationDelegation(_ context.Context, _ []string) (Outcome, error) {
