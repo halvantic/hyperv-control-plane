@@ -123,17 +123,31 @@ func startsWithJSON(b []byte) bool {
 // assign to a switch, so its IP is not reported (the frontend treats a NIC with
 // no host IP and no switch as free). A NIC bound to a vSwitch carries no IP here
 // (the address lives on its management-OS vNIC), so it is naturally not flagged.
+//
+// The floating cluster IP is also a Manual address, but it is not a management
+// identity — it lives on whichever node currently owns the cluster core group and
+// must not pin that NIC as management (else the NIC the operator wants to free for
+// a vSwitch looks untouchable). Cluster IPs are gathered from the cluster's IP
+// Address resources and excluded, so only a NIC with its own static IP is flagged.
 func inventoryScript() string {
 	return `
 $ErrorActionPreference = 'Stop'
+$clusterIps = @()
+try {
+  Import-Module FailoverClusters -ErrorAction SilentlyContinue
+  $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
+} catch {}
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''
   if ($static) { $ip = [string]$a.IPAddress }
   $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg }
+  # Default-route next hop on this NIC, so a re-homed management IP can keep the
+  # host's default route on the converged switch's vNIC.
+  $gw = [string]((Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}

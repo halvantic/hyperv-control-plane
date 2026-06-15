@@ -305,6 +305,10 @@ type PhysicalAdapter struct {
 	// (RegisterThisConnectionsAddress). A secondary/DHCP NIC that registers can
 	// publish a wrong A record for the host.
 	RegistersDNS bool `json:"registersDNS,omitempty"`
+	// Gateway is the IPv4 default-route next hop on this adapter, if any. It is
+	// captured so that when a management IP is re-homed onto a converged switch's
+	// management vNIC, the host's default route can be reproduced on the vNIC.
+	Gateway string `json:"gateway,omitempty"`
 }
 
 type PhysicalDisk struct {
@@ -553,6 +557,13 @@ type ClusterMgmtVNIC struct {
 	// HostIPs maps a member host to this vNIC's IP (CIDR) on that host. A host
 	// with no entry gets DHCP.
 	HostIPs map[string]string `json:"hostIPs,omitempty"`
+
+	// HostGateways and HostDNS carry the default gateway and DNS servers for this
+	// vNIC per host, so re-homing a host's management IP onto a converged switch's
+	// vNIC preserves its default route and resolvers. Keyed like HostIPs; empty
+	// entries leave the gateway/DNS unset (on-subnet-only).
+	HostGateways map[string]string   `json:"hostGateways,omitempty"`
+	HostDNS      map[string][]string `json:"hostDNS,omitempty"`
 }
 
 type WitnessSpec struct {
