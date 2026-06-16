@@ -727,6 +727,8 @@ const (
 
 	JobShutdownHost = "ShutdownHost" // no params — power the host off now (Stop-Computer -Force)
 
+	JobEnableRDP = "EnableRDP" // no params — enable Remote Desktop (clear fDenyTSConnections, enable the RDP firewall group)
+
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local

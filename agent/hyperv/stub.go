@@ -286,6 +286,8 @@ func (s *Stub) ShutdownHost(_ context.Context, _ bool) error {
 	return nil
 }
 
+func (s *Stub) EnableRDP(_ context.Context) error { return nil }
+
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

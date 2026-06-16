@@ -65,6 +65,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.RebootHost(ctx, p["drain"] == "true"), "reboot initiated")
 	case types.JobShutdownHost:
 		return done(r.hv.ShutdownHost(ctx, p["drain"] == "true"), "shutdown initiated")
+	case types.JobEnableRDP:
+		return done(r.hv.EnableRDP(ctx), "enabled Remote Desktop")
 	case types.JobClusterDestroy:
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:

@@ -163,6 +163,11 @@ type Interface interface {
 	// RebootHost.
 	ShutdownHost(ctx context.Context, drain bool) error
 
+	// EnableRDP turns on Remote Desktop on the host (clears fDenyTSConnections and
+	// enables the Remote Desktop firewall group). Run as an operator job before an
+	// RDP connection; idempotent.
+	EnableRDP(ctx context.Context) error
+
 	// GetClusterState observes the failover cluster this node belongs to, if
 	// any. It is a pure read.
 	GetClusterState(ctx context.Context) (ClusterState, error)
