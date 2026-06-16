@@ -200,6 +200,13 @@ type Interface interface {
 	// only when S2D is not already enabled.
 	EnableS2D(ctx context.Context) (Outcome, error)
 
+	// EnsureS2DPoolDisks adds any poolable physical disks across the cluster to
+	// the S2D pool, so a node added after S2D was enabled actually contributes its
+	// disks (Add-ClusterNode does not claim a late-joiner's disks — they stay
+	// CanPool). Run by the former; idempotent: OutcomeUnchanged when no disk is
+	// poolable, OutcomeUpdated when disks were added.
+	EnsureS2DPoolDisks(ctx context.Context) (Outcome, error)
+
 	// EnsureCSV makes the Cluster Shared Volume described by spec exist on the
 	// S2D pool, idempotently: OutcomeUnchanged when it already exists,
 	// OutcomeCreated when it had to be provisioned.

@@ -339,6 +339,10 @@ func (s *Stub) EnableS2D(_ context.Context) (Outcome, error) {
 	return OutcomeCreated, nil
 }
 
+func (s *Stub) EnsureS2DPoolDisks(_ context.Context) (Outcome, error) {
+	return OutcomeUnchanged, nil
+}
+
 func (s *Stub) EnsureCSV(_ context.Context, spec CSVProvision) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
