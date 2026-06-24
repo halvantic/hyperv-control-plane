@@ -16,7 +16,10 @@
 //     where the VMware mental model differs.
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Common envelope
@@ -748,6 +751,40 @@ const (
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
 )
+
+// sensitiveJobParams are Job.Params keys whose values are credential material.
+// They are stripped from every UI/REST view of a job and scrubbed from the
+// stored job once it reaches a terminal state, so secrets do not linger at rest
+// in the job history. The agent receives the real values over the gRPC job
+// channel before the job completes, so scrubbing afterwards costs it nothing.
+var sensitiveJobParams = map[string]bool{
+	"guestuser": true, "guestpass": true, "domainuser": true, "domainpass": true,
+	"username": true, "password": true, "pass": true, "pw": true, "secret": true,
+}
+
+// IsSensitiveJobParam reports whether a Job.Params key carries credential
+// material (case-insensitive).
+func IsSensitiveJobParam(key string) bool {
+	return sensitiveJobParams[strings.ToLower(key)]
+}
+
+// ScrubSensitiveParams returns a copy of params with credential values removed.
+// It is the single point that decides what counts as a secret, shared by the
+// REST redaction (display) and the store's terminal-job scrub (at rest). An
+// empty map is returned unchanged.
+func ScrubSensitiveParams(params map[string]string) map[string]string {
+	if len(params) == 0 {
+		return params
+	}
+	clean := make(map[string]string, len(params))
+	for k, v := range params {
+		if IsSensitiveJobParam(k) {
+			continue
+		}
+		clean[k] = v
+	}
+	return clean
+}
 
 // ---------------------------------------------------------------------------
 // Secrets
