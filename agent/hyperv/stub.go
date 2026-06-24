@@ -71,6 +71,10 @@ type Stub struct {
 	// so tests can exercise the reconciler's VM failure path.
 	FailVM string
 
+	// FailVMHostPaths, when true, makes EnsureVMHostPaths return an error, so tests
+	// can exercise the reconciler's best-effort (advisory, non-degrading) path.
+	FailVMHostPaths bool
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -226,6 +230,9 @@ func (s *Stub) EnsureHostIP(_ context.Context, spec types.PhysicalNICConfig) (Ou
 func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.FailVMHostPaths {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced failure setting VM host paths")
+	}
 	if s.vmHostVMPath == vmPath && s.vmHostVHDPath == vhdPath {
 		return OutcomeUnchanged, nil
 	}

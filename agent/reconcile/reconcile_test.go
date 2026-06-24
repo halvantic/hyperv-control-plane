@@ -72,6 +72,29 @@ func TestReconcileRoleAlreadyInstalled(t *testing.T) {
 	}
 }
 
+// A best-effort step that fails (here the default VM/VHD host paths) must not
+// degrade the host or hold back its generation: the host stays Ready/Honoured
+// and the failure is recorded as a non-blocking advisory (Reason "NotApplied"),
+// so the UI can surface "settled, with advisories" rather than a hard error.
+func TestReconcileBestEffortFailureIsAdvisory(t *testing.T) {
+	host := hostWithRole(types.RebootNever)
+	host.Spec.Storage.DefaultVMPath = `C:\ClusterStorage\Vol01`
+	host.Spec.Storage.DefaultVHDPath = `C:\ClusterStorage\Vol01`
+	stub := &hyperv.Stub{HyperVInstalled: true, FailVMHostPaths: true}
+
+	res, err := testReconciler(stub).Reconcile(context.Background(), host, nil)
+	if err != nil {
+		t.Fatalf("best-effort failure must not return an error: %v", err)
+	}
+	if !res.Honoured || res.Phase != types.PhaseReady {
+		t.Fatalf("want honoured/ready despite best-effort failure, got phase=%s honoured=%v", res.Phase, res.Honoured)
+	}
+	reason, ok := reasonByType(res.Conditions, "VMHostPaths")
+	if !ok || reason != "NotApplied" {
+		t.Fatalf("VMHostPaths condition: want advisory reason NotApplied, got %q (present=%v)", reason, ok)
+	}
+}
+
 // RebootNever: the agent installs the role but must NOT reboot; it surfaces
 // RebootRequired, does not honour the generation, and does not touch networking.
 func TestReconcileRoleNeedsRebootPolicyNever(t *testing.T) {

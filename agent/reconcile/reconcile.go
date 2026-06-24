@@ -115,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// the role step.
 	if st := desired.Spec.Storage; st.DefaultVMPath != "" || st.DefaultVHDPath != "" {
 		out, err := r.hv.EnsureVMHostPaths(ctx, st.DefaultVMPath, st.DefaultVHDPath)
-		conds = append(conds, r.condition("VMHostPaths", out, err))
+		conds = append(conds, r.advisoryCondition("VMHostPaths", out, err))
 		if err != nil {
 			// Best-effort: the default VM/VHD path is a convenience for where new
 			// VMs land — VMs themselves carry explicit paths. Some hosts can't set
@@ -151,7 +151,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// domain's SRV records; a failure surfaces as a condition without degrading.
 	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
 		out, err := r.hv.EnsureHostDNS(ctx, dns)
-		conds = append(conds, r.condition("HostDNS", out, err))
+		conds = append(conds, r.advisoryCondition("HostDNS", out, err))
 		if err != nil {
 			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
 		} else if out != hyperv.OutcomeUnchanged {
@@ -416,6 +416,21 @@ func (r *Reconciler) condition(condType string, out hyperv.Outcome, err error) t
 	default:
 		c.Reason = "AlreadyConfigured"
 		c.Message = "already matches desired state"
+	}
+	return c
+}
+
+// advisoryCondition is condition() for a best-effort step (host DNS, default
+// VM/VHD paths): a failure is recorded as a non-blocking advisory — Reason
+// "NotApplied" rather than "ApplyFailed" — so it neither degrades the host nor
+// holds back its generation. The host stays Ready/settled and the UI surfaces
+// it as "settled, with advisories" rather than a hard error. Success is
+// identical to condition().
+func (r *Reconciler) advisoryCondition(condType string, out hyperv.Outcome, err error) types.Condition {
+	c := r.condition(condType, out, err)
+	if err != nil {
+		c.Reason = "NotApplied"
+		c.Message = err.Error() + " (best-effort; not blocking)"
 	}
 	return c
 }
