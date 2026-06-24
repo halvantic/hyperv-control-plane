@@ -152,6 +152,34 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	return nil
 }
 
+// FormatDiskDrive initialises a physical disk to GPT, creates a single
+// max-size partition, formats it NTFS and assigns a drive letter. Refuses the
+// OS/boot disk. Idempotent: if the disk already has a partition with the
+// requested drive letter the operation is a no-op.
+func (p *PowerShell) FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error {
+	id := psQuote(deviceID)
+	letter := psQuote(driveLetter)
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
+		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
+		"if (-not $pd) { throw 'no physical disk with DeviceId ' + %[1]s }; "+
+		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; "+
+		"if (-not $disk) { throw 'disk not reachable via Get-Disk' }; "+
+		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "+
+		"$existing = $disk | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq %[2]s }; "+
+		"if ($existing) { 'RESULT=NOOP'; return }; "+
+		"Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; "+
+		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; "+
+		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false }; "+
+		"Initialize-Disk -Number $disk.Number -PartitionStyle GPT; "+
+		"New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter %[2]s | Out-Null; "+
+		"Format-Volume -DriveLetter %[2]s -FileSystem NTFS -Confirm:$false | Out-Null; "+
+		"'RESULT=FORMATTED'", id, letter)
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("format disk drive %q → %s: %w", deviceID, driveLetter, err)
+	}
+	return nil
+}
+
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
 // group already exists for it, it is left alone. The new role's group is named
 // after the VM, which is what the discovery observation keys on.

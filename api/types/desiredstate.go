@@ -281,6 +281,10 @@ type HostInventory struct {
 	// OSVersion is the host OS caption/version (e.g. "Microsoft Windows Server
 	// 2025 Datacenter 10.0.26100").
 	OSVersion string `json:"osVersion,omitempty"`
+	// UsedDriveLetters are the single-character drive letters currently in use
+	// on the host (e.g. ["C","D"]). The UI uses this to prevent assigning a
+	// letter that is already taken when formatting a disk to a volume.
+	UsedDriveLetters []string `json:"usedDriveLetters,omitempty"`
 }
 
 type PhysicalAdapter struct {
@@ -319,6 +323,9 @@ type PhysicalDisk struct {
 	// IsOSDisk is true for the disk backing the host's boot/system volume, so the
 	// UI can exclude it from the data disks available for S2D.
 	IsOSDisk bool `json:"isOSDisk,omitempty"`
+	// DriveLetter is the Windows drive letter assigned to this disk's primary
+	// partition (e.g. "E"), empty when the disk is raw or pooled.
+	DriveLetter string `json:"driveLetter,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +352,10 @@ type HostNetworkingSpec struct {
 	// Domain & DNS setting. Empty leaves DNS untouched. Setting this before a
 	// domain join is what lets the host resolve the domain's SRV records.
 	DNSServers []string `json:"dnsServers,omitempty"`
+
+	// NICConfigs assigns static IPs to named physical adapters. Applied after
+	// switches so a NIC being teamed gets its IP removed cleanly first.
+	NICConfigs []PhysicalNICConfig `json:"nicConfigs,omitempty"`
 }
 
 type VirtualSwitchSpec struct {
@@ -719,7 +730,8 @@ const (
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
 
-	JobFormatDisk = "FormatDisk" // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
+	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
+	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter
 
 	JobRepairHostDNS = "RepairHostDNS" // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 

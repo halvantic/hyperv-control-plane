@@ -196,6 +196,39 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Build the set of NICs that are teamed into a vSwitch. Once a NIC is a SET
+	// team member it has no independent IP interface — the IP lives on the
+	// management OS vNIC on that switch. Trying to call New-NetIPAddress on a
+	// teamed NIC returns "Element not found" (error 1168).
+	teamedNICs := make(map[string]bool)
+	for _, sw := range net.Switches {
+		for _, m := range sw.TeamMembers {
+			teamedNICs[m] = true
+		}
+	}
+
+	for _, c := range net.NICConfigs {
+		if teamedNICs[c.AdapterName] {
+			r.log.Info("skipping NIC IP config: adapter is a SET team member", "adapter", c.AdapterName)
+			conds = append(conds, r.condition("NICConfig/"+c.AdapterName, hyperv.OutcomeUnchanged, nil))
+			continue
+		}
+		out, err := r.hv.EnsureHostIP(ctx, c)
+		conds = append(conds, r.condition("NICConfig/"+c.AdapterName, out, err))
+		if err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ensure NIC IP %q: %w", c.AdapterName, err)
+			}
+			r.log.Error("ensure NIC IP failed", "adapter", c.AdapterName, "err", err)
+			continue
+		}
+		if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("NIC IP reconciled", "adapter", c.AdapterName, "outcome", out)
+		}
+	}
+
 	res := Result{
 		Conditions:      conds,
 		Changed:         changed,
@@ -222,14 +255,28 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host, 
 	var changed bool
 
 	if spec.ManagementNIC != nil {
-		out, err := r.hv.EnsureHostIP(ctx, *spec.ManagementNIC)
-		conds = append(conds, r.condition("ManagementNIC/"+spec.ManagementNIC.AdapterName, out, err))
-		if err != nil {
-			return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("ensure management IP: %w", err)
+		// Once the management NIC is teamed into a SET switch its IP is
+		// re-homed to a management OS vNIC. Skip here to avoid "Element not
+		// found" (error 1168) on New-NetIPAddress.
+		adaptorTeamed := false
+		for _, sw := range spec.Networking.Switches {
+			for _, m := range sw.TeamMembers {
+				if m == spec.ManagementNIC.AdapterName {
+					adaptorTeamed = true
+					break
+				}
+			}
 		}
-		if out != hyperv.OutcomeUnchanged {
-			changed = true
-			r.log.Info("management IP reconciled", "adapter", spec.ManagementNIC.AdapterName, "outcome", out)
+		if !adaptorTeamed {
+			out, err := r.hv.EnsureHostIP(ctx, *spec.ManagementNIC)
+			conds = append(conds, r.condition("ManagementNIC/"+spec.ManagementNIC.AdapterName, out, err))
+			if err != nil {
+				return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("ensure management IP: %w", err)
+			}
+			if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("management IP reconciled", "adapter", spec.ManagementNIC.AdapterName, "outcome", out)
+			}
 		}
 	}
 

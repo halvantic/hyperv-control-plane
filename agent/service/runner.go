@@ -15,6 +15,7 @@ import (
 	"github.com/joshua-fourie/ballast/agent/store"
 	ballastpb "github.com/joshua-fourie/ballast/api/proto"
 	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/joshua-fourie/ballast/version"
 )
 
 // jobTimeout caps a single imperative job. A job that exceeds it is cancelled
@@ -83,7 +84,7 @@ type runner struct {
 	jobsInflight map[string]struct{}
 }
 
-const agentVersion = "0.1.0-slice"
+const agentVersion = version.Version
 
 // run drives the agent until ctx is cancelled.
 func (r *runner) run(ctx context.Context) error {

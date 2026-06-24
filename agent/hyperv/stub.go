@@ -235,7 +235,8 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 
 func (s *Stub) RemoveSwitch(_ context.Context, _ string) error { return nil }
 func (s *Stub) RemoveVM(_ context.Context, _ string) error     { return nil }
-func (s *Stub) FormatDisk(_ context.Context, _ string) error   { return nil }
+func (s *Stub) FormatDisk(_ context.Context, _ string) error            { return nil }
+func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error    { return nil }
 func (s *Stub) DestroyCluster(_ context.Context) error         { return nil }
 
 func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {

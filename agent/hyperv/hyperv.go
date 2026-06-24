@@ -127,6 +127,9 @@ type Interface interface {
 	// FormatDisk wipes a physical disk (by PhysicalDisk DeviceId) back to a raw,
 	// poolable state. Destructive imperative Job; refuses the boot/system disk.
 	FormatDisk(ctx context.Context, deviceID string) error
+	// FormatDiskDrive initialises a physical disk, creates a single GPT partition,
+	// formats it NTFS and assigns the requested drive letter. Refuses the OS disk.
+	FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error
 
 	// RepairHostDNS fixes a common multi-homed-host misconfiguration: it points
 	// every non-management NIC's DNS at the domain controller (the management

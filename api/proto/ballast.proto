@@ -271,6 +271,7 @@ message HostInventory {
   uint64 total_memory_bytes = 3;
   int32 logical_cpus = 4;
   string os_version = 5;
+  repeated string used_drive_letters = 6;
 }
 
 message PhysicalAdapter {
@@ -297,6 +298,7 @@ message PhysicalDisk {
   string media_type = 3;
   bool can_pool = 4;
   bool is_os_disk = 5;
+  string drive_letter = 6;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +309,7 @@ message HostNetworkingSpec {
   repeated VirtualSwitchSpec switches = 1;
   repeated ManagementVNICSpec management_vnics = 2;
   repeated string dns_servers = 3;
+  repeated PhysicalNICConfig nic_configs = 4;
 }
 
 enum SETTeamingMode {
