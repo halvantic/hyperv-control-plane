@@ -738,6 +738,8 @@ const (
 
 	JobRepairHostDNS = "RepairHostDNS" // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 
+	JobRepairNetworkProfile = "RepairNetworkProfile" // no params — set any host NIC on the Public network profile to Private (Public breaks WinRM/clustering); Domain NICs are left as-is
+
 	JobRebootHost = "RebootHost" // no params — restart the host now (Restart-Computer -Force)
 
 	JobShutdownHost = "ShutdownHost" // no params — power the host off now (Stop-Computer -Force)

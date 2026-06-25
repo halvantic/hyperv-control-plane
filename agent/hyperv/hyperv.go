@@ -139,6 +139,13 @@ type Interface interface {
 	// Returns a short summary of what changed. Imperative Job.
 	RepairHostDNS(ctx context.Context, dns string) (string, error)
 
+	// RepairNetworkProfile sets any host NIC on the Public network profile to
+	// Private. A NIC stuck on Public — e.g. after a vSwitch was created or removed
+	// — silently breaks WinRM and failover clustering; a managed host NIC should be
+	// on Private or the automatic Domain-authenticated profile. Domain NICs are
+	// left as they are. Returns a per-NIC summary. Imperative Job.
+	RepairNetworkProfile(ctx context.Context) (string, error)
+
 	// DestroyCluster tears the cluster down from this node (the former): remove VM
 	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;
 	// a no-op when no cluster exists.

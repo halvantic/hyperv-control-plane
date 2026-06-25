@@ -506,6 +506,10 @@ func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 	return "dns repaired (stub)", nil
 }
 
+func (s *Stub) RepairNetworkProfile(_ context.Context) (string, error) {
+	return "network profiles ok (stub)", nil
+}
+
 func (s *Stub) EnsureHostDNS(_ context.Context, _ []string) (Outcome, error) {
 	return OutcomeUnchanged, nil
 }

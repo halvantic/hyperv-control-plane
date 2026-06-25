@@ -341,6 +341,37 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join
 	return OutcomeUnchanged, nil
 }
 
+// RepairNetworkProfile sets any NIC on the Public network profile to Private. A
+// host NIC stuck on Public (often a side effect of creating or removing a
+// vSwitch) silently breaks WinRM and failover clustering. Domain-authenticated
+// NICs are left alone (that profile is assigned automatically when the DC is
+// reachable). Returns a per-NIC summary so the operator can confirm the result.
+func (p *PowerShell) RepairNetworkProfile(ctx context.Context) (string, error) {
+	const script = `$ErrorActionPreference='Stop'
+$lines = @()
+$changed = 0
+foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+  if ($prof.NetworkCategory -eq 'Public') {
+    try {
+      Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+      $lines += ($prof.InterfaceAlias + ': Public -> Private')
+      $changed++
+    } catch {
+      $lines += ($prof.InterfaceAlias + ': Public (could not change - ' + $_.Exception.Message + ')')
+    }
+  } else {
+    $lines += ($prof.InterfaceAlias + ': ' + $prof.NetworkCategory)
+  }
+}
+if (-not $lines) { 'no network connection profiles found' }
+else { ($lines -join '; ') + ' [' + $changed + ' set to Private]' }`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("repair network profile: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $domain = (Get-CimInstance Win32_ComputerSystem).Domain
