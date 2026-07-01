@@ -251,6 +251,20 @@ func TestParseCIDR(t *testing.T) {
 	}
 }
 
+// The IP apply must free the desired address from any interface that already
+// holds it (e.g. an AllowManagementOS auto-vNIC took it via DHCP) before adding
+// it, or New-NetIPAddress fails "object already exists" (Windows error 5010)
+// when the address moves between vNICs. It must still add on the target vNIC.
+func TestApplyIPScriptFreesAddressOnOtherInterface(t *testing.T) {
+	s := applyIPScript("ManagementHost", "192.168.1.159", 24, &types.IPConfig{Address: "192.168.1.159/24"})
+	if !strings.Contains(s, "Get-NetIPAddress -IPAddress '192.168.1.159' -AddressFamily IPv4") {
+		t.Fatalf("apply script does not free the address from other interfaces:\n%s", s)
+	}
+	if !strings.Contains(s, "New-NetIPAddress -InterfaceAlias $alias -IPAddress '192.168.1.159' -PrefixLength 24") {
+		t.Fatalf("apply script add line wrong:\n%s", s)
+	}
+}
+
 // A vNIC that exists and matches, but whose IP has drifted from DHCP to the
 // desired static, reports Updated and runs the IP apply exactly once.
 func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
