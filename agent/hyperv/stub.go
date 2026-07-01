@@ -75,6 +75,12 @@ type Stub struct {
 	// can exercise the reconciler's best-effort (advisory, non-degrading) path.
 	FailVMHostPaths bool
 
+	// NetworkProfilePublic, when true, makes EnsureNetworkProfilesPrivate report it
+	// had to flip a NIC (OutcomeUpdated); FailNetworkProfile makes it error. Both
+	// let tests drive the reconciler's network-profile hygiene step.
+	NetworkProfilePublic bool
+	FailNetworkProfile   bool
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -508,6 +514,16 @@ func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 
 func (s *Stub) RepairNetworkProfile(_ context.Context) (string, error) {
 	return "network profiles ok (stub)", nil
+}
+
+func (s *Stub) EnsureNetworkProfilesPrivate(_ context.Context) (Outcome, error) {
+	if s.FailNetworkProfile {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced failure setting network profile")
+	}
+	if s.NetworkProfilePublic {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
 }
 
 func (s *Stub) EnsureHostDNS(_ context.Context, _ []string) (Outcome, error) {

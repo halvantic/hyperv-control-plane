@@ -143,8 +143,17 @@ type Interface interface {
 	// Private. A NIC stuck on Public — e.g. after a vSwitch was created or removed
 	// — silently breaks WinRM and failover clustering; a managed host NIC should be
 	// on Private or the automatic Domain-authenticated profile. Domain NICs are
-	// left as they are. Returns a per-NIC summary. Imperative Job.
+	// left as they are. Returns a per-NIC summary. Imperative Job (operator-run).
 	RepairNetworkProfile(ctx context.Context) (string, error)
+
+	// EnsureNetworkProfilesPrivate is the reconcile-driven, idempotent counterpart
+	// of RepairNetworkProfile: it flips any NIC left on the Public profile to
+	// Private and reports OutcomeUnchanged when none were (Domain-authenticated and
+	// Private NICs are left alone). The reconciler runs it after switch/vNIC work
+	// so a host that a vSwitch operation stranded on Public heals itself on the
+	// same or next pass instead of needing the operator to run the job — keeping
+	// WinRM and clustering reachable even while the centre is offline.
+	EnsureNetworkProfilesPrivate(ctx context.Context) (Outcome, error)
 
 	// DestroyCluster tears the cluster down from this node (the former): remove VM
 	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;

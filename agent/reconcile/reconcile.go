@@ -196,6 +196,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Keep managed host NICs off the Public network profile. Creating or adjusting
+	// a vSwitch/vNIC (just done above) frequently strands an interface on Public,
+	// which silently blocks inbound WinRM and failover clustering. Running this on
+	// every pass — not just as an operator-triggered job — makes the host heal
+	// itself, and it works while the centre is offline. This is host hygiene, not
+	// desired spec, so it is best-effort: surface a condition, never degrade the
+	// host or hold its generation back. Only run it where the agent manages
+	// networking (a switch or management vNIC is declared).
+	if len(net.Switches) > 0 || len(net.ManagementVNICs) > 0 {
+		out, err := r.hv.EnsureNetworkProfilesPrivate(ctx)
+		conds = append(conds, r.advisoryCondition("NetworkProfile", out, err))
+		if err != nil {
+			r.log.Warn("ensure network profiles private failed (best-effort, not degrading)", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("network profile reconciled (Public -> Private)", "outcome", out)
+		}
+	}
+
 	// Build the set of NICs that are teamed into a vSwitch. Once a NIC is a SET
 	// team member it has no independent IP interface — the IP lives on the
 	// management OS vNIC on that switch. Trying to call New-NetIPAddress on a

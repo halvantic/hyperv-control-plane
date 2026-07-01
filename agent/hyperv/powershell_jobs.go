@@ -372,6 +372,44 @@ else { ($lines -join '; ') + ' [' + $changed + ' set to Private]' }`
 	return strings.TrimSpace(string(out)), nil
 }
 
+// EnsureNetworkProfilesPrivate is the idempotent, reconcile-driven form of
+// RepairNetworkProfile. It flips only NICs currently on the Public profile to
+// Private and reports whether it had to. It emits a "changed=<n> failed=<n>"
+// summary the agent parses into an Outcome; a Set failure surfaces as an error
+// so the reconciler can record it as an advisory condition without degrading the
+// host (the profile is host hygiene, not part of the desired spec).
+func (p *PowerShell) EnsureNetworkProfilesPrivate(ctx context.Context) (Outcome, error) {
+	const script = `$ErrorActionPreference='Stop'
+$changed = 0
+$failed = @()
+foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+  if ($prof.NetworkCategory -eq 'Public') {
+    try {
+      Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+      $changed++
+    } catch {
+      $failed += ($prof.InterfaceAlias + ': ' + $_.Exception.Message)
+    }
+  }
+}
+'changed=' + $changed + ' failed=' + $failed.Count + $(if ($failed) { ' :: ' + ($failed -join '; ') } else { '' })`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure network profiles private: %w", err)
+	}
+	summary := strings.TrimSpace(string(out))
+	var changed, failed int
+	fmt.Sscanf(summary, "changed=%d failed=%d", &changed, &failed)
+	outcome := OutcomeUnchanged
+	if changed > 0 {
+		outcome = OutcomeUpdated
+	}
+	if failed > 0 {
+		return outcome, fmt.Errorf("ensure network profiles private: %s", summary)
+	}
+	return outcome, nil
+}
+
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $domain = (Get-CimInstance Win32_ComputerSystem).Domain
