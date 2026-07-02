@@ -164,7 +164,10 @@ if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
 }
 Import-Module ActiveDirectory -ErrorAction Stop
 $dom = (Get-CimInstance Win32_ComputerSystem).Domain
-$nodes = %[1]s | Where-Object { $_ }
+# Always include the local host so a standalone source<->destination pair gets
+# delegation both ways (the caller passes just the destination); for a cluster
+# the local former is already in the node list, so this is a no-op after dedupe.
+$nodes = (@($env:COMPUTERNAME) + (%[1]s)) | Where-Object { $_ } | Select-Object -Unique
 $changed = @()
 foreach ($src in $nodes) {
   $want = @()

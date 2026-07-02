@@ -335,9 +335,10 @@ type Interface interface {
 	// MigrateVM shared-nothing live-migrates a standalone (non-clustered) VM to
 	// another host with no shared storage: Move-VM -DestinationHost -IncludeStorage
 	// moves the VM and its files to destPath on the target. Run on the source host.
-	// A running VM migrates live; a stopped one moves offline. Both hosts must have
-	// VM migration enabled and, for Kerberos, constrained delegation between their
-	// computer accounts (host setup, not done here). Imperative Job.
+	// A running VM migrates live; a stopped one moves offline. It enables migration
+	// on the source; the destination must also have it enabled. Kerberos delegation
+	// between the two computer accounts is provisioned by the MigrateVM job (via
+	// EnsureMigrationDelegation) before this runs. Imperative Job.
 	MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error)
 
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all

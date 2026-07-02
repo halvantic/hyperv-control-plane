@@ -52,6 +52,14 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"]), "live-migrated "+p["vm"]+" to "+p["node"])
 	case types.JobMigrateVM:
+		// Auto-provision Kerberos constrained delegation between this (source) host
+		// and the destination so shared-nothing migration works without a manual AD
+		// step. EnsureMigrationDelegation includes the local host, so passing just
+		// the destination sets delegation both ways. The agent runs as a domain
+		// admin; idempotent, and a no-op when it is already in place.
+		if _, derr := r.hv.EnsureMigrationDelegation(ctx, []string{p["destHost"]}); derr != nil {
+			return "", fmt.Errorf("ensure migration delegation to %s: %w", p["destHost"], derr)
+		}
 		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"])
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
