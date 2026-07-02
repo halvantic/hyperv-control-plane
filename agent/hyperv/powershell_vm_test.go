@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -41,5 +42,25 @@ func TestEnsureVMScriptNoDiskNoPath(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
 	if strings.Contains(s, "-Path $vmDir") {
 		t.Fatalf("a diskless VM should not set -Path:\n%s", s)
+	}
+}
+
+// MigrateVM issues a shared-nothing Move-VM to the destination host, carrying
+// storage to the destination path, and returns the summary.
+func TestMigrateVMScript(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("migrated Web01 to hvnew02")}}
+	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "migrated Web01 to hvnew02" {
+		t.Fatalf("out = %q", out)
+	}
+	s := f.calls[0]
+	if !strings.Contains(s, "Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
+		t.Fatalf("script missing shared-nothing Move-VM:\n%s", s)
+	}
+	if !strings.Contains(s, "$dest = 'hvnew02'") || !strings.Contains(s, `$path = 'C:\VMs\Web01'`) {
+		t.Fatalf("script args wrong:\n%s", s)
 	}
 }

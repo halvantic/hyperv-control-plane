@@ -500,6 +500,9 @@ func (s *Stub) EnsureClusterVMRole(_ context.Context, _ string) (Outcome, error)
 func (s *Stub) MoveClusterGroup(_ context.Context, _, _ string) error        { return nil }
 func (s *Stub) MoveClusterSharedVolume(_ context.Context, _, _ string) error { return nil }
 func (s *Stub) MoveClusterVM(_ context.Context, _, _ string) error           { return nil }
+func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _ string) (string, error) {
+	return "migrated " + vm + " to " + destHost + " (stub)", nil
+}
 func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {
 	return "validation ok (stub)", nil
 }

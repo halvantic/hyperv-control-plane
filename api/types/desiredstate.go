@@ -726,6 +726,7 @@ const (
 	JobClusterMoveCSV      = "ClusterMoveCSV"      // params: volume, node — move CSV ownership to node
 	JobClusterValidate     = "ClusterValidate"     // params: nodes (optional, comma list), include (optional) — Test-Cluster
 	JobClusterMoveVM       = "ClusterMoveVM"       // params: vm, node — live-migrate a clustered VM role to node
+	JobMigrateVM           = "MigrateVM"           // params: vm, destHost, destPath — shared-nothing live migration of a standalone VM to another host (run on the source host)
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 

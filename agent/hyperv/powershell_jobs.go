@@ -276,6 +276,39 @@ try {
 	return nil
 }
 
+// MigrateVM shared-nothing live-migrates a standalone VM to another host, moving
+// its storage too (Move-VM -IncludeStorage). It runs on the source host. It
+// enables migration locally first; the destination must also have it enabled and,
+// for Kerberos, constrained delegation between the two computer accounts — that is
+// host setup done elsewhere. On failure it folds the recent VMMS event detail into
+// the message so the real cause (transport / delegation / CPU compat) is visible.
+func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$vm = %[1]s; $dest = %[2]s; $path = %[3]s
+if (-not $path) { $path = 'C:\VMs\' + $vm }
+if (-not (Get-VM -Name $vm -ErrorAction SilentlyContinue)) { throw ('VM ' + $vm + ' is not on this host') }
+# Shared-nothing migration needs migration enabled on the source (this host).
+Enable-VMMigration -ErrorAction SilentlyContinue | Out-Null
+Set-VMHost -UseAnyNetworkForMigration $true -ErrorAction SilentlyContinue
+try {
+  Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path -ErrorAction Stop | Out-Null
+} catch {
+  $msg = $_.Exception.Message
+  $detail = ''
+  try {
+    $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-5); Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue
+    if ($ev) { $detail = ' -- events: ' + (($ev | ForEach-Object { ($_.Message -split [Environment]::NewLine)[0] }) -join ' | ') }
+  } catch {}
+  throw ($msg + $detail)
+}
+'migrated ' + $vm + ' to ' + $dest`, psQuote(vm), psQuote(destHost), psQuote(destPath))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("migrate vm %q to %q: %w", vm, destHost, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests
 // are excluded by default because they can be disruptive on an in-use CSV; the
 // caller can opt into a different category set via include.
