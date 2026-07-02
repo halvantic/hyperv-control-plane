@@ -375,6 +375,19 @@ if (-not (Get-VMDvdDrive -VMName %[1]s | Where-Object { $_.Path -and ([IO.Path]:
 		clusterGuard = fmt.Sprintf("  try { if (Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue) { $ownedElsewhere = $true } } catch {}\n", name)
 	}
 
+	// Place the VM's files in a per-VM folder on the chosen datastore — the first
+	// disk's directory (e.g. C:\ClusterStorage\vol1\<VM>) — and point New-VM's
+	// config there with -Path. This keeps a cluster VM's config on shared storage
+	// (migration-ready) and, crucially, does not depend on the host's default VM
+	// path, which may be unset or point at a folder that does not exist (New-VM
+	// then fails 0x80070002 "cannot access configuration store"). The folder is
+	// created first so both New-VM and New-VHD have somewhere to write.
+	mkVMDir, vmPathArg := "", ""
+	if len(s.Disks) > 0 && s.Disks[0].Path != "" {
+		mkVMDir = fmt.Sprintf("  $vmDir = Split-Path %s -Parent\n  if ($vmDir) { New-Item -ItemType Directory -Path $vmDir -Force | Out-Null }\n", psQuote(s.Disks[0].Path))
+		vmPathArg = " -Path $vmDir"
+	}
+
 	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $created = $false
@@ -387,7 +400,7 @@ if (-not $vm) {
     [pscustomobject]@{ created = $false; changed = $false; pendingPowerOff = $false } | ConvertTo-Json -Compress
     return
   }
-  New-VM -Name %[1]s -Generation %[2]d -MemoryStartupBytes %[3]d -NoVHD | Out-Null
+%[11]s  New-VM -Name %[1]s -Generation %[2]d -MemoryStartupBytes %[3]d -NoVHD%[12]s | Out-Null
   $created = $true
 }
 $running = $false
@@ -397,7 +410,7 @@ if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[5]s
 %[6]s%[7]s%[8]s%[9]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads
