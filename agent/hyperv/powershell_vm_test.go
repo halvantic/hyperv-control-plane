@@ -60,6 +60,11 @@ func TestMigrateVMScript(t *testing.T) {
 	if !strings.Contains(s, "Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
 		t.Fatalf("script missing shared-nothing Move-VM:\n%s", s)
 	}
+	// Service-initiated migration must switch off CredSSP, or it fails with
+	// "no credentials available".
+	if !strings.Contains(s, "-VirtualMachineMigrationAuthenticationType Kerberos") {
+		t.Fatalf("script does not set Kerberos migration auth:\n%s", s)
+	}
 	if !strings.Contains(s, "$dest = 'hvnew02'") || !strings.Contains(s, `$path = 'C:\VMs\Web01'`) {
 		t.Fatalf("script args wrong:\n%s", s)
 	}

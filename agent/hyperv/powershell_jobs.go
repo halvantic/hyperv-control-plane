@@ -287,9 +287,18 @@ func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath strin
 $vm = %[1]s; $dest = %[2]s; $path = %[3]s
 if (-not $path) { $path = 'C:\VMs\' + $vm }
 if (-not (Get-VM -Name $vm -ErrorAction SilentlyContinue)) { throw ('VM ' + $vm + ' is not on this host') }
-# Shared-nothing migration needs migration enabled on the source (this host).
+# Service-initiated migration MUST use Kerberos: CredSSP delegates an interactive
+# user's credentials, which the agent service does not have, so it fails with "no
+# credentials available in the security package" (0x8009030E). Enable migration
+# and set Kerberos on the source and — over a single Kerberos hop, as a domain
+# admin — on the destination too. Kerberos also needs constrained delegation
+# between the two computer accounts, provisioned by the MigrateVM job beforehand.
 Enable-VMMigration -ErrorAction SilentlyContinue | Out-Null
-Set-VMHost -UseAnyNetworkForMigration $true -ErrorAction SilentlyContinue
+Set-VMHost -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction SilentlyContinue
+try {
+  Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
+  Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
+} catch {}
 try {
   Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path -ErrorAction Stop | Out-Null
 } catch {
