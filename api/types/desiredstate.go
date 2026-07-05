@@ -706,7 +706,13 @@ const (
 	JobRunning   JobState = "Running"   // agent claimed and is executing
 	JobSucceeded JobState = "Succeeded" // completed successfully
 	JobFailed    JobState = "Failed"    // failed, see Message
+	JobCancelled JobState = "Cancelled" // cancelled by an operator (terminal)
 )
+
+// Terminal reports whether a job state is final (no further transitions).
+func (s JobState) Terminal() bool {
+	return s == JobSucceeded || s == JobFailed || s == JobCancelled
+}
 
 // Job kinds. Params carry the operands (e.g. "vm" for a VM name, "node" for a
 // cluster node, "target" for a migration destination).
