@@ -330,7 +330,10 @@ type Interface interface {
 	// MoveClusterVM live-migrates a highly-available VM role to node with no
 	// downtime (Move-ClusterVirtualMachineRole -MigrationType Live). Run locally
 	// on a member. Imperative Job.
-	MoveClusterVM(ctx context.Context, vm, node string) error
+	// MoveClusterVM live-migrates a clustered VM role to node. onProgress (nil-safe)
+	// receives streamed progress notes ("live migration N%") polled from
+	// Msvm_MigrationJob while the move runs.
+	MoveClusterVM(ctx context.Context, vm, node string, onProgress ProgressFunc) error
 
 	// MigrateVM shared-nothing live-migrates a standalone (non-clustered) VM to
 	// another host with no shared storage: Move-VM -DestinationHost -IncludeStorage
@@ -338,8 +341,9 @@ type Interface interface {
 	// A running VM migrates live; a stopped one moves offline. It enables migration
 	// on the source; the destination must also have it enabled. Kerberos delegation
 	// between the two computer accounts is provisioned by the MigrateVM job (via
-	// EnsureMigrationDelegation) before this runs. Imperative Job.
-	MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error)
+	// EnsureMigrationDelegation) before this runs. onProgress (nil-safe) receives
+	// streamed progress notes. Imperative Job.
+	MigrateVM(ctx context.Context, vm, destHost, destPath string, onProgress ProgressFunc) (string, error)
 
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive

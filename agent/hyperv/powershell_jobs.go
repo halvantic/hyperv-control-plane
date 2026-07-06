@@ -218,59 +218,59 @@ func (p *PowerShell) MoveClusterSharedVolume(ctx context.Context, volume, node s
 // used deliberately: Failover Clustering live-migrates it when the VM is running
 // (no downtime) and does a quick move when it is stopped, rather than forcing
 // Live (which errors on a stopped VM).
-func (p *PowerShell) MoveClusterVM(ctx context.Context, vm, node string) error {
-	// On failure Move-ClusterVirtualMachineRole only says "check the event log",
-	// which is useless from the console. Catch the failure and fold the recent
-	// error/warning events into the message so the operator sees the real cause
-	// (e.g. a migration-transport listener problem) without opening Event Viewer.
-	// A clustered VM logs to the Hyper-V High-Availability channel and, for the
-	// cluster side, to FailoverClustering/Operational and the System log — query
-	// all of them, including Critical level. The migration type is left to
-	// Hyper-V (live when the VM is running, quick when it is off).
+func (p *PowerShell) MoveClusterVM(ctx context.Context, vm, node string, onProgress ProgressFunc) error {
+	// Run the move in a background job so the foreground can poll Msvm_MigrationJob
+	// and stream PROGRESS lines. On failure keep the hard-won two-node event
+	// capture: Move-ClusterVirtualMachineRole only says "check the event log", and
+	// a clustered live migration's real cause often lands on the DESTINATION node
+	// (receive-side transport/listener), so gather Hyper-V High-Availability, VMMS,
+	// FailoverClustering/Operational and System events from both nodes. Migration
+	// type is picked by VM state (Live when running, Quick when off).
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-Import-Module FailoverClusters
-# Pick the migration type by the VM's actual state: a running VM live-migrates
-# (no downtime); a stopped/saved VM gets a Quick move (ownership change). The
-# cmdlet defaults to Live, which is rejected on a stopped VM with "not in an
-# appropriate state", so the type must be chosen explicitly.
-$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
-if ($grp -and $grp.OwnerNode.Name -eq %[2]s) { 'already on ' + %[2]s + '; no move needed'; return }
-$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
-$mt = 'Quick'
-if ($vm -and $vm.State -eq 'Running') { $mt = 'Live' }
-try {
-  Move-ClusterVirtualMachineRole -Name %[1]s -Node %[2]s -MigrationType $mt -ErrorAction Stop | Out-Null
-} catch {
-  $msg = $_.Exception.Message
+Import-Module FailoverClusters -ErrorAction SilentlyContinue
+$vm = %[1]s; $tn = %[2]s
+$grp = Get-ClusterGroup -Name $vm -ErrorAction SilentlyContinue
+if ($grp -and $grp.OwnerNode.Name -eq $tn) { Write-Output ('DONE already on ' + $tn + '; no move needed'); return }
+$v = Get-VM -Name $vm -ErrorAction SilentlyContinue
+$mt = 'Quick'; if ($v -and $v.State -eq 'Running') { $mt = 'Live' }
+$job = Start-Job -ScriptBlock { param($vm,$tn,$mt) Import-Module FailoverClusters -ErrorAction SilentlyContinue; Move-ClusterVirtualMachineRole -Name $vm -Node $tn -MigrationType $mt } -ArgumentList $vm,$tn,$mt
+$last = -1
+while ($job.State -eq 'Running') {
+  $mj = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending | Select-Object -First 1
+  if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
+  Start-Sleep -Seconds 2
+}
+Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+if ($job.State -eq 'Failed') {
+  $msg = ''; try { $msg = [string]$job.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
   $since = (Get-Date).AddMinutes(-5)
   $logs = @('Microsoft-Windows-Hyper-V-High-Availability-Admin','Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')
-  # A clustered live migration fails on the DESTINATION node (the receive-side
-  # listen-socket / transport error lands there), so gather events from both the
-  # source (local) and the target node. The agent runs as a domain admin, so a
-  # remote read of the target's log is a single hop (no delegation).
   $rows = @()
-  foreach ($pair in @(@{ n = $env:COMPUTERNAME; remote = $false }, @{ n = %[2]s; remote = $true })) {
-    $node = $pair.n
-    $ev = @()
+  foreach ($pair in @(@{ n = $env:COMPUTERNAME; remote = $false }, @{ n = $tn; remote = $true })) {
+    $en = $pair.n; $ev = @()
     foreach ($l in $logs) {
       try {
-        if ($pair.remote) { $ev += Get-WinEvent -ComputerName $node -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue }
+        if ($pair.remote) { $ev += Get-WinEvent -ComputerName $en -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue }
         else { $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue }
       } catch {}
     }
     try {
-      if ($pair.remote) { $ev += Get-WinEvent -ComputerName $node -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } }
+      if ($pair.remote) { $ev += Get-WinEvent -ComputerName $en -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } }
       else { $ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2,3 } -MaxEvents 40 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*Hyper-V*' } }
     } catch {}
     foreach ($e in ($ev | Sort-Object TimeCreated -Unique)) {
-      $rows += '[' + $node + ' ' + $e.TimeCreated.ToString('HH:mm:ss') + ' id=' + $e.Id + '] ' + (($e.Message -split [Environment]::NewLine)[0])
+      $rows += '[' + $en + ' ' + $e.TimeCreated.ToString('HH:mm:ss') + ' id=' + $e.Id + '] ' + (($e.Message -split [Environment]::NewLine)[0])
     }
   }
   $detail = ($rows -join ' | ')
   if (-not $detail) { $detail = 'no related events on source or destination in the last 5 minutes; run Get-ClusterLog for detail' }
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
   throw ('(' + $mt + ' migration) ' + $msg + ' -- events: ' + $detail)
-}`, psQuote(vm), psQuote(node))
-	if err := p.run2(ctx, script); err != nil {
+}
+Remove-Job $job -Force -ErrorAction SilentlyContinue
+Write-Output ('DONE live-migrated ' + $vm + ' to ' + $tn)`, psQuote(vm), psQuote(node))
+	var result string
+	if err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result)); err != nil {
 		return fmt.Errorf("migrate VM %q to %q: %w", vm, node, err)
 	}
 	return nil
@@ -282,7 +282,7 @@ try {
 // for Kerberos, constrained delegation between the two computer accounts — that is
 // host setup done elsewhere. On failure it folds the recent VMMS event detail into
 // the message so the real cause (transport / delegation / CPU compat) is visible.
-func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error) {
+func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath string, onProgress ProgressFunc) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $vm = %[1]s; $dest = %[2]s; $path = %[3]s
 if (-not $path) { $path = 'C:\VMs\' + $vm }
@@ -299,23 +299,57 @@ try {
   Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
   Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
 } catch {}
-try {
-  Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path -ErrorAction Stop | Out-Null
-} catch {
-  $msg = $_.Exception.Message
+%[4]s
+Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
+		psQuote(vm), psQuote(destHost), psQuote(destPath),
+		migrateWithProgress("Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path"))
+	result := "migrated " + vm + " to " + destHost
+	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
+	if err != nil {
+		return "", fmt.Errorf("migrate vm %q to %q: %w", vm, destHost, err)
+	}
+	return result, nil
+}
+
+// migrateWithProgress wraps a Move-* command so it runs in a background job while
+// the foreground polls Msvm_MigrationJob and emits "PROGRESS <pct>" lines the
+// agent streams into progress reports. On failure it folds the recent VMMS event
+// detail into the thrown message so the real cause is visible.
+func migrateWithProgress(moveCmd string) string {
+	return `$job = Start-Job -ScriptBlock { param($vm,$dest,$node,$path,$mt) Import-Module Hyper-V -ErrorAction SilentlyContinue; Import-Module FailoverClusters -ErrorAction SilentlyContinue; ` + moveCmd + ` } -ArgumentList $vm,$dest,$node,$path,$mt
+$last = -1
+while ($job.State -eq 'Running') {
+  $mj = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending | Select-Object -First 1
+  if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
+  Start-Sleep -Seconds 2
+}
+Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+if ($job.State -eq 'Failed') {
+  $reason = ''
+  try { $reason = [string]$job.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
   $detail = ''
   try {
     $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-5); Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue
     if ($ev) { $detail = ' -- events: ' + (($ev | ForEach-Object { ($_.Message -split [Environment]::NewLine)[0] }) -join ' | ') }
   } catch {}
-  throw ($msg + $detail)
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
+  throw ($reason + $detail)
 }
-'migrated ' + $vm + ' to ' + $dest`, psQuote(vm), psQuote(destHost), psQuote(destPath))
-	out, err := p.run(ctx, script)
-	if err != nil {
-		return "", fmt.Errorf("migrate vm %q to %q: %w", vm, destHost, err)
+Remove-Job $job -Force -ErrorAction SilentlyContinue`
+}
+
+// migrationLineHandler parses the streamed migration output: PROGRESS lines
+// become progress notes; a DONE line overrides the result message.
+func migrationLineHandler(onProgress ProgressFunc, result *string) func(string) {
+	return func(line string) {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "PROGRESS "):
+			onProgress.emit("live migration " + strings.TrimPrefix(line, "PROGRESS ") + "%")
+		case strings.HasPrefix(line, "DONE "):
+			*result = strings.TrimPrefix(line, "DONE ")
+		}
 	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests

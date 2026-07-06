@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -45,20 +46,36 @@ func TestEnsureVMScriptNoDiskNoPath(t *testing.T) {
 	}
 }
 
-// MigrateVM issues a shared-nothing Move-VM to the destination host, carrying
-// storage to the destination path, and returns the summary.
+// MigrateVM issues a shared-nothing Move-VM (backgrounded for progress polling)
+// to the destination host, streams progress from PROGRESS lines, and returns the
+// DONE summary.
 func TestMigrateVMScript(t *testing.T) {
-	f := &fakeRunner{responses: [][]byte{[]byte("migrated Web01 to hvnew02")}}
-	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`)
+	f := &fakeRunner{streamLines: []string{"PROGRESS 0", "PROGRESS 45", "PROGRESS 100", "DONE migrated Web01 to hvnew02"}}
+	var pct []string
+	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`,
+		func(note string) { pct = append(pct, note) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != "migrated Web01 to hvnew02" {
 		t.Fatalf("out = %q", out)
 	}
-	s := f.calls[0]
+	// Progress notes came from the PROGRESS lines (the DONE line is not a note).
+	want := []string{"live migration 0%", "live migration 45%", "live migration 100%"}
+	if len(pct) != len(want) {
+		t.Fatalf("progress notes = %v, want %v", pct, want)
+	}
+	for i := range want {
+		if pct[i] != want[i] {
+			t.Fatalf("progress notes = %v, want %v", pct, want)
+		}
+	}
+	s := f.streamScript
 	if !strings.Contains(s, "Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
 		t.Fatalf("script missing shared-nothing Move-VM:\n%s", s)
+	}
+	if !strings.Contains(s, "Start-Job") || !strings.Contains(s, "Msvm_MigrationJob") {
+		t.Fatalf("script missing background-job progress poll:\n%s", s)
 	}
 	// Service-initiated migration must switch off CredSSP, or it fails with
 	// "no credentials available".
@@ -67,5 +84,14 @@ func TestMigrateVMScript(t *testing.T) {
 	}
 	if !strings.Contains(s, "$dest = 'hvnew02'") || !strings.Contains(s, `$path = 'C:\VMs\Web01'`) {
 		t.Fatalf("script args wrong:\n%s", s)
+	}
+}
+
+// A failed migration surfaces the streamed error.
+func TestMigrateVMScriptFailure(t *testing.T) {
+	f := &fakeRunner{streamLines: []string{"PROGRESS 10"}, streamErr: fmt.Errorf("powershell: exit status 1: (Live migration) transport failed")}
+	_, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", "", nil)
+	if err == nil || !strings.Contains(err.Error(), "transport failed") {
+		t.Fatalf("expected transport failure, got %v", err)
 	}
 }

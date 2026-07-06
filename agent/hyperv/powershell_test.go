@@ -18,6 +18,21 @@ type fakeRunner struct {
 	errs      []error
 	calls     []string
 	i         int
+	// streamLines are emitted, in order, to onLine by the stream runner; streamErr
+	// is returned after them. streamScript records the streamed script.
+	streamLines  []string
+	streamErr    error
+	streamScript string
+}
+
+func (f *fakeRunner) runStream(_ context.Context, script string, onLine func(string)) error {
+	f.streamScript = script
+	for _, l := range f.streamLines {
+		if onLine != nil {
+			onLine(l)
+		}
+	}
+	return f.streamErr
 }
 
 func (f *fakeRunner) run(_ context.Context, script string) ([]byte, error) {
@@ -35,7 +50,7 @@ func (f *fakeRunner) run(_ context.Context, script string) ([]byte, error) {
 }
 
 func newTestPS(f *fakeRunner) *PowerShell {
-	return &PowerShell{run: f.run, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &PowerShell{run: f.run, runStream: f.runStream, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func TestCollectInventoryParses(t *testing.T) {
