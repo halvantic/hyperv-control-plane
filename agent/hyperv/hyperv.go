@@ -264,6 +264,10 @@ type Interface interface {
 	// requests Running/Off; Paused/Saved are observed, never requested.
 	SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error)
 
+	// RestartVM restarts a running VM — a one-shot imperative action (power is
+	// never continuously enforced). Errors if the VM is not running.
+	RestartVM(ctx context.Context, name string) error
+
 	// GetVMScreen returns a small PNG snapshot of the VM's console (the Hyper-V
 	// thumbnail). A pure read; returns nil (no error) when the VM has no screen
 	// to capture (e.g. it is off). Read-only — not an interactive console.

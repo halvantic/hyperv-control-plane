@@ -26,6 +26,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobVMStop:
 		_, err := r.hv.SetVMPowerState(ctx, p["vm"], types.VMPowerOff)
 		return done(err, "stopped "+p["vm"])
+	case types.JobVMRestart:
+		return done(r.hv.RestartVM(ctx, p["vm"]), "restarted "+p["vm"])
 	case types.JobVMCheckpoint:
 		return done(r.hv.CreateVMCheckpoint(ctx, p["vm"], p["name"]), "checkpoint created")
 	case types.JobVMExport:

@@ -63,15 +63,35 @@ func TestReconcileVMFreshThenIdempotent(t *testing.T) {
 }
 
 // DesiredPowerState=Off leaves the freshly-created VM off (created VMs come up
-// off in the stub), so power is not changed.
+// off), and — since power is imperative, only the initial Running state is
+// driven at creation — no power action is taken at all.
 func TestReconcileVMDesiredOff(t *testing.T) {
 	stub := stubWithSwitch()
 	res := testReconciler(stub).ReconcileVM(context.Background(), vmDesired(types.VMPowerOff))
 	if !res.Honoured || res.PowerState != types.VMPowerOff {
 		t.Fatalf("want honoured/off, got %+v", res)
 	}
-	if reason, _ := reasonByType(res.Conditions, "VMPower/web01"); reason != "AlreadyConfigured" {
-		t.Fatalf("power reason: want AlreadyConfigured (already off), got %q", reason)
+	if _, ok := reasonByType(res.Conditions, "VMPower/web01"); ok {
+		t.Fatal("a created-Off VM should get no VMPower condition (power is imperative)")
+	}
+}
+
+// Power is not re-enforced: a VM whose guest stopped (observed Off) while its
+// spec still says Running is NOT restarted by the reconcile loop.
+func TestReconcileVMPowerNotEnforced(t *testing.T) {
+	stub := stubWithSwitch()
+	r := testReconciler(stub)
+	// Create + initial power-on.
+	r.ReconcileVM(context.Background(), vmDesired(types.VMPowerRunning))
+	// Simulate the guest/operator stopping it out-of-band.
+	_, _ = stub.SetVMPowerState(context.Background(), "web01", types.VMPowerOff)
+	// A steady-state reconcile must not start it again.
+	res := r.ReconcileVM(context.Background(), vmDesired(types.VMPowerRunning))
+	if res.PowerState != types.VMPowerOff {
+		t.Fatalf("reconcile must not restart a manually-stopped VM; got %q", res.PowerState)
+	}
+	if _, ok := reasonByType(res.Conditions, "VMPower/web01"); ok {
+		t.Fatal("steady-state reconcile should take no power action")
 	}
 }
 

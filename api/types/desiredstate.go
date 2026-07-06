@@ -719,6 +719,7 @@ func (s JobState) Terminal() bool {
 const (
 	JobVMStart        = "VMStart"            // params: vm
 	JobVMStop         = "VMStop"             // params: vm
+	JobVMRestart      = "VMRestart"          // params: vm — one-shot guest restart
 	JobVMCheckpoint   = "VMCheckpoint"       // params: vm, name
 	JobVMApplyCheck   = "VMApplyCheckpoint"  // params: vm, name
 	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name

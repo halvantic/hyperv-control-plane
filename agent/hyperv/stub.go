@@ -457,6 +457,15 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 	return OutcomeUpdated, nil
 }
 
+func (s *Stub) RestartVM(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.vms[name]; !ok {
+		return fmt.Errorf("stub: VM %q does not exist", name)
+	}
+	return nil
+}
+
 // GetVMScreen returns no screenshot in the stub.
 func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 

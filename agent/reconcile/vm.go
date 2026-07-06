@@ -101,18 +101,23 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		r.log.Info("vm config change pending power-off", "vm", vm.Meta.Name)
 	}
 
-	// Drive power to the desired state. Only Running/Off are requested.
-	if ps := vm.Spec.DesiredPowerState; ps == types.VMPowerRunning || ps == types.VMPowerOff {
-		pout, perr := r.hv.SetVMPowerState(ctx, vm.Meta.Name, ps)
+	// Power is imperative, not a continuously-enforced desired state: an operator
+	// or the guest OS may stop, start, or restart a VM, and the agent must not
+	// fight that by driving it back every pass. The *persistent* boot policy is
+	// AutomaticStartAction (applied by EnsureVM above), which brings a VM back
+	// after a host reboot. Here we only honour the requested initial power state,
+	// once, at creation — a VM authored to run comes up running.
+	if ensured.Outcome == hyperv.OutcomeCreated && vm.Spec.DesiredPowerState == types.VMPowerRunning {
+		pout, perr := r.hv.SetVMPowerState(ctx, vm.Meta.Name, types.VMPowerRunning)
 		res.Conditions = append(res.Conditions, r.condition("VMPower/"+vm.Meta.Name, pout, perr))
 		if perr != nil {
-			r.log.Error("set vm power failed", "vm", vm.Meta.Name, "desired", ps, "err", perr)
+			r.log.Error("initial vm power-on failed", "vm", vm.Meta.Name, "err", perr)
 			res.Phase = types.PhaseDegraded
 			return res
 		}
 		if pout != hyperv.OutcomeUnchanged {
 			res.Changed = true
-			r.log.Info("vm power reconciled", "vm", vm.Meta.Name, "desired", ps, "outcome", pout)
+			r.log.Info("vm powered on at creation", "vm", vm.Meta.Name)
 		}
 	}
 
