@@ -8,13 +8,13 @@ import (
 	"log/slog"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/agent/reconcile"
 	"github.com/joshua-fourie/ballast/agent/store"
 	ballastpb "github.com/joshua-fourie/ballast/api/proto"
 	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/joshua-fourie/ballast/version"
 )
 
 // jobTimeout caps a single imperative job. A job that exceeds it is cancelled
@@ -33,6 +33,9 @@ type runnerConfig struct {
 	hostName   string
 	storePath  string
 	heartbeat  time.Duration
+	// tlsDir holds the CA + this agent's client cert/key for mutual TLS to the
+	// centre, provisioned at onboard. Empty connects insecure.
+	tlsDir string
 }
 
 // runner is the OS-independent agent loop: it adopts its last-honoured desired
@@ -83,7 +86,7 @@ type runner struct {
 	jobsInflight map[string]struct{}
 }
 
-const agentVersion = "0.1.0-slice"
+const agentVersion = version.Version
 
 // run drives the agent until ctx is cancelled.
 func (r *runner) run(ctx context.Context) error {
@@ -92,8 +95,7 @@ func (r *runner) run(ctx context.Context) error {
 	// intent it was last given.
 	r.adoptCachedState()
 
-	conn, err := grpc.NewClient(r.cfg.centreAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(r.cfg.centreAddr, transportCreds(r.cfg.tlsDir, r.log))
 	if err != nil {
 		return err
 	}

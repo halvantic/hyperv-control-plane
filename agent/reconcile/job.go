@@ -51,6 +51,16 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"]), "live-migrated "+p["vm"]+" to "+p["node"])
+	case types.JobMigrateVM:
+		// Auto-provision Kerberos constrained delegation between this (source) host
+		// and the destination so shared-nothing migration works without a manual AD
+		// step. EnsureMigrationDelegation includes the local host, so passing just
+		// the destination sets delegation both ways. The agent runs as a domain
+		// admin; idempotent, and a no-op when it is already in place.
+		if _, derr := r.hv.EnsureMigrationDelegation(ctx, []string{p["destHost"]}); derr != nil {
+			return "", fmt.Errorf("ensure migration delegation to %s: %w", p["destHost"], derr)
+		}
+		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"])
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveVM:
@@ -59,12 +69,18 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		return done(r.hv.RemoveCSV(ctx, p["volume"]), "removed volume "+p["volume"])
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
+	case types.JobFormatDiskDrive:
+		return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], p["driveLetter"]), "formatted disk "+p["deviceId"]+" as "+p["driveLetter"]+":")
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])
+	case types.JobRepairNetworkProfile:
+		return r.hv.RepairNetworkProfile(ctx)
 	case types.JobRebootHost:
 		return done(r.hv.RebootHost(ctx, p["drain"] == "true"), "reboot initiated")
 	case types.JobShutdownHost:
 		return done(r.hv.ShutdownHost(ctx, p["drain"] == "true"), "shutdown initiated")
+	case types.JobEnableRDP:
+		return done(r.hv.EnableRDP(ctx), "enabled Remote Desktop")
 	case types.JobClusterDestroy:
 		return done(r.hv.DestroyCluster(ctx), "destroyed cluster")
 	case types.JobClusterValidate:

@@ -321,6 +321,10 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	// Switch off DHCP, then clear any existing address and default route so the
 	// new address applies cleanly and idempotently.
 	b.WriteString("Set-NetIPInterface -InterfaceAlias $alias -Dhcp Disabled -ErrorAction SilentlyContinue\n")
+	// The desired address may already exist on a *different* interface (e.g. an
+	// AllowManagementOS auto-vNIC picked it up via DHCP). Free it there first, or
+	// New-NetIPAddress below fails "object already exists" (Windows error 5010).
+	fmt.Fprintf(&b, "Get-NetIPAddress -IPAddress %s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n", psQuote(ip))
 	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
 	b.WriteString("Remove-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue\n")
 	if cfg.Gateway != "" {

@@ -2065,6 +2065,7 @@ type HostInventory struct {
 	TotalMemoryBytes uint64                 `protobuf:"varint,3,opt,name=total_memory_bytes,json=totalMemoryBytes,proto3" json:"total_memory_bytes,omitempty"`
 	LogicalCpus      int32                  `protobuf:"varint,4,opt,name=logical_cpus,json=logicalCpus,proto3" json:"logical_cpus,omitempty"`
 	OsVersion        string                 `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3" json:"os_version,omitempty"`
+	UsedDriveLetters []string               `protobuf:"bytes,6,rep,name=used_drive_letters,json=usedDriveLetters,proto3" json:"used_drive_letters,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -2134,6 +2135,13 @@ func (x *HostInventory) GetOsVersion() string {
 	return ""
 }
 
+func (x *HostInventory) GetUsedDriveLetters() []string {
+	if x != nil {
+		return x.UsedDriveLetters
+	}
+	return nil
+}
+
 type PhysicalAdapter struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -2145,8 +2153,12 @@ type PhysicalAdapter struct {
 	// dns_servers are the IPv4 DNS servers configured on this adapter; registers_dns
 	// is whether the adapter registers its address in DNS. Used to flag a NIC whose
 	// DNS does not point at the domain controller (a domain-join/registration risk).
-	DnsServers    []string `protobuf:"bytes,7,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
-	RegistersDns  bool     `protobuf:"varint,8,opt,name=registers_dns,json=registersDns,proto3" json:"registers_dns,omitempty"`
+	DnsServers   []string `protobuf:"bytes,7,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	RegistersDns bool     `protobuf:"varint,8,opt,name=registers_dns,json=registersDns,proto3" json:"registers_dns,omitempty"`
+	// gateway is the IPv4 default-route next hop on this adapter, captured so a
+	// management IP re-homed onto a converged switch's vNIC keeps the host's
+	// default route. Empty when the adapter has no default route.
+	Gateway       string `protobuf:"bytes,9,opt,name=gateway,proto3" json:"gateway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2237,6 +2249,13 @@ func (x *PhysicalAdapter) GetRegistersDns() bool {
 	return false
 }
 
+func (x *PhysicalAdapter) GetGateway() string {
+	if x != nil {
+		return x.Gateway
+	}
+	return ""
+}
+
 type PhysicalDisk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
@@ -2244,6 +2263,7 @@ type PhysicalDisk struct {
 	MediaType     string                 `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
 	CanPool       bool                   `protobuf:"varint,4,opt,name=can_pool,json=canPool,proto3" json:"can_pool,omitempty"`
 	IsOsDisk      bool                   `protobuf:"varint,5,opt,name=is_os_disk,json=isOsDisk,proto3" json:"is_os_disk,omitempty"`
+	DriveLetter   string                 `protobuf:"bytes,6,opt,name=drive_letter,json=driveLetter,proto3" json:"drive_letter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2313,11 +2333,19 @@ func (x *PhysicalDisk) GetIsOsDisk() bool {
 	return false
 }
 
+func (x *PhysicalDisk) GetDriveLetter() string {
+	if x != nil {
+		return x.DriveLetter
+	}
+	return ""
+}
+
 type HostNetworkingSpec struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Switches        []*VirtualSwitchSpec   `protobuf:"bytes,1,rep,name=switches,proto3" json:"switches,omitempty"`
 	ManagementVnics []*ManagementVNICSpec  `protobuf:"bytes,2,rep,name=management_vnics,json=managementVnics,proto3" json:"management_vnics,omitempty"`
 	DnsServers      []string               `protobuf:"bytes,3,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	NicConfigs      []*PhysicalNICConfig   `protobuf:"bytes,4,rep,name=nic_configs,json=nicConfigs,proto3" json:"nic_configs,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2369,6 +2397,13 @@ func (x *HostNetworkingSpec) GetManagementVnics() []*ManagementVNICSpec {
 func (x *HostNetworkingSpec) GetDnsServers() []string {
 	if x != nil {
 		return x.DnsServers
+	}
+	return nil
+}
+
+func (x *HostNetworkingSpec) GetNicConfigs() []*PhysicalNICConfig {
+	if x != nil {
+		return x.NicConfigs
 	}
 	return nil
 }
@@ -4339,14 +4374,15 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
-	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\x8a\x02\n" +
+	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\xb8\x02\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +
 	"\x12total_memory_bytes\x18\x03 \x01(\x04R\x10totalMemoryBytes\x12!\n" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
-	"os_version\x18\x05 \x01(\tR\tosVersion\"\xec\x01\n" +
+	"os_version\x18\x05 \x01(\tR\tosVersion\x12,\n" +
+	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\x86\x02\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
@@ -4356,7 +4392,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04ipv4\x18\x06 \x01(\tR\x04ipv4\x12\x1f\n" +
 	"\vdns_servers\x18\a \x03(\tR\n" +
 	"dnsServers\x12#\n" +
-	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\"\xa2\x01\n" +
+	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
+	"\agateway\x18\t \x01(\tR\agateway\"\xc5\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -4365,12 +4402,15 @@ const file_ballast_proto_rawDesc = "" +
 	"media_type\x18\x03 \x01(\tR\tmediaType\x12\x19\n" +
 	"\bcan_pool\x18\x04 \x01(\bR\acanPool\x12\x1c\n" +
 	"\n" +
-	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\"\xbb\x01\n" +
+	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\x12!\n" +
+	"\fdrive_letter\x18\x06 \x01(\tR\vdriveLetter\"\xfb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +
 	"\vdns_servers\x18\x03 \x03(\tR\n" +
-	"dnsServers\"\xfe\x01\n" +
+	"dnsServers\x12>\n" +
+	"\vnic_configs\x18\x04 \x03(\v2\x1d.ballast.v1.PhysicalNICConfigR\n" +
+	"nicConfigs\"\xfe\x01\n" +
 	"\x11VirtualSwitchSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fteam_members\x18\x02 \x03(\tR\vteamMembers\x12=\n" +
@@ -4699,52 +4739,53 @@ var file_ballast_proto_depIdxs = []int32{
 	32, // 36: ballast.v1.HostInventory.physical_disks:type_name -> ballast.v1.PhysicalDisk
 	34, // 37: ballast.v1.HostNetworkingSpec.switches:type_name -> ballast.v1.VirtualSwitchSpec
 	35, // 38: ballast.v1.HostNetworkingSpec.management_vnics:type_name -> ballast.v1.ManagementVNICSpec
-	2,  // 39: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
-	3,  // 40: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
-	36, // 41: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
-	62, // 42: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
-	40, // 43: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
-	18, // 44: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
-	41, // 45: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
-	44, // 46: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
-	43, // 47: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
-	42, // 48: ballast.v1.ClusterSpec.volumes:type_name -> ballast.v1.CSVSpec
-	22, // 49: ballast.v1.ClusterSpec.live_migration:type_name -> ballast.v1.LiveMigrationSpec
-	4,  // 50: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
-	0,  // 51: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
-	19, // 52: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
-	48, // 53: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
-	49, // 54: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
-	50, // 55: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
-	46, // 56: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
-	47, // 57: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
-	45, // 58: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
-	18, // 59: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
-	52, // 60: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
-	57, // 61: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
-	53, // 62: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
-	54, // 63: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
-	55, // 64: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
-	56, // 65: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
-	5,  // 66: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
-	6,  // 67: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
-	0,  // 68: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
-	5,  // 69: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
-	19, // 70: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
-	58, // 71: ballast.v1.VMStatus.checkpoints:type_name -> ballast.v1.VMCheckpoint
-	7,  // 72: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	9,  // 73: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	15, // 74: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	12, // 75: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
-	8,  // 76: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	10, // 77: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	17, // 78: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	13, // 79: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
-	76, // [76:80] is the sub-list for method output_type
-	72, // [72:76] is the sub-list for method input_type
-	72, // [72:72] is the sub-list for extension type_name
-	72, // [72:72] is the sub-list for extension extendee
-	0,  // [0:72] is the sub-list for field type_name
+	23, // 39: ballast.v1.HostNetworkingSpec.nic_configs:type_name -> ballast.v1.PhysicalNICConfig
+	2,  // 40: ballast.v1.VirtualSwitchSpec.teaming_mode:type_name -> ballast.v1.SETTeamingMode
+	3,  // 41: ballast.v1.VirtualSwitchSpec.load_balancing:type_name -> ballast.v1.SETLoadBalancing
+	36, // 42: ballast.v1.ManagementVNICSpec.ip_config:type_name -> ballast.v1.IPConfig
+	62, // 43: ballast.v1.HostStorageSpec.eligible_disk_selector:type_name -> ballast.v1.HostStorageSpec.EligibleDiskSelectorEntry
+	40, // 44: ballast.v1.ClusterAssignment.cluster:type_name -> ballast.v1.Cluster
+	18, // 45: ballast.v1.Cluster.meta:type_name -> ballast.v1.ObjectMeta
+	41, // 46: ballast.v1.Cluster.spec:type_name -> ballast.v1.ClusterSpec
+	44, // 47: ballast.v1.Cluster.status:type_name -> ballast.v1.ClusterStatus
+	43, // 48: ballast.v1.ClusterSpec.witness:type_name -> ballast.v1.WitnessSpec
+	42, // 49: ballast.v1.ClusterSpec.volumes:type_name -> ballast.v1.CSVSpec
+	22, // 50: ballast.v1.ClusterSpec.live_migration:type_name -> ballast.v1.LiveMigrationSpec
+	4,  // 51: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
+	0,  // 52: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
+	19, // 53: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
+	48, // 54: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
+	49, // 55: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
+	50, // 56: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
+	46, // 57: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
+	47, // 58: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
+	45, // 59: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
+	18, // 60: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
+	52, // 61: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
+	57, // 62: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
+	53, // 63: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
+	54, // 64: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
+	55, // 65: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
+	56, // 66: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
+	5,  // 67: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
+	6,  // 68: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
+	0,  // 69: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
+	5,  // 70: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
+	19, // 71: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
+	58, // 72: ballast.v1.VMStatus.checkpoints:type_name -> ballast.v1.VMCheckpoint
+	7,  // 73: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	9,  // 74: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	15, // 75: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	12, // 76: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
+	8,  // 77: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	10, // 78: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	17, // 79: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	13, // 80: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
+	77, // [77:81] is the sub-list for method output_type
+	73, // [73:77] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }

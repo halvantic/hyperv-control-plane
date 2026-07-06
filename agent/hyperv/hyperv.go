@@ -127,6 +127,9 @@ type Interface interface {
 	// FormatDisk wipes a physical disk (by PhysicalDisk DeviceId) back to a raw,
 	// poolable state. Destructive imperative Job; refuses the boot/system disk.
 	FormatDisk(ctx context.Context, deviceID string) error
+	// FormatDiskDrive initialises a physical disk, creates a single GPT partition,
+	// formats it NTFS and assigns the requested drive letter. Refuses the OS disk.
+	FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error
 
 	// RepairHostDNS fixes a common multi-homed-host misconfiguration: it points
 	// every non-management NIC's DNS at the domain controller (the management
@@ -135,6 +138,22 @@ type Interface interface {
 	// resolution. dns, when non-empty, forces the DC's DNS address (recovery).
 	// Returns a short summary of what changed. Imperative Job.
 	RepairHostDNS(ctx context.Context, dns string) (string, error)
+
+	// RepairNetworkProfile sets any host NIC on the Public network profile to
+	// Private. A NIC stuck on Public — e.g. after a vSwitch was created or removed
+	// — silently breaks WinRM and failover clustering; a managed host NIC should be
+	// on Private or the automatic Domain-authenticated profile. Domain NICs are
+	// left as they are. Returns a per-NIC summary. Imperative Job (operator-run).
+	RepairNetworkProfile(ctx context.Context) (string, error)
+
+	// EnsureNetworkProfilesPrivate is the reconcile-driven, idempotent counterpart
+	// of RepairNetworkProfile: it flips any NIC left on the Public profile to
+	// Private and reports OutcomeUnchanged when none were (Domain-authenticated and
+	// Private NICs are left alone). The reconciler runs it after switch/vNIC work
+	// so a host that a vSwitch operation stranded on Public heals itself on the
+	// same or next pass instead of needing the operator to run the job — keeping
+	// WinRM and clustering reachable even while the centre is offline.
+	EnsureNetworkProfilesPrivate(ctx context.Context) (Outcome, error)
 
 	// DestroyCluster tears the cluster down from this node (the former): remove VM
 	// roles, disable S2D, Remove-Cluster -CleanupAD. Destructive imperative Job;
@@ -162,6 +181,11 @@ type Interface interface {
 	// operator job, never speculatively. drain has the same meaning as for
 	// RebootHost.
 	ShutdownHost(ctx context.Context, drain bool) error
+
+	// EnableRDP turns on Remote Desktop on the host (clears fDenyTSConnections and
+	// enables the Remote Desktop firewall group). Run as an operator job before an
+	// RDP connection; idempotent.
+	EnableRDP(ctx context.Context) error
 
 	// GetClusterState observes the failover cluster this node belongs to, if
 	// any. It is a pure read.
@@ -199,6 +223,13 @@ type Interface interface {
 	// pool). A cluster-level operation run by the former; the caller invokes it
 	// only when S2D is not already enabled.
 	EnableS2D(ctx context.Context) (Outcome, error)
+
+	// EnsureS2DPoolDisks adds any poolable physical disks across the cluster to
+	// the S2D pool, so a node added after S2D was enabled actually contributes its
+	// disks (Add-ClusterNode does not claim a late-joiner's disks — they stay
+	// CanPool). Run by the former; idempotent: OutcomeUnchanged when no disk is
+	// poolable, OutcomeUpdated when disks were added.
+	EnsureS2DPoolDisks(ctx context.Context) (Outcome, error)
 
 	// EnsureCSV makes the Cluster Shared Volume described by spec exist on the
 	// S2D pool, idempotently: OutcomeUnchanged when it already exists,
@@ -300,6 +331,15 @@ type Interface interface {
 	// downtime (Move-ClusterVirtualMachineRole -MigrationType Live). Run locally
 	// on a member. Imperative Job.
 	MoveClusterVM(ctx context.Context, vm, node string) error
+
+	// MigrateVM shared-nothing live-migrates a standalone (non-clustered) VM to
+	// another host with no shared storage: Move-VM -DestinationHost -IncludeStorage
+	// moves the VM and its files to destPath on the target. Run on the source host.
+	// A running VM migrates live; a stopped one moves offline. It enables migration
+	// on the source; the destination must also have it enabled. Kerberos delegation
+	// between the two computer accounts is provisioned by the MigrateVM job (via
+	// EnsureMigrationDelegation) before this runs. Imperative Job.
+	MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error)
 
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive

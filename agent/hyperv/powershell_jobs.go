@@ -152,6 +152,34 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	return nil
 }
 
+// FormatDiskDrive initialises a physical disk to GPT, creates a single
+// max-size partition, formats it NTFS and assigns a drive letter. Refuses the
+// OS/boot disk. Idempotent: if the disk already has a partition with the
+// requested drive letter the operation is a no-op.
+func (p *PowerShell) FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error {
+	id := psQuote(deviceID)
+	letter := psQuote(driveLetter)
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
+		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
+		"if (-not $pd) { throw 'no physical disk with DeviceId ' + %[1]s }; "+
+		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; "+
+		"if (-not $disk) { throw 'disk not reachable via Get-Disk' }; "+
+		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "+
+		"$existing = $disk | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq %[2]s }; "+
+		"if ($existing) { 'RESULT=NOOP'; return }; "+
+		"Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; "+
+		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; "+
+		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false }; "+
+		"Initialize-Disk -Number $disk.Number -PartitionStyle GPT; "+
+		"New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter %[2]s | Out-Null; "+
+		"Format-Volume -DriveLetter %[2]s -FileSystem NTFS -Confirm:$false | Out-Null; "+
+		"'RESULT=FORMATTED'", id, letter)
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("format disk drive %q → %s: %w", deviceID, driveLetter, err)
+	}
+	return nil
+}
+
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
 // group already exists for it, it is left alone. The new role's group is named
 // after the VM, which is what the discovery observation keys on.
@@ -248,6 +276,48 @@ try {
 	return nil
 }
 
+// MigrateVM shared-nothing live-migrates a standalone VM to another host, moving
+// its storage too (Move-VM -IncludeStorage). It runs on the source host. It
+// enables migration locally first; the destination must also have it enabled and,
+// for Kerberos, constrained delegation between the two computer accounts — that is
+// host setup done elsewhere. On failure it folds the recent VMMS event detail into
+// the message so the real cause (transport / delegation / CPU compat) is visible.
+func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$vm = %[1]s; $dest = %[2]s; $path = %[3]s
+if (-not $path) { $path = 'C:\VMs\' + $vm }
+if (-not (Get-VM -Name $vm -ErrorAction SilentlyContinue)) { throw ('VM ' + $vm + ' is not on this host') }
+# Service-initiated migration MUST use Kerberos: CredSSP delegates an interactive
+# user's credentials, which the agent service does not have, so it fails with "no
+# credentials available in the security package" (0x8009030E). Enable migration
+# and set Kerberos on the source and — over a single Kerberos hop, as a domain
+# admin — on the destination too. Kerberos also needs constrained delegation
+# between the two computer accounts, provisioned by the MigrateVM job beforehand.
+Enable-VMMigration -ErrorAction SilentlyContinue | Out-Null
+Set-VMHost -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction SilentlyContinue
+try {
+  Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
+  Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
+} catch {}
+try {
+  Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path -ErrorAction Stop | Out-Null
+} catch {
+  $msg = $_.Exception.Message
+  $detail = ''
+  try {
+    $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-5); Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue
+    if ($ev) { $detail = ' -- events: ' + (($ev | ForEach-Object { ($_.Message -split [Environment]::NewLine)[0] }) -join ' | ') }
+  } catch {}
+  throw ($msg + $detail)
+}
+'migrated ' + $vm + ' to ' + $dest`, psQuote(vm), psQuote(destHost), psQuote(destPath))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("migrate vm %q to %q: %w", vm, destHost, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests
 // are excluded by default because they can be disruptive on an in-use CSV; the
 // caller can opt into a different category set via include.
@@ -311,6 +381,75 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join
 		return OutcomeUpdated, nil
 	}
 	return OutcomeUnchanged, nil
+}
+
+// RepairNetworkProfile sets any NIC on the Public network profile to Private. A
+// host NIC stuck on Public (often a side effect of creating or removing a
+// vSwitch) silently breaks WinRM and failover clustering. Domain-authenticated
+// NICs are left alone (that profile is assigned automatically when the DC is
+// reachable). Returns a per-NIC summary so the operator can confirm the result.
+func (p *PowerShell) RepairNetworkProfile(ctx context.Context) (string, error) {
+	const script = `$ErrorActionPreference='Stop'
+$lines = @()
+$changed = 0
+foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+  if ($prof.NetworkCategory -eq 'Public') {
+    try {
+      Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+      $lines += ($prof.InterfaceAlias + ': Public -> Private')
+      $changed++
+    } catch {
+      $lines += ($prof.InterfaceAlias + ': Public (could not change - ' + $_.Exception.Message + ')')
+    }
+  } else {
+    $lines += ($prof.InterfaceAlias + ': ' + $prof.NetworkCategory)
+  }
+}
+if (-not $lines) { 'no network connection profiles found' }
+else { ($lines -join '; ') + ' [' + $changed + ' set to Private]' }`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("repair network profile: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// EnsureNetworkProfilesPrivate is the idempotent, reconcile-driven form of
+// RepairNetworkProfile. It flips only NICs currently on the Public profile to
+// Private and reports whether it had to. It emits a "changed=<n> failed=<n>"
+// summary the agent parses into an Outcome; a Set failure surfaces as an error
+// so the reconciler can record it as an advisory condition without degrading the
+// host (the profile is host hygiene, not part of the desired spec).
+func (p *PowerShell) EnsureNetworkProfilesPrivate(ctx context.Context) (Outcome, error) {
+	const script = `$ErrorActionPreference='Stop'
+$changed = 0
+$failed = @()
+foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+  if ($prof.NetworkCategory -eq 'Public') {
+    try {
+      Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
+      $changed++
+    } catch {
+      $failed += ($prof.InterfaceAlias + ': ' + $_.Exception.Message)
+    }
+  }
+}
+'changed=' + $changed + ' failed=' + $failed.Count + $(if ($failed) { ' :: ' + ($failed -join '; ') } else { '' })`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure network profiles private: %w", err)
+	}
+	summary := strings.TrimSpace(string(out))
+	var changed, failed int
+	fmt.Sscanf(summary, "changed=%d failed=%d", &changed, &failed)
+	outcome := OutcomeUnchanged
+	if changed > 0 {
+		outcome = OutcomeUpdated
+	}
+	if failed > 0 {
+		return outcome, fmt.Errorf("ensure network profiles private: %s", summary)
+	}
+	return outcome, nil
 }
 
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {

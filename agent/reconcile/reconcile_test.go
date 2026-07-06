@@ -72,6 +72,29 @@ func TestReconcileRoleAlreadyInstalled(t *testing.T) {
 	}
 }
 
+// A best-effort step that fails (here the default VM/VHD host paths) must not
+// degrade the host or hold back its generation: the host stays Ready/Honoured
+// and the failure is recorded as a non-blocking advisory (Reason "NotApplied"),
+// so the UI can surface "settled, with advisories" rather than a hard error.
+func TestReconcileBestEffortFailureIsAdvisory(t *testing.T) {
+	host := hostWithRole(types.RebootNever)
+	host.Spec.Storage.DefaultVMPath = `C:\ClusterStorage\Vol01`
+	host.Spec.Storage.DefaultVHDPath = `C:\ClusterStorage\Vol01`
+	stub := &hyperv.Stub{HyperVInstalled: true, FailVMHostPaths: true}
+
+	res, err := testReconciler(stub).Reconcile(context.Background(), host, nil)
+	if err != nil {
+		t.Fatalf("best-effort failure must not return an error: %v", err)
+	}
+	if !res.Honoured || res.Phase != types.PhaseReady {
+		t.Fatalf("want honoured/ready despite best-effort failure, got phase=%s honoured=%v", res.Phase, res.Honoured)
+	}
+	reason, ok := reasonByType(res.Conditions, "VMHostPaths")
+	if !ok || reason != "NotApplied" {
+		t.Fatalf("VMHostPaths condition: want advisory reason NotApplied, got %q (present=%v)", reason, ok)
+	}
+}
+
 // RebootNever: the agent installs the role but must NOT reboot; it surfaces
 // RebootRequired, does not honour the generation, and does not touch networking.
 func TestReconcileRoleNeedsRebootPolicyNever(t *testing.T) {
@@ -148,6 +171,57 @@ func TestReconcileFreshThenIdempotent(t *testing.T) {
 	}
 	if reason, _ := reasonByType(res2.Conditions, "Switch/ConvergedSwitch"); reason != "AlreadyConfigured" {
 		t.Fatalf("switch reason on converged pass: want AlreadyConfigured, got %q", reason)
+	}
+}
+
+// A host managing networking heals a NIC stranded on the Public profile as part
+// of the ordinary reconcile pass — no operator job needed.
+func TestReconcileHealsPublicNetworkProfile(t *testing.T) {
+	stub := &hyperv.Stub{NetworkProfilePublic: true}
+	r := testReconciler(stub)
+
+	res, err := r.Reconcile(context.Background(), hostWithNetworking(), nil)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if !res.Honoured || res.Phase != types.PhaseReady || !res.Changed {
+		t.Fatalf("want honoured/ready/changed, got %+v", res)
+	}
+	if reason, ok := reasonByType(res.Conditions, "NetworkProfile"); !ok || reason != "Updated" {
+		t.Fatalf("NetworkProfile condition: want Updated, got %q (present=%v)", reason, ok)
+	}
+}
+
+// The profile step only runs where the agent manages networking; a host with no
+// switch or management vNIC declared does not touch connection profiles.
+func TestReconcileSkipsNetworkProfileWithoutNetworking(t *testing.T) {
+	stub := &hyperv.Stub{NetworkProfilePublic: true}
+	r := testReconciler(stub)
+
+	res, err := r.Reconcile(context.Background(), types.Host{Meta: types.ObjectMeta{Name: "bare", Generation: 1}}, nil)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if _, ok := reasonByType(res.Conditions, "NetworkProfile"); ok {
+		t.Fatal("NetworkProfile condition present on a host with no managed networking")
+	}
+}
+
+// A profile-repair failure is advisory: it is surfaced as a NotApplied condition
+// but must not degrade the host or hold its generation back.
+func TestReconcileNetworkProfileFailureIsAdvisory(t *testing.T) {
+	stub := &hyperv.Stub{FailNetworkProfile: true}
+	r := testReconciler(stub)
+
+	res, err := r.Reconcile(context.Background(), hostWithNetworking(), nil)
+	if err != nil {
+		t.Fatalf("reconcile should not error on advisory failure: %v", err)
+	}
+	if !res.Honoured || res.Phase != types.PhaseReady {
+		t.Fatalf("advisory failure must stay honoured/ready, got %+v", res)
+	}
+	if reason, ok := reasonByType(res.Conditions, "NetworkProfile"); !ok || reason != "NotApplied" {
+		t.Fatalf("NetworkProfile condition: want NotApplied, got %q (present=%v)", reason, ok)
 	}
 }
 

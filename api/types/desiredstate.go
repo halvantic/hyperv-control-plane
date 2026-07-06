@@ -16,7 +16,10 @@
 //     where the VMware mental model differs.
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Common envelope
@@ -281,6 +284,10 @@ type HostInventory struct {
 	// OSVersion is the host OS caption/version (e.g. "Microsoft Windows Server
 	// 2025 Datacenter 10.0.26100").
 	OSVersion string `json:"osVersion,omitempty"`
+	// UsedDriveLetters are the single-character drive letters currently in use
+	// on the host (e.g. ["C","D"]). The UI uses this to prevent assigning a
+	// letter that is already taken when formatting a disk to a volume.
+	UsedDriveLetters []string `json:"usedDriveLetters,omitempty"`
 }
 
 type PhysicalAdapter struct {
@@ -305,6 +312,10 @@ type PhysicalAdapter struct {
 	// (RegisterThisConnectionsAddress). A secondary/DHCP NIC that registers can
 	// publish a wrong A record for the host.
 	RegistersDNS bool `json:"registersDNS,omitempty"`
+	// Gateway is the IPv4 default-route next hop on this adapter, if any. It is
+	// captured so that when a management IP is re-homed onto a converged switch's
+	// management vNIC, the host's default route can be reproduced on the vNIC.
+	Gateway string `json:"gateway,omitempty"`
 }
 
 type PhysicalDisk struct {
@@ -315,6 +326,9 @@ type PhysicalDisk struct {
 	// IsOSDisk is true for the disk backing the host's boot/system volume, so the
 	// UI can exclude it from the data disks available for S2D.
 	IsOSDisk bool `json:"isOSDisk,omitempty"`
+	// DriveLetter is the Windows drive letter assigned to this disk's primary
+	// partition (e.g. "E"), empty when the disk is raw or pooled.
+	DriveLetter string `json:"driveLetter,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +355,10 @@ type HostNetworkingSpec struct {
 	// Domain & DNS setting. Empty leaves DNS untouched. Setting this before a
 	// domain join is what lets the host resolve the domain's SRV records.
 	DNSServers []string `json:"dnsServers,omitempty"`
+
+	// NICConfigs assigns static IPs to named physical adapters. Applied after
+	// switches so a NIC being teamed gets its IP removed cleanly first.
+	NICConfigs []PhysicalNICConfig `json:"nicConfigs,omitempty"`
 }
 
 type VirtualSwitchSpec struct {
@@ -553,6 +571,13 @@ type ClusterMgmtVNIC struct {
 	// HostIPs maps a member host to this vNIC's IP (CIDR) on that host. A host
 	// with no entry gets DHCP.
 	HostIPs map[string]string `json:"hostIPs,omitempty"`
+
+	// HostGateways and HostDNS carry the default gateway and DNS servers for this
+	// vNIC per host, so re-homing a host's management IP onto a converged switch's
+	// vNIC preserves its default route and resolvers. Keyed like HostIPs; empty
+	// entries leave the gateway/DNS unset (on-subnet-only).
+	HostGateways map[string]string   `json:"hostGateways,omitempty"`
+	HostDNS      map[string][]string `json:"hostDNS,omitempty"`
 }
 
 type WitnessSpec struct {
@@ -681,7 +706,13 @@ const (
 	JobRunning   JobState = "Running"   // agent claimed and is executing
 	JobSucceeded JobState = "Succeeded" // completed successfully
 	JobFailed    JobState = "Failed"    // failed, see Message
+	JobCancelled JobState = "Cancelled" // cancelled by an operator (terminal)
 )
+
+// Terminal reports whether a job state is final (no further transitions).
+func (s JobState) Terminal() bool {
+	return s == JobSucceeded || s == JobFailed || s == JobCancelled
+}
 
 // Job kinds. Params carry the operands (e.g. "vm" for a VM name, "node" for a
 // cluster node, "target" for a migration destination).
@@ -701,6 +732,7 @@ const (
 	JobClusterMoveCSV      = "ClusterMoveCSV"      // params: volume, node — move CSV ownership to node
 	JobClusterValidate     = "ClusterValidate"     // params: nodes (optional, comma list), include (optional) — Test-Cluster
 	JobClusterMoveVM       = "ClusterMoveVM"       // params: vm, node — live-migrate a clustered VM role to node
+	JobMigrateVM           = "MigrateVM"           // params: vm, destHost, destPath — shared-nothing live migration of a standalone VM to another host (run on the source host)
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 
@@ -708,13 +740,18 @@ const (
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
 
-	JobFormatDisk = "FormatDisk" // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
+	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
+	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter
 
 	JobRepairHostDNS = "RepairHostDNS" // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
+
+	JobRepairNetworkProfile = "RepairNetworkProfile" // no params — set any host NIC on the Public network profile to Private (Public breaks WinRM/clustering); Domain NICs are left as-is
 
 	JobRebootHost = "RebootHost" // no params — restart the host now (Restart-Computer -Force)
 
 	JobShutdownHost = "ShutdownHost" // no params — power the host off now (Stop-Computer -Force)
+
+	JobEnableRDP = "EnableRDP" // no params — enable Remote Desktop (clear fDenyTSConnections, enable the RDP firewall group)
 
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 
@@ -723,6 +760,40 @@ const (
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
 )
+
+// sensitiveJobParams are Job.Params keys whose values are credential material.
+// They are stripped from every UI/REST view of a job and scrubbed from the
+// stored job once it reaches a terminal state, so secrets do not linger at rest
+// in the job history. The agent receives the real values over the gRPC job
+// channel before the job completes, so scrubbing afterwards costs it nothing.
+var sensitiveJobParams = map[string]bool{
+	"guestuser": true, "guestpass": true, "domainuser": true, "domainpass": true,
+	"username": true, "password": true, "pass": true, "pw": true, "secret": true,
+}
+
+// IsSensitiveJobParam reports whether a Job.Params key carries credential
+// material (case-insensitive).
+func IsSensitiveJobParam(key string) bool {
+	return sensitiveJobParams[strings.ToLower(key)]
+}
+
+// ScrubSensitiveParams returns a copy of params with credential values removed.
+// It is the single point that decides what counts as a secret, shared by the
+// REST redaction (display) and the store's terminal-job scrub (at rest). An
+// empty map is returned unchanged.
+func ScrubSensitiveParams(params map[string]string) map[string]string {
+	if len(params) == 0 {
+		return params
+	}
+	clean := make(map[string]string, len(params))
+	for k, v := range params {
+		if IsSensitiveJobParam(k) {
+			continue
+		}
+		clean[k] = v
+	}
+	return clean
+}
 
 // ---------------------------------------------------------------------------
 // Secrets

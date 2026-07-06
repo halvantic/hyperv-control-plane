@@ -39,6 +39,37 @@ func (p *PowerShell) EnableS2D(ctx context.Context) (Outcome, error) {
 	return OutcomeCreated, nil
 }
 
+// EnsureS2DPoolDisks adds any poolable disks across the cluster to the S2D pool.
+// Add-ClusterNode joins a node to the cluster but does not claim its disks, so a
+// node added after S2D was enabled keeps its disks CanPool and contributes no
+// capacity until they are explicitly added. Idempotent: a no-op when nothing is
+// poolable.
+func (p *PowerShell) EnsureS2DPoolDisks(ctx context.Context) (Outcome, error) {
+	script := `
+$ErrorActionPreference = 'Stop'
+$pool = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if (-not $pool) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+$claim = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue)
+if (-not $claim -or $claim.Count -eq 0) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+Add-PhysicalDisk -StoragePoolFriendlyName $pool.FriendlyName -PhysicalDisks $claim
+[pscustomobject]@{ changed = $true; added = $claim.Count } | ConvertTo-Json -Compress
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure S2D pool disks: %w", err)
+	}
+	var res struct {
+		Changed bool `json:"changed"`
+	}
+	if err := decodeJSON(out, &res); err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure S2D pool disks: %w", err)
+	}
+	if res.Changed {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 // EnsureCSV creates the CSV if absent. It locates the S2D pool (the single
 // non-primordial storage pool) and creates a CSVFS_ReFS volume on it, which
 // Failover Clustering automatically presents as a Cluster Shared Volume.

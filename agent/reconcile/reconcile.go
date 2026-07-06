@@ -115,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// the role step.
 	if st := desired.Spec.Storage; st.DefaultVMPath != "" || st.DefaultVHDPath != "" {
 		out, err := r.hv.EnsureVMHostPaths(ctx, st.DefaultVMPath, st.DefaultVHDPath)
-		conds = append(conds, r.condition("VMHostPaths", out, err))
+		conds = append(conds, r.advisoryCondition("VMHostPaths", out, err))
 		if err != nil {
 			// Best-effort: the default VM/VHD path is a convenience for where new
 			// VMs land — VMs themselves carry explicit paths. Some hosts can't set
@@ -151,7 +151,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// domain's SRV records; a failure surfaces as a condition without degrading.
 	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
 		out, err := r.hv.EnsureHostDNS(ctx, dns)
-		conds = append(conds, r.condition("HostDNS", out, err))
+		conds = append(conds, r.advisoryCondition("HostDNS", out, err))
 		if err != nil {
 			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
 		} else if out != hyperv.OutcomeUnchanged {
@@ -196,6 +196,58 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Keep managed host NICs off the Public network profile. Creating or adjusting
+	// a vSwitch/vNIC (just done above) frequently strands an interface on Public,
+	// which silently blocks inbound WinRM and failover clustering. Running this on
+	// every pass — not just as an operator-triggered job — makes the host heal
+	// itself, and it works while the centre is offline. This is host hygiene, not
+	// desired spec, so it is best-effort: surface a condition, never degrade the
+	// host or hold its generation back. Only run it where the agent manages
+	// networking (a switch or management vNIC is declared).
+	if len(net.Switches) > 0 || len(net.ManagementVNICs) > 0 {
+		out, err := r.hv.EnsureNetworkProfilesPrivate(ctx)
+		conds = append(conds, r.advisoryCondition("NetworkProfile", out, err))
+		if err != nil {
+			r.log.Warn("ensure network profiles private failed (best-effort, not degrading)", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("network profile reconciled (Public -> Private)", "outcome", out)
+		}
+	}
+
+	// Build the set of NICs that are teamed into a vSwitch. Once a NIC is a SET
+	// team member it has no independent IP interface — the IP lives on the
+	// management OS vNIC on that switch. Trying to call New-NetIPAddress on a
+	// teamed NIC returns "Element not found" (error 1168).
+	teamedNICs := make(map[string]bool)
+	for _, sw := range net.Switches {
+		for _, m := range sw.TeamMembers {
+			teamedNICs[m] = true
+		}
+	}
+
+	for _, c := range net.NICConfigs {
+		if teamedNICs[c.AdapterName] {
+			r.log.Info("skipping NIC IP config: adapter is a SET team member", "adapter", c.AdapterName)
+			conds = append(conds, r.condition("NICConfig/"+c.AdapterName, hyperv.OutcomeUnchanged, nil))
+			continue
+		}
+		out, err := r.hv.EnsureHostIP(ctx, c)
+		conds = append(conds, r.condition("NICConfig/"+c.AdapterName, out, err))
+		if err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ensure NIC IP %q: %w", c.AdapterName, err)
+			}
+			r.log.Error("ensure NIC IP failed", "adapter", c.AdapterName, "err", err)
+			continue
+		}
+		if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("NIC IP reconciled", "adapter", c.AdapterName, "outcome", out)
+		}
+	}
+
 	res := Result{
 		Conditions:      conds,
 		Changed:         changed,
@@ -222,14 +274,28 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host, 
 	var changed bool
 
 	if spec.ManagementNIC != nil {
-		out, err := r.hv.EnsureHostIP(ctx, *spec.ManagementNIC)
-		conds = append(conds, r.condition("ManagementNIC/"+spec.ManagementNIC.AdapterName, out, err))
-		if err != nil {
-			return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("ensure management IP: %w", err)
+		// Once the management NIC is teamed into a SET switch its IP is
+		// re-homed to a management OS vNIC. Skip here to avoid "Element not
+		// found" (error 1168) on New-NetIPAddress.
+		adaptorTeamed := false
+		for _, sw := range spec.Networking.Switches {
+			for _, m := range sw.TeamMembers {
+				if m == spec.ManagementNIC.AdapterName {
+					adaptorTeamed = true
+					break
+				}
+			}
 		}
-		if out != hyperv.OutcomeUnchanged {
-			changed = true
-			r.log.Info("management IP reconciled", "adapter", spec.ManagementNIC.AdapterName, "outcome", out)
+		if !adaptorTeamed {
+			out, err := r.hv.EnsureHostIP(ctx, *spec.ManagementNIC)
+			conds = append(conds, r.condition("ManagementNIC/"+spec.ManagementNIC.AdapterName, out, err))
+			if err != nil {
+				return Result{Phase: types.PhaseDegraded, Conditions: conds}, true, fmt.Errorf("ensure management IP: %w", err)
+			}
+			if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("management IP reconciled", "adapter", spec.ManagementNIC.AdapterName, "outcome", out)
+			}
 		}
 	}
 
@@ -369,6 +435,21 @@ func (r *Reconciler) condition(condType string, out hyperv.Outcome, err error) t
 	default:
 		c.Reason = "AlreadyConfigured"
 		c.Message = "already matches desired state"
+	}
+	return c
+}
+
+// advisoryCondition is condition() for a best-effort step (host DNS, default
+// VM/VHD paths): a failure is recorded as a non-blocking advisory — Reason
+// "NotApplied" rather than "ApplyFailed" — so it neither degrades the host nor
+// holds back its generation. The host stays Ready/settled and the UI surfaces
+// it as "settled, with advisories" rather than a hard error. Success is
+// identical to condition().
+func (r *Reconciler) advisoryCondition(condType string, out hyperv.Outcome, err error) types.Condition {
+	c := r.condition(condType, out, err)
+	if err != nil {
+		c.Reason = "NotApplied"
+		c.Message = err.Error() + " (best-effort; not blocking)"
 	}
 	return c
 }

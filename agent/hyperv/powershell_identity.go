@@ -96,7 +96,9 @@ func (p *PowerShell) EnsureHostIP(ctx context.Context, spec types.PhysicalNICCon
 $ErrorActionPreference = 'Stop'
 $cur = Get-NetIPAddress -InterfaceAlias %[1]s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq %[2]s }
 if ($cur) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+Get-NetIPAddress -IPAddress %[2]s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
 Get-NetIPAddress -InterfaceAlias %[1]s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+Get-NetRoute -InterfaceAlias %[1]s -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 New-NetIPAddress -InterfaceAlias %[1]s -IPAddress %[2]s -PrefixLength %[3]d%[4]s | Out-Null
 %[5]s[pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, adapter, psQuote(ip), prefix, gwLine, dnsLine)

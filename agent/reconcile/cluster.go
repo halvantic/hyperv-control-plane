@@ -216,6 +216,21 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) 
 		conds = append(conds, r.condition("S2DEnabled", hyperv.OutcomeUnchanged, nil))
 	}
 
+	// Claim any poolable disks into the pool. A node added after S2D was enabled
+	// keeps its disks CanPool until added, so without this a late-joiner
+	// contributes no capacity. Best-effort: surfaced as a condition and logged,
+	// but a transient failure does not fail the storage pass.
+	if s2dEnabled {
+		dOut, dErr := r.hv.EnsureS2DPoolDisks(ctx)
+		conds = append(conds, r.condition("S2DPoolDisks", dOut, dErr))
+		if dErr != nil {
+			r.log.Error("claim S2D pool disks failed", "err", dErr)
+		} else if dOut != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("S2D pool disks claimed")
+		}
+	}
+
 	for _, vol := range a.Cluster.Spec.Volumes {
 		out, err := r.hv.EnsureCSV(ctx, hyperv.CSVProvision{
 			Name:           vol.Name,

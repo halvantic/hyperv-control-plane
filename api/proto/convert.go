@@ -219,17 +219,20 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			Ipv4:         a.IPv4,
 			DnsServers:   a.DNSServers,
 			RegistersDns: a.RegistersDNS,
+			Gateway:      a.Gateway,
 		})
 	}
 	for _, d := range inv.PhysicalDisks {
 		out.PhysicalDisks = append(out.PhysicalDisks, &PhysicalDisk{
-			DeviceId:  d.DeviceID,
-			SizeBytes: d.SizeBytes,
-			MediaType: d.MediaType,
-			CanPool:   d.CanPool,
-			IsOsDisk:  d.IsOSDisk,
+			DeviceId:    d.DeviceID,
+			SizeBytes:   d.SizeBytes,
+			MediaType:   d.MediaType,
+			CanPool:     d.CanPool,
+			IsOsDisk:    d.IsOSDisk,
+			DriveLetter: d.DriveLetter,
 		})
 	}
+	out.UsedDriveLetters = inv.UsedDriveLetters
 	return out
 }
 
@@ -252,17 +255,20 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			IPv4:         a.GetIpv4(),
 			DNSServers:   a.GetDnsServers(),
 			RegistersDNS: a.GetRegistersDns(),
+			Gateway:      a.GetGateway(),
 		})
 	}
 	for _, d := range inv.GetPhysicalDisks() {
 		out.PhysicalDisks = append(out.PhysicalDisks, types.PhysicalDisk{
-			DeviceID:  d.GetDeviceId(),
-			SizeBytes: d.GetSizeBytes(),
-			MediaType: d.GetMediaType(),
-			CanPool:   d.GetCanPool(),
-			IsOSDisk:  d.GetIsOsDisk(),
+			DeviceID:    d.GetDeviceId(),
+			SizeBytes:   d.GetSizeBytes(),
+			MediaType:   d.GetMediaType(),
+			CanPool:     d.GetCanPool(),
+			IsOSDisk:    d.GetIsOsDisk(),
+			DriveLetter: d.GetDriveLetter(),
 		})
 	}
+	out.UsedDriveLetters = inv.GetUsedDriveLetters()
 	return out
 }
 
@@ -285,6 +291,12 @@ func networkingToProto(n types.HostNetworkingSpec) *HostNetworkingSpec {
 		out.ManagementVnics = append(out.ManagementVnics, mgmtVNICToProto(v))
 	}
 	out.DnsServers = n.DNSServers
+	for _, c := range n.NICConfigs {
+		out.NicConfigs = append(out.NicConfigs, &PhysicalNICConfig{
+			AdapterName: c.AdapterName,
+			IpConfig:    &IPConfig{Address: c.IPConfig.Address, Gateway: c.IPConfig.Gateway, DnsServers: c.IPConfig.DNSServers},
+		})
+	}
 	return out
 }
 
@@ -306,6 +318,12 @@ func networkingFromProto(n *HostNetworkingSpec) types.HostNetworkingSpec {
 		out.ManagementVNICs = append(out.ManagementVNICs, mgmtVNICFromProto(v))
 	}
 	out.DNSServers = n.GetDnsServers()
+	for _, c := range n.GetNicConfigs() {
+		out.NICConfigs = append(out.NICConfigs, types.PhysicalNICConfig{
+			AdapterName: c.GetAdapterName(),
+			IPConfig:    types.IPConfig{Address: c.GetIpConfig().GetAddress(), Gateway: c.GetIpConfig().GetGateway(), DNSServers: c.GetIpConfig().GetDnsServers()},
+		})
+	}
 	return out
 }
 
@@ -550,8 +568,10 @@ func HostFromProto(h *Host) types.Host {
 // Cluster
 // ---------------------------------------------------------------------------
 //
-// The proto ClusterSpec omits Volumes (CSVSpec): Cluster Shared Volume
-// provisioning is a later increment, so it is not yet carried on the wire.
+// ClusterSpec carries members, witness, S2D enable, CSV volumes and live
+// migration on the wire — the former needs them to act. Cluster switches and
+// the default storage path are deliberately not on the wire: the centre fans
+// them into each member's HostSpec, so they reach agents through the host spec.
 
 func witnessTypeToProto(w types.WitnessType) WitnessType {
 	switch w {

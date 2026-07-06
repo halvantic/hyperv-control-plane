@@ -40,6 +40,7 @@ func main() {
 		svcUser    = flag.String("service-user", "", "run the service as this account (e.g. DOMAIN\\user); empty = LocalSystem. Cluster/domain operations need a domain admin.")
 		svcPass    = flag.String("service-password", "", "password for -service-user")
 		logPath    = flag.String("log", defaultLogPath(), "agent log file (stdout is discarded when run as a service)")
+		tlsDir     = flag.String("tls-dir", "", "directory with ca.pem + agent-cert.pem + agent-key.pem for mutual TLS to the centre; empty connects insecure")
 	)
 	flag.Parse()
 
@@ -59,6 +60,9 @@ func main() {
 			"-heartbeat", heartbeat.String(),
 			"-hyperv", *hypervKind,
 			"-log", *logPath,
+		}
+		if *tlsDir != "" {
+			args = append(args, "-tls-dir", *tlsDir)
 		}
 		if err := installService(serviceName, serviceDisplayName, serviceDescription, exe, args, *svcUser, *svcPass); err != nil {
 			log.Error("install service failed", "err", err)
@@ -107,6 +111,7 @@ func main() {
 			hostName:   *hostName,
 			storePath:  *storePath,
 			heartbeat:  *heartbeat,
+			tlsDir:     *tlsDir,
 		},
 		log:        log,
 		hv:         hv,

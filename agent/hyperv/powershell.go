@@ -123,20 +123,47 @@ func startsWithJSON(b []byte) bool {
 // assign to a switch, so its IP is not reported (the frontend treats a NIC with
 // no host IP and no switch as free). A NIC bound to a vSwitch carries no IP here
 // (the address lives on its management-OS vNIC), so it is naturally not flagged.
+//
+// The floating cluster IP is also a Manual address, but it is not a management
+// identity — it lives on whichever node currently owns the cluster core group and
+// must not pin that NIC as management (else the NIC the operator wants to free for
+// a vSwitch looks untouchable). Cluster IPs are gathered from the cluster's IP
+// Address resources and excluded, so only a NIC with its own static IP is flagged.
 func inventoryScript() string {
 	return `
 $ErrorActionPreference = 'Stop'
+$clusterIps = @()
+try {
+  Import-Module FailoverClusters -ErrorAction SilentlyContinue
+  $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
+} catch {}
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''
   if ($static) { $ip = [string]$a.IPAddress }
   $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg }
+  # Default-route next hop on this NIC, so a re-homed management IP can keep the
+  # host's default route on the converged switch's vNIC.
+  $gw = [string]((Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
+# Build a map of PhysicalDisk DeviceId → first drive letter assigned via a
+# partition (e.g. an NTFS volume formatted with Format-Volume and a drive letter).
+$diskToLetter = @{}
+try {
+  Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
+    $d = $_
+    $letters = @($d | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
+    if ($letters.Count -gt 0) {
+      $pds = @($d | Get-PhysicalDisk -ErrorAction SilentlyContinue)
+      foreach ($pd in $pds) { $diskToLetter[[string]$pd.DeviceId] = $letters[0] }
+    }
+  }
+} catch {}
 # In an S2D cluster Get-PhysicalDisk returns the whole cluster pool, so a host
 # would report every node's disks. Keep only the disks whose physically-connected
 # storage node is this host (mapping per disk, since the node->disk direction
@@ -149,16 +176,20 @@ $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object {
 })
 if (-not $pdisks -or $pdisks.Count -eq 0) { $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue) }
 $disks = $pdisks | ForEach-Object {
-  [pscustomobject]@{ deviceId = [string]$_.DeviceId; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ([string]$_.DeviceId -in $osIds) }
+  $id = [string]$_.DeviceId
+  $letter = if ($diskToLetter.ContainsKey($id)) { $diskToLetter[$id] } else { '' }
+  [pscustomobject]@{ deviceId = $id; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($id -in $osIds); driveLetter = $letter }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem
+$driveLetters = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Name.Length -eq 1 } | ForEach-Object { $_.Name })
 [pscustomobject]@{
   physicalAdapters = @($adapters)
   physicalDisks    = @($disks)
   totalMemoryBytes = [uint64]$cs.TotalPhysicalMemory
   logicalCPUs      = [int]$cs.NumberOfLogicalProcessors
   osVersion        = [string]($os.Caption + ' ' + $os.Version).Trim()
+  usedDriveLetters = @($driveLetters)
 } | ConvertTo-Json -Depth 5 -Compress
 `
 }
@@ -235,7 +266,18 @@ if ($csv) {
     [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace) }
   })
 } else {
-  $vols = @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | ForEach-Object {
+  # Exclude the OS/system volume: collect boot/system disk drive letters so they
+  # are not offered as VM storage locations (the agent can't create VHDXs there
+  # without risking the OS partition). The C drive is skipped even if detection
+  # fails — it is always the Windows system volume on these hosts.
+  $osDriveLetters = @('C')
+  try {
+    $osDriveLetters += @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } |
+      Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } |
+      ForEach-Object { [string]$_.DriveLetter })
+    $osDriveLetters = @($osDriveLetters | Sort-Object -Unique)
+  } catch {}
+  $vols = @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
     [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining) }
   })
 }

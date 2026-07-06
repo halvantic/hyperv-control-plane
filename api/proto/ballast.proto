@@ -271,6 +271,7 @@ message HostInventory {
   uint64 total_memory_bytes = 3;
   int32 logical_cpus = 4;
   string os_version = 5;
+  repeated string used_drive_letters = 6;
 }
 
 message PhysicalAdapter {
@@ -285,6 +286,10 @@ message PhysicalAdapter {
   // DNS does not point at the domain controller (a domain-join/registration risk).
   repeated string dns_servers = 7;
   bool registers_dns = 8;
+  // gateway is the IPv4 default-route next hop on this adapter, captured so a
+  // management IP re-homed onto a converged switch's vNIC keeps the host's
+  // default route. Empty when the adapter has no default route.
+  string gateway = 9;
 }
 
 message PhysicalDisk {
@@ -293,6 +298,7 @@ message PhysicalDisk {
   string media_type = 3;
   bool can_pool = 4;
   bool is_os_disk = 5;
+  string drive_letter = 6;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +309,7 @@ message HostNetworkingSpec {
   repeated VirtualSwitchSpec switches = 1;
   repeated ManagementVNICSpec management_vnics = 2;
   repeated string dns_servers = 3;
+  repeated PhysicalNICConfig nic_configs = 4;
 }
 
 enum SETTeamingMode {

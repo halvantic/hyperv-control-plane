@@ -75,6 +75,18 @@ func (p *PowerShell) RebootHost(ctx context.Context, drain bool) error {
 	return nil
 }
 
+// EnableRDP turns on Remote Desktop: clear the deny-connections policy and enable
+// the Remote Desktop firewall rule group. Idempotent — re-running is a no-op.
+func (p *PowerShell) EnableRDP(ctx context.Context) error {
+	script := `$ErrorActionPreference='Stop'
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue`
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("enable RDP: %w", err)
+	}
+	return nil
+}
+
 func (p *PowerShell) ShutdownHost(ctx context.Context, drain bool) error {
 	// The host powers off and the agent process is terminated; it returns only
 	// when the host is powered back on and the service restarts.

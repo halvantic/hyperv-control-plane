@@ -71,6 +71,16 @@ type Stub struct {
 	// so tests can exercise the reconciler's VM failure path.
 	FailVM string
 
+	// FailVMHostPaths, when true, makes EnsureVMHostPaths return an error, so tests
+	// can exercise the reconciler's best-effort (advisory, non-degrading) path.
+	FailVMHostPaths bool
+
+	// NetworkProfilePublic, when true, makes EnsureNetworkProfilesPrivate report it
+	// had to flip a NIC (OutcomeUpdated); FailNetworkProfile makes it error. Both
+	// let tests drive the reconciler's network-profile hygiene step.
+	NetworkProfilePublic bool
+	FailNetworkProfile   bool
+
 	mu       sync.Mutex
 	switches map[string]types.VirtualSwitchSpec
 	vnics    map[string]types.ManagementVNICSpec
@@ -226,6 +236,9 @@ func (s *Stub) EnsureHostIP(_ context.Context, spec types.PhysicalNICConfig) (Ou
 func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.FailVMHostPaths {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced failure setting VM host paths")
+	}
 	if s.vmHostVMPath == vmPath && s.vmHostVHDPath == vhdPath {
 		return OutcomeUnchanged, nil
 	}
@@ -235,7 +248,8 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 
 func (s *Stub) RemoveSwitch(_ context.Context, _ string) error { return nil }
 func (s *Stub) RemoveVM(_ context.Context, _ string) error     { return nil }
-func (s *Stub) FormatDisk(_ context.Context, _ string) error   { return nil }
+func (s *Stub) FormatDisk(_ context.Context, _ string) error            { return nil }
+func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error    { return nil }
 func (s *Stub) DestroyCluster(_ context.Context) error         { return nil }
 
 func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
@@ -285,6 +299,8 @@ func (s *Stub) ShutdownHost(_ context.Context, _ bool) error {
 	s.ShutdownCalled = true
 	return nil
 }
+
+func (s *Stub) EnableRDP(_ context.Context) error { return nil }
 
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
@@ -337,6 +353,10 @@ func (s *Stub) EnableS2D(_ context.Context) (Outcome, error) {
 	s.EnableS2DCalled = true
 	s.S2DEnabled = true
 	return OutcomeCreated, nil
+}
+
+func (s *Stub) EnsureS2DPoolDisks(_ context.Context) (Outcome, error) {
+	return OutcomeUnchanged, nil
 }
 
 func (s *Stub) EnsureCSV(_ context.Context, spec CSVProvision) (Outcome, error) {
@@ -480,6 +500,9 @@ func (s *Stub) EnsureClusterVMRole(_ context.Context, _ string) (Outcome, error)
 func (s *Stub) MoveClusterGroup(_ context.Context, _, _ string) error        { return nil }
 func (s *Stub) MoveClusterSharedVolume(_ context.Context, _, _ string) error { return nil }
 func (s *Stub) MoveClusterVM(_ context.Context, _, _ string) error           { return nil }
+func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _ string) (string, error) {
+	return "migrated " + vm + " to " + destHost + " (stub)", nil
+}
 func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {
 	return "validation ok (stub)", nil
 }
@@ -490,6 +513,20 @@ func (s *Stub) ClusterLog(_ context.Context, _, _ string) (string, error) {
 
 func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 	return "dns repaired (stub)", nil
+}
+
+func (s *Stub) RepairNetworkProfile(_ context.Context) (string, error) {
+	return "network profiles ok (stub)", nil
+}
+
+func (s *Stub) EnsureNetworkProfilesPrivate(_ context.Context) (Outcome, error) {
+	if s.FailNetworkProfile {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced failure setting network profile")
+	}
+	if s.NetworkProfilePublic {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
 }
 
 func (s *Stub) EnsureHostDNS(_ context.Context, _ []string) (Outcome, error) {
