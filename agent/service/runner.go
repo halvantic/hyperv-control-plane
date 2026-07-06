@@ -329,7 +329,12 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 			jctx, cancel := context.WithTimeout(ctx, jobTimeout)
 			defer cancel()
 			r.reportJob(jctx, client, job.ID, types.JobRunning, "")
-			msg, jerr := r.reconciler.ExecuteJob(jctx, job)
+			// A long-running job (live migration) streams progress notes; surface
+			// each as the job's Running message so the console shows a live %.
+			onProgress := func(note string) {
+				r.reportJob(jctx, client, job.ID, types.JobRunning, note)
+			}
+			msg, jerr := r.reconciler.ExecuteJob(jctx, job, onProgress)
 			if jerr != nil {
 				r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
 				r.reportJob(jctx, client, job.ID, types.JobFailed, jerr.Error())

@@ -499,8 +499,12 @@ func (s *Stub) EnsureClusterVMRole(_ context.Context, _ string) (Outcome, error)
 }
 func (s *Stub) MoveClusterGroup(_ context.Context, _, _ string) error        { return nil }
 func (s *Stub) MoveClusterSharedVolume(_ context.Context, _, _ string) error { return nil }
-func (s *Stub) MoveClusterVM(_ context.Context, _, _ string) error           { return nil }
-func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _ string) (string, error) {
+func (s *Stub) MoveClusterVM(_ context.Context, _, _ string, onProgress ProgressFunc) error {
+	onProgress.emit("live migration 100%")
+	return nil
+}
+func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _ string, onProgress ProgressFunc) (string, error) {
+	onProgress.emit("live migration 100%")
 	return "migrated " + vm + " to " + destHost + " (stub)", nil
 }
 func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {

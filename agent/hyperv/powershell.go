@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +15,16 @@ import (
 	"github.com/joshua-fourie/ballast/api/types"
 )
 
+// ProgressFunc receives a human-readable progress note from a long-running
+// operation (e.g. "live migration 42%"). A nil ProgressFunc is a no-op.
+type ProgressFunc func(note string)
+
+func (f ProgressFunc) emit(note string) {
+	if f != nil {
+		f(note)
+	}
+}
+
 // PowerShell is the v1 host implementation of Interface. It shells out to the
 // Windows PowerShell management modules (Hyper-V, NetAdapter, NetTCPIP) per the
 // stack decision in CLAUDE.md: every operation is an explicit, documented
@@ -25,20 +36,26 @@ import (
 // pure Go (see plan* functions) so it is unit-tested without a host; the
 // scripts themselves require a real Hyper-V host to validate.
 type PowerShell struct {
-	run runFunc
-	log *slog.Logger
+	run       runFunc
+	runStream runStreamFunc
+	log       *slog.Logger
 }
 
 // runFunc executes a PowerShell script and returns its stdout. It is a field so
 // tests can inject canned output in place of a real shell-out.
 type runFunc func(ctx context.Context, script string) ([]byte, error)
 
+// runStreamFunc executes a script and invokes onLine for each stdout line as it
+// arrives (so long-running scripts can report progress mid-flight), returning
+// the exit error. Injectable so tests can drive canned progress lines.
+type runStreamFunc func(ctx context.Context, script string, onLine func(string)) error
+
 // NewPowerShell returns a host implementation backed by powershell.exe.
 func NewPowerShell(log *slog.Logger) *PowerShell {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &PowerShell{run: execPowerShell, log: log}
+	return &PowerShell{run: execPowerShell, runStream: execPowerShellStream, log: log}
 }
 
 // execPowerShell runs a script under Windows PowerShell. It uses powershell.exe
@@ -53,6 +70,35 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// execPowerShellStream runs a script and calls onLine for each stdout line as it
+// is produced, so a long-running script (e.g. a migration emitting PROGRESS
+// lines) can report mid-flight. stderr is captured and folded into the exit
+// error, as with execPowerShell.
+func execPowerShellStream(ctx context.Context, script string, onLine func(string)) error {
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("powershell stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("powershell start: %w", err)
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if onLine != nil {
+			onLine(strings.TrimRight(sc.Text(), "\r"))
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // runWithEnv executes a script via powershell.exe with extra environment

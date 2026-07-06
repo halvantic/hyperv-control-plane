@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
 )
 
@@ -12,7 +13,11 @@ import (
 // result detail (shown in the centre on success) plus any error. Unlike the
 // reconcile loop, a Job is a one-shot action — it is not retried by the loop;
 // the centre records the outcome and the operator re-issues on failure.
-func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, error) {
+//
+// onProgress (nil-safe) receives mid-flight progress notes for the long-running
+// jobs that report them (live migration), which the caller surfaces as the job's
+// Running message.
+func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress hyperv.ProgressFunc) (string, error) {
 	p := job.Params
 	switch job.Kind {
 	case types.JobVMStart:
@@ -50,7 +55,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 	case types.JobClusterMoveCSV:
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
 	case types.JobClusterMoveVM:
-		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"]), "live-migrated "+p["vm"]+" to "+p["node"])
+		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"], onProgress), "live-migrated "+p["vm"]+" to "+p["node"])
 	case types.JobMigrateVM:
 		// Auto-provision Kerberos constrained delegation between this (source) host
 		// and the destination so shared-nothing migration works without a manual AD
@@ -60,7 +65,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job) (string, err
 		if _, derr := r.hv.EnsureMigrationDelegation(ctx, []string{p["destHost"]}); derr != nil {
 			return "", fmt.Errorf("ensure migration delegation to %s: %w", p["destHost"], derr)
 		}
-		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"])
+		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], onProgress)
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveVM:
