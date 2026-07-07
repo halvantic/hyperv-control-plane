@@ -21,6 +21,19 @@ import (
 // and reported Failed, so a stuck host operation can never wedge the agent.
 const jobTimeout = 10 * time.Minute
 
+// jobTimeoutFor returns the cap for a job kind. Most finish in seconds, but
+// storage rebuilds/repairs and live migrations legitimately run for many minutes
+// (disk rebalance, VM+storage copy), so they get a longer cap rather than being
+// killed mid-operation and left in a half-applied state.
+func jobTimeoutFor(kind string) time.Duration {
+	switch kind {
+	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM:
+		return 30 * time.Minute
+	default:
+		return jobTimeout
+	}
+}
+
 // fullResyncEvery forces a full desired-state pull (ignoring the cached
 // generation) every N cycles, so the agent self-heals from a reused/colliding
 // generation rather than trusting an "unchanged" answer indefinitely.
@@ -326,7 +339,7 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 				delete(r.jobsInflight, job.ID)
 				r.jobsMu.Unlock()
 			}()
-			jctx, cancel := context.WithTimeout(ctx, jobTimeout)
+			jctx, cancel := context.WithTimeout(ctx, jobTimeoutFor(job.Kind))
 			defer cancel()
 			r.reportJob(jctx, client, job.ID, types.JobRunning, "")
 			// A long-running job (live migration) streams progress notes; surface
