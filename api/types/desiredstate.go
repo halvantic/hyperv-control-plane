@@ -754,6 +754,7 @@ const (
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
 	JobRepairPool   = "RepairPool"   // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy
+	JobRebuildPool  = "RebuildPool"  // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter

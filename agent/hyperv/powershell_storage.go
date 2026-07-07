@@ -167,3 +167,48 @@ if ($removed -eq 0 -and $errs.Count -gt 0) { throw ('could not remove any of ' +
 	}
 	return msg, nil
 }
+
+// RebuildStoragePool is the heavy remediation for a pool that Repair cannot
+// salvage — a stale, degraded pool left over from a torn-down cluster, holding
+// orphaned (departed-node) disks and inaccessible volumes it will not shed. It
+// DESTROYS the pool and every volume on it, then re-enables Storage Spaces Direct
+// so a fresh, healthy pool is created from the cluster's current disks, named
+// after the current cluster. Destructive — all data on the pool is lost — and
+// gated behind an explicit operator action. Runs on a cluster member.
+func (p *PowerShell) RebuildStoragePool(ctx context.Context) (string, error) {
+	script := `
+$ErrorActionPreference = 'Continue'
+$log = @()
+Import-Module FailoverClusters -ErrorAction SilentlyContinue
+# 1. Remove every virtual disk (CSV/volume) so nothing pins the pool.
+foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
+  try { Remove-VirtualDisk -InputObject $vd -Confirm:$false -ErrorAction Stop; $log += ('vdisk-' + $vd.FriendlyName) } catch { $log += ('vdisk-err-' + $_.Exception.Message) }
+}
+# 2. Disable S2D — destroys the pool (and its orphaned/departed disk records).
+try { Disable-ClusterStorageSpacesDirect -Confirm:$false -ErrorAction Stop; $log += 'disabled-s2d' } catch { $log += ('disable-err-' + $_.Exception.Message) }
+# 3. Remove any storage pool that survives, and clear residual pool metadata off
+#    the disks so Enable can reclaim them.
+foreach ($sp in @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })) {
+  try { Set-StoragePool -InputObject $sp -IsReadOnly $false -ErrorAction SilentlyContinue; Remove-StoragePool -InputObject $sp -Confirm:$false -ErrorAction Stop; $log += ('pool-removed-' + $sp.FriendlyName) } catch { $log += ('pool-err-' + $_.Exception.Message) }
+}
+foreach ($d in @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { -not $_.CanPool -and -not (Get-VirtualDisk -PhysicalDisk $_ -ErrorAction SilentlyContinue) })) {
+  try { Reset-PhysicalDisk -UniqueId $d.UniqueId -ErrorAction Stop; $log += 'disk-reset' } catch {}
+}
+# 4. Re-enable S2D, creating a fresh pool named after the current cluster.
+$cn = (Get-Cluster -ErrorAction SilentlyContinue).Name
+$poolName = if ($cn) { 'S2D on ' + $cn } else { 'S2D Pool' }
+try { Enable-ClusterStorageSpacesDirect -PoolFriendlyName $poolName -Confirm:$false -ErrorAction Stop; $log += ('enabled-' + $poolName) } catch { $log += ('enable-err-' + $_.Exception.Message) }
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if (-not $sp) { throw ('rebuild left no pool: ' + ($log -join ' | ')) }
+'RESULT=REBUILT ' + $sp.FriendlyName + ' ' + $sp.HealthStatus + ' :: ' + ($log -join ' | ')
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("rebuild storage pool: %w", err)
+	}
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	return msg, nil
+}

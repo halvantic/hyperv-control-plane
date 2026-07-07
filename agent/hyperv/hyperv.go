@@ -248,6 +248,12 @@ type Interface interface {
 	// disks are Healthy.
 	RepairStoragePool(ctx context.Context) (string, error)
 
+	// RebuildStoragePool DESTROYS the S2D pool and its volumes and re-enables S2D
+	// to create a fresh pool from the cluster's current disks. For a stale/degraded
+	// pool left over from a torn-down cluster that Repair cannot salvage. All data
+	// on the pool is lost; gated behind an explicit operator action.
+	RebuildStoragePool(ctx context.Context) (string, error)
+
 	// GetVMState observes the named VM: whether it exists and, if so, its power
 	// state and best-effort runtime metrics. Pure read.
 	GetVMState(ctx context.Context, name string) (VMState, error)

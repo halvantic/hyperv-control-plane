@@ -58,6 +58,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
 	case types.JobRepairPool:
 		return r.hv.RepairStoragePool(ctx)
+	case types.JobRebuildPool:
+		return r.hv.RebuildStoragePool(ctx)
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"], onProgress), "live-migrated "+p["vm"]+" to "+p["node"])
 	case types.JobMigrateVM:
