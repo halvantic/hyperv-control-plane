@@ -27,7 +27,7 @@ const jobTimeout = 10 * time.Minute
 // killed mid-operation and left in a half-applied state.
 func jobTimeoutFor(kind string) time.Duration {
 	switch kind {
-	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM:
+	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM, types.JobFetchISO, types.JobVMExport:
 		return 30 * time.Minute
 	default:
 		return jobTimeout
