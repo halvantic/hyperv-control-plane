@@ -127,18 +127,25 @@ func (p *PowerShell) EnsureVMHostPaths(ctx context.Context, vmPath, vhdPath stri
 		return OutcomeUnchanged, nil
 	}
 	var b strings.Builder
-	b.WriteString("$ErrorActionPreference='Stop'; $h=Get-VMHost; $u=$false; ")
-	// Create each target directory first — Set-VMHost rejects a path that does
-	// not exist, and on a CSV the path is most reliably set to a real folder.
+	b.WriteString("$ErrorActionPreference='Stop'; $h=Get-VMHost; $u=$false; $skip=@(); ")
+	// Best-effort per path: only set it once the directory exists. Try to create
+	// it, but if that fails — e.g. the path targets a CSV (C:\ClusterStorage\...)
+	// that has not been provisioned yet, where you cannot create a folder at the
+	// namespace root — skip that path instead of failing the whole reconcile. The
+	// host keeps its current default until the CSV exists.
+	setPath := func(prop, flag, path string) {
+		q := psQuote(path)
+		b.WriteString(fmt.Sprintf("$ok=Test-Path %s; if (-not $ok) { try { New-Item -ItemType Directory -Path %s -Force -ErrorAction Stop | Out-Null; $ok=$true } catch { $ok=$false } }; ", q, q))
+		b.WriteString(fmt.Sprintf("if ($ok) { if ($h.%s -ne %s) { try { Set-VMHost -%s %s -ErrorAction Stop; $u=$true } catch { $skip += %s } } } else { $skip += %s }; ",
+			prop, q, flag, q, q, q))
+	}
 	if vmPath != "" {
-		b.WriteString(fmt.Sprintf("if (-not (Test-Path %s)) { New-Item -ItemType Directory -Path %s -Force | Out-Null }; ", psQuote(vmPath), psQuote(vmPath)))
-		b.WriteString(fmt.Sprintf("if ($h.VirtualMachinePath -ne %s) { Set-VMHost -VirtualMachinePath %s; $u=$true }; ", psQuote(vmPath), psQuote(vmPath)))
+		setPath("VirtualMachinePath", "VirtualMachinePath", vmPath)
 	}
 	if vhdPath != "" {
-		b.WriteString(fmt.Sprintf("if (-not (Test-Path %s)) { New-Item -ItemType Directory -Path %s -Force | Out-Null }; ", psQuote(vhdPath), psQuote(vhdPath)))
-		b.WriteString(fmt.Sprintf("if ($h.VirtualHardDiskPath -ne %s) { Set-VMHost -VirtualHardDiskPath %s; $u=$true }; ", psQuote(vhdPath), psQuote(vhdPath)))
+		setPath("VirtualHardDiskPath", "VirtualHardDiskPath", vhdPath)
 	}
-	b.WriteString("if ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
+	b.WriteString("if ($skip.Count) {'RESULT=SKIP ' + ($skip -join ',')} elseif ($u) {'RESULT=UPDATED'} else {'RESULT=NOOP'}")
 	out, err := p.run(ctx, b.String())
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("set vm host paths: %w", err)

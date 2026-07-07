@@ -94,6 +94,16 @@ if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
   throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
 }
 New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
+# Failover Clustering auto-mounts the new CSV at C:\ClusterStorage\VolumeN. Rename
+# the mount point to the volume's friendly name so it lands at a predictable path
+# (C:\ClusterStorage\<name>) — that is where the host's default VM/VHD path points.
+$vd = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
+$csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + %[1]s + '*') } | Select-Object -First 1
+if ($csv) {
+  $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
+  $want = 'C:\ClusterStorage\' + %[1]s
+  if ($cur -and $cur -ne $want -and -not (Test-Path $want)) { try { Rename-Item -Path $cur -NewName %[1]s -ErrorAction Stop } catch {} }
+}
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
 
