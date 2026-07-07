@@ -97,6 +97,24 @@ type runner struct {
 	// not launch them twice. Guarded by jobsMu.
 	jobsMu       sync.Mutex
 	jobsInflight map[string]struct{}
+
+	// nudge lets a finished job ask the main loop to run an extra cycle now,
+	// instead of waiting for the next heartbeat, so the centre reflects the new
+	// state (e.g. a migrated VM's new owner) within a second or two. Buffered so a
+	// send never blocks the job goroutine; a pending nudge coalesces many jobs.
+	nudge chan struct{}
+}
+
+// requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
+// if one is already queued, this is a no-op).
+func (r *runner) requestNudge() {
+	if r.nudge == nil {
+		return
+	}
+	select {
+	case r.nudge <- struct{}{}:
+	default:
+	}
 }
 
 const agentVersion = version.Version
@@ -116,6 +134,7 @@ func (r *runner) run(ctx context.Context) error {
 	client := ballastpb.NewAgentServiceClient(conn)
 
 	// One immediate cycle so state is fresh on startup, then on a ticker.
+	r.nudge = make(chan struct{}, 1)
 	r.cycle(ctx, client)
 
 	ticker := time.NewTicker(r.cfg.heartbeat)
@@ -125,6 +144,10 @@ func (r *runner) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			r.cycle(ctx, client)
+		case <-r.nudge:
+			// A job just finished — run an extra cycle now so the centre reflects
+			// the new state (migrated VM's owner, power change, etc.) promptly.
 			r.cycle(ctx, client)
 		}
 	}
@@ -338,6 +361,10 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 				r.jobsMu.Lock()
 				delete(r.jobsInflight, job.ID)
 				r.jobsMu.Unlock()
+				// Ask for an immediate follow-up cycle so the centre reflects
+				// whatever this job changed (VM owner/power, storage, cluster)
+				// without waiting for the next heartbeat.
+				r.requestNudge()
 			}()
 			jctx, cancel := context.WithTimeout(ctx, jobTimeoutFor(job.Kind))
 			defer cancel()
