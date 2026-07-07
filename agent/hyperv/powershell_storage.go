@@ -144,13 +144,17 @@ $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsP
 if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
 $bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
 if ($bad.Count -eq 0) { 'RESULT=NOOP pool ' + $sp.FriendlyName + ' is ' + $sp.HealthStatus; return }
-# Retire so Storage Spaces stops placing data on them, then remove them from the
-# pool; the pool rebalances/repairs onto the remaining healthy disks.
+# A departed node's disks stall in "Removing From Pool" because S2D tries to drain
+# data off disks that are gone. Tell the pool to actively retire missing disks so
+# the removal completes; then retire and remove each unhealthy disk.
+try { Set-StoragePool -FriendlyName $sp.FriendlyName -RetireMissingPhysicalDisks Always -ErrorAction SilentlyContinue } catch {}
 $bad | Set-PhysicalDisk -Usage Retired -ErrorAction SilentlyContinue
-$removed = 0
+$removed = 0; $errs = @()
 foreach ($d in $bad) {
-  try { Remove-PhysicalDisk -PhysicalDisks $d -StoragePoolFriendlyName $sp.FriendlyName -Confirm:$false -ErrorAction Stop; $removed++ } catch {}
+  try { Remove-PhysicalDisk -PhysicalDisks $d -StoragePoolFriendlyName $sp.FriendlyName -Confirm:$false -ErrorAction Stop; $removed++ }
+  catch { $errs += ('SN ' + $d.SerialNumber + ': ' + $_.Exception.Message) }
 }
+if ($removed -eq 0 -and $errs.Count -gt 0) { throw ('could not remove any of ' + $bad.Count + ' unhealthy disk(s): ' + ($errs -join ' | ')) }
 'RESULT=REPAIRED removed ' + $removed + ' of ' + $bad.Count + ' unhealthy disk(s) from ' + $sp.FriendlyName
 `
 	out, err := p.run(ctx, script)
