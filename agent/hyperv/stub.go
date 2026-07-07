@@ -384,6 +384,14 @@ func (s *Stub) RemoveCSV(_ context.Context, name string) error {
 	return nil
 }
 
+func (s *Stub) RepairStoragePool(_ context.Context) (string, error) {
+	return "NOOP pool is Healthy (stub)", nil
+}
+
+func (s *Stub) RebuildStoragePool(_ context.Context) (string, error) {
+	return "REBUILT S2D Pool Healthy (stub)", nil
+}
+
 func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -455,6 +463,15 @@ func (s *Stub) SetVMPowerState(_ context.Context, name string, desired types.VMP
 	}
 	vm.power = desired
 	return OutcomeUpdated, nil
+}
+
+func (s *Stub) RestartVM(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.vms[name]; !ok {
+		return fmt.Errorf("stub: VM %q does not exist", name)
+	}
+	return nil
 }
 
 // GetVMScreen returns no screenshot in the stub.

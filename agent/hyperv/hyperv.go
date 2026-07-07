@@ -242,6 +242,18 @@ type Interface interface {
 	// (no error) when no such volume exists.
 	RemoveCSV(ctx context.Context, name string) error
 
+	// RepairStoragePool retires and removes disks that are no longer Healthy from
+	// the S2D pool so it returns to Healthy (e.g. a departed node's orphaned disks
+	// after a teardown). Returns a short summary. Idempotent: a no-op when all
+	// disks are Healthy.
+	RepairStoragePool(ctx context.Context) (string, error)
+
+	// RebuildStoragePool DESTROYS the S2D pool and its volumes and re-enables S2D
+	// to create a fresh pool from the cluster's current disks. For a stale/degraded
+	// pool left over from a torn-down cluster that Repair cannot salvage. All data
+	// on the pool is lost; gated behind an explicit operator action.
+	RebuildStoragePool(ctx context.Context) (string, error)
+
 	// GetVMState observes the named VM: whether it exists and, if so, its power
 	// state and best-effort runtime metrics. Pure read.
 	GetVMState(ctx context.Context, name string) (VMState, error)
@@ -263,6 +275,10 @@ type Interface interface {
 	// Off). OutcomeUnchanged when it is already there. The reconciler only
 	// requests Running/Off; Paused/Saved are observed, never requested.
 	SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error)
+
+	// RestartVM restarts a running VM — a one-shot imperative action (power is
+	// never continuously enforced). Errors if the VM is not running.
+	RestartVM(ctx context.Context, name string) error
 
 	// GetVMScreen returns a small PNG snapshot of the VM's console (the Hyper-V
 	// thumbnail). A pure read; returns nil (no error) when the VM has no screen
@@ -443,6 +459,10 @@ type ClusterPool struct {
 	Name           string
 	RawBytes       uint64
 	AllocatedBytes uint64
+	Health         string
+	Operational    string
+	UnhealthyDisks int
+	TotalDisks     int
 }
 
 // ClusterNetworkInfo is one cluster network: its name, subnet (CIDR), role

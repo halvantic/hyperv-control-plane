@@ -26,6 +26,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobVMStop:
 		_, err := r.hv.SetVMPowerState(ctx, p["vm"], types.VMPowerOff)
 		return done(err, "stopped "+p["vm"])
+	case types.JobVMRestart:
+		return done(r.hv.RestartVM(ctx, p["vm"]), "restarted "+p["vm"])
 	case types.JobVMCheckpoint:
 		return done(r.hv.CreateVMCheckpoint(ctx, p["vm"], p["name"]), "checkpoint created")
 	case types.JobVMExport:
@@ -54,6 +56,10 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
+	case types.JobRepairPool:
+		return r.hv.RepairStoragePool(ctx)
+	case types.JobRebuildPool:
+		return r.hv.RebuildStoragePool(ctx)
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"], onProgress), "live-migrated "+p["vm"]+" to "+p["node"])
 	case types.JobMigrateVM:

@@ -452,6 +452,14 @@ message ClusterPool {
   string name = 1;
   uint64 raw_bytes = 2;
   uint64 allocated_bytes = 3;
+  // health is the pool HealthStatus ("Healthy"/"Warning"/"Unhealthy") and
+  // operational the OperationalStatus (e.g. "Degraded"); unhealthy_disks /
+  // total_disks are the pool's physical-disk health counts. A CSV cannot be
+  // provisioned while the pool is not Healthy.
+  string health = 4;
+  string operational = 5;
+  int32 unhealthy_disks = 6;
+  int32 total_disks = 7;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.

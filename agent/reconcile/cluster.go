@@ -156,7 +156,8 @@ func clusterPoolToStatus(p *hyperv.ClusterPool) *types.ClusterPoolStatus {
 	if p == nil {
 		return nil
 	}
-	return &types.ClusterPoolStatus{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes}
+	return &types.ClusterPoolStatus{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
+		Health: p.Health, Operational: p.Operational, UnhealthyDisks: p.UnhealthyDisks, TotalDisks: p.TotalDisks}
 }
 
 func clusterNodesToStatus(ns []hyperv.ClusterNodeState) []types.ClusterNodeStatus {

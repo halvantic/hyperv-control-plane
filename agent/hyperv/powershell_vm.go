@@ -431,14 +431,28 @@ func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired t
 	if desired == types.VMPowerOff {
 		target = "Off"
 	}
+	// A clustered VM is powered via its cluster group from any member — the
+	// cluster service routes it to the current owner, so we do not need to know or
+	// reach the owner node. A standalone VM is powered locally. Detect which by
+	// whether a cluster group of that name exists.
+	clusterVerb := "Start-ClusterGroup"
+	if desired == types.VMPowerOff {
+		clusterVerb = "Stop-ClusterGroup"
+	}
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
+$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+if ($grp) {
+  if ([string]$grp.State -eq '%[4]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+  %[5]s -Name %[1]s -ErrorAction Stop | Out-Null
+  [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress; return
+}
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if (-not $vm) { throw 'VM does not exist' }
 if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 %[3]s | Out-Null
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
-`, psQuote(name), target, verb)
+`, psQuote(name), target, verb, clusterGroupState(desired), clusterVerb)
 
 	out, err := p.run(ctx, script)
 	if err != nil {
@@ -454,6 +468,38 @@ if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | Con
 		return OutcomeUpdated, nil
 	}
 	return OutcomeUnchanged, nil
+}
+
+// clusterGroupState maps a requested VM power state to the cluster group state
+// used to skip a no-op.
+func clusterGroupState(desired types.VMPowerState) string {
+	if desired == types.VMPowerOff {
+		return "Offline"
+	}
+	return "Online"
+}
+
+// RestartVM restarts a running VM (a one-shot imperative action, not a desired
+// state — power is never continuously enforced). For a clustered VM it targets
+// the current owner node (resolved from the cluster group) so the restart runs
+// where the VM actually is; for a standalone VM it restarts locally. Restart-VM
+// requests a guest OS restart; -Force skips the confirmation prompt.
+func (p *PowerShell) RestartVM(ctx context.Context, name string) error {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+if ($grp) {
+  if ([string]$grp.State -ne 'Online') { throw ('cluster role is ' + $grp.State + '; only a running VM can be restarted') }
+  Restart-VM -Name %[1]s -ComputerName $grp.OwnerNode.Name -Force -ErrorAction Stop | Out-Null
+  return
+}
+$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+if (-not $vm) { throw 'VM does not exist' }
+if ([string]$vm.State -ne 'Running') { throw ('VM is ' + $vm.State + '; only a running VM can be restarted') }
+Restart-VM -Name %[1]s -Force -ErrorAction Stop | Out-Null`, psQuote(name))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("restart vm %q: %w", name, err)
+	}
+	return nil
 }
 
 // screenScript captures the VM's console thumbnail via WMI

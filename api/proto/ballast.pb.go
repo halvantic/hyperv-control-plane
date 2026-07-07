@@ -3333,6 +3333,14 @@ type ClusterPool struct {
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	RawBytes       uint64                 `protobuf:"varint,2,opt,name=raw_bytes,json=rawBytes,proto3" json:"raw_bytes,omitempty"`
 	AllocatedBytes uint64                 `protobuf:"varint,3,opt,name=allocated_bytes,json=allocatedBytes,proto3" json:"allocated_bytes,omitempty"`
+	// health is the pool HealthStatus ("Healthy"/"Warning"/"Unhealthy") and
+	// operational the OperationalStatus (e.g. "Degraded"); unhealthy_disks /
+	// total_disks are the pool's physical-disk health counts. A CSV cannot be
+	// provisioned while the pool is not Healthy.
+	Health         string `protobuf:"bytes,4,opt,name=health,proto3" json:"health,omitempty"`
+	Operational    string `protobuf:"bytes,5,opt,name=operational,proto3" json:"operational,omitempty"`
+	UnhealthyDisks int32  `protobuf:"varint,6,opt,name=unhealthy_disks,json=unhealthyDisks,proto3" json:"unhealthy_disks,omitempty"`
+	TotalDisks     int32  `protobuf:"varint,7,opt,name=total_disks,json=totalDisks,proto3" json:"total_disks,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3384,6 +3392,34 @@ func (x *ClusterPool) GetRawBytes() uint64 {
 func (x *ClusterPool) GetAllocatedBytes() uint64 {
 	if x != nil {
 		return x.AllocatedBytes
+	}
+	return 0
+}
+
+func (x *ClusterPool) GetHealth() string {
+	if x != nil {
+		return x.Health
+	}
+	return ""
+}
+
+func (x *ClusterPool) GetOperational() string {
+	if x != nil {
+		return x.Operational
+	}
+	return ""
+}
+
+func (x *ClusterPool) GetUnhealthyDisks() int32 {
+	if x != nil {
+		return x.UnhealthyDisks
+	}
+	return 0
+}
+
+func (x *ClusterPool) GetTotalDisks() int32 {
+	if x != nil {
+		return x.TotalDisks
 	}
 	return 0
 }
@@ -4489,11 +4525,16 @@ const file_ballast_proto_rawDesc = "" +
 	"\x05state\x18\x04 \x01(\tR\x05state\"7\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"g\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\xeb\x01\n" +
 	"\vClusterPool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\traw_bytes\x18\x02 \x01(\x04R\brawBytes\x12'\n" +
-	"\x0fallocated_bytes\x18\x03 \x01(\x04R\x0eallocatedBytes\"v\n" +
+	"\x0fallocated_bytes\x18\x03 \x01(\x04R\x0eallocatedBytes\x12\x16\n" +
+	"\x06health\x18\x04 \x01(\tR\x06health\x12 \n" +
+	"\voperational\x18\x05 \x01(\tR\voperational\x12'\n" +
+	"\x0funhealthy_disks\x18\x06 \x01(\x05R\x0eunhealthyDisks\x12\x1f\n" +
+	"\vtotal_disks\x18\a \x01(\x05R\n" +
+	"totalDisks\"v\n" +
 	"\fClusterGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +

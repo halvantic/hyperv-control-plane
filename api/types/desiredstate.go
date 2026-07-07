@@ -627,12 +627,25 @@ type ClusterNetworkStatus struct {
 	State string `json:"state,omitempty"`
 }
 
-// ClusterPoolStatus is the S2D storage pool's capacity. Free is RawBytes minus
-// AllocatedBytes; volumes' three-way mirror copies count against AllocatedBytes.
+// ClusterPoolStatus is the S2D storage pool's capacity and health. Free is
+// RawBytes minus AllocatedBytes; volumes' three-way mirror copies count against
+// AllocatedBytes.
 type ClusterPoolStatus struct {
 	Name           string `json:"name,omitempty"`
 	RawBytes       uint64 `json:"rawBytes,omitempty"`
 	AllocatedBytes uint64 `json:"allocatedBytes,omitempty"`
+
+	// Health is the pool's HealthStatus ("Healthy", "Warning", "Unhealthy") and
+	// OperationalStatus (e.g. "Degraded") as reported by Storage Spaces. A CSV
+	// cannot be provisioned while the pool is not Healthy.
+	Health      string `json:"health,omitempty"`
+	Operational string `json:"operational,omitempty"`
+	// UnhealthyDisks is the number of physical disks in the pool that are not
+	// Healthy (lost communication, transient error, failed). These degrade the
+	// pool and block resilient-volume creation until retired/replaced.
+	UnhealthyDisks int `json:"unhealthyDisks,omitempty"`
+	// TotalDisks is the pool's physical-disk count, for context.
+	TotalDisks int `json:"totalDisks,omitempty"`
 }
 
 // ClusterNodeStatus is a cluster node and its observed state — Up, Paused (the
@@ -719,6 +732,7 @@ func (s JobState) Terminal() bool {
 const (
 	JobVMStart        = "VMStart"            // params: vm
 	JobVMStop         = "VMStop"             // params: vm
+	JobVMRestart      = "VMRestart"          // params: vm — one-shot guest restart
 	JobVMCheckpoint   = "VMCheckpoint"       // params: vm, name
 	JobVMApplyCheck   = "VMApplyCheckpoint"  // params: vm, name
 	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name
@@ -739,6 +753,8 @@ const (
 	JobRemoveSwitch = "RemoveSwitch" // params: switch — delete a virtual switch from the host
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
+	JobRepairPool   = "RepairPool"   // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy
+	JobRebuildPool  = "RebuildPool"  // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter
