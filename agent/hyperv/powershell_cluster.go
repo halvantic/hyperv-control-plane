@@ -29,6 +29,10 @@ type clusterPoolObs struct {
 	Name           string `json:"name"`
 	RawBytes       uint64 `json:"rawBytes"`
 	AllocatedBytes uint64 `json:"allocatedBytes"`
+	Health         string `json:"health"`
+	Operational    string `json:"operational"`
+	UnhealthyDisks int    `json:"unhealthyDisks"`
+	TotalDisks     int    `json:"totalDisks"`
 }
 
 type clusterNetworkObs struct {
@@ -55,7 +59,11 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-$pool = if ($sp) { [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize } } else { $null }
+$pool = if ($sp) {
+  $pd = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue)
+  $bad = @($pd | Where-Object { $_.HealthStatus -ne 'Healthy' }).Count
+  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count }
+} else { $null }
 $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
   $role = switch ([int]$_.Role) { 0 { 'None' } 1 { 'Cluster' } 3 { 'ClusterAndClient' } default { [string]$_.Role } }
@@ -90,7 +98,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	}
 	var pool *ClusterPool
 	if obs.Pool != nil {
-		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes}
+		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes,
+			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks, TotalDisks: obs.Pool.TotalDisks}
 	}
 	netw := make([]ClusterNetworkInfo, 0, len(obs.Networks))
 	for _, n := range obs.Networks {

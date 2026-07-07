@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 type storageObservation struct {
@@ -82,9 +83,17 @@ func (p *PowerShell) EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome,
 $ErrorActionPreference = 'Stop'
 $existing = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
 if ($existing) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
-$pool = (Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1).FriendlyName
-if (-not $pool) { throw 'no Storage Spaces Direct pool found' }
-New-Volume -StoragePoolFriendlyName $pool -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
+# A resilient volume cannot be created on a pool that is not Healthy; New-Volume
+# would otherwise fail with an opaque "Not Supported". Surface the real cause —
+# the pool health and how many disks are unhealthy — so the operator can retire
+# or replace them (or run the pool-repair job) before retrying.
+$bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
+if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
+  throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
+}
+New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
 
@@ -121,4 +130,36 @@ $vd | Remove-VirtualDisk -Confirm:$false
 		return fmt.Errorf("remove CSV %q: %w", name, err)
 	}
 	return nil
+}
+
+// RepairStoragePool returns a degraded S2D pool to Healthy by retiring and
+// removing the physical disks that are no longer Healthy (lost communication,
+// transient error, failed) — e.g. a departed node's disks orphaned after a
+// cluster teardown. It reports how many disks it removed. Idempotent: a no-op
+// (no error) when every disk is already Healthy.
+func (p *PowerShell) RepairStoragePool(ctx context.Context) (string, error) {
+	script := `
+$ErrorActionPreference = 'Stop'
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
+$bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
+if ($bad.Count -eq 0) { 'RESULT=NOOP pool ' + $sp.FriendlyName + ' is ' + $sp.HealthStatus; return }
+# Retire so Storage Spaces stops placing data on them, then remove them from the
+# pool; the pool rebalances/repairs onto the remaining healthy disks.
+$bad | Set-PhysicalDisk -Usage Retired -ErrorAction SilentlyContinue
+$removed = 0
+foreach ($d in $bad) {
+  try { Remove-PhysicalDisk -PhysicalDisks $d -StoragePoolFriendlyName $sp.FriendlyName -Confirm:$false -ErrorAction Stop; $removed++ } catch {}
+}
+'RESULT=REPAIRED removed ' + $removed + ' of ' + $bad.Count + ' unhealthy disk(s) from ' + $sp.FriendlyName
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("repair storage pool: %w", err)
+	}
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	return msg, nil
 }

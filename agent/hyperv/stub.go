@@ -384,6 +384,10 @@ func (s *Stub) RemoveCSV(_ context.Context, name string) error {
 	return nil
 }
 
+func (s *Stub) RepairStoragePool(_ context.Context) (string, error) {
+	return "NOOP pool is Healthy (stub)", nil
+}
+
 func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -242,6 +242,12 @@ type Interface interface {
 	// (no error) when no such volume exists.
 	RemoveCSV(ctx context.Context, name string) error
 
+	// RepairStoragePool retires and removes disks that are no longer Healthy from
+	// the S2D pool so it returns to Healthy (e.g. a departed node's orphaned disks
+	// after a teardown). Returns a short summary. Idempotent: a no-op when all
+	// disks are Healthy.
+	RepairStoragePool(ctx context.Context) (string, error)
+
 	// GetVMState observes the named VM: whether it exists and, if so, its power
 	// state and best-effort runtime metrics. Pure read.
 	GetVMState(ctx context.Context, name string) (VMState, error)
@@ -447,6 +453,10 @@ type ClusterPool struct {
 	Name           string
 	RawBytes       uint64
 	AllocatedBytes uint64
+	Health         string
+	Operational    string
+	UnhealthyDisks int
+	TotalDisks     int
 }
 
 // ClusterNetworkInfo is one cluster network: its name, subnet (CIDR), role
