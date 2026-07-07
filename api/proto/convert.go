@@ -701,14 +701,16 @@ func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
 	if p == nil {
 		return nil
 	}
-	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes}
+	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
+		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks), TotalDisks: int32(p.TotalDisks)}
 }
 
 func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
 	if p == nil {
 		return nil
 	}
-	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes()}
+	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes(),
+		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()), TotalDisks: int(p.GetTotalDisks())}
 }
 
 func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {
