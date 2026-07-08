@@ -103,6 +103,14 @@ type runner struct {
 	// state (e.g. a migrated VM's new owner) within a second or two. Buffered so a
 	// send never blocks the job goroutine; a pending nudge coalesces many jobs.
 	nudge chan struct{}
+
+	// lastStatus is the most recent host status built by a cycle. A lightweight
+	// keepalive goroutine re-sends it between cycles to refresh the centre's
+	// LastContact, so a long reconcile/cluster pass does not make the host look
+	// offline (the reconcile loop only reports at the end of each cycle). Guarded
+	// by statusMu.
+	statusMu   sync.Mutex
+	lastStatus *types.HostStatus
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -136,6 +144,12 @@ func (r *runner) run(ctx context.Context) error {
 	// One immediate cycle so state is fresh on startup, then on a ticker.
 	r.nudge = make(chan struct{}, 1)
 	r.cycle(ctx, client)
+
+	// Lightweight keepalive, decoupled from the reconcile loop: it re-sends the
+	// last built status on a short interval so a long reconcile/cluster pass never
+	// makes the host look offline (the centre marks a host stale after 90s without
+	// contact, and a cycle can exceed that on a busy cluster former).
+	go r.keepalive(ctx, client)
 
 	ticker := time.NewTicker(r.cfg.heartbeat)
 	defer ticker.Stop()
@@ -189,6 +203,37 @@ func (r *runner) tryRegister(ctx context.Context, client ballastpb.AgentServiceC
 	r.registered = true
 	r.log.Info("registered with centre",
 		"host", r.cfg.hostName, "uid", r.uid, "known", resp.GetKnown())
+}
+
+// keepalive refreshes the centre's LastContact between reconcile cycles by
+// re-sending the last built status on a short, fixed interval (well under the
+// centre's 90s staleness window). It is intentionally lightweight — a direct
+// ReportStatus with no journaling or reconcile — so a slow cycle (large CSV I/O,
+// cluster/storage queries) never makes the host appear offline. Best-effort: a
+// failure (centre unreachable) is ignored; the next full cycle handles autonomy.
+func (r *runner) keepalive(ctx context.Context, client ballastpb.AgentServiceClient) {
+	t := time.NewTicker(25 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			r.statusMu.Lock()
+			st := r.lastStatus
+			r.statusMu.Unlock()
+			if st == nil || r.uid == "" {
+				continue
+			}
+			if _, err := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
+				HostName: r.cfg.hostName,
+				Uid:      r.uid,
+				Status:   ballastpb.StatusToProto(*st),
+			}); err != nil {
+				r.log.Debug("keepalive report failed", "err", err)
+			}
+		}
+	}
 }
 
 // cycle is one heartbeat. It collects inventory once, then in order:
@@ -314,6 +359,12 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	} else {
 		st.NetworkProfile = np
 	}
+	// Cache for the keepalive goroutine before reporting, so it can refresh
+	// LastContact with current data between cycles.
+	r.statusMu.Lock()
+	cp := st
+	r.lastStatus = &cp
+	r.statusMu.Unlock()
 	r.reportStatus(ctx, client, st)
 
 	// Cluster reconcile, only when the centre gave us a current assignment. Every
