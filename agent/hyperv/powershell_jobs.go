@@ -445,14 +445,25 @@ foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
   }
 }
 # A broken machine secure channel keeps a NIC off DomainAuthenticated even with
-# working DNS. If the trust is down and a DC is reachable, repair it (the agent
-# runs as a domain admin). Harmless when the channel is already healthy.
-try {
-  if (-not (Test-ComputerSecureChannel -ErrorAction Stop)) {
-    if (Test-ComputerSecureChannel -Repair -ErrorAction SilentlyContinue) { $lines += 'secure channel repaired' }
-    else { $lines += 'secure channel down (repair failed - check DNS/DC reachability)' }
+# working DNS. Only attempt a repair once the domain actually resolves (a DC is
+# reachable) — otherwise it fails "server is not operational". DNS must be fixed
+# first (Fix host DNS). The agent runs as a domain admin, so the repair itself has
+# rights. Harmless when the channel is already healthy.
+$domain = (Get-CimInstance Win32_ComputerSystem).Domain
+if ($domain -and $domain -ne 'WORKGROUP') {
+  $dcReachable = $false
+  try { if (Resolve-DnsName -Name $domain -Type SOA -QuickTimeout -ErrorAction Stop) { $dcReachable = $true } } catch {}
+  if (-not $dcReachable) {
+    $lines += ('cannot resolve ' + $domain + ' — run Fix host DNS first (skipped secure-channel repair)')
+  } else {
+    try {
+      if (-not (Test-ComputerSecureChannel -ErrorAction Stop)) {
+        if (Test-ComputerSecureChannel -Repair -ErrorAction SilentlyContinue) { $lines += 'secure channel repaired' }
+        else { $lines += 'secure channel down (repair failed)' }
+      }
+    } catch { $lines += ('secure channel: ' + $_.Exception.Message) }
   }
-} catch { $lines += ('secure channel check failed: ' + $_.Exception.Message) }
+}
 # Force NLA to re-evaluate every NIC's network location so a domain NIC with
 # working DNS is promoted to DomainAuthenticated. Best-effort; no link drop.
 try { Restart-Service NlaSvc -Force -ErrorAction Stop; Start-Sleep -Seconds 4; $lines += 'NLA restarted (domain re-detect)' } catch { $lines += ('NLA restart failed: ' + $_.Exception.Message) }
