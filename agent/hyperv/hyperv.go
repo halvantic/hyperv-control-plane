@@ -199,6 +199,12 @@ type Interface interface {
 	// host's connection profiles (Public/Private/DomainAuthenticated). A pure read.
 	GetNetworkProfile(ctx context.Context) (string, error)
 
+	// PruneManagementVNICs removes stray management-OS vNICs on the given managed
+	// switches that are not in keep and carry no manual static IPv4 — auto/leftover
+	// vNICs from earlier switch iterations. Never removes a declared vNIC, one with
+	// a manual IP, or the last management connection on a switch.
+	PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error)
+
 	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
 	// member needs for node-to-node coordination — Failover Clusters and WMI
 	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and

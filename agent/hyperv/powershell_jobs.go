@@ -400,7 +400,12 @@ $servers = @(%[1]s.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_
 if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+  # Only set DNS on a NIC that carries a routable manual static IPv4 — the real
+  # management NIC — not APIPA/no-IP strays or SET team members. Otherwise DNS
+  # ends up stranded on a no-IP vNIC while the NIC with the IP has none.
+  $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
+  if (-not $hasIp) { continue }
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   if (($cur -join ',') -ne $want) {
     try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $servers -ErrorAction Stop; $changed = $true } catch {}
@@ -442,6 +447,26 @@ foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
     } catch {
       $lines += ($prof.InterfaceAlias + ': Public (could not change - ' + $_.Exception.Message + ')')
     }
+  }
+}
+# A broken machine secure channel keeps a NIC off DomainAuthenticated even with
+# working DNS. Only attempt a repair once the domain actually resolves (a DC is
+# reachable) — otherwise it fails "server is not operational". DNS must be fixed
+# first (Fix host DNS). The agent runs as a domain admin, so the repair itself has
+# rights. Harmless when the channel is already healthy.
+$domain = (Get-CimInstance Win32_ComputerSystem).Domain
+if ($domain -and $domain -ne 'WORKGROUP') {
+  $dcReachable = $false
+  try { if (Resolve-DnsName -Name $domain -Type SOA -QuickTimeout -ErrorAction Stop) { $dcReachable = $true } } catch {}
+  if (-not $dcReachable) {
+    $lines += ('cannot resolve ' + $domain + ' — run Fix host DNS first (skipped secure-channel repair)')
+  } else {
+    try {
+      if (-not (Test-ComputerSecureChannel -ErrorAction Stop)) {
+        if (Test-ComputerSecureChannel -Repair -ErrorAction SilentlyContinue) { $lines += 'secure channel repaired' }
+        else { $lines += 'secure channel down (repair failed)' }
+      }
+    } catch { $lines += ('secure channel: ' + $_.Exception.Message) }
   }
 }
 # Force NLA to re-evaluate every NIC's network location so a domain NIC with
@@ -504,7 +529,7 @@ $dc = $null
 if ($forced) { $dc = $forced }
 else {
   $cands = @()
-  foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+  foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
     $cands += @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   }
   $cands = @($cands | Where-Object { $_ } | Select-Object -Unique)
@@ -522,12 +547,12 @@ try {
   $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
 } catch {}
 $mgmtIdx = -1
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
   if ($ips) { $mgmtIdx = [int]$n.ifIndex; break }
 }
 $fixed = @()
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   $wantReg = ([int]$n.ifIndex -eq $mgmtIdx)
