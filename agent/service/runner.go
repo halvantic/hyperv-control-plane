@@ -39,6 +39,18 @@ func jobTimeoutFor(kind string) time.Duration {
 // generation rather than trusting an "unchanged" answer indefinitely.
 const fullResyncEvery = 20
 
+// resourceRefreshEvery throttles the expensive host-resource observation (switch
+// details, volumes, ISO scan, management-vNIC topology with cluster-IP
+// classification) to every N cycles instead of every cycle. These change rarely,
+// so re-scanning them each 15s cycle is wasted work that inflates cycle time; the
+// last result is reused in between. A job completion nudges an immediate cycle, so
+// operator-driven changes still surface promptly.
+const resourceRefreshEvery = 8
+
+// netProfileRefreshEvery likewise throttles the network-location query (weakest
+// connection-profile category), which changes only when domain reachability does.
+const netProfileRefreshEvery = 4
+
 // runnerConfig is the agent's runtime configuration, independent of how the
 // process was started (Windows service or console).
 type runnerConfig struct {
@@ -111,6 +123,14 @@ type runner struct {
 	// by statusMu.
 	statusMu   sync.Mutex
 	lastStatus *types.HostStatus
+
+	// lastResources / lastNetProfile cache the expensive observations that are
+	// refreshed only every few cycles (see resourceRefreshEvery / netProfileRefreshEvery)
+	// and reused in between, so a 15s cycle is not dominated by rescanning state
+	// that rarely changes.
+	lastResources  types.HostResources
+	lastNetProfile string
+	haveResources  bool
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -251,9 +271,18 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	if merr != nil {
 		r.log.Error("collect metrics failed", "err", merr)
 	}
-	resources, resErr := r.hv.CollectResources(ctx)
-	if resErr != nil {
-		r.log.Error("collect resources failed", "err", resErr)
+	// Resources (switch details, volumes, ISO scan, vNIC topology) change rarely
+	// and are the heaviest observation, so refresh them only every few cycles and
+	// reuse the last result in between. A job nudge forces a fresh cycle anyway.
+	resources := r.lastResources
+	if !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
+		if res, resErr := r.hv.CollectResources(ctx); resErr != nil {
+			r.log.Error("collect resources failed", "err", resErr)
+		} else {
+			resources = res
+			r.lastResources = res
+			r.haveResources = true
+		}
 	}
 	identity, iderr := r.hv.GetHostIdentity(ctx)
 	if iderr != nil {
@@ -354,11 +383,16 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
-	if np, nperr := r.hv.GetNetworkProfile(ctx); nperr != nil {
-		r.log.Warn("get network profile failed", "err", nperr)
-	} else {
-		st.NetworkProfile = np
+	// Network location changes only when domain reachability does — refresh it
+	// periodically and reuse the cached value otherwise.
+	if r.lastNetProfile == "" || r.cycles%netProfileRefreshEvery == 0 {
+		if np, nperr := r.hv.GetNetworkProfile(ctx); nperr != nil {
+			r.log.Warn("get network profile failed", "err", nperr)
+		} else {
+			r.lastNetProfile = np
+		}
 	}
+	st.NetworkProfile = r.lastNetProfile
 	// Cache for the keepalive goroutine before reporting, so it can refresh
 	// LastContact with current data between cycles.
 	r.statusMu.Lock()
