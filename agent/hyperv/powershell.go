@@ -332,7 +332,28 @@ $isos = @()
 foreach ($r in $roots) {
   if (Test-Path $r) { $isos += @((Get-ChildItem -Path $r -Filter *.iso -File -Recurse -Depth 1).FullName) }
 }
-[pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos) } | ConvertTo-Json -Depth 4 -Compress
+# Observed management-OS vNICs with their switch, VLAN, DNS, network profile and
+# IP addresses classified by kind (host static / cluster VIP / dhcp / apipa) —
+# drives the networking topology view.
+$clusterIps = @()
+try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
+$netCat = @{}
+Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { $netCat[[string]$_.InterfaceAlias] = [string]$_.NetworkCategory }
+$mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue | ForEach-Object {
+  $a = $_; $alias = 'vEthernet (' + [string]$a.Name + ')'
+  $vlan = 0
+  try { $vv = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $a.Name -ErrorAction SilentlyContinue; if ($vv -and $vv.OperationMode -eq 'Access') { $vlan = [int]$vv.AccessVlanId } } catch {}
+  $addrs = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne '127.0.0.1' } | ForEach-Object {
+    $k = 'host'
+    if ($clusterIps -contains $_.IPAddress) { $k = 'cluster' }
+    elseif ($_.IPAddress -like '169.254.*') { $k = 'apipa' }
+    elseif ([string]$_.PrefixOrigin -eq 'Dhcp') { $k = 'dhcp' }
+    [pscustomobject]@{ address = ([string]$_.IPAddress + '/' + [string]$_.PrefixLength); kind = $k }
+  })
+  $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs) }
+})
+[pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos); managementVNICs = @($mgmtVnics) } | ConvertTo-Json -Depth 5 -Compress
 `
 
 // CollectResources observes existing switches, storage volumes and ISO files.

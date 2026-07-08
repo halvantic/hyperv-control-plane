@@ -205,6 +205,17 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) 
 	}
 	s2dEnabled = state.S2DEnabled
 
+	// If the S2D state could not be determined this pass (the query was starved,
+	// typically under heavy CSV I/O), do NOT attempt to enable it. Running
+	// Enable-ClusterStorageSpacesDirect on an already-enabled cluster fails and is
+	// heavy — a false "disabled" reading must never trigger it. Defer to the next
+	// pass and skip the disk/CSV work that depends on S2D.
+	if !state.S2DKnown {
+		conds = append(conds, r.advisoryCondition("S2DEnabled", hyperv.OutcomeUnchanged,
+			fmt.Errorf("S2D state undetermined (host busy) — deferring storage reconcile")))
+		return s2dEnabled, conds, changed, nil
+	}
+
 	if !state.S2DEnabled {
 		out, err := r.hv.EnableS2D(ctx)
 		conds = append(conds, r.condition("S2DEnabled", out, err))

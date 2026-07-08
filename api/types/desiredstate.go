@@ -241,6 +241,29 @@ type HostResources struct {
 	// ISOs are paths of ISO files discovered in conventional locations
 	// (each volume's ISOs folder, C:\ISOs), offered as boot media.
 	ISOs []string `json:"isos,omitempty"`
+	// ManagementVNICs are the observed management-OS vNICs (vEthernet adapters):
+	// their switch, VLAN, DNS, network profile, and IP addresses with kind. Drives
+	// the networking topology view and lets the operator spot/remove strays.
+	ManagementVNICs []ManagementVNICInfo `json:"managementVNICs,omitempty"`
+}
+
+// ManagementVNICInfo is an observed management-OS vNIC.
+type ManagementVNICInfo struct {
+	Name       string        `json:"name"`
+	SwitchName string        `json:"switchName,omitempty"`
+	VlanID     int           `json:"vlanID,omitempty"`
+	DNSServers []string      `json:"dnsServers,omitempty"`
+	// Profile is the Windows network category on this vNIC (Public/Private/
+	// DomainAuthenticated).
+	Profile   string        `json:"profile,omitempty"`
+	Addresses []VNICAddress `json:"addresses,omitempty"`
+}
+
+// VNICAddress is one IPv4 address on a vNIC with its classification.
+type VNICAddress struct {
+	Address string `json:"address"` // CIDR
+	// Kind is host (manual static), cluster (a cluster VIP), dhcp, or apipa.
+	Kind string `json:"kind,omitempty"`
 }
 
 // VirtualSwitchInfo is the observed state of an existing virtual switch on a
@@ -756,7 +779,8 @@ const (
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 
-	JobRemoveSwitch = "RemoveSwitch" // params: switch — delete a virtual switch from the host
+	JobRemoveSwitch    = "RemoveSwitch"    // params: switch — delete a virtual switch from the host
+	JobRemoveMgmtVNIC  = "RemoveMgmtVNIC"  // params: vnic — remove a management-OS vNIC from the host
 	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
 	JobRepairPool   = "RepairPool"   // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy

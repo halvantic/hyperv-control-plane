@@ -8,17 +8,29 @@ import (
 
 type storageObservation struct {
 	S2DEnabled bool     `json:"s2dEnabled"`
+	S2DKnown   bool     `json:"s2dKnown"`
 	Volumes    []string `json:"volumes"`
 }
 
+// storageStateScript reports whether S2D is enabled AND whether that state could
+// be determined at all. Under heavy I/O (e.g. a large copy to a CSV) the
+// Get-ClusterStorageSpacesDirect query can be starved and return nothing; treating
+// that as "disabled" made the reconcile fire a spurious, heavy
+// Enable-ClusterStorageSpacesDirect on an already-enabled cluster. So: the query
+// is wrapped to distinguish failure (unknown) from a real 'Disabled', and the
+// presence of any S2D virtual disk is taken as a reliable positive signal that
+// S2D is on even when the state query itself does not answer.
 const storageStateScript = `
 $ErrorActionPreference = 'Stop'
 $enabled = $false
-$s2d = Get-ClusterStorageSpacesDirect -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 3>$null
-if ($s2d -and $s2d.State -eq 'Enabled') { $enabled = $true }
-$vols = @()
-if ($enabled) { $vols = @((Get-VirtualDisk -ErrorAction SilentlyContinue).FriendlyName) }
-[pscustomobject]@{ s2dEnabled = $enabled; volumes = @($vols) } | ConvertTo-Json -Compress
+$known = $false
+try {
+  $s2d = Get-ClusterStorageSpacesDirect -WarningAction SilentlyContinue -ErrorAction Stop 3>$null
+  if ($s2d) { $known = $true; if ($s2d.State -eq 'Enabled') { $enabled = $true } }
+} catch { $known = $false }
+$vols = @((Get-VirtualDisk -ErrorAction SilentlyContinue).FriendlyName)
+if ($vols.Count -gt 0) { $enabled = $true; $known = $true }
+[pscustomobject]@{ s2dEnabled = $enabled; s2dKnown = $known; volumes = @($vols) } | ConvertTo-Json -Compress
 `
 
 func (p *PowerShell) GetStorageState(ctx context.Context) (StorageState, error) {
@@ -30,7 +42,7 @@ func (p *PowerShell) GetStorageState(ctx context.Context) (StorageState, error) 
 	if err := decodeJSON(out, &obs); err != nil {
 		return StorageState{}, fmt.Errorf("get storage state: %w", err)
 	}
-	return StorageState{S2DEnabled: obs.S2DEnabled, Volumes: obs.Volumes}, nil
+	return StorageState{S2DEnabled: obs.S2DEnabled, S2DKnown: obs.S2DKnown, Volumes: obs.Volumes}, nil
 }
 
 func (p *PowerShell) EnableS2D(ctx context.Context) (Outcome, error) {

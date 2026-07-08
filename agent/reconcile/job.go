@@ -74,6 +74,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], onProgress)
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
+	case types.JobRemoveMgmtVNIC:
+		return done(r.hv.RemoveMgmtVNIC(ctx, p["vnic"]), "removed management vNIC "+p["vnic"])
 	case types.JobRemoveVM:
 		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
 	case types.JobRemoveCSV:

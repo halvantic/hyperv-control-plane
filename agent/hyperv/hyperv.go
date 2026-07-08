@@ -205,6 +205,10 @@ type Interface interface {
 	// a manual IP, or the last management connection on a switch.
 	PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error)
 
+	// RemoveMgmtVNIC removes a management-OS vNIC by name (imperative cleanup of a
+	// stray). Idempotent: a no-op when absent.
+	RemoveMgmtVNIC(ctx context.Context, name string) error
+
 	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
 	// member needs for node-to-node coordination — Failover Clusters and WMI
 	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and
@@ -427,6 +431,10 @@ type VMState struct {
 type StorageState struct {
 	// S2DEnabled is true when Storage Spaces Direct is on and the pool exists.
 	S2DEnabled bool
+	// S2DKnown is true when the S2D state could actually be determined. When false
+	// (e.g. the query was starved under heavy I/O), S2DEnabled is not trustworthy
+	// and callers must NOT act on a false reading — never enable on an unknown.
+	S2DKnown bool
 	// Volumes are the CSV / virtual-disk names that currently exist.
 	Volumes []string
 }

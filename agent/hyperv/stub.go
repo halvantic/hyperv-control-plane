@@ -341,7 +341,7 @@ func (s *Stub) FormCluster(_ context.Context, f ClusterFormation) error {
 func (s *Stub) GetStorageState(_ context.Context) (StorageState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return StorageState{S2DEnabled: s.S2DEnabled, Volumes: append([]string(nil), s.CSVs...)}, nil
+	return StorageState{S2DEnabled: s.S2DEnabled, S2DKnown: true, Volumes: append([]string(nil), s.CSVs...)}, nil
 }
 
 func (s *Stub) EnableS2D(_ context.Context) (Outcome, error) {
@@ -395,6 +395,8 @@ func (s *Stub) GetNetworkProfile(_ context.Context) (string, error) {
 func (s *Stub) PruneManagementVNICs(_ context.Context, _, _ []string) (Outcome, error) {
 	return OutcomeUnchanged, nil
 }
+
+func (s *Stub) RemoveMgmtVNIC(_ context.Context, _ string) error { return nil }
 
 func (s *Stub) RebuildStoragePool(_ context.Context) (string, error) {
 	return "REBUILT S2D Pool Healthy (stub)", nil

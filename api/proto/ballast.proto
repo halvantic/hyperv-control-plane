@@ -253,6 +253,21 @@ message HostResources {
   repeated StorageVolume volumes = 2;
   repeated string isos = 3;
   repeated VirtualSwitchInfo switch_details = 4;
+  repeated ManagementVNICInfo management_vnics = 5;
+}
+
+message ManagementVNICInfo {
+  string name = 1;
+  string switch_name = 2;
+  int32 vlan_id = 3;
+  repeated string dns_servers = 4;
+  string profile = 5;
+  repeated VNICAddress addresses = 6;
+}
+
+message VNICAddress {
+  string address = 1;
+  string kind = 2;
 }
 
 message VirtualSwitchInfo {

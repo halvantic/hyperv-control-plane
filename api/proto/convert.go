@@ -496,6 +496,13 @@ func resourcesToProto(r types.HostResources) *HostResources {
 			Name: s.Name, NetAdapters: s.NetAdapters, AllowManagementOs: s.AllowManagementOS, VlanId: int32(s.VLANID),
 		})
 	}
+	for _, v := range r.ManagementVNICs {
+		mv := &ManagementVNICInfo{Name: v.Name, SwitchName: v.SwitchName, VlanId: int32(v.VlanID), DnsServers: v.DNSServers, Profile: v.Profile}
+		for _, a := range v.Addresses {
+			mv.Addresses = append(mv.Addresses, &VNICAddress{Address: a.Address, Kind: a.Kind})
+		}
+		out.ManagementVnics = append(out.ManagementVnics, mv)
+	}
 	return out
 }
 
@@ -511,6 +518,13 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 		out.SwitchDetails = append(out.SwitchDetails, types.VirtualSwitchInfo{
 			Name: s.GetName(), NetAdapters: s.GetNetAdapters(), AllowManagementOS: s.GetAllowManagementOs(), VLANID: int(s.GetVlanId()),
 		})
+	}
+	for _, v := range r.GetManagementVnics() {
+		mv := types.ManagementVNICInfo{Name: v.GetName(), SwitchName: v.GetSwitchName(), VlanID: int(v.GetVlanId()), DNSServers: v.GetDnsServers(), Profile: v.GetProfile()}
+		for _, a := range v.GetAddresses() {
+			mv.Addresses = append(mv.Addresses, types.VNICAddress{Address: a.GetAddress(), Kind: a.GetKind()})
+		}
+		out.ManagementVNICs = append(out.ManagementVNICs, mv)
 	}
 	return out
 }

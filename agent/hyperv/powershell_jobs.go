@@ -111,6 +111,16 @@ func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) error {
 // delete does not leave an orphaned role behind; this makes the job work for a
 // clustered VM regardless of which member it ran on. The VHDX files are left on
 // disk. Idempotent: absent VM/role is a no-op.
+// RemoveMgmtVNIC removes a management-OS vNIC by name. Idempotent: a no-op when
+// no such vNIC exists. Used to clean up stray/leftover management vNICs.
+func (p *PowerShell) RemoveMgmtVNIC(ctx context.Context, name string) error {
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; if (Get-VMNetworkAdapter -ManagementOS -Name %[1]s -ErrorAction SilentlyContinue) { Remove-VMNetworkAdapter -ManagementOS -Name %[1]s }", psQuote(name))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove management vNIC %q: %w", name, err)
+	}
+	return nil
+}
+
 func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
 	q := psQuote(name)
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
