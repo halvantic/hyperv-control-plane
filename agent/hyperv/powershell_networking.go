@@ -340,6 +340,14 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	} else {
 		b.WriteString("Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses | Out-Null\n")
 	}
+	// Creating/rebinding a management vNIC makes NLA reclassify it, and at that
+	// instant the domain controller is not yet reachable on it, so Windows lands
+	// the adapter on Public/Private and never re-checks — breaking domain auth and
+	// cross-node WMI/RPC (Add-ClusterVirtualMachineRole etc.). Now that the vNIC
+	// has its address + DNS, restart NLA so it re-detects the DC and promotes the
+	// adapter to DomainAuthenticated. Best-effort; re-classification only, no link
+	// drop. Runs only when the IP/DNS is (re)applied, not every reconcile pass.
+	b.WriteString("try { Restart-Service NlaSvc -Force -ErrorAction Stop; Start-Sleep -Seconds 3 } catch {}\n")
 	return b.String()
 }
 

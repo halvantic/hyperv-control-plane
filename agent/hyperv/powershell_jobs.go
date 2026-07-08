@@ -423,7 +423,14 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join
 // NICs are left alone (that profile is assigned automatically when the DC is
 // reachable). Returns a per-NIC summary so the operator can confirm the result.
 func (p *PowerShell) RepairNetworkProfile(ctx context.Context) (string, error) {
-	const script = `$ErrorActionPreference='Stop'
+	// DomainAuthenticated cannot be set with Set-NetConnectionProfile (it only
+	// accepts Public/Private) — the NLA service assigns it automatically when it
+	// can reach a domain controller on the NIC. So this flips Public -> Private (so
+	// the restrictive Public firewall rules stop applying) and then restarts NLA to
+	// force domain re-detection: a NIC that can now reach the DC (correct DNS) is
+	// promoted Private -> DomainAuthenticated, which is what cross-node WMI/RPC
+	// (Add-ClusterVirtualMachineRole etc.) needs.
+	const script = `$ErrorActionPreference='Continue'
 $lines = @()
 $changed = 0
 foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
@@ -435,12 +442,14 @@ foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
     } catch {
       $lines += ($prof.InterfaceAlias + ': Public (could not change - ' + $_.Exception.Message + ')')
     }
-  } else {
-    $lines += ($prof.InterfaceAlias + ': ' + $prof.NetworkCategory)
   }
 }
-if (-not $lines) { 'no network connection profiles found' }
-else { ($lines -join '; ') + ' [' + $changed + ' set to Private]' }`
+# Force NLA to re-evaluate every NIC's network location so a domain NIC with
+# working DNS is promoted to DomainAuthenticated. Best-effort; no link drop.
+try { Restart-Service NlaSvc -Force -ErrorAction Stop; Start-Sleep -Seconds 4; $lines += 'NLA restarted (domain re-detect)' } catch { $lines += ('NLA restart failed: ' + $_.Exception.Message) }
+$after = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { $_.InterfaceAlias + '=' + $_.NetworkCategory }) -join ', '
+if (-not $after) { 'no network connection profiles found' }
+else { ($lines -join '; ') + ' [' + $changed + ' Public->Private] now: ' + $after }`
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return "", fmt.Errorf("repair network profile: %w", err)

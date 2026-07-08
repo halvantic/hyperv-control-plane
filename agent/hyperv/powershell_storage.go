@@ -94,6 +94,16 @@ if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
   throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
 }
 New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
+# Failover Clustering auto-mounts the new CSV at C:\ClusterStorage\VolumeN. Rename
+# the mount point to the volume's friendly name so it lands at a predictable path
+# (C:\ClusterStorage\<name>) — that is where the host's default VM/VHD path points.
+$vd = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
+$csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + %[1]s + '*') } | Select-Object -First 1
+if ($csv) {
+  $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
+  $want = 'C:\ClusterStorage\' + %[1]s
+  if ($cur -and $cur -ne $want -and -not (Test-Path $want)) { try { Rename-Item -Path $cur -NewName %[1]s -ErrorAction Stop } catch {} }
+}
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
 
@@ -176,31 +186,34 @@ if ($removed -eq 0 -and $errs.Count -gt 0) { throw ('could not remove any of ' +
 // after the current cluster. Destructive — all data on the pool is lost — and
 // gated behind an explicit operator action. Runs on a cluster member.
 func (p *PowerShell) RebuildStoragePool(ctx context.Context) (string, error) {
+	// This does NOT Disable/Enable S2D — that is a heavy cluster operation that
+	// hangs for many minutes on a degraded pool (exactly the case this fixes).
+	// Instead: destroy the pool's volumes (so nothing pins it), then retire and
+	// remove the unhealthy/orphaned disks (which succeeds once the pool holds no
+	// data), then rename the pool to match the current cluster. Fast and safe.
 	script := `
 $ErrorActionPreference = 'Continue'
 $log = @()
-Import-Module FailoverClusters -ErrorAction SilentlyContinue
-# 1. Remove every virtual disk (CSV/volume) so nothing pins the pool.
-foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
-  try { Remove-VirtualDisk -InputObject $vd -Confirm:$false -ErrorAction Stop; $log += ('vdisk-' + $vd.FriendlyName) } catch { $log += ('vdisk-err-' + $_.Exception.Message) }
-}
-# 2. Disable S2D — destroys the pool (and its orphaned/departed disk records).
-try { Disable-ClusterStorageSpacesDirect -Confirm:$false -ErrorAction Stop; $log += 'disabled-s2d' } catch { $log += ('disable-err-' + $_.Exception.Message) }
-# 3. Remove any storage pool that survives, and clear residual pool metadata off
-#    the disks so Enable can reclaim them.
-foreach ($sp in @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })) {
-  try { Set-StoragePool -InputObject $sp -IsReadOnly $false -ErrorAction SilentlyContinue; Remove-StoragePool -InputObject $sp -Confirm:$false -ErrorAction Stop; $log += ('pool-removed-' + $sp.FriendlyName) } catch { $log += ('pool-err-' + $_.Exception.Message) }
-}
-foreach ($d in @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { -not $_.CanPool -and -not (Get-VirtualDisk -PhysicalDisk $_ -ErrorAction SilentlyContinue) })) {
-  try { Reset-PhysicalDisk -UniqueId $d.UniqueId -ErrorAction Stop; $log += 'disk-reset' } catch {}
-}
-# 4. Re-enable S2D, creating a fresh pool named after the current cluster.
-$cn = (Get-Cluster -ErrorAction SilentlyContinue).Name
-$poolName = if ($cn) { 'S2D on ' + $cn } else { 'S2D Pool' }
-try { Enable-ClusterStorageSpacesDirect -PoolFriendlyName $poolName -Confirm:$false -ErrorAction Stop; $log += ('enabled-' + $poolName) } catch { $log += ('enable-err-' + $_.Exception.Message) }
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-if (-not $sp) { throw ('rebuild left no pool: ' + ($log -join ' | ')) }
-'RESULT=REBUILT ' + $sp.FriendlyName + ' ' + $sp.HealthStatus + ' :: ' + ($log -join ' | ')
+if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
+# 1. Destroy every virtual disk / CSV so nothing pins the pool's resiliency.
+foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
+  try { $vd | Remove-VirtualDisk -Confirm:$false -ErrorAction Stop; $log += ('vdisk-' + $vd.FriendlyName) } catch { $log += ('vdisk-err-' + $_.Exception.Message) }
+}
+# 2. Retire and remove every unhealthy disk. With no volumes left there is no data
+#    to preserve, so removing a departed node's orphaned disks now succeeds.
+try { Set-StoragePool -FriendlyName $sp.FriendlyName -RetireMissingPhysicalDisks Always -ErrorAction SilentlyContinue } catch {}
+$bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
+$bad | Set-PhysicalDisk -Usage Retired -ErrorAction SilentlyContinue
+$removed = 0
+foreach ($d in $bad) {
+  try { Remove-PhysicalDisk -PhysicalDisks $d -StoragePoolFriendlyName $sp.FriendlyName -Confirm:$false -ErrorAction Stop; $removed++ } catch { $log += ('rm-err-' + $_.Exception.Message) }
+}
+# 3. Rename the pool to match the current cluster (it was left over from another).
+$cn = (Get-Cluster -ErrorAction SilentlyContinue).Name
+if ($cn) { $want = 'S2D on ' + $cn; if ($sp.FriendlyName -ne $want) { try { Set-StoragePool -FriendlyName $sp.FriendlyName -NewFriendlyName $want -ErrorAction Stop; $log += ('renamed-' + $want) } catch { $log += ('rename-err-' + $_.Exception.Message) } } }
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+'RESULT=REBUILT ' + $sp.FriendlyName + ' ' + $sp.HealthStatus + ' removed=' + $removed + '/' + $bad.Count + ' :: ' + ($log -join ' | ')
 `
 	out, err := p.run(ctx, script)
 	if err != nil {
