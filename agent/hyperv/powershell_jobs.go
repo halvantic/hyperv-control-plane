@@ -400,7 +400,7 @@ $servers = @(%[1]s.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_
 if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   if (($cur -join ',') -ne $want) {
     try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $servers -ErrorAction Stop; $changed = $true } catch {}
@@ -444,6 +444,15 @@ foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
     }
   }
 }
+# A broken machine secure channel keeps a NIC off DomainAuthenticated even with
+# working DNS. If the trust is down and a DC is reachable, repair it (the agent
+# runs as a domain admin). Harmless when the channel is already healthy.
+try {
+  if (-not (Test-ComputerSecureChannel -ErrorAction Stop)) {
+    if (Test-ComputerSecureChannel -Repair -ErrorAction SilentlyContinue) { $lines += 'secure channel repaired' }
+    else { $lines += 'secure channel down (repair failed - check DNS/DC reachability)' }
+  }
+} catch { $lines += ('secure channel check failed: ' + $_.Exception.Message) }
 # Force NLA to re-evaluate every NIC's network location so a domain NIC with
 # working DNS is promoted to DomainAuthenticated. Best-effort; no link drop.
 try { Restart-Service NlaSvc -Force -ErrorAction Stop; Start-Sleep -Seconds 4; $lines += 'NLA restarted (domain re-detect)' } catch { $lines += ('NLA restart failed: ' + $_.Exception.Message) }
@@ -504,7 +513,7 @@ $dc = $null
 if ($forced) { $dc = $forced }
 else {
   $cands = @()
-  foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+  foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
     $cands += @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   }
   $cands = @($cands | Where-Object { $_ } | Select-Object -Unique)
@@ -522,12 +531,12 @@ try {
   $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
 } catch {}
 $mgmtIdx = -1
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
   if ($ips) { $mgmtIdx = [int]$n.ifIndex; break }
 }
 $fixed = @()
-foreach ($n in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   $wantReg = ([int]$n.ifIndex -eq $mgmtIdx)
