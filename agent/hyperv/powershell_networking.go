@@ -409,6 +409,44 @@ func (p *PowerShell) run2(ctx context.Context, script string) error {
 	return err
 }
 
+// PruneManagementVNICs removes stray management-OS vNICs on the given managed
+// switches: any vNIC not in keep that carries no manual static IPv4 (an auto or
+// leftover vNIC, often on APIPA). It never removes a declared (kept) vNIC, never
+// removes the last management vNIC on a switch (it only prunes where a kept vNIC
+// remains, so AllowManagementOS stays true and the switch keeps its management
+// connection), and leaves a vNIC still holding a manual static IP for the operator.
+func (p *PowerShell) PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error) {
+	if len(switches) == 0 {
+		return OutcomeUnchanged, nil
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$switches = %[1]s
+$keep = %[2]s
+$all = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue)
+$removed = @()
+foreach ($a in $all) {
+  $sw = [string]$a.SwitchName; $nm = [string]$a.Name
+  if ($switches -notcontains $sw) { continue }
+  if ($keep -contains $nm) { continue }
+  $hasKept = @($all | Where-Object { [string]$_.SwitchName -eq $sw -and $keep -contains [string]$_.Name }).Count -gt 0
+  if (-not $hasKept) { continue }
+  $alias = 'vEthernet (' + $nm + ')'
+  $manual = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
+  if ($manual) { continue }
+  try { Remove-VMNetworkAdapter -ManagementOS -Name $nm -ErrorAction Stop; $removed += ($nm + '@' + $sw) } catch {}
+}
+if ($removed.Count -gt 0) { 'RESULT=REMOVED ' + ($removed -join ',') } else { 'RESULT=NOOP' }`,
+		psStringList(switches), psStringList(keep))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("prune management vNICs: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=REMOVED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
 // GetNetworkProfile returns the weakest Windows network-location category across
 // the host's connection profiles: "Public" if any NIC is Public, else "Private"
 // if any is Private, else "DomainAuthenticated". Empty when none are reported.

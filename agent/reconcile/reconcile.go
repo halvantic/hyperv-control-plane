@@ -180,6 +180,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	}
 
 	for _, v := range net.ManagementVNICs {
+		// DNS belongs on the management vNIC — the NIC that carries the routable
+		// static IP. If the vNIC declares no DNS of its own, apply the host-level
+		// DNS servers so the reconcile SETS DNS on it instead of clearing it (which
+		// would strand DNS on stray no-IP vNICs). Copy the config so the shared
+		// cached desired is not mutated.
+		if v.IPConfig != nil && len(v.IPConfig.DNSServers) == 0 && len(net.DNSServers) > 0 {
+			cfg := *v.IPConfig
+			cfg.DNSServers = append([]string(nil), net.DNSServers...)
+			v.IPConfig = &cfg
+		}
 		out, err := r.hv.EnsureMgmtVNIC(ctx, v)
 		conds = append(conds, r.condition("ManagementVNIC/"+v.Name, out, err))
 		if err != nil {
@@ -193,6 +203,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		if out != hyperv.OutcomeUnchanged {
 			changed = true
 			r.log.Info("management vNIC reconciled", "vnic", v.Name, "outcome", out)
+		}
+	}
+
+	// Prune stray management-OS vNICs: on a switch we manage, remove any management
+	// vNIC not in the declared set that carries no manual static IP — an auto or
+	// leftover vNIC (often APIPA) from an earlier switch/cluster iteration. Best-
+	// effort host hygiene; a vNIC still holding a static IP is left for the operator
+	// (it may carry something intended). Only runs where we manage a switch.
+	if len(net.Switches) > 0 {
+		switches := make([]string, 0, len(net.Switches))
+		for _, sw := range net.Switches {
+			switches = append(switches, sw.Name)
+		}
+		keep := make([]string, 0, len(net.ManagementVNICs))
+		for _, v := range net.ManagementVNICs {
+			keep = append(keep, v.Name)
+		}
+		out, err := r.hv.PruneManagementVNICs(ctx, switches, keep)
+		conds = append(conds, r.advisoryCondition("PruneVNICs", out, err))
+		if err != nil {
+			r.log.Warn("prune stray management vNICs failed (best-effort)", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("pruned stray management vNIC(s)")
 		}
 	}
 

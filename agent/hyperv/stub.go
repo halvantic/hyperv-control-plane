@@ -392,6 +392,10 @@ func (s *Stub) GetNetworkProfile(_ context.Context) (string, error) {
 	return "DomainAuthenticated", nil
 }
 
+func (s *Stub) PruneManagementVNICs(_ context.Context, _, _ []string) (Outcome, error) {
+	return OutcomeUnchanged, nil
+}
+
 func (s *Stub) RebuildStoragePool(_ context.Context) (string, error) {
 	return "REBUILT S2D Pool Healthy (stub)", nil
 }
