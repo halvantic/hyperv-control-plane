@@ -236,6 +236,10 @@ message HostStatus {
   string computer_name = 11;
   string domain = 12;
   string agent_version = 13;
+  // network_profile is the weakest connection-profile category on the host
+  // (Public/Private/DomainAuthenticated); a management NIC off the domain profile
+  // breaks cross-node WMI/clustering.
+  string network_profile = 14;
 }
 
 message HostMetrics {

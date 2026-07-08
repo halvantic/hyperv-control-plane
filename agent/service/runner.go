@@ -309,6 +309,11 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
+	if np, nperr := r.hv.GetNetworkProfile(ctx); nperr != nil {
+		r.log.Warn("get network profile failed", "err", nperr)
+	} else {
+		st.NetworkProfile = np
+	}
 	r.reportStatus(ctx, client, st)
 
 	// Cluster reconcile, only when the centre gave us a current assignment. Every
