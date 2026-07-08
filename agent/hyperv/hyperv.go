@@ -195,6 +195,10 @@ type Interface interface {
 	// and its tools if absent. The feature install does not require a reboot.
 	EnsureFailoverClusteringFeature(ctx context.Context) (Outcome, error)
 
+	// GetNetworkProfile returns the weakest network-location category across the
+	// host's connection profiles (Public/Private/DomainAuthenticated). A pure read.
+	GetNetworkProfile(ctx context.Context) (string, error)
+
 	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
 	// member needs for node-to-node coordination — Failover Clusters and WMI
 	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and

@@ -409,6 +409,23 @@ func (p *PowerShell) run2(ctx context.Context, script string) error {
 	return err
 }
 
+// GetNetworkProfile returns the weakest Windows network-location category across
+// the host's connection profiles: "Public" if any NIC is Public, else "Private"
+// if any is Private, else "DomainAuthenticated". Empty when none are reported.
+// The UI shows it as a coloured pill; Public/Private link to the repair action.
+func (p *PowerShell) GetNetworkProfile(ctx context.Context) (string, error) {
+	const script = `$cats = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NetworkCategory })
+if ($cats -contains 'Public') { 'Public' }
+elseif ($cats -contains 'Private') { 'Private' }
+elseif ($cats -contains 'DomainAuthenticated') { 'DomainAuthenticated' }
+else { '' }`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("get network profile: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func psBool(b bool) string {
 	if b {
 		return "$true"

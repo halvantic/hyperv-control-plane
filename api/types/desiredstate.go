@@ -200,6 +200,12 @@ type HostStatus struct {
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
 
+	// NetworkProfile is the weakest Windows network-location category across the
+	// host's connection profiles ("Public" / "Private" / "DomainAuthenticated").
+	// A management NIC off the domain profile breaks cross-node WMI/clustering, so
+	// the UI surfaces it as a coloured pill with a one-click repair.
+	NetworkProfile string `json:"networkProfile,omitempty"`
+
 	// LastContact is when the agent last reached the control plane.
 	LastContact time.Time `json:"lastContact"`
 
