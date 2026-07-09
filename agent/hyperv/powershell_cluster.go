@@ -278,6 +278,12 @@ func (p *PowerShell) FormCluster(ctx context.Context, f ClusterFormation) error 
 		fmt.Fprintf(&b, " -StaticAddress %s", psQuote(f.ManagementIP))
 	}
 	b.WriteString(" | Out-Null\n")
+	// Make the cluster tolerant of transient heartbeat loss under heavy I/O. On a
+	// converged/nested cluster an S2D repair can saturate the single network, drop
+	// heartbeats, partition nodes, and spiral into a repair storm (repair restarts
+	// each time a node flaps). Raising the thresholds lets one repair pass finish
+	// instead of flapping. Best-effort so it never fails formation.
+	b.WriteString("try { $cl = Get-Cluster; $cl.SameSubnetThreshold = 20; $cl.SameSubnetDelay = 2000; $cl.CrossSubnetThreshold = 20; $cl.CrossSubnetDelay = 4000 } catch {}\n")
 	if err := p.run2(ctx, b.String()); err != nil {
 		return fmt.Errorf("form cluster %q: %w", f.Name, err)
 	}

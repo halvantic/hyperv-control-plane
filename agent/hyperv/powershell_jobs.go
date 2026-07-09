@@ -172,6 +172,13 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 // EnsureS2DPoolDisks claims the now-poolable disks on its next pass.
 func (p *PowerShell) ResetPoolDisks(ctx context.Context) (string, error) {
 	script := `$ErrorActionPreference='Stop'
+# Safeguard: never wipe disks while the pool is unhealthy or a repair/regeneration
+# is running. Adding disk churn to a degraded pool is exactly what cascades into a
+# heartbeat/repair storm — make the operator resolve pool health first.
+$sp0 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if ($sp0 -and $sp0.HealthStatus -ne 'Healthy') { throw ('refusing to reset disks: the S2D pool is ' + $sp0.HealthStatus + '/' + ($sp0.OperationalStatus -join ',') + '. Resolve pool health first (a repair may be in progress).') }
+$rj = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object { $_.JobState -eq 'Running' -and $_.Name -match 'Repair|Regeneration|Rebalance' })
+if ($rj.Count -gt 0) { throw ('refusing to reset disks: a storage ' + ($rj[0].Name) + ' job is in progress — wait for it to finish before adding disks.') }
 # Physical disks that are members of the S2D pool — never touch these.
 $members = @()
 try { $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1; if ($sp) { $members = @(($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue).UniqueId) } } catch {}
