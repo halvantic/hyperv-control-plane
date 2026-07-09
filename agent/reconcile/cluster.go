@@ -131,13 +131,16 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	// 5. Kerberos live migration needs constrained delegation between the nodes'
 	// computer accounts. The former (a domain admin) configures it once when the
 	// cluster's live-migration auth is Kerberos — so provisioning a cluster with
-	// Kerberos migration sets this up automatically, no manual AD step. A failure
-	// is surfaced but does not fail the pass.
+	// Kerberos migration sets this up automatically, no manual AD step. It needs a
+	// reachable DC (AD Web Services / DNS); when AD is transiently unreachable this
+	// must NOT degrade the cluster — it is advisory (best-effort) and retries each
+	// pass, so a broken DNS/trust window surfaces as an advisory note, not a
+	// failure. Live migration simply won't work until the delegation lands.
 	if lm := a.Cluster.Spec.LiveMigration; a.IsFormer && lm != nil && lm.Enabled && strings.EqualFold(lm.AuthenticationType, "Kerberos") {
 		dOut, dErr := r.hv.EnsureMigrationDelegation(ctx, a.Cluster.Spec.Members)
-		conds = append(conds, r.condition("MigrationDelegation", dOut, dErr))
+		conds = append(conds, r.advisoryCondition("MigrationDelegation", dOut, dErr))
 		if dErr != nil {
-			r.log.Error("ensure migration delegation failed", "err", dErr)
+			r.log.Warn("ensure migration delegation failed (best-effort, not degrading)", "err", dErr)
 		} else {
 			changed = changed || dOut != hyperv.OutcomeUnchanged
 		}
