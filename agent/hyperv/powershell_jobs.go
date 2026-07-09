@@ -162,6 +162,41 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	return nil
 }
 
+// ResetPoolDisks wipes every LOCAL non-OS disk that is not already an S2D pool
+// member, so a node newly added to the cluster contributes its disks to the pool
+// (S2D only claims blank/CanPool disks). It enumerates via Get-Disk, which is
+// local to this host, so it can never touch another node's disks; it skips the
+// boot/system disk and any disk already in the pool, so running it on an existing
+// member is a safe no-op. Destructive for the node's own data disks — intended for
+// preparing a node for S2D. Returns a summary. After this the former's
+// EnsureS2DPoolDisks claims the now-poolable disks on its next pass.
+func (p *PowerShell) ResetPoolDisks(ctx context.Context) (string, error) {
+	script := `$ErrorActionPreference='Stop'
+$members = @()
+try { $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1; if ($sp) { $members = @(($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue).UniqueId) } } catch {}
+$wiped = 0; $pool = 0; $skipped = 0; $errs = @()
+foreach ($disk in @(Get-Disk -ErrorAction SilentlyContinue)) {
+  if ($disk.IsBoot -or $disk.IsSystem) { $skipped++; continue }
+  $pd = $disk | Get-PhysicalDisk -ErrorAction SilentlyContinue
+  if ($pd -and ($members -contains $pd.UniqueId)) { $skipped++; continue }
+  try {
+    Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue
+    Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue
+    if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue }
+    if ($pd) { Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue }
+    $wiped++
+    $after = if ($pd) { Get-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue } else { $null }
+    if ($after -and $after.CanPool) { $pool++ }
+  } catch { $errs += ('disk ' + $disk.Number + ': ' + $_.Exception.Message) }
+}
+'RESULT wiped=' + $wiped + ' nowPoolable=' + $pool + ' skipped=' + $skipped + $(if ($errs) { ' :: ' + ($errs -join '; ') } else { '' })`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("reset pool disks: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // FormatDiskDrive initialises a physical disk to GPT, creates a single
 // max-size partition, formats it NTFS and assigns a drive letter. Refuses the
 // OS/boot disk. Idempotent: if the disk already has a partition with the

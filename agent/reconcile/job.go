@@ -86,6 +86,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], p["driveLetter"]), "formatted disk "+p["deviceId"]+" as "+p["driveLetter"]+":")
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])
+	case types.JobResetPoolDisks:
+		return r.hv.ResetPoolDisks(ctx)
 	case types.JobRepairNetworkProfile:
 		return r.hv.RepairNetworkProfile(ctx)
 	case types.JobRebootHost:

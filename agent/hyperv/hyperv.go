@@ -209,6 +209,10 @@ type Interface interface {
 	// stray). Idempotent: a no-op when absent.
 	RemoveMgmtVNIC(ctx context.Context, name string) error
 
+	// ResetPoolDisks wipes local non-OS, non-pooled disks so S2D can claim them —
+	// used to add a node's storage to the pool. Safe on an existing member (no-op).
+	ResetPoolDisks(ctx context.Context) (string, error)
+
 	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
 	// member needs for node-to-node coordination — Failover Clusters and WMI
 	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and
