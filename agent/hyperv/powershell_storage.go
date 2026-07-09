@@ -93,30 +93,58 @@ func (p *PowerShell) EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome,
 	}
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$existing = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
-if ($existing) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+$name = %[1]s
+function Rename-CsvMount($n) {
+  # Failover Clustering auto-mounts a CSV at C:\ClusterStorage\VolumeN. Rename it to
+  # the friendly name so it lands at a predictable path (where the host's default
+  # VM/VHD path points). Best-effort.
+  $csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $n + '*') } | Select-Object -First 1
+  if ($csv) {
+    $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
+    $wantPath = 'C:\ClusterStorage\' + $n
+    if ($cur -and $cur -ne $wantPath -and -not (Test-Path $wantPath)) { try { Rename-Item -Path $cur -NewName $n -ErrorAction Stop } catch {} }
+  }
+}
+$existing = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
+if ($existing) {
+  Rename-CsvMount $name
+  # A volume can be present but still materialising on S2D (allocation/resync). Only
+  # call it ready when Healthy; otherwise report provisioning so the reconcile shows
+  # progress rather than a spurious failure.
+  if ($existing.HealthStatus -eq 'Healthy') { [pscustomobject]@{ status = 'ready' } | ConvertTo-Json -Compress; return }
+  [pscustomobject]@{ status = 'provisioning'; detail = ('volume materialising (' + [string]$existing.HealthStatus + '/' + (@($existing.OperationalStatus) -join ',') + ')') } | ConvertTo-Json -Compress; return
+}
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
 if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
 # A resilient volume cannot be created on a pool that is not Healthy; New-Volume
-# would otherwise fail with an opaque "Not Supported". Surface the real cause —
-# the pool health and how many disks are unhealthy — so the operator can retire
-# or replace them (or run the pool-repair job) before retrying.
+# would otherwise fail with an opaque "Not Supported". Surface the real cause.
 $bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
 if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
   throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
 }
-New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName %[1]s -FileSystem CSVFS_ReFS -Size %[2]d -ResiliencySettingName %[3]s | Out-Null
-# Failover Clustering auto-mounts the new CSV at C:\ClusterStorage\VolumeN. Rename
-# the mount point to the volume's friendly name so it lands at a predictable path
-# (C:\ClusterStorage\<name>) — that is where the host's default VM/VHD path points.
-$vd = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
-$csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + %[1]s + '*') } | Select-Object -First 1
-if ($csv) {
-  $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
-  $want = 'C:\ClusterStorage\' + %[1]s
-  if ($cur -and $cur -ne $want -and -not (Test-Path $want)) { try { Rename-Item -Path $cur -NewName %[1]s -ErrorAction Stop } catch {} }
+# Capacity pre-check: a mirror volume needs roughly 2-3x its logical size of free
+# pool space. Refuse early with a clear message rather than New-Volume's opaque
+# "Not Supported" when the pool plainly cannot hold it.
+$want = [int64]%[2]d
+$free = [int64]($sp.Size - $sp.AllocatedSize)
+if ($want -gt 0 -and $free -lt $want) {
+  throw ('insufficient pool capacity for CSV "' + $name + '": ' + [math]::Round($free/1GB,1) + ' GB free, volume needs ' + [math]::Round($want/1GB,1) + ' GB (more with mirror resiliency). Free space or add disks, then retry.')
 }
-[pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
+try {
+  New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName $name -FileSystem CSVFS_ReFS -Size $want -ResiliencySettingName %[3]s -ErrorAction Stop | Out-Null
+} catch {
+  # S2D volume creation is slow; a retry can race an in-flight creation and fail
+  # opaquely while the volume is actually appearing — treat that as provisioning,
+  # not a failure. Otherwise surface the real cause with the pool's current free
+  # space, which is usually the true constraint behind "Not Supported".
+  $now = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
+  if ($now) { [pscustomobject]@{ status = 'provisioning'; detail = 'creation in progress' } | ConvertTo-Json -Compress; return }
+  $sp2 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+  $free2 = if ($sp2) { [int64]($sp2.Size - $sp2.AllocatedSize) } else { [int64]0 }
+  throw ('create CSV "' + $name + '" failed: ' + $_.Exception.Message + ' (pool free ' + [math]::Round($free2/1GB,1) + ' GB; a mirror volume needs about 2-3x its size free)')
+}
+Rename-CsvMount $name
+[pscustomobject]@{ status = 'created' } | ConvertTo-Json -Compress
 `, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
 
 	out, err := p.run(ctx, script)
@@ -124,15 +152,21 @@ if ($csv) {
 		return OutcomeUnchanged, fmt.Errorf("ensure CSV %q: %w", spec.Name, err)
 	}
 	var res struct {
-		Changed bool `json:"changed"`
+		Status string `json:"status"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure CSV %q: %w", spec.Name, err)
 	}
-	if res.Changed {
+	switch res.Status {
+	case "created":
 		return OutcomeCreated, nil
+	case "provisioning":
+		// Still materialising on S2D — not settled, but not a failure. Reported as
+		// progress so it never surfaces as ApplyFailed during a normal creation.
+		return OutcomeUpdated, nil
+	default: // "ready"
+		return OutcomeUnchanged, nil
 	}
-	return OutcomeUnchanged, nil
 }
 
 // RemoveCSV deletes the Cluster Shared Volume backed by the virtual disk of the
