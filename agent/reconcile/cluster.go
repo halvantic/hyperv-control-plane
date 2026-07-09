@@ -78,6 +78,18 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, err))
 		return ClusterResult{Phase: types.PhaseDegraded, Changed: changed, Conditions: conds}, fmt.Errorf("get cluster state: %w", err)
 	}
+	// The node is clustered but the state could not be read this pass (cluster
+	// service momentarily unavailable). Do NOT proceed: forming would be a spurious
+	// New-Cluster on an already-joined node, and reporting would clobber the real
+	// status with empties. Defer to the next pass.
+	if state.Exists && !state.Known {
+		conds = append(conds, types.Condition{
+			Type: "ClusterFormed", Status: true, Reason: "StateUndetermined",
+			Message:            "cluster present but its state was unreadable this pass — deferring",
+			LastTransitionTime: r.now(),
+		})
+		return ClusterResult{Phase: types.PhaseProgressing, Honoured: true, Changed: changed, Conditions: conds}, nil
+	}
 	// 3. Not formed yet.
 	if !state.Exists {
 		// Only the designated former acts; others wait.

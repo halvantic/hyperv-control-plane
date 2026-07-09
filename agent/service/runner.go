@@ -161,15 +161,19 @@ func (r *runner) run(ctx context.Context) error {
 	defer conn.Close()
 	client := ballastpb.NewAgentServiceClient(conn)
 
-	// One immediate cycle so state is fresh on startup, then on a ticker.
 	r.nudge = make(chan struct{}, 1)
-	r.cycle(ctx, client)
 
-	// Lightweight keepalive, decoupled from the reconcile loop: it re-sends the
-	// last built status on a short interval so a long reconcile/cluster pass never
-	// makes the host look offline (the centre marks a host stale after 90s without
-	// contact, and a cycle can exceed that on a busy cluster former).
+	// Start the keepalive BEFORE the first reconcile cycle. The first cycle can be
+	// slow or even hang (e.g. reconciling a paused-critical VM or degraded storage),
+	// and it must not gate liveness — otherwise the host reads offline until the
+	// cycle returns. The keepalive re-sends the last built status once the first
+	// cycle produces one; until then it is a harmless no-op. This is decoupled from
+	// the reconcile loop, which the centre's 90s staleness window otherwise trips on
+	// a busy host.
 	go r.keepalive(ctx, client)
+
+	// One immediate cycle so state is fresh on startup, then on a ticker.
+	r.cycle(ctx, client)
 
 	ticker := time.NewTicker(r.cfg.heartbeat)
 	defer ticker.Stop()

@@ -15,6 +15,7 @@ type clusterOwnedObs struct {
 
 type clusterObservation struct {
 	Exists     bool                `json:"exists"`
+	Known      bool                `json:"known"`
 	Name       string              `json:"name"`
 	Members    []string            `json:"members"`
 	Nodes      []clusterOwnedObs   `json:"nodes"`
@@ -48,7 +49,16 @@ type clusterNetworkObs struct {
 const clusterStateScript = `
 $ErrorActionPreference = 'Stop'
 $c = Get-Cluster -ErrorAction SilentlyContinue
-if (-not $c) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress; return }
+if (-not $c) {
+  # Get-Cluster returned nothing — but is the node truly un-clustered, or was the
+  # cluster service just momentarily unavailable (starting, mid-operation)? A joined
+  # node has the cluster database hive at HKLM:\Cluster. If it exists we ARE
+  # clustered and must NOT report "no cluster", which would trigger a spurious
+  # New-Cluster that fails ("already joined to a cluster"). Report exists+unknown so
+  # the reconciler neither forms nor clobbers status this pass.
+  if (Test-Path 'HKLM:\Cluster') { [pscustomobject]@{ exists = $true; known = $false } | ConvertTo-Json -Compress; return }
+  [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return
+}
 $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; state = [string]$_.State } })
 $nodes = @($nodeObjs | ForEach-Object { $_.name })
@@ -68,7 +78,7 @@ $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
   $role = switch ([int]$_.Role) { 0 { 'None' } 1 { 'Cluster' } 3 { 'ClusterAndClient' } default { [string]$_.Role } }
   [pscustomobject]@{ name = [string]$_.Name; cidr = ([string]$_.Address + '/' + $bits); role = $role; state = [string]$_.State } })
-[pscustomobject]@{ exists = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets) } | ConvertTo-Json -Compress -Depth 4
+[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets) } | ConvertTo-Json -Compress -Depth 4
 `
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
@@ -105,7 +115,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, n := range obs.Networks {
 		netw = append(netw, ClusterNetworkInfo{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State})
 	}
-	return ClusterState{Exists: obs.Exists, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw}, nil
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw}, nil
 }
 
 const installClusteringScript = `

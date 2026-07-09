@@ -172,20 +172,35 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 // EnsureS2DPoolDisks claims the now-poolable disks on its next pass.
 func (p *PowerShell) ResetPoolDisks(ctx context.Context) (string, error) {
 	script := `$ErrorActionPreference='Stop'
+# Physical disks that are members of the S2D pool — never touch these.
 $members = @()
 try { $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1; if ($sp) { $members = @(($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue).UniqueId) } } catch {}
+# Enumerate ONLY disks physically connected to THIS node via its StorageNode. This
+# is critical: in an S2D cluster Get-Disk/Get-PhysicalDisk return cluster-wide
+# objects (including the Spaces virtual disks that back the CSVs), so iterating
+# those risks wiping shared storage or another node's disks. If the local node's
+# disks cannot be resolved, do NOTHING rather than fall back to a cluster-wide set.
+$local = @()
+try {
+  $sn = Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') } | Select-Object -First 1
+  if ($sn) { $local = @($sn | Get-PhysicalDisk -PhysicallyConnected -ErrorAction SilentlyContinue) }
+} catch {}
+if (-not $local -or $local.Count -eq 0) { 'RESULT wiped=0 nowPoolable=0 skipped=0 (could not resolve this node''s local disks — no action)'; return }
 $wiped = 0; $pool = 0; $skipped = 0; $errs = @()
-foreach ($disk in @(Get-Disk -ErrorAction SilentlyContinue)) {
-  if ($disk.IsBoot -or $disk.IsSystem) { $skipped++; continue }
-  $pd = $disk | Get-PhysicalDisk -ErrorAction SilentlyContinue
-  if ($pd -and ($members -contains $pd.UniqueId)) { $skipped++; continue }
+foreach ($pd in $local) {
+  if ($members -contains $pd.UniqueId) { $skipped++; continue }   # already in the pool
+  $disk = $pd | Get-Disk -ErrorAction SilentlyContinue
+  if (-not $disk) { $skipped++; continue }
+  # Never the OS/boot disk, and never a virtual/Spaces disk (a CSV) even if one
+  # somehow appears local.
+  if ($disk.IsBoot -or $disk.IsSystem -or $disk.BusType -eq 'Spaces' -or $disk.BusType -eq 'File Backed Virtual') { $skipped++; continue }
   try {
     Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue
     Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue
     if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue }
-    if ($pd) { Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue }
+    Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
     $wiped++
-    $after = if ($pd) { Get-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue } else { $null }
+    $after = Get-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
     if ($after -and $after.CanPool) { $pool++ }
   } catch { $errs += ('disk ' + $disk.Number + ': ' + $_.Exception.Message) }
 }

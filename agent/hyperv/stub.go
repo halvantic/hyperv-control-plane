@@ -305,7 +305,7 @@ func (s *Stub) EnableRDP(_ context.Context) error { return nil }
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ClusterState{Exists: s.ClusterExists, Name: s.ClusterName, Members: s.ClusterMembers}, nil
+	return ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName, Members: s.ClusterMembers}, nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {

@@ -455,6 +455,11 @@ type CSVProvision struct {
 type ClusterState struct {
 	// Exists is true when this node is part of a formed cluster.
 	Exists bool
+	// Known is false when the cluster state could not be determined this pass (e.g.
+	// the cluster service was momentarily unavailable but the node IS clustered).
+	// When false, Exists is reported true (to avoid a spurious New-Cluster) but the
+	// detail fields are empty, so the reconciler must defer rather than clobber.
+	Known bool
 	// Name is the cluster's name (empty when Exists is false).
 	Name string
 	// Members are the node names currently in the cluster.
