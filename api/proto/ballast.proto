@@ -309,6 +309,10 @@ message PhysicalAdapter {
   // management IP re-homed onto a converged switch's vNIC keeps the host's
   // default route. Empty when the adapter has no default route.
   string gateway = 9;
+  // prefix_length is the IPv4 prefix of the address in ipv4 (e.g. 24), so the
+  // UI can prefill an exact CIDR when re-homing the address onto a management
+  // vNIC. Zero when ipv4 is empty.
+  int32 prefix_length = 10;
 }
 
 message PhysicalDisk {

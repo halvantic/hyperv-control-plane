@@ -2313,7 +2313,11 @@ type PhysicalAdapter struct {
 	// gateway is the IPv4 default-route next hop on this adapter, captured so a
 	// management IP re-homed onto a converged switch's vNIC keeps the host's
 	// default route. Empty when the adapter has no default route.
-	Gateway       string `protobuf:"bytes,9,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	Gateway string `protobuf:"bytes,9,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	// prefix_length is the IPv4 prefix of the address in ipv4 (e.g. 24), so the
+	// UI can prefill an exact CIDR when re-homing the address onto a management
+	// vNIC. Zero when ipv4 is empty.
+	PrefixLength  int32 `protobuf:"varint,10,opt,name=prefix_length,json=prefixLength,proto3" json:"prefix_length,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2409,6 +2413,13 @@ func (x *PhysicalAdapter) GetGateway() string {
 		return x.Gateway
 	}
 	return ""
+}
+
+func (x *PhysicalAdapter) GetPrefixLength() int32 {
+	if x != nil {
+		return x.PrefixLength
+	}
+	return 0
 }
 
 type PhysicalDisk struct {
@@ -4587,7 +4598,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
 	"os_version\x18\x05 \x01(\tR\tosVersion\x12,\n" +
-	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\x86\x02\n" +
+	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\xab\x02\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
@@ -4598,7 +4609,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdns_servers\x18\a \x03(\tR\n" +
 	"dnsServers\x12#\n" +
 	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
-	"\agateway\x18\t \x01(\tR\agateway\"\xc5\x01\n" +
+	"\agateway\x18\t \x01(\tR\agateway\x12#\n" +
+	"\rprefix_length\x18\n" +
+	" \x01(\x05R\fprefixLength\"\xc5\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +

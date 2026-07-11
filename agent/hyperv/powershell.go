@@ -186,14 +186,14 @@ try {
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
   $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
-  $ip = ''
-  if ($static) { $ip = [string]$a.IPAddress }
+  $ip = ''; $plen = 0
+  if ($static) { $ip = [string]$a.IPAddress; $plen = [int]$a.PrefixLength }
   $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   # Default-route next hop on this NIC, so a re-homed management IP can keep the
   # host's default route on the converged switch's vNIC.
   $gw = [string]((Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}

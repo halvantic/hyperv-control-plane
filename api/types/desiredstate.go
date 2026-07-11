@@ -345,6 +345,10 @@ type PhysicalAdapter struct {
 	// captured so that when a management IP is re-homed onto a converged switch's
 	// management vNIC, the host's default route can be reproduced on the vNIC.
 	Gateway string `json:"gateway,omitempty"`
+	// PrefixLength is the IPv4 prefix of the address in IPv4 (e.g. 24), so the
+	// UI can prefill an exact CIDR when re-homing the address onto a management
+	// vNIC. Zero when IPv4 is empty.
+	PrefixLength int `json:"prefixLength,omitempty"`
 }
 
 type PhysicalDisk struct {
