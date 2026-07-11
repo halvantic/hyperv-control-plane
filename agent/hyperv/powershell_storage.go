@@ -57,12 +57,50 @@ func (p *PowerShell) EnableS2D(ctx context.Context) (Outcome, error) {
 // node added after S2D was enabled keeps its disks CanPool and contributes no
 // capacity until they are explicitly added. Idempotent: a no-op when nothing is
 // poolable.
+//
+// It also bootstraps a MISSING pool: Enable-ClusterStorageSpacesDirect on a
+// cluster with no eligible disks completes with only a warning, reports state
+// Enabled, and creates no pool — and nothing else ever creates it, so CSV
+// provisioning fails forever. When S2D is Enabled, no pool exists, and poolable
+// disks are now visible, cycle S2D (disable + enable). This is safe by
+// construction: no pool means no data to destroy, and re-enabling claims the
+// disks and creates the pool the sanctioned way.
 func (p *PowerShell) EnsureS2DPoolDisks(ctx context.Context) (Outcome, error) {
 	script := `
 $ErrorActionPreference = 'Stop'
 $pool = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-if (-not $pool) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 $claim = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue)
+if (-not $pool) {
+  # The caller only runs this when S2D is enabled, so no pool means Enable ran
+  # while no disks were eligible and created nothing. If poolable disks exist
+  # now, cycle S2D so enable re-claims them and creates the pool (safe: no pool
+  # means no data). A failure here must surface, not be swallowed — a silent
+  # skip leaves CSV provisioning failing forever with no visible cause.
+  if ($claim.Count -eq 0) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+  try {
+    Disable-ClusterStorageSpacesDirect -Confirm:$false -WarningAction SilentlyContinue 3>$null | Out-Null
+  } catch {
+    # Enabled-but-poolless S2D can refuse the cmdlet's own cleanup (HRESULT
+    # 0x80070001 setting FaultDomainAwarenessDefault on the subsystem) because
+    # a poolless enable never established that state. The only thing to undo
+    # here is the cluster's S2DEnabled flag; the property is read-only through
+    # the provider, so clear it in the live cluster hive (the documented
+    # workaround for a wedged disable) and let the fresh Enable below rebuild
+    # everything the proper way.
+    Set-ItemProperty -Path 'HKLM:\Cluster' -Name S2DEnabled -Value 0
+    Start-Sleep -Seconds 5
+  }
+  # On virtual hardware, enable with the cache disabled: S2D's cache tier needs
+  # real NVMe/SSD device hierarchy, and enabling it in a nested/VM lab fails
+  # partway (flag set, no pool created) — the exact wedge this path recovers.
+  $isVM = (Get-CimInstance Win32_ComputerSystem).Model -match 'Virtual|VMware'
+  if ($isVM) {
+    Enable-ClusterStorageSpacesDirect -CacheState Disabled -Confirm:$false -WarningAction SilentlyContinue 3>$null | Out-Null
+  } else {
+    Enable-ClusterStorageSpacesDirect -Confirm:$false -WarningAction SilentlyContinue 3>$null | Out-Null
+  }
+  [pscustomobject]@{ changed = $true; bootstrapped = $true } | ConvertTo-Json -Compress; return
+}
 if (-not $claim -or $claim.Count -eq 0) { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 Add-PhysicalDisk -StoragePoolFriendlyName $pool.FriendlyName -PhysicalDisks $claim
 [pscustomobject]@{ changed = $true; added = $claim.Count } | ConvertTo-Json -Compress
@@ -115,7 +153,10 @@ if ($existing) {
   [pscustomobject]@{ status = 'provisioning'; detail = ('volume materialising (' + [string]$existing.HealthStatus + '/' + (@($existing.OperationalStatus) -join ',') + ')') } | ConvertTo-Json -Compress; return
 }
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
+if (-not $sp) {
+  $n = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue).Count
+  throw ('no S2D pool exists yet (' + $n + ' poolable disk(s) visible). S2D was likely enabled while no disks were eligible; the pool is bootstrapped automatically once poolable disks appear - retries next pass.')
+}
 # A resilient volume cannot be created on a pool that is not Healthy; New-Volume
 # would otherwise fail with an opaque "Not Supported". Surface the real cause.
 $bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
