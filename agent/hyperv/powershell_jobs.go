@@ -454,10 +454,15 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 // address). The DC DNS is the configured DNS server that actually resolves the
 // AD domain's SOA. dns, when non-empty, overrides this (used to recover a host
 // whose NICs no longer point at the DC). Idempotent.
-// EnsureHostDNS sets every up physical NIC's IPv4 DNS to the given servers,
-// idempotently. Unlike RepairHostDNS it does not require domain membership, so
-// it can run before a join. Reports UPDATED/NOOP via a distinct token so the
-// outcome doesn't depend on substring-matching arbitrary cmdlet output.
+// EnsureHostDNS enforces the rule "DNS belongs where the default route lives":
+// every up adapter with a manual static IPv4 AND a default route (the
+// management path) gets the given DNS servers; a manual-IP adapter with NO
+// default route (an isolated cluster network — storage, live migration) gets
+// its DNS cleared and DNS registration disabled. DNS or a gateway on an
+// interface makes Failover Clustering classify that network as
+// ClusterAndClient, and New-Cluster then demands a cluster IP for it — DNS
+// pushed onto a storage vNIC broke cluster formation exactly that way.
+// Idempotent; unlike RepairHostDNS it does not require domain membership.
 func (p *PowerShell) EnsureHostDNS(ctx context.Context, dns []string) (Outcome, error) {
 	if len(dns) == 0 {
 		return OutcomeUnchanged, nil
@@ -468,14 +473,33 @@ if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-  # Only set DNS on a NIC that carries a routable manual static IPv4 — the real
-  # management NIC — not APIPA/no-IP strays or SET team members. Otherwise DNS
-  # ends up stranded on a no-IP vNIC while the NIC with the IP has none.
   $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
   if (-not $hasIp) { continue }
+  $routed = @(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -gt 0
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-  if (($cur -join ',') -ne $want) {
-    try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $servers -ErrorAction Stop; $changed = $true } catch {}
+  if ($routed) {
+    if (($cur -join ',') -ne $want) {
+      try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $servers -ErrorAction Stop; $changed = $true } catch {}
+    }
+  } else {
+    # Isolated cluster network: no DNS, no DNS registration, so clustering
+    # keeps it cluster-only and no stray A records are published for it.
+    if ($cur.Count -gt 0) {
+      try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ResetServerAddresses -ErrorAction Stop; $changed = $true } catch {}
+    }
+    $dc = Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue
+    if ($dc -and $dc.RegisterThisConnectionsAddress) {
+      try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction Stop; $changed = $true } catch {}
+    }
+    # And no IPv6 default route from router advertisements: on a flat layer-2
+    # every interface hears the RA, and any default route (v4 OR v6) makes
+    # clustering classify the network ClusterAndClient, which blocks New-Cluster
+    # ("no address was given to configure the Cluster Name on this network").
+    $v6def = @(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue)
+    if ($v6def.Count -gt 0) {
+      try { Set-NetIPInterface -InterfaceIndex $n.ifIndex -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction Stop } catch {}
+      try { $v6def | Remove-NetRoute -Confirm:$false -ErrorAction Stop; $changed = $true } catch {}
+    }
   }
 }
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join(dns, ",")))

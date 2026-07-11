@@ -207,10 +207,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	}
 
 	// Prune stray management-OS vNICs: on a switch we manage, remove any management
-	// vNIC not in the declared set that carries no manual static IP — an auto or
-	// leftover vNIC (often APIPA) from an earlier switch/cluster iteration. Best-
-	// effort host hygiene; a vNIC still holding a static IP is left for the operator
-	// (it may carry something intended). Only runs where we manage a switch.
+	// vNIC not in the declared set that carries no real IPv4 at all (APIPA only) —
+	// an auto or leftover vNIC from an earlier switch/cluster iteration. A vNIC
+	// holding ANY non-APIPA address survives, whatever its origin: manual IPs are
+	// the operator's, DHCP leases are live, and the failover cluster's IP resource
+	// lands on a vNIC with PrefixOrigin 'Other'. Only runs where we manage a switch.
 	if len(net.Switches) > 0 {
 		switches := make([]string, 0, len(net.Switches))
 		for _, sw := range net.Switches {

@@ -241,11 +241,12 @@ func TestIPDiffers(t *testing.T) {
 		obs  ipObservation
 		want bool
 	}{
-		{"exact match", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, false},
+		{"exact match", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}, Registers: true}, false},
+		{"registration drift", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}, Registers: false}, true},
 		{"dhcp / no static", ipObservation{Address: "", Gateway: "", DNSServers: nil}, true},
-		{"address drift", ipObservation{Address: "10.0.0.99/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, true},
-		{"gateway drift", ipObservation{Address: "10.0.0.21/24", Gateway: "", DNSServers: []string{"10.0.0.1", "10.0.0.2"}}, true},
-		{"dns order matters", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.2", "10.0.0.1"}}, true},
+		{"address drift", ipObservation{Address: "10.0.0.99/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.1", "10.0.0.2"}, Registers: true}, true},
+		{"gateway drift", ipObservation{Address: "10.0.0.21/24", Gateway: "", DNSServers: []string{"10.0.0.1", "10.0.0.2"}, Registers: true}, true},
+		{"dns order matters", ipObservation{Address: "10.0.0.21/24", Gateway: "10.0.0.1", DNSServers: []string{"10.0.0.2", "10.0.0.1"}, Registers: true}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -315,7 +316,7 @@ func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
 func TestEnsureMgmtVNICConvergedNoChange(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{
 		[]byte(`{"exists":true,"switchName":"ConvergedSwitch","vlanID":0}`),
-		[]byte(`{"address":"10.0.0.21/24","gateway":"","dnsServers":["10.0.0.1"]}`),
+		[]byte(`{"address":"10.0.0.21/24","gateway":"","dnsServers":["10.0.0.1"],"registers":true}`),
 	}}
 	spec := types.ManagementVNICSpec{
 		Name: "Management", SwitchName: "ConvergedSwitch", VLANID: 0,

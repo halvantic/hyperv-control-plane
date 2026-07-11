@@ -164,6 +164,10 @@ type ipObservation struct {
 	Address    string   `json:"address"` // CIDR, e.g. 10.0.0.21/24; empty if none/DHCP-less
 	Gateway    string   `json:"gateway"`
 	DNSServers []string `json:"dnsServers"`
+	// Registers is the interface's "register this connection's addresses in
+	// DNS" flag. Reconciled because it is part of what makes Failover
+	// Clustering classify the interface's network as client-facing.
+	Registers bool `json:"registers"`
 }
 
 type vnicPlan int
@@ -280,13 +284,15 @@ func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservatio
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $alias = 'vEthernet (%[1]s)'
-$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne 'WellKnown' } | Select-Object -First 1
+$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
 $gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
 $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+$reg = [bool](Get-DnsClient -InterfaceAlias $alias -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
 [pscustomobject]@{
   address    = if ($ip) { "$($ip.IPAddress)/$($ip.PrefixLength)" } else { '' }
   gateway    = if ($gw) { [string]$gw } else { '' }
   dnsServers = @($dns)
+  registers  = $reg
 } | ConvertTo-Json -Compress
 `, name) // name is a host-controlled adapter name; not attacker-supplied.
 
@@ -310,6 +316,13 @@ func ipDiffers(desired *types.IPConfig, obs ipObservation) bool {
 	if desired.Gateway != obs.Gateway {
 		return true
 	}
+	// DNS registration follows the DNS declaration: a management vNIC (has DNS)
+	// registers its address; an isolated cluster-network vNIC (no DNS) must not,
+	// or clustering classifies its network as client-facing and New-Cluster
+	// demands a cluster IP for it.
+	if (len(desired.DNSServers) > 0) != obs.Registers {
+		return true
+	}
 	return !sameOrderedStrings(desired.DNSServers, obs.DNSServers)
 }
 
@@ -325,7 +338,12 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	// AllowManagementOS auto-vNIC picked it up via DHCP). Free it there first, or
 	// New-NetIPAddress below fails "object already exists" (Windows error 5010).
 	fmt.Fprintf(&b, "Get-NetIPAddress -IPAddress %s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n", psQuote(ip))
-	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
+	// Clear only addresses we own: Manual statics and DHCP leases. Never touch
+	// PrefixOrigin 'Other' — that is how the failover cluster's IP address
+	// resource appears on the owning node's vNIC, and deleting it fails the
+	// resource and drops the node's interface out of the cluster network on
+	// every reconcile pass.
+	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -or $_.PrefixOrigin -eq 'Dhcp' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
 	b.WriteString("Remove-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue\n")
 	if cfg.Gateway != "" {
 		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d -DefaultGateway %s | Out-Null\n",
@@ -337,8 +355,22 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	if len(cfg.DNSServers) > 0 {
 		fmt.Fprintf(&b, "Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses %s | Out-Null\n",
 			psStringList(cfg.DNSServers))
+		b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $true -ErrorAction SilentlyContinue\n")
 	} else {
+		// No DNS declared: an isolated cluster network (storage, live migration).
+		// Also stop it registering in DNS — a published A record for a non-routed
+		// address breaks name resolution to the host, and DNS on the interface
+		// makes clustering treat the network as client-facing.
 		b.WriteString("Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses | Out-Null\n")
+		b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue\n")
+	}
+	if cfg.Gateway == "" {
+		// Isolated networks must not pick up an IPv6 default route from router
+		// advertisements either — on an untagged/flat layer-2 every vNIC hears
+		// the RA, and any default route makes clustering classify the network
+		// ClusterAndClient (New-Cluster then demands a cluster IP for it).
+		b.WriteString("Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv6 -RouterDiscovery Disabled -ErrorAction SilentlyContinue\n")
+		b.WriteString("Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue\n")
 	}
 	// Creating/rebinding a management vNIC makes NLA reclassify it, and at that
 	// instant the domain controller is not yet reachable on it, so Windows lands
@@ -409,12 +441,47 @@ func (p *PowerShell) run2(ctx context.Context, script string) error {
 	return err
 }
 
+// ConvergedNetworkReady reports whether this node's converged networking is in
+// place: every named SET switch exists AND a management vNIC carries a routable
+// manual IPv4 (the host's management IP re-homed onto the switch's vNIC, not still
+// on a physical NIC or on APIPA). The cluster former uses this to defer formation
+// until networking is stable — forming first and re-homing the IP afterwards is
+// what churns heartbeats/DNS on a live cluster.
+func (p *PowerShell) ConvergedNetworkReady(ctx context.Context, switchNames []string) (bool, error) {
+	if len(switchNames) == 0 {
+		return true, nil
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$switches = %[1]s
+$ready = $true
+foreach ($sw in $switches) { if (-not (Get-VMSwitch -Name $sw -ErrorAction SilentlyContinue)) { $ready = $false } }
+$hasMgmtIP = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and $_.InterfaceAlias -like 'vEthernet*' }).Count -gt 0
+if (-not $hasMgmtIP) { $ready = $false }
+[pscustomobject]@{ ready = [bool]$ready } | ConvertTo-Json -Compress`, psStringList(switchNames))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return false, fmt.Errorf("check converged network ready: %w", err)
+	}
+	var res struct {
+		Ready bool `json:"ready"`
+	}
+	if err := decodeJSON(out, &res); err != nil {
+		return false, fmt.Errorf("check converged network ready: %w", err)
+	}
+	return res.Ready, nil
+}
+
 // PruneManagementVNICs removes stray management-OS vNICs on the given managed
-// switches: any vNIC not in keep that carries no manual static IPv4 (an auto or
-// leftover vNIC, often on APIPA). It never removes a declared (kept) vNIC, never
-// removes the last management vNIC on a switch (it only prunes where a kept vNIC
-// remains, so AllowManagementOS stays true and the switch keeps its management
-// connection), and leaves a vNIC still holding a manual static IP for the operator.
+// switches: any vNIC not in keep that carries no real IPv4 at all (an auto or
+// leftover vNIC on APIPA/link-local only). It never removes a declared (kept)
+// vNIC, never removes the last management vNIC on a switch (it only prunes where
+// a kept vNIC remains, so AllowManagementOS stays true and the switch keeps its
+// management connection), and leaves a vNIC holding ANY non-APIPA IPv4 —
+// whatever its origin. That last rule is load-bearing: the failover cluster's
+// IP address resource is added to the owning node's vNIC with PrefixOrigin
+// 'Other' (not 'Manual'), and DHCP leases are 'Dhcp' — a Manual-only test once
+// deleted a vNIC carrying the live cluster IP, killing the cluster IP resource
+// and dropping the node out of the cluster network.
 func (p *PowerShell) PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error) {
 	if len(switches) == 0 {
 		return OutcomeUnchanged, nil
@@ -431,8 +498,8 @@ foreach ($a in $all) {
   $hasKept = @($all | Where-Object { [string]$_.SwitchName -eq $sw -and $keep -contains [string]$_.Name }).Count -gt 0
   if (-not $hasKept) { continue }
   $alias = 'vEthernet (' + $nm + ')'
-  $manual = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
-  if ($manual) { continue }
+  $hasIP = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' }).Count -gt 0
+  if ($hasIP) { continue }
   try { Remove-VMNetworkAdapter -ManagementOS -Name $nm -ErrorAction Stop; $removed += ($nm + '@' + $sw) } catch {}
 }
 if ($removed.Count -gt 0) { 'RESULT=REMOVED ' + ($removed -join ',') } else { 'RESULT=NOOP' }`,
