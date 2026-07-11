@@ -284,7 +284,8 @@ func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservatio
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $alias = 'vEthernet (%[1]s)'
-$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+$clusterIps = @(); try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
+$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
 $gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
 $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
 $reg = [bool](Get-DnsClient -InterfaceAlias $alias -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
@@ -338,12 +339,14 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	// AllowManagementOS auto-vNIC picked it up via DHCP). Free it there first, or
 	// New-NetIPAddress below fails "object already exists" (Windows error 5010).
 	fmt.Fprintf(&b, "Get-NetIPAddress -IPAddress %s -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n", psQuote(ip))
-	// Clear only addresses we own: Manual statics and DHCP leases. Never touch
-	// PrefixOrigin 'Other' — that is how the failover cluster's IP address
-	// resource appears on the owning node's vNIC, and deleting it fails the
-	// resource and drops the node's interface out of the cluster network on
-	// every reconcile pass.
-	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -or $_.PrefixOrigin -eq 'Dhcp' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
+	// Clear only addresses we own: Manual statics and DHCP leases — and never
+	// an address belonging to a cluster IP Address resource, whatever its
+	// PrefixOrigin. The cluster IP appears on the owning node's vNIC as 'Other'
+	// on some builds but Manual on others, so origin alone is not a safe guard:
+	// deleting it under a live resource fails its health check with 1168 and
+	// parks the cluster IP Failed once the restart budget runs out.
+	b.WriteString("$clusterIps = @(); try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}\n")
+	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { ($_.PrefixOrigin -eq 'Manual' -or $_.PrefixOrigin -eq 'Dhcp') -and ($clusterIps -notcontains $_.IPAddress) } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
 	b.WriteString("Remove-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue\n")
 	if cfg.Gateway != "" {
 		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d -DefaultGateway %s | Out-Null\n",
