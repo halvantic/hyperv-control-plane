@@ -170,22 +170,46 @@ func (p *PowerShell) EnsureClusterFirewall(ctx context.Context) (Outcome, error)
 // + cifs SPNs) between cluster nodes' computer accounts, which cluster-initiated
 // live migration needs when the host auth type is Kerberos. Idempotent: it reads
 // each computer's existing msDS-AllowedToDelegateTo and only adds what is
-// missing. Run on the former as a domain admin. Installs the AD module if absent.
+// missing. Run on the former as a domain admin.
+//
+// Uses System.DirectoryServices (LDAP port 389) rather than the ActiveDirectory
+// PowerShell module so it does not depend on AD Web Services (port 9389) being
+// reachable. ADWS is often absent or blocked on small lab DCs.
 func (p *PowerShell) EnsureMigrationDelegation(ctx context.Context, nodes []string) (Outcome, error) {
 	nodeExpr := "@(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Name })"
 	if len(nodes) > 0 {
 		nodeExpr = "@(" + psStringList(nodes) + ")"
 	}
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-  try { Install-WindowsFeature RSAT-AD-PowerShell -ErrorAction Stop | Out-Null }
-  catch { try { Add-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0' -ErrorAction Stop | Out-Null } catch {} }
-}
-Import-Module ActiveDirectory -ErrorAction Stop
 $dom = (Get-CimInstance Win32_ComputerSystem).Domain
-# Always include the local host so a standalone source<->destination pair gets
-# delegation both ways (the caller passes just the destination); for a cluster
-# the local former is already in the node list, so this is a no-op after dedupe.
+$domDn = 'DC=' + (($dom -split '\.') -join ',DC=')
+# Locate a DC to connect to directly via LDAP/389.
+# Strategy: try Netlogon DC locator first; if that fails (SRV records not
+# resolvable on a freshly configured converged host) probe each DNS server
+# configured on this host — in a domain environment the DNS servers are
+# typically the DCs themselves, so attempting LDAP against each one works.
+$dcAddr = $null
+try {
+  $ctx = [System.DirectoryServices.ActiveDirectory.DirectoryContext]::new(
+    [System.DirectoryServices.ActiveDirectory.DirectoryContextType]::Domain, $dom)
+  $dcAddr = ([System.DirectoryServices.ActiveDirectory.DomainController]::FindOne($ctx)).IPAddress
+} catch {}
+if (-not $dcAddr) {
+  $candidates = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.ServerAddresses } |
+    ForEach-Object { $_.ServerAddresses } |
+    Select-Object -Unique)
+  foreach ($ip in $candidates) {
+    try {
+      $t = [System.DirectoryServices.DirectorySearcher]::new([ADSI]"LDAP://$ip/$domDn")
+      $t.Filter = "(objectClass=domain)"; $t.SizeLimit = 1
+      $null = $t.FindOne()
+      $dcAddr = $ip; break
+    } catch {}
+  }
+}
+if (-not $dcAddr) { throw "cannot locate a domain controller for $dom — check DNS on this host points at a DC" }
+# Always include the local host so delegation is configured both ways.
 $nodes = (@($env:COMPUTERNAME) + (%[1]s)) | Where-Object { $_ } | Select-Object -Unique
 $changed = @()
 foreach ($src in $nodes) {
@@ -196,11 +220,18 @@ foreach ($src in $nodes) {
     $want += 'cifs/' + $dst + '.' + $dom
     $want += 'cifs/' + $dst
   }
-  $comp = Get-ADComputer -Identity $src -Properties 'msDS-AllowedToDelegateTo'
-  $cur = @($comp.'msDS-AllowedToDelegateTo' | ForEach-Object { [string]$_ })
+  $srch = [System.DirectoryServices.DirectorySearcher]::new([ADSI]"LDAP://$dcAddr/$domDn")
+  $srch.Filter = "(&(objectClass=computer)(sAMAccountName=${src}$))"
+  $srch.PropertiesToLoad.Add('msDS-AllowedToDelegateTo') | Out-Null
+  $result = $srch.FindOne()
+  if (-not $result) { Write-Warning "AD: computer $src not found; skipping"; continue }
+  $cur = @($result.Properties['msDS-AllowedToDelegateTo'] | ForEach-Object { [string]$_ })
   [string[]]$missing = @($want | Where-Object { $cur -notcontains $_ } | ForEach-Object { [string]$_ })
   if ($missing.Count -gt 0) {
-    Set-ADComputer -Identity $src -Add @{ 'msDS-AllowedToDelegateTo' = $missing }
+    $de = $result.GetDirectoryEntry()
+    foreach ($spn in $missing) { $de.Properties['msDS-AllowedToDelegateTo'].Add($spn) | Out-Null }
+    $de.CommitChanges()
+    $de.Dispose()
     $changed += $src
   }
 }
