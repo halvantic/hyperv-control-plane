@@ -400,6 +400,8 @@ func (s *Stub) RemoveMgmtVNIC(_ context.Context, _ string) error { return nil }
 
 func (s *Stub) ResetPoolDisks(_ context.Context) (string, error) { return "RESULT wiped=0 nowPoolable=0 skipped=0", nil }
 
+func (s *Stub) ConvergedNetworkReady(_ context.Context, _ []string) (bool, error) { return true, nil }
+
 func (s *Stub) RebuildStoragePool(_ context.Context) (string, error) {
 	return "REBUILT S2D Pool Healthy (stub)", nil
 }

@@ -213,6 +213,11 @@ type Interface interface {
 	// used to add a node's storage to the pool. Safe on an existing member (no-op).
 	ResetPoolDisks(ctx context.Context) (string, error)
 
+	// ConvergedNetworkReady reports whether the named SET switches exist and the
+	// host's management IP is on a switch vNIC — the former gates cluster formation
+	// on this so it never forms over pre-switch networking. True when no switches.
+	ConvergedNetworkReady(ctx context.Context, switchNames []string) (bool, error)
+
 	// EnsureClusterFirewall enables the inbound firewall rule groups a cluster
 	// member needs for node-to-node coordination — Failover Clusters and WMI
 	// (the latter carries the RPC/WMI calls Add-ClusterVirtualMachineRole and

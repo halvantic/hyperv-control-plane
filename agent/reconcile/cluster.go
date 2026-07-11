@@ -101,6 +101,32 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 			})
 			return ClusterResult{Phase: types.PhaseProgressing, Changed: changed, Conditions: conds}, nil
 		}
+		// Gate: if this cluster runs a converged SET switch, do not form until the
+		// former's networking is in place (switch up + management IP re-homed onto
+		// its vNIC). Forming over the pre-switch network and moving the IP afterwards
+		// is what churns heartbeats/DNS on a live cluster. Only gates when a switch
+		// is defined; a switchless cluster forms immediately.
+		var swNames []string
+		for _, sw := range a.Cluster.Spec.Switches {
+			if sw.Name != "" {
+				swNames = append(swNames, sw.Name)
+			}
+		}
+		if len(swNames) > 0 {
+			ready, rerr := r.hv.ConvergedNetworkReady(ctx, swNames)
+			if rerr != nil {
+				r.log.Warn("converged-network readiness check failed; deferring formation", "err", rerr)
+				ready = false
+			}
+			if !ready {
+				conds = append(conds, types.Condition{
+					Type: "ClusterFormed", Status: false, Reason: "AwaitingNetworking",
+					Message:            "waiting for the converged switch and management vNIC before forming the cluster",
+					LastTransitionTime: r.now(),
+				})
+				return ClusterResult{Phase: types.PhaseProgressing, Changed: changed, Conditions: conds}, nil
+			}
+		}
 		formation := hyperv.ClusterFormation{
 			Name:         a.Cluster.Meta.Name,
 			Members:      a.Cluster.Spec.Members,
