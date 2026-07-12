@@ -38,6 +38,16 @@ $enabled = %[1]s
 $auth = %[2]s
 $port = %[3]d
 $storage = %[4]s
+# On a cluster member the replication-server configuration hangs off the
+# Hyper-V Replica Broker; before the broker role is online even the query
+# fails with a misleading ObjectNotFound. Say what is actually being waited
+# on — the reconcile retries every pass until the former's broker lands.
+$clussvc = Get-Service ClusSvc -ErrorAction SilentlyContinue
+if ($enabled -and $clussvc -and $clussvc.Status -eq 'Running') {
+  $broker = Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' } | Select-Object -First 1
+  if (-not $broker) { throw 'a cluster node accepts replica traffic only via the Hyper-V Replica Broker - waiting for the cluster''s broker to be provisioned' }
+  if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
+}
 $rs = Get-VMReplicationServer -ErrorAction Stop
 $changed = $false
 if (-not $enabled) {
