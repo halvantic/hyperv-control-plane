@@ -394,6 +394,20 @@ type Interface interface {
 	// matching filter, e.g. a VM name) — the per-operation detail the Windows
 	// event log does not fully capture. Imperative Job.
 	ClusterLog(ctx context.Context, span, filter string) (string, error)
+
+	// EnsureReplicaServer configures this host to accept Hyper-V Replica
+	// traffic: Set-VMReplicationServer plus the replica firewall listener rule.
+	// Idempotent.
+	EnsureReplicaServer(ctx context.Context, spec types.ReplicaServerSpec) (Outcome, error)
+
+	// EnsureReplicaBroker provisions the Hyper-V Replica Broker cluster role
+	// (client access point + broker resource). Run on the former. Idempotent.
+	EnsureReplicaBroker(ctx context.Context, spec types.ReplicaBrokerSpec) (Outcome, error)
+
+	// EnsureVMReplication drives one VM's Hyper-V Replica relationship to the
+	// declared spec: enable + initial replication when absent, adjust when it
+	// drifts, remove when Enabled is false. Idempotent.
+	EnsureVMReplication(ctx context.Context, vmName string, spec types.VMReplicationSpec) (Outcome, error)
 }
 
 // VMEnsureResult is what EnsureVM did.
@@ -434,6 +448,9 @@ type VMState struct {
 	// Observed is the VM's actual configuration (CPU/memory/disks/adapters), for
 	// showing and adopting VMs Ballast did not create.
 	Observed *types.VMObserved
+	// Replication is the VM's observed Hyper-V Replica state; nil when the VM
+	// has no replication relationship.
+	Replication *types.VMReplicationStatus
 }
 
 // StorageState is the observed S2D/CSV state on the cluster.

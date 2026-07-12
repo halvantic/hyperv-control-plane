@@ -146,6 +146,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Hyper-V Replica server: accept inbound replica traffic when declared
+	// (fanned from a cluster's ReplicaBroker, or set directly on a standalone
+	// replica target host).
+	if rs := desired.Spec.ReplicaServer; rs != nil {
+		out, err := r.hv.EnsureReplicaServer(ctx, *rs)
+		conds = append(conds, r.condition("ReplicaServer", out, err))
+		if err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("configure replica server: %w", err)
+			}
+			r.log.Error("configure replica server failed", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("replica server reconciled", "outcome", out)
+		}
+	}
+
 	// Host DNS servers (typically the DCs), fanned from the centre's Domain & DNS
 	// setting. Best-effort and applied before a join so the host can resolve the
 	// domain's SRV records; a failure surfaces as a condition without degrading.

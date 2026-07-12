@@ -43,6 +43,9 @@ type VMResult struct {
 	// Observed is the VM's actual config (for showing/adopting unmanaged VMs).
 	Observed *types.VMObserved
 
+	// Replication is the VM's observed Hyper-V Replica state, when present.
+	Replication *types.VMReplicationStatus
+
 	// AssignedMemoryBytes / CPUUsagePercent / UptimeSeconds are best-effort
 	// observed runtime metrics.
 	AssignedMemoryBytes uint64
@@ -88,6 +91,23 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 			r.log.Info("vm registered as cluster role", "vm", vm.Meta.Name)
 		}
 	}
+	// Hyper-V Replica: drive the VM's replication relationship to spec. A
+	// failure surfaces on its condition and holds the VM at Progressing (the
+	// target side may still be provisioning its replica server/broker — this
+	// retries every pass) rather than degrading a VM that is otherwise healthy.
+	replPending := false
+	if vm.Spec.Replication != nil {
+		rout, rerr := r.hv.EnsureVMReplication(ctx, vm.Meta.Name, *vm.Spec.Replication)
+		res.Conditions = append(res.Conditions, r.condition("VMReplication/"+vm.Meta.Name, rout, rerr))
+		if rerr != nil {
+			r.log.Warn("ensure vm replication failed (retries next pass)", "vm", vm.Meta.Name, "err", rerr)
+			replPending = true
+		} else if rout != hyperv.OutcomeUnchanged {
+			res.Changed = true
+			r.log.Info("vm replication reconciled", "vm", vm.Meta.Name, "outcome", rout)
+		}
+	}
+
 	// A processor-count or static-memory change cannot apply while the VM runs;
 	// surface it and hold ObservedGeneration back (Progressing, not Degraded)
 	// until the VM is stopped, rather than failing every cycle.
@@ -137,9 +157,10 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		res.AssignedMemoryBytes = state.AssignedMemoryBytes
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds
+		res.Replication = state.Replication
 	}
 
-	if pending {
+	if pending || replPending {
 		// Configuration is not fully honoured until the deferred change applies.
 		res.Phase = types.PhaseProgressing
 		res.Honoured = false

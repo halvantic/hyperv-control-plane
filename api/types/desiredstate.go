@@ -131,6 +131,33 @@ type HostSpec struct {
 	// (enable, authentication type, concurrency, and which networks to use).
 	// Cluster-wide intent is fanned here from ClusterSpec.LiveMigration.
 	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
+
+	// ReplicaServer, when set, configures this host to ACCEPT Hyper-V Replica
+	// traffic (Set-VMReplicationServer + the replica firewall rule) so VMs from
+	// elsewhere can replicate to it. For a cluster member this is fanned from
+	// ClusterSpec.ReplicaBroker and applies per node; replication then targets
+	// the broker's client access point, not an individual node.
+	ReplicaServer *ReplicaServerSpec `json:"replicaServer,omitempty"`
+}
+
+// ReplicaServerSpec makes a host a Hyper-V Replica target.
+type ReplicaServerSpec struct {
+	// Enabled turns the replica server on. False (with the spec present)
+	// declares it off.
+	Enabled bool `json:"enabled"`
+
+	// AuthenticationType is Kerberos (integrated, both ends domain-joined) or
+	// Certificate. Empty defaults to Kerberos.
+	AuthenticationType string `json:"authenticationType,omitempty"`
+
+	// Port is the listener port. Zero defaults to 80 for Kerberos (443 for
+	// certificate auth).
+	Port int `json:"port,omitempty"`
+
+	// DefaultStorageLocation is where inbound replica VHDs land. On a cluster
+	// member this should be a CSV path so the replica VM can fail over. Empty
+	// defaults to C:\Hyper-V\Replica (host) — set explicitly for clusters.
+	DefaultStorageLocation string `json:"defaultStorageLocation,omitempty"`
 }
 
 // LiveMigrationSpec configures host live migration. On a cluster all members get
@@ -558,6 +585,14 @@ type ClusterSpec struct {
 	// LiveMigration is cluster-wide live-migration configuration fanned into
 	// every member's HostSpec so a VM can migrate between any of them.
 	LiveMigration *LiveMigrationSpec `json:"liveMigration,omitempty"`
+
+	// ReplicaBroker, when set, provisions the Hyper-V Replica Broker role on
+	// this cluster — required for a cluster to send or receive Hyper-V Replica
+	// traffic (replication targets the broker's client access point, and the
+	// broker follows VM ownership as roles move between nodes). The centre also
+	// fans a ReplicaServerSpec into every member host so each node accepts
+	// replica traffic.
+	ReplicaBroker *ReplicaBrokerSpec `json:"replicaBroker,omitempty"`
 }
 
 // ClusterSwitchSpec is a virtual switch defined once at the cluster and created
@@ -611,6 +646,25 @@ type ClusterMgmtVNIC struct {
 	// entries leave the gateway/DNS unset (on-subnet-only).
 	HostGateways map[string]string   `json:"hostGateways,omitempty"`
 	HostDNS      map[string][]string `json:"hostDNS,omitempty"`
+}
+
+// ReplicaBrokerSpec provisions the Hyper-V Replica Broker cluster role: a
+// client access point (name + optional static IP) plus the broker resource.
+// Replication to or from the cluster addresses the broker's name, never an
+// individual node.
+type ReplicaBrokerSpec struct {
+	// Name is the broker's client access point (computer object) name, e.g.
+	// "Newer-Broker". Required.
+	Name string `json:"name"`
+
+	// StaticIP optionally assigns the client access point a static address;
+	// empty uses DHCP (fails on static-only networks — set it there).
+	StaticIP string `json:"staticIP,omitempty"`
+
+	// StoragePath is where inbound replica VHDs land on the members — a CSV
+	// path so a replica VM can fail over. Fanned into each member host's
+	// ReplicaServerSpec.DefaultStorageLocation.
+	StoragePath string `json:"storagePath,omitempty"`
 }
 
 type WitnessSpec struct {
@@ -957,6 +1011,39 @@ type VMSpec struct {
 	// AutomaticStartAction governs what the host does with the VM when the host
 	// itself boots. Empty defaults to the Hyper-V default (StartIfRunning).
 	AutomaticStartAction VMStartAction `json:"automaticStartAction,omitempty"`
+
+	// Replication, when set, replicates this VM with Hyper-V Replica to a
+	// standalone host or another cluster. The owning agent enables and keeps
+	// the replication relationship; the target side must be a configured
+	// replica server (HostSpec.ReplicaServer / ClusterSpec.ReplicaBroker —
+	// the UI authors both sides together). Enabled=false with the spec present
+	// removes an existing relationship.
+	Replication *VMReplicationSpec `json:"replication,omitempty"`
+}
+
+// VMReplicationSpec declares Hyper-V Replica for one VM.
+type VMReplicationSpec struct {
+	Enabled bool `json:"enabled"`
+
+	// TargetHost / TargetCluster record the operator's intent (one of the two)
+	// for display and validation. TargetCluster means the replica lands as a
+	// clustered replica behind that cluster's broker.
+	TargetHost    string `json:"targetHost,omitempty"`
+	TargetCluster string `json:"targetCluster,omitempty"`
+
+	// ReplicaServer is the address replication actually points at: the
+	// standalone host's FQDN, or the broker's client access point FQDN for a
+	// cluster target. Authored by the UI when the spec is written.
+	ReplicaServer string `json:"replicaServer,omitempty"`
+
+	// FrequencySeconds is the replication interval: 30, 300 or 900. Zero
+	// defaults to 300.
+	FrequencySeconds int `json:"frequencySeconds,omitempty"`
+
+	// AuthenticationType is Kerberos or Certificate; empty defaults to
+	// Kerberos. Port zero defaults to 80 (Kerberos) / 443 (Certificate).
+	AuthenticationType string `json:"authenticationType,omitempty"`
+	Port               int    `json:"port,omitempty"`
 }
 
 // VMPlacementSpec assigns a VM to a host. It is the only link between a VM and
@@ -1093,7 +1180,30 @@ type VMStatus struct {
 	// not create. Read-only.
 	Observed *VMObserved `json:"observed,omitempty"`
 
+	// Replication is the VM's observed Hyper-V Replica state, present when the
+	// VM has a replication relationship (as primary or replica).
+	Replication *VMReplicationStatus `json:"replication,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// VMReplicationStatus is a VM's observed Hyper-V Replica state.
+type VMReplicationStatus struct {
+	// Mode is Primary or Replica (this copy's role in the relationship).
+	Mode string `json:"mode,omitempty"`
+	// State is the replication state (e.g. Replicating, InitialReplication,
+	// Suspended, Error, ReadyForInitialReplication).
+	State string `json:"state,omitempty"`
+	// Health is Normal, Warning or Critical.
+	Health string `json:"health,omitempty"`
+	// PrimaryServer / ReplicaServer are the two ends as Hyper-V reports them.
+	PrimaryServer string `json:"primaryServer,omitempty"`
+	ReplicaServer string `json:"replicaServer,omitempty"`
+	// LastReplicationTime is when the last replica cycle completed (RFC3339);
+	// empty before initial replication finishes.
+	LastReplicationTime string `json:"lastReplicationTime,omitempty"`
+	// FrequencySeconds is the configured interval.
+	FrequencySeconds int `json:"frequencySeconds,omitempty"`
 }
 
 // VMObserved is a VM's actual configuration as read from the host, used to show

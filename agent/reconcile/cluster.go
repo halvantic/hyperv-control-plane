@@ -172,6 +172,22 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		}
 	}
 
+	// 6. Hyper-V Replica Broker — required for the cluster to send or receive
+	// replica traffic; replication addresses the broker's client access point.
+	// Former-only, like other cluster-wide roles. Best-effort: a transient
+	// failure (e.g. AD unreachable for the CAP computer object) surfaces on the
+	// condition and retries next pass without degrading the cluster.
+	if a.IsFormer && a.Cluster.Spec.ReplicaBroker != nil {
+		bOut, bErr := r.hv.EnsureReplicaBroker(ctx, *a.Cluster.Spec.ReplicaBroker)
+		conds = append(conds, r.condition("ReplicaBroker", bOut, bErr))
+		if bErr != nil {
+			r.log.Warn("ensure replica broker failed (retries next pass)", "err", bErr)
+		} else if bOut != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("replica broker reconciled", "outcome", bOut)
+		}
+	}
+
 	phase, honoured := types.PhaseReady, true
 	if storageErr != nil {
 		phase, honoured = types.PhaseDegraded, false

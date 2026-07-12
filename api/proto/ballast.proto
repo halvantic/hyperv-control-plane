@@ -201,6 +201,20 @@ message HostSpec {
   PhysicalNICConfig management_nic = 8;
   DomainJoinSpec domain_join = 9;
   LiveMigrationSpec live_migration = 10;
+  // replica_server, when set, makes this host accept Hyper-V Replica traffic.
+  ReplicaServerSpec replica_server = 11;
+}
+
+// ReplicaServerSpec makes a host a Hyper-V Replica target.
+message ReplicaServerSpec {
+  bool enabled = 1;
+  // authentication_type is Kerberos or Certificate; empty defaults to Kerberos.
+  string authentication_type = 2;
+  // port 0 defaults to 80 for Kerberos.
+  int32 port = 3;
+  // default_storage_location is where inbound replica VHDs land (a CSV path on
+  // cluster members). Empty defaults to C:\Hyper-V\Replica.
+  string default_storage_location = 4;
 }
 
 // LiveMigrationSpec configures host live migration.
@@ -415,6 +429,16 @@ message ClusterSpec {
   // live_migration is the cluster-wide live-migration config, delivered to the
   // former so it can configure Kerberos constrained delegation between nodes.
   LiveMigrationSpec live_migration = 6;
+  // replica_broker provisions the Hyper-V Replica Broker role (former only).
+  ReplicaBrokerSpec replica_broker = 7;
+}
+
+// ReplicaBrokerSpec is the Hyper-V Replica Broker cluster role: a client
+// access point plus the broker resource. Replication addresses the broker.
+message ReplicaBrokerSpec {
+  string name = 1;
+  string static_ip = 2;
+  string storage_path = 3;
 }
 
 message CSVSpec {
@@ -545,6 +569,21 @@ message VMSpec {
   VMPowerState desired_power_state = 8;
   VMStartAction automatic_start_action = 9;
   string iso_path = 10;
+  // replication, when set, replicates this VM with Hyper-V Replica.
+  VMReplicationSpec replication = 11;
+}
+
+// VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the
+// address replication points at (host FQDN or a broker client access point).
+message VMReplicationSpec {
+  bool enabled = 1;
+  string target_host = 2;
+  string target_cluster = 3;
+  string replica_server = 4;
+  // frequency_seconds is 30, 300 or 900; 0 defaults to 300.
+  int32 frequency_seconds = 5;
+  string authentication_type = 6;
+  int32 port = 7;
 }
 
 message VMPlacementSpec {
@@ -589,6 +628,19 @@ message VMStatus {
   string guest_fqdn = 12;
   repeated VMCheckpoint checkpoints = 13;
   string observed_json = 14; // VMObserved marshalled as JSON (CPU/mem/disks/adapters)
+  // replication is the VM's observed Hyper-V Replica state, when it has one.
+  VMReplicationStatus replication = 15;
+}
+
+// VMReplicationStatus is a VM's observed Hyper-V Replica state.
+message VMReplicationStatus {
+  string mode = 1;   // Primary | Replica
+  string state = 2;  // Replicating, InitialReplication, Error, ...
+  string health = 3; // Normal | Warning | Critical
+  string primary_server = 4;
+  string replica_server = 5;
+  string last_replication_time = 6; // RFC3339
+  int32 frequency_seconds = 7;
 }
 
 message VMCheckpoint {

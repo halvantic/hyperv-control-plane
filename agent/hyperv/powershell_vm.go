@@ -54,6 +54,17 @@ type vmObservation struct {
 	Generation          int               `json:"generation"`
 	Disks               []vmDiskObs       `json:"disks"`
 	Nics                []vmNicObs        `json:"nics"`
+	Repl                *vmReplObs        `json:"repl"`
+}
+
+type vmReplObs struct {
+	Mode          string `json:"mode"`
+	State         string `json:"state"`
+	Health        string `json:"health"`
+	PrimaryServer string `json:"primaryServer"`
+	ReplicaServer string `json:"replicaServer"`
+	LastRepl      string `json:"lastRepl"`
+	FrequencySec  int    `json:"frequencySec"`
 }
 
 func (p *PowerShell) GetVMState(ctx context.Context, name string) (VMState, error) {
@@ -108,6 +119,23 @@ try { foreach ($a in @(Get-VMNetworkAdapter -VMName %[1]s -ErrorAction SilentlyC
 } } catch {}
 $dm = $false; $mmin = [uint64]0; $mmax = [uint64]0
 try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $mmax = [uint64]$vm.MemoryMaximum } catch {}
+$repl = $null
+try {
+  $rr = Get-VMReplication -VMName %[1]s -ErrorAction SilentlyContinue
+  if ($rr) {
+    $lt = ''
+    try { if ($rr.LastReplicationTime) { $lt = $rr.LastReplicationTime.ToUniversalTime().ToString('o') } } catch {}
+    $repl = [pscustomobject]@{
+      mode          = [string]$rr.ReplicationMode
+      state         = [string]$rr.State
+      health        = [string]$rr.Health
+      primaryServer = [string]$rr.PrimaryServer
+      replicaServer = [string]$rr.ReplicaServer
+      lastRepl      = $lt
+      frequencySec  = [int]$rr.FrequencySec
+    }
+  }
+} catch {}
 [pscustomobject]@{
   exists              = $true
   id                  = [string]$vm.Id
@@ -127,6 +155,7 @@ try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $
   generation          = [int]$vm.Generation
   disks               = @($disks)
   nics                = @($nics)
+  repl                = $repl
 } | ConvertTo-Json -Compress -Depth 6
 `, psQuote(name))
 
@@ -166,6 +195,18 @@ try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $
 		}
 		observed = o
 	}
+	var repl *types.VMReplicationStatus
+	if obs.Repl != nil {
+		repl = &types.VMReplicationStatus{
+			Mode:                obs.Repl.Mode,
+			State:               obs.Repl.State,
+			Health:              obs.Repl.Health,
+			PrimaryServer:       obs.Repl.PrimaryServer,
+			ReplicaServer:       obs.Repl.ReplicaServer,
+			LastReplicationTime: obs.Repl.LastRepl,
+			FrequencySeconds:    obs.Repl.FrequencySec,
+		}
+	}
 	return VMState{
 		Exists:              obs.Exists,
 		ID:                  obs.ID,
@@ -178,6 +219,7 @@ try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $
 		GuestFQDN:           obs.GuestFQDN,
 		Checkpoints:         cps,
 		Observed:            observed,
+		Replication:         repl,
 	}, nil
 }
 

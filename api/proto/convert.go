@@ -423,6 +423,14 @@ func specToProto(s types.HostSpec) *HostSpec {
 			Networks:           m.Networks,
 		}
 	}
+	if r := s.ReplicaServer; r != nil {
+		out.ReplicaServer = &ReplicaServerSpec{
+			Enabled:                r.Enabled,
+			AuthenticationType:     r.AuthenticationType,
+			Port:                   int32(r.Port),
+			DefaultStorageLocation: r.DefaultStorageLocation,
+		}
+	}
 	return out
 }
 
@@ -459,6 +467,14 @@ func specFromProto(s *HostSpec) types.HostSpec {
 			AuthenticationType: m.GetAuthenticationType(),
 			MaxConcurrent:      int(m.GetMaxConcurrent()),
 			Networks:           m.GetNetworks(),
+		}
+	}
+	if r := s.GetReplicaServer(); r != nil {
+		out.ReplicaServer = &types.ReplicaServerSpec{
+			Enabled:                r.GetEnabled(),
+			AuthenticationType:     r.GetAuthenticationType(),
+			Port:                   int(r.GetPort()),
+			DefaultStorageLocation: r.GetDefaultStorageLocation(),
 		}
 	}
 	return out
@@ -644,6 +660,9 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 			Networks:           m.Networks,
 		}
 	}
+	if b := s.ReplicaBroker; b != nil {
+		out.ReplicaBroker = &ReplicaBrokerSpec{Name: b.Name, StaticIp: b.StaticIP, StoragePath: b.StoragePath}
+	}
 	return out
 }
 
@@ -678,6 +697,9 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 			MaxConcurrent:      int(m.GetMaxConcurrent()),
 			Networks:           m.GetNetworks(),
 		}
+	}
+	if b := s.GetReplicaBroker(); b != nil {
+		out.ReplicaBroker = &types.ReplicaBrokerSpec{Name: b.GetName(), StaticIP: b.GetStaticIp(), StoragePath: b.GetStoragePath()}
 	}
 	return out
 }
@@ -927,6 +949,17 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 			MacAddress: a.MACAddress,
 		})
 	}
+	if r := s.Replication; r != nil {
+		out.Replication = &VMReplicationSpec{
+			Enabled:            r.Enabled,
+			TargetHost:         r.TargetHost,
+			TargetCluster:      r.TargetCluster,
+			ReplicaServer:      r.ReplicaServer,
+			FrequencySeconds:   int32(r.FrequencySeconds),
+			AuthenticationType: r.AuthenticationType,
+			Port:               int32(r.Port),
+		}
+	}
 	return out
 }
 
@@ -964,6 +997,17 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 			MACAddress: a.GetMacAddress(),
 		})
 	}
+	if r := s.GetReplication(); r != nil {
+		out.Replication = &types.VMReplicationSpec{
+			Enabled:            r.GetEnabled(),
+			TargetHost:         r.GetTargetHost(),
+			TargetCluster:      r.GetTargetCluster(),
+			ReplicaServer:      r.GetReplicaServer(),
+			FrequencySeconds:   int(r.GetFrequencySeconds()),
+			AuthenticationType: r.GetAuthenticationType(),
+			Port:               int(r.GetPort()),
+		}
+	}
 	return out
 }
 
@@ -984,6 +1028,37 @@ func VMStatusToProto(s types.VMStatus) *VMStatus {
 		GuestFqdn:           s.GuestFQDN,
 		Checkpoints:         checkpointsToProto(s.Checkpoints),
 		ObservedJson:        marshalObserved(s.Observed),
+		Replication:         vmReplicationStatusToProto(s.Replication),
+	}
+}
+
+func vmReplicationStatusToProto(r *types.VMReplicationStatus) *VMReplicationStatus {
+	if r == nil {
+		return nil
+	}
+	return &VMReplicationStatus{
+		Mode:                r.Mode,
+		State:               r.State,
+		Health:              r.Health,
+		PrimaryServer:       r.PrimaryServer,
+		ReplicaServer:       r.ReplicaServer,
+		LastReplicationTime: r.LastReplicationTime,
+		FrequencySeconds:    int32(r.FrequencySeconds),
+	}
+}
+
+func vmReplicationStatusFromProto(r *VMReplicationStatus) *types.VMReplicationStatus {
+	if r == nil {
+		return nil
+	}
+	return &types.VMReplicationStatus{
+		Mode:                r.GetMode(),
+		State:               r.GetState(),
+		Health:              r.GetHealth(),
+		PrimaryServer:       r.GetPrimaryServer(),
+		ReplicaServer:       r.GetReplicaServer(),
+		LastReplicationTime: r.GetLastReplicationTime(),
+		FrequencySeconds:    int(r.GetFrequencySeconds()),
 	}
 }
 
@@ -1059,6 +1134,7 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 		GuestFQDN:           s.GetGuestFqdn(),
 		Checkpoints:         checkpointsFromProto(s.GetCheckpoints()),
 		Observed:            unmarshalObserved(s.GetObservedJson()),
+		Replication:         vmReplicationStatusFromProto(s.GetReplication()),
 	}
 }
 
