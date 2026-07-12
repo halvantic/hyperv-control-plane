@@ -139,6 +139,18 @@ $changed = $false
 if (-not $enabled) {
   if ($r) { Remove-VMReplication -VMName $vm -ErrorAction Stop; $changed = $true }
 } else {
+  # A clustered primary can only replicate through its own cluster's Hyper-V
+  # Replica Broker; without one Enable-VMReplication fails with a misleading
+  # "object was not found". Check explicitly so the condition says what is
+  # actually missing, and wait (retrying each pass) while the broker the
+  # former is provisioning comes online.
+  $isClustered = $false
+  try { $isClustered = [bool](Get-VM -Name $vm -ErrorAction Stop).IsClustered } catch {}
+  if ($isClustered) {
+    $broker = Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' } | Select-Object -First 1
+    if (-not $broker) { throw 'a clustered VM replicates through its own cluster''s Hyper-V Replica Broker, and this cluster has none - declare a ReplicaBroker on this cluster (re-saving the Replication dialog does it automatically)' }
+    if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
+  }
   if (-not $r) {
     Enable-VMReplication -VMName $vm -ReplicaServerName $server -ReplicaServerPort $port -AuthenticationType $auth -ReplicationFrequencySec $freq -ErrorAction Stop
     Start-VMInitialReplication -VMName $vm -ErrorAction Stop
