@@ -32,15 +32,28 @@ func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
 }
 
 func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) error {
-	// Idempotent: skip when the ISO is already present. Download to a temporary
-	// file then move into place so an interrupted transfer never looks complete.
-	// ProgressPreference off makes Invoke-WebRequest stream large files quickly.
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "+
+	// Idempotent: skip when the ISO is already present. Fetch to a temp file then
+	// move into place so an interrupted transfer never looks complete.
+	//
+	// Source can be a UNC/local path or an http(s) URL:
+	//   - UNC (\\server\share\x.iso) or local (D:\x.iso): Copy-Item, direct and
+	//     resumable-safe — the robust way to place a large ISO, no centre hop.
+	//   - URL: prefer BITS (Start-BitsTransfer — resumable, retries, built for
+	//     multi-GB) and fall back to Invoke-WebRequest if BITS is unavailable.
+	//     Invoke-WebRequest buffering/timeouts are what made large uploads stall.
+	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
 		"$dest=%[1]s; $url=%[2]s; "+
 		"if (Test-Path $dest) { return }; "+
 		"$dir=Split-Path -Parent $dest; if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; "+
 		"$tmp=$dest + [char]46 + 'download'; "+
-		"Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing; "+
+		"if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }; "+
+		"if ($url -like '\\\\*' -or $url -match '^[A-Za-z]:\\\\') { "+
+		"  Copy-Item -LiteralPath $url -Destination $tmp -Force "+
+		"} else { "+
+		"  $ok=$false; "+
+		"  try { Import-Module BitsTransfer -ErrorAction Stop; Start-BitsTransfer -Source $url -Destination $tmp -ErrorAction Stop; $ok=$true } catch {}; "+
+		"  if (-not $ok) { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing } "+
+		"}; "+
 		"Move-Item -Force -Path $tmp -Destination $dest", psQuote(dest), psQuote(url))
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("fetch iso to %q: %w", dest, err)
