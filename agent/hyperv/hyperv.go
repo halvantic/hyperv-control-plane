@@ -281,6 +281,12 @@ type Interface interface {
 	// state and best-effort runtime metrics. Pure read.
 	GetVMState(ctx context.Context, name string) (VMState, error)
 
+	// ListObservedVMs enumerates every VM present on the host with enough config
+	// to display and adopt it (power, generation, CPU/memory, disks, adapters,
+	// clustered flag, replication). This is how the centre discovers VMs when
+	// Ballast is added to existing infrastructure. Pure read.
+	ListObservedVMs(ctx context.Context) ([]types.ObservedVM, error)
+
 	// EnsureVM makes the VM described by vm exist on this host and match its
 	// configuration (processor count, memory, disks, network adapters),
 	// idempotently. It does not change power state — that is SetVMPowerState, so

@@ -500,8 +500,36 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 			MemoryInUseBytes: s.Metrics.MemoryInUseBytes,
 			UptimeSeconds:    s.Metrics.UptimeSeconds,
 		},
-		Resources: resourcesToProto(s.Resources),
+		Resources:       resourcesToProto(s.Resources),
+		ObservedVmsJson: observedVMsToJSON(s.ObservedVMs),
 	}
+}
+
+func observedVMsToJSON(vms []types.ObservedVM) []string {
+	if len(vms) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(vms))
+	for _, v := range vms {
+		if b, err := json.Marshal(v); err == nil {
+			out = append(out, string(b))
+		}
+	}
+	return out
+}
+
+func observedVMsFromJSON(in []string) []types.ObservedVM {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.ObservedVM, 0, len(in))
+	for _, s := range in {
+		var v types.ObservedVM
+		if err := json.Unmarshal([]byte(s), &v); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func resourcesToProto(r types.HostResources) *HostResources {
@@ -574,6 +602,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		}
 	}
 	out.Resources = resourcesFromProto(s.GetResources())
+	out.ObservedVMs = observedVMsFromJSON(s.GetObservedVmsJson())
 	return out
 }
 

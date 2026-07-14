@@ -249,7 +249,33 @@ type HostStatus struct {
 	// ISO files to boot from). Observed each cycle; a pure read, never authored.
 	Resources HostResources `json:"resources,omitempty"`
 
+	// ObservedVMs is every VM present on the host, whether or not Ballast
+	// manages it. It is how the centre discovers VMs when Ballast is added to
+	// existing infrastructure: the UI lists unmanaged ones under the host and
+	// offers to adopt them into desired state. Observed each cycle; a pure read.
+	ObservedVMs []ObservedVM `json:"observedVMs,omitempty"`
+
 	Conditions []Condition `json:"conditions,omitempty"`
+}
+
+// ObservedVM is a VM discovered on a host — enough to display it and adopt it
+// into desired state. Config carries the actual CPU/memory/disks/adapters so an
+// adopt reproduces the VM without recreating its VHDXs.
+type ObservedVM struct {
+	Name       string       `json:"name"`
+	VMID       string       `json:"vmId,omitempty"`
+	PowerState VMPowerState `json:"powerState,omitempty"`
+	// Managed is true when this VM is already a Ballast control-plane object
+	// (in the host's desired VM set), so the UI shows it as managed, not as a
+	// candidate to adopt.
+	Managed bool `json:"managed,omitempty"`
+	// Clustered is true when the VM is a highly-available cluster role (adopt
+	// places it on the cluster, not the single host).
+	Clustered   bool                 `json:"clustered,omitempty"`
+	GuestOS     string               `json:"guestOS,omitempty"`
+	IPAddress   string               `json:"ipAddress,omitempty"`
+	Config      *VMObserved          `json:"config,omitempty"`
+	Replication *VMReplicationStatus `json:"replication,omitempty"`
 }
 
 // HostResources is the set of pre-existing host objects available for use when
@@ -276,10 +302,10 @@ type HostResources struct {
 
 // ManagementVNICInfo is an observed management-OS vNIC.
 type ManagementVNICInfo struct {
-	Name       string        `json:"name"`
-	SwitchName string        `json:"switchName,omitempty"`
-	VlanID     int           `json:"vlanID,omitempty"`
-	DNSServers []string      `json:"dnsServers,omitempty"`
+	Name       string   `json:"name"`
+	SwitchName string   `json:"switchName,omitempty"`
+	VlanID     int      `json:"vlanID,omitempty"`
+	DNSServers []string `json:"dnsServers,omitempty"`
 	// Profile is the Windows network category on this vNIC (Public/Private/
 	// DomainAuthenticated).
 	Profile   string        `json:"profile,omitempty"`
@@ -785,12 +811,12 @@ type CSVStatus struct {
 // not retried by the loop; the operator re-issues it. This keeps the autonomy
 // model clean — only declarative state is enforced when the centre is offline.
 type Job struct {
-	ID        string            `json:"id"`
-	HostName  string            `json:"hostName"` // target host whose agent runs it
-	Kind      string            `json:"kind"`
-	Params    map[string]string `json:"params,omitempty"`
-	State     JobState          `json:"state"`
-	Message   string            `json:"message,omitempty"` // result detail / error
+	ID       string            `json:"id"`
+	HostName string            `json:"hostName"` // target host whose agent runs it
+	Kind     string            `json:"kind"`
+	Params   map[string]string `json:"params,omitempty"`
+	State    JobState          `json:"state"`
+	Message  string            `json:"message,omitempty"` // result detail / error
 	// CreatedBy is the operator who triggered the job (the authenticated REST
 	// session's username), or "system" for centre-initiated jobs. Centre-only
 	// metadata for the activity log; never sent to agents.
@@ -837,12 +863,12 @@ const (
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 
-	JobRemoveSwitch    = "RemoveSwitch"    // params: switch — delete a virtual switch from the host
-	JobRemoveMgmtVNIC  = "RemoveMgmtVNIC"  // params: vnic — remove a management-OS vNIC from the host
-	JobRemoveVM     = "RemoveVM"     // params: vm — stop and delete a VM from the host (hard delete)
-	JobRemoveCSV    = "RemoveCSV"    // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
-	JobRepairPool   = "RepairPool"   // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy
-	JobRebuildPool  = "RebuildPool"  // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
+	JobRemoveSwitch   = "RemoveSwitch"   // params: switch — delete a virtual switch from the host
+	JobRemoveMgmtVNIC = "RemoveMgmtVNIC" // params: vnic — remove a management-OS vNIC from the host
+	JobRemoveVM       = "RemoveVM"       // params: vm — stop and delete a VM from the host (hard delete)
+	JobRemoveCSV      = "RemoveCSV"      // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
+	JobRepairPool     = "RepairPool"     // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy
+	JobRebuildPool    = "RebuildPool"    // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter

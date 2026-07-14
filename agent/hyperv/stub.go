@@ -416,6 +416,16 @@ func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
 	return VMState{Exists: true, PowerState: vm.power}, nil
 }
 
+func (s *Stub) ListObservedVMs(_ context.Context) ([]types.ObservedVM, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]types.ObservedVM, 0, len(s.vms))
+	for name, vm := range s.vms {
+		out = append(out, types.ObservedVM{Name: name, PowerState: vm.power})
+	}
+	return out, nil
+}
+
 func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (VMEnsureResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1755,8 +1755,12 @@ type HostStatus struct {
 	// (Public/Private/DomainAuthenticated); a management NIC off the domain profile
 	// breaks cross-node WMI/clustering.
 	NetworkProfile string `protobuf:"bytes,14,opt,name=network_profile,json=networkProfile,proto3" json:"network_profile,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// observed_vms_json is every VM present on the host (managed or not), each an
+	// ObservedVM marshalled as JSON — how the centre discovers VMs on existing
+	// infrastructure so the UI can list and adopt them.
+	ObservedVmsJson []string `protobuf:"bytes,15,rep,name=observed_vms_json,json=observedVmsJson,proto3" json:"observed_vms_json,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HostStatus) Reset() {
@@ -1885,6 +1889,13 @@ func (x *HostStatus) GetNetworkProfile() string {
 		return x.NetworkProfile
 	}
 	return ""
+}
+
+func (x *HostStatus) GetObservedVmsJson() []string {
+	if x != nil {
+		return x.ObservedVmsJson
+	}
+	return nil
 }
 
 type HostMetrics struct {
@@ -4900,7 +4911,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x17\n" +
 	"\aou_path\x18\x02 \x01(\tR\x06ouPath\x12+\n" +
-	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\x80\x05\n" +
+	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xac\x05\n" +
 	"\n" +
 	"HostStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
@@ -4921,7 +4932,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\rcomputer_name\x18\v \x01(\tR\fcomputerName\x12\x16\n" +
 	"\x06domain\x18\f \x01(\tR\x06domain\x12#\n" +
 	"\ragent_version\x18\r \x01(\tR\fagentVersion\x12'\n" +
-	"\x0fnetwork_profile\x18\x0e \x01(\tR\x0enetworkProfile\"\x8f\x01\n" +
+	"\x0fnetwork_profile\x18\x0e \x01(\tR\x0enetworkProfile\x12*\n" +
+	"\x11observed_vms_json\x18\x0f \x03(\tR\x0fobservedVmsJson\"\x8f\x01\n" +
 	"\vHostMetrics\x12*\n" +
 	"\x11cpu_usage_percent\x18\x01 \x01(\x05R\x0fcpuUsagePercent\x12-\n" +
 	"\x13memory_in_use_bytes\x18\x02 \x01(\x04R\x10memoryInUseBytes\x12%\n" +

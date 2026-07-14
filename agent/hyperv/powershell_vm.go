@@ -223,6 +223,112 @@ try {
 	}, nil
 }
 
+// observedVMListItem is one VM in the host-wide inventory (compact — no
+// per-VM KVP/checkpoint reads, which would be too heavy across every VM).
+type observedVMListItem struct {
+	Name       string      `json:"name"`
+	ID         string      `json:"id"`
+	PowerState string      `json:"powerState"`
+	Clustered  bool        `json:"clustered"`
+	GuestOS    string      `json:"guestOS"`
+	IPAddress  string      `json:"ipAddress"`
+	Processor  int         `json:"processorCount"`
+	MemStartup uint64      `json:"memoryStartup"`
+	DynMem     bool        `json:"dynamicMemory"`
+	MemMin     uint64      `json:"memMin"`
+	MemMax     uint64      `json:"memMax"`
+	Generation int         `json:"generation"`
+	Disks      []vmDiskObs `json:"disks"`
+	Nics       []vmNicObs  `json:"nics"`
+	Repl       *vmReplObs  `json:"repl"`
+}
+
+// ListObservedVMs enumerates every VM on the host. Best-effort per VM: a read
+// error on one does not drop the rest.
+func (p *PowerShell) ListObservedVMs(ctx context.Context) ([]types.ObservedVM, error) {
+	const script = `
+$ErrorActionPreference = 'Stop'
+$out = @()
+foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
+  try {
+    $ips = ''
+    try { $ips = (@($vm | Get-VMNetworkAdapter | Select-Object -ExpandProperty IPAddresses | Where-Object { $_ -and $_ -notlike 'fe80*' -and $_ -ne '127.0.0.1' }) -join ', ') } catch {}
+    $disks = @()
+    try { foreach ($d in @($vm | Get-VMHardDiskDrive -ErrorAction SilentlyContinue)) {
+      $sz = 0; try { $sz = [uint64]((Get-VHD -Path $d.Path -ErrorAction Stop).Size) } catch {}
+      $disks += [pscustomobject]@{ path = [string]$d.Path; sizeBytes = [uint64]$sz }
+    } } catch {}
+    $nics = @()
+    try { foreach ($a in @($vm | Get-VMNetworkAdapter -ErrorAction SilentlyContinue)) {
+      $vl = 0; try { $vv = Get-VMNetworkAdapterVlan -VMNetworkAdapter $a -ErrorAction SilentlyContinue; if ($vv -and $vv.OperationMode -eq 'Access') { $vl = [int]$vv.AccessVlanId } } catch {}
+      $nics += [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = [int]$vl }
+    } } catch {}
+    $repl = $null
+    try {
+      $rr = Get-VMReplication -VM $vm -ErrorAction SilentlyContinue
+      if ($rr) {
+        $lt = ''; try { if ($rr.LastReplicationTime) { $lt = $rr.LastReplicationTime.ToUniversalTime().ToString('o') } } catch {}
+        $repl = [pscustomobject]@{ mode=[string]$rr.ReplicationMode; state=[string]$rr.State; health=[string]$rr.Health; primaryServer=[string]$rr.PrimaryServer; replicaServer=[string]$rr.ReplicaServer; lastRepl=$lt; frequencySec=[int]$rr.FrequencySec }
+      }
+    } catch {}
+    $clustered = $false; try { $clustered = [bool]$vm.IsClustered } catch {}
+    $dm = $false; $mmin = [uint64]0; $mmax = [uint64]0
+    try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $mmax = [uint64]$vm.MemoryMaximum } catch {}
+    $out += [pscustomobject]@{
+      name = [string]$vm.Name; id = [string]$vm.Id; powerState = [string]$vm.State; clustered = $clustered
+      guestOS = ''; ipAddress = [string]$ips
+      processorCount = [int]$vm.ProcessorCount; memoryStartup = [uint64]$vm.MemoryStartup
+      dynamicMemory = $dm; memMin = $mmin; memMax = $mmax; generation = [int]$vm.Generation
+      disks = @($disks); nics = @($nics); repl = $repl
+    }
+  } catch {}
+}
+ConvertTo-Json -InputObject @($out) -Compress -Depth 6
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("list observed vms: %w", err)
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	// ConvertTo-Json emits a bare object (not an array) for a single VM.
+	if trimmed[0] == '{' {
+		trimmed = "[" + trimmed + "]"
+	}
+	var items []observedVMListItem
+	if err := decodeJSON([]byte(trimmed), &items); err != nil {
+		return nil, fmt.Errorf("list observed vms: %w", err)
+	}
+	result := make([]types.ObservedVM, 0, len(items))
+	for _, it := range items {
+		cfg := &types.VMObserved{
+			ProcessorCount: it.Processor, MemoryStartupBytes: it.MemStartup,
+			DynamicMemory: it.DynMem, MinBytes: it.MemMin, MaxBytes: it.MemMax, Generation: it.Generation,
+		}
+		for _, d := range it.Disks {
+			cfg.Disks = append(cfg.Disks, types.VMDiskSpec{Path: d.Path, SizeBytes: d.SizeBytes})
+		}
+		for _, n := range it.Nics {
+			cfg.NetworkAdapters = append(cfg.NetworkAdapters, types.VMNetworkAdapterSpec{Name: n.Name, SwitchName: n.SwitchName, VLANID: n.VLANID})
+		}
+		ov := types.ObservedVM{
+			Name: it.Name, VMID: it.ID, PowerState: powerStateFromHyperV(it.PowerState),
+			Clustered: it.Clustered, GuestOS: it.GuestOS, IPAddress: it.IPAddress, Config: cfg,
+		}
+		if it.Repl != nil {
+			ov.Replication = &types.VMReplicationStatus{
+				Mode: it.Repl.Mode, State: it.Repl.State, Health: it.Repl.Health,
+				PrimaryServer: it.Repl.PrimaryServer, ReplicaServer: it.Repl.ReplicaServer,
+				LastReplicationTime: it.Repl.LastRepl, FrequencySeconds: it.Repl.FrequencySec,
+			}
+		}
+		result = append(result, ov)
+	}
+	return result, nil
+}
+
 // EnsureVM creates the VM if absent and then converges its processor count,
 // memory, disks and network adapters. The script reports whether the VM was
 // created and whether anything changed, which maps to the Outcome.

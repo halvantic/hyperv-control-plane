@@ -254,6 +254,10 @@ message HostStatus {
   // (Public/Private/DomainAuthenticated); a management NIC off the domain profile
   // breaks cross-node WMI/clustering.
   string network_profile = 14;
+  // observed_vms_json is every VM present on the host (managed or not), each an
+  // ObservedVM marshalled as JSON — how the centre discovers VMs on existing
+  // infrastructure so the UI can list and adopt them.
+  repeated string observed_vms_json = 15;
 }
 
 message HostMetrics {

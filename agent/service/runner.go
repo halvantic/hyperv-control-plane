@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,6 +132,12 @@ type runner struct {
 	lastResources  types.HostResources
 	lastNetProfile string
 	haveResources  bool
+
+	// lastObservedVMs caches the host-wide VM inventory (for discovery/adoption),
+	// refreshed on the same throttle as resources since enumerating every VM is
+	// comparably heavy and the set changes rarely.
+	lastObservedVMs []types.ObservedVM
+	haveObservedVMs bool
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -385,6 +392,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	}
 
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
+	st.ObservedVMs = r.observeVMs(ctx)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it
@@ -597,6 +605,39 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 	if err != nil {
 		r.log.Warn("cluster status report failed", "err", err)
 	}
+}
+
+// observeVMs enumerates every VM on the host (throttled, like resources) and
+// marks the ones already in this host's desired state as managed, so the centre
+// can list unmanaged VMs for discovery/adoption. Best-effort: on error it
+// reuses the last inventory rather than blanking discovery.
+func (r *runner) observeVMs(ctx context.Context) []types.ObservedVM {
+	vms := r.lastObservedVMs
+	if !r.haveObservedVMs || r.cycles%resourceRefreshEvery == 0 {
+		if got, err := r.hv.ListObservedVMs(ctx); err != nil {
+			r.log.Warn("list observed vms failed; reusing last inventory", "err", err)
+		} else {
+			vms = got
+			r.lastObservedVMs = got
+			r.haveObservedVMs = true
+		}
+	}
+	if len(vms) == 0 {
+		return nil
+	}
+	// Mark VMs that are already Ballast-managed (in the cached desired set).
+	managed := map[string]bool{}
+	if cached, ok, err := r.st.LoadDesiredVMs(); err == nil && ok {
+		for _, vm := range cached {
+			managed[strings.ToLower(vm.Meta.Name)] = true
+		}
+	}
+	out := make([]types.ObservedVM, len(vms))
+	for i, v := range vms {
+		v.Managed = managed[strings.ToLower(v.Name)]
+		out[i] = v
+	}
+	return out
 }
 
 // buildStatus assembles the status to report. ObservedGeneration carries the
