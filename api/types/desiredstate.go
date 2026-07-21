@@ -960,7 +960,9 @@ type User struct {
 	// PasswordHash is the bcrypt hash of the user's password. Never serialised to
 	// any UI/automation surface.
 	PasswordHash string `json:"-"`
-	// Role governs what the user may do: RoleAdmin or RoleOperator.
+	// Role governs what the user may do: RoleAdmin (everything), RoleOperator
+	// (day-to-day fabric and VM operations, but not accounts, centre settings,
+	// or the credential vault), or RoleReadOnly (view only).
 	Role string `json:"role"`
 	// Source is UserSourceLocal for built-in accounts; AD/LDAP users (a later
 	// phase) will carry a different source.
@@ -971,6 +973,7 @@ type User struct {
 const (
 	RoleAdmin       = "admin"
 	RoleOperator    = "operator"
+	RoleReadOnly    = "readonly"
 	UserSourceLocal = "local"
 )
 
