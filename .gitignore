@@ -13,6 +13,9 @@ go.work
 go.work.sum
 .env
 
+# Frontend
+frontend/node_modules/
+
 # Editor / OS
 .idea/
 .vscode/
