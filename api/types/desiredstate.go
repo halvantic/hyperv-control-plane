@@ -1162,6 +1162,14 @@ type VMStatus struct {
 	// PowerState is the actual observed power state of the VM.
 	PowerState VMPowerState `json:"powerState,omitempty"`
 
+	// LastReportedAt is when an agent last reported this VM's status. Stamped
+	// by the centre on receipt (never by agents, so it is not on the proto,
+	// like the other centre-only metadata). Zero for a VM no agent has
+	// reported since the centre gained stamping. It is what lets the centre
+	// notice a VM that no agent is enforcing — the dangerous quiet failure
+	// where the last reported status stays green forever.
+	LastReportedAt time.Time `json:"lastReportedAt,omitempty"`
+
 	// VMID is the VM's Hyper-V GUID (Get-VM .Id). The centre uses it as the
 	// console preconnection-blob to open the VM's VMConnect console over RDP.
 	VMID string `json:"vmId,omitempty"`

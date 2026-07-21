@@ -126,8 +126,10 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 // EnsureVMReplication drives one VM's Hyper-V Replica relationship to spec.
 // Absent + enabled: Enable-VMReplication then Start-VMInitialReplication.
 // Present but drifted (server/frequency): Set-VMReplication. Present but
-// spec disabled: Remove-VMReplication. A relationship stuck at
-// ReadyForInitialReplication gets its initial replication (re)started.
+// spec disabled: Remove-VMReplication. Wedged relationships are repaired
+// (ReadyForInitialReplication → start initial; Suspended/Error → resume;
+// resynchronise states → resume with resync) and anything else with Critical
+// health fails the condition instead of no-opping green.
 func (p *PowerShell) EnsureVMReplication(ctx context.Context, vmName string, spec types.VMReplicationSpec) (Outcome, error) {
 	auth, port := replicaAuthPort(spec.AuthenticationType, spec.Port)
 	freq := spec.FrequencySeconds
@@ -170,9 +172,27 @@ if (-not $enabled) {
       Set-VMReplication -VMName $vm -ReplicaServerName $server -ReplicaServerPort $port -AuthenticationType $auth -ReplicationFrequencySec $freq -ErrorAction Stop
       $changed = $true
     }
-    if ([string]$r.State -eq 'ReadyForInitialReplication') {
+    # A relationship can wedge in states this reconcile must not report as
+    # settled. Repair the ones with a known remedy; anything else unhealthy
+    # is surfaced as a failing condition rather than a green no-op — a
+    # desired-state system must never say "configured" while replication is
+    # not actually flowing.
+    $state = [string]$r.State
+    $health = [string]$r.Health
+    if ($state -eq 'ReadyForInitialReplication') {
       Start-VMInitialReplication -VMName $vm -ErrorAction Stop
       $changed = $true
+    } elseif ($state -eq 'Suspended') {
+      Resume-VMReplication -VMName $vm -ErrorAction Stop
+      $changed = $true
+    } elseif ($state -eq 'WaitingForStartResynchronize' -or $state -eq 'ResynchronizeSuspended') {
+      Resume-VMReplication -VMName $vm -Resynchronize -ErrorAction Stop
+      $changed = $true
+    } elseif ($state -eq 'Error') {
+      Resume-VMReplication -VMName $vm -ErrorAction Stop
+      $changed = $true
+    } elseif ($health -eq 'Critical') {
+      throw ('replication is configured but unhealthy: state ' + $state + ', health ' + $health + ' - see Get-VMReplication on the primary')
     }
   }
 }
