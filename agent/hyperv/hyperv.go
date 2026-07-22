@@ -420,21 +420,24 @@ type Interface interface {
 	// reconciled: the centre records the outcome and rewrites desired state on
 	// success so the reconcile loop honours the inverted topology afterwards.
 
-	// TestFailover starts a non-disruptive test failover (a temporary test VM on
-	// an isolated network); the primary keeps running. Returns a short detail.
-	TestFailover(ctx context.Context, vmName string) (string, error)
+	// TestFailover starts a non-disruptive test failover (a temporary test VM);
+	// the primary keeps running. network, when set, is the switch on this host to
+	// connect the test VM's adapters to. Returns a short detail.
+	TestFailover(ctx context.Context, vmName, network string) (string, error)
 
 	// StopTestFailover tears down a test failover, removing the temporary VM.
 	StopTestFailover(ctx context.Context, vmName string) error
 
 	// PlannedFailover performs a zero-data-loss planned failover from primaryHost
 	// to this replica host and reverses replication so the old primary becomes the
-	// new replica. Returns a short detail.
-	PlannedFailover(ctx context.Context, vmName, primaryHost string) (string, error)
+	// new replica. network, when set, is the switch on this host to connect the
+	// VM's adapters to. Returns a short detail.
+	PlannedFailover(ctx context.Context, vmName, primaryHost, network string) (string, error)
 
 	// Failover performs an unplanned failover after the primary is lost, from the
-	// latest replica data or the named recovery point. Returns a short detail.
-	Failover(ctx context.Context, vmName, recoveryPoint string) (string, error)
+	// latest replica data or the named recovery point. network, when set, is the
+	// switch on this host to connect the VM's adapters to. Returns a short detail.
+	Failover(ctx context.Context, vmName, recoveryPoint, network string) (string, error)
 
 	// CancelFailover reverts a test or unplanned failover (Stop-VMFailover).
 	CancelFailover(ctx context.Context, vmName string) error

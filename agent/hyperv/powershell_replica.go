@@ -240,21 +240,26 @@ if ([string]$r.Mode -ne 'Replica') { throw ('%[2]s runs on the Replica copy; thi
 // isolated network and starts it. The primary keeps running and replicating, so
 // this is safe to run any time to prove the replica boots. Tear it down with
 // StopTestFailover. Idempotent: an existing test VM is left running.
-func (p *PowerShell) TestFailover(ctx context.Context, vmName string) (string, error) {
+func (p *PowerShell) TestFailover(ctx context.Context, vmName, network string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 %[1]s
 $testName = %[2]s + ' - Test'
 if (-not (Get-VM -Name $testName -ErrorAction SilentlyContinue)) {
   Start-VMFailover -VMName %[2]s -AsTest -Confirm:$false | Out-Null
 }
+# Connect the test VM's adapters to the chosen switch on this (replica) host — the
+# source switch usually does not exist here, so without this the NIC is left with
+# no switch and the VM has no network.
+$net = %[3]s
+if ($net) { Get-VMNetworkAdapter -VMName $testName -ErrorAction SilentlyContinue | Connect-VMNetworkAdapter -SwitchName $net -ErrorAction SilentlyContinue }
 $tv = Get-VM -Name $testName -ErrorAction SilentlyContinue
 if ($tv -and [string]$tv.State -ne 'Running') { Start-VM -Name $testName -ErrorAction SilentlyContinue | Out-Null }
 'RESULT=OK'`,
-		replicaModeGuard(psQuote(vmName), "test failover"), psQuote(vmName))
+		replicaModeGuard(psQuote(vmName), "test failover"), psQuote(vmName), psQuote(network))
 	if _, err := p.run(ctx, script); err != nil {
 		return "", fmt.Errorf("test failover %q: %w", vmName, err)
 	}
-	return "test VM \"" + vmName + " - Test\" running on an isolated network; tear down with Stop test failover", nil
+	return "test VM \"" + vmName + " - Test\" running; tear down with Stop test failover", nil
 }
 
 // StopTestFailover tears down a running test failover, removing the temporary
@@ -278,7 +283,7 @@ if (Get-VM -Name $testName -ErrorAction SilentlyContinue) {
 // the relationship, and start the new primary. The primary must be reachable;
 // for a clustered primary this stops the running VM — the cluster role may need
 // to be taken offline first on some rigs.
-func (p *PowerShell) PlannedFailover(ctx context.Context, vmName, primaryHost string) (string, error) {
+func (p *PowerShell) PlannedFailover(ctx context.Context, vmName, primaryHost, network string) (string, error) {
 	if strings.TrimSpace(primaryHost) == "" {
 		return "", fmt.Errorf("planned failover %q: primary host is required", vmName)
 	}
@@ -294,10 +299,13 @@ Start-VMFailover -ComputerName $primary -VMName %[2]s -Prepare -Confirm:$false -
 Start-VMFailover -VMName %[2]s -Confirm:$false -ErrorAction Stop
 # 3. Reverse the relationship so the old primary becomes the new replica.
 Set-VMReplication -VMName %[2]s -Reverse -Confirm:$false -ErrorAction Stop
-# 4. Bring the new primary up.
+# 4. Connect the VM's adapters to the chosen switch on this host (the source
+#    switch may not exist here), then bring the new primary up.
+$net = %[4]s
+if ($net) { Get-VMNetworkAdapter -VMName %[2]s -ErrorAction SilentlyContinue | Connect-VMNetworkAdapter -SwitchName $net -ErrorAction SilentlyContinue }
 Start-VM -Name %[2]s -ErrorAction Stop
 'RESULT=OK'`,
-		replicaModeGuard(psQuote(vmName), "planned failover"), psQuote(vmName), psQuote(primaryHost))
+		replicaModeGuard(psQuote(vmName), "planned failover"), psQuote(vmName), psQuote(primaryHost), psQuote(network))
 	if _, err := p.run(ctx, script); err != nil {
 		return "", fmt.Errorf("planned failover %q: %w", vmName, err)
 	}
@@ -308,7 +316,7 @@ Start-VM -Name %[2]s -ErrorAction Stop
 // from its latest received data, or the named recovery point, after the primary
 // is lost. Replication is left broken (the old primary is gone) until reversed
 // with ReverseReplication once it returns. Cancel with CancelFailover to revert.
-func (p *PowerShell) Failover(ctx context.Context, vmName, recoveryPoint string) (string, error) {
+func (p *PowerShell) Failover(ctx context.Context, vmName, recoveryPoint, network string) (string, error) {
 	rp := ""
 	detail := "unplanned failover complete; " + vmName + " running here from the latest replica data"
 	if strings.TrimSpace(recoveryPoint) != "" {
@@ -323,9 +331,11 @@ Start-VMFailover -VMName %[1]s -VMRecoverySnapshot $snap -Confirm:$false -ErrorA
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 %[1]s
 %[2]s
+$net = %[4]s
+if ($net) { Get-VMNetworkAdapter -VMName %[3]s -ErrorAction SilentlyContinue | Connect-VMNetworkAdapter -SwitchName $net -ErrorAction SilentlyContinue }
 Start-VM -Name %[3]s -ErrorAction Stop
 'RESULT=OK'`,
-		replicaModeGuard(psQuote(vmName), "unplanned failover"), rp, psQuote(vmName))
+		replicaModeGuard(psQuote(vmName), "unplanned failover"), rp, psQuote(vmName), psQuote(network))
 	if _, err := p.run(ctx, script); err != nil {
 		return "", fmt.Errorf("unplanned failover %q: %w", vmName, err)
 	}

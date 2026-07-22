@@ -570,17 +570,17 @@ func (s *Stub) EnsureVMReplication(_ context.Context, _ string, _ types.VMReplic
 	return OutcomeUnchanged, nil
 }
 
-func (s *Stub) TestFailover(_ context.Context, vm string) (string, error) {
+func (s *Stub) TestFailover(_ context.Context, vm, _ string) (string, error) {
 	return "test failover of " + vm + " (stub)", nil
 }
 
 func (s *Stub) StopTestFailover(_ context.Context, _ string) error { return nil }
 
-func (s *Stub) PlannedFailover(_ context.Context, vm, primaryHost string) (string, error) {
+func (s *Stub) PlannedFailover(_ context.Context, vm, primaryHost, _ string) (string, error) {
 	return "planned failover of " + vm + " from " + primaryHost + " (stub)", nil
 }
 
-func (s *Stub) Failover(_ context.Context, vm, _ string) (string, error) {
+func (s *Stub) Failover(_ context.Context, vm, _, _ string) (string, error) {
 	return "unplanned failover of " + vm + " (stub)", nil
 }
 
