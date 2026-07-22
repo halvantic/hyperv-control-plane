@@ -136,7 +136,9 @@ function Rename-CsvMount($n) {
   # Failover Clustering auto-mounts a CSV at C:\ClusterStorage\VolumeN. Rename it to
   # the friendly name so it lands at a predictable path (where the host's default
   # VM/VHD path points). Best-effort.
-  $csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $n + '*') } | Select-Object -First 1
+  # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
+  # abort the whole script (exit 0, truncated output) after cluster cmdlets.
+  $csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $n + '*') })[0]
   if ($csv) {
     $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
     $wantPath = 'C:\ClusterStorage\' + $n

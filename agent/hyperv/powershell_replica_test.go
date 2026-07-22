@@ -45,3 +45,22 @@ func TestEnsureVMReplicationScriptHandlesStuckStates(t *testing.T) {
 		}
 	}
 }
+
+// TestResultOutcomeRejectsTruncatedOutput guards the marker protocol: a script
+// that exits 0 without reaching its RESULT= line (the silent Select-Object
+// -First pipeline-stop failure) must surface as an error, never as a green
+// no-op.
+func TestResultOutcomeRejectsTruncatedOutput(t *testing.T) {
+	if out, err := resultOutcome([]byte("RESULT=UPDATED\n"), "op"); err != nil || out != OutcomeUpdated {
+		t.Fatalf("updated: got %v, %v", out, err)
+	}
+	if out, err := resultOutcome([]byte("some output\nRESULT=NOOP"), "op"); err != nil || out != OutcomeUnchanged {
+		t.Fatalf("noop: got %v, %v", out, err)
+	}
+	if _, err := resultOutcome([]byte("partial output, script died here"), "ensure vm replication Website"); err == nil {
+		t.Fatal("truncated output must be an error, not a silent no-op")
+	}
+	if _, err := resultOutcome(nil, "op"); err == nil {
+		t.Fatal("empty output must be an error")
+	}
+}

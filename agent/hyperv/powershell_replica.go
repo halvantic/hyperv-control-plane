@@ -8,6 +8,27 @@ import (
 	"github.com/joshua-fourie/ballast/api/types"
 )
 
+// resultOutcome interprets the output of a script that ends with an explicit
+// RESULT=UPDATED / RESULT=NOOP marker. A script can die mid-run with exit code
+// 0 and no marker — PowerShell's Select-Object -First pipeline stop does
+// exactly this after FailoverClusters cmdlets, aborting the script silently —
+// and treating that as "no change" is how a VM's replication read green for a
+// week while never being configured. Marker missing ⇒ error, never a no-op.
+func resultOutcome(out []byte, op string) (Outcome, error) {
+	s := string(out)
+	if strings.Contains(s, "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	if strings.Contains(s, "RESULT=NOOP") {
+		return OutcomeUnchanged, nil
+	}
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) > 300 {
+		trimmed = trimmed[:300] + "…"
+	}
+	return OutcomeUnchanged, fmt.Errorf("%s: script ended without a result marker — output was truncated mid-run (partial output: %q)", op, trimmed)
+}
+
 // replicaDefaults fills the conventional Hyper-V Replica defaults: Kerberos
 // integrated auth on port 80.
 func replicaAuthPort(auth string, port int) (string, int) {
@@ -44,7 +65,9 @@ $storage = %[4]s
 # on — the reconcile retries every pass until the former's broker lands.
 $clussvc = Get-Service ClusSvc -ErrorAction SilentlyContinue
 if ($enabled -and $clussvc -and $clussvc.Status -eq 'Running') {
-  $broker = Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' } | Select-Object -First 1
+  # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
+  # abort the whole script (exit 0, no output marker) after cluster cmdlets.
+  $broker = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
   if (-not $broker) { throw 'a cluster node accepts replica traffic only via the Hyper-V Replica Broker - waiting for the cluster''s broker to be provisioned' }
   if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
 }
@@ -76,10 +99,7 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure replica server: %w", err)
 	}
-	if strings.Contains(string(out), "RESULT=UPDATED") {
-		return OutcomeUpdated, nil
-	}
-	return OutcomeUnchanged, nil
+	return resultOutcome(out, "ensure replica server")
 }
 
 // EnsureReplicaBroker provisions the Hyper-V Replica Broker role on the local
@@ -117,10 +137,7 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure replica broker %q: %w", spec.Name, err)
 	}
-	if strings.Contains(string(out), "RESULT=UPDATED") {
-		return OutcomeUpdated, nil
-	}
-	return OutcomeUnchanged, nil
+	return resultOutcome(out, "ensure replica broker")
 }
 
 // EnsureVMReplication drives one VM's Hyper-V Replica relationship to spec.
@@ -159,7 +176,9 @@ if (-not $enabled) {
   $isClustered = $false
   try { $isClustered = [bool](Get-VM -Name $vm -ErrorAction Stop).IsClustered } catch {}
   if ($isClustered) {
-    $broker = Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' } | Select-Object -First 1
+    # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
+  # abort the whole script (exit 0, no output marker) after cluster cmdlets.
+  $broker = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
     if (-not $broker) { throw 'a clustered VM replicates through its own cluster''s Hyper-V Replica Broker, and this cluster has none - declare a ReplicaBroker on this cluster (re-saving the Replication dialog does it automatically)' }
     if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
   }
@@ -202,8 +221,5 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure vm replication %q: %w", vmName, err)
 	}
-	if strings.Contains(string(out), "RESULT=UPDATED") {
-		return OutcomeUpdated, nil
-	}
-	return OutcomeUnchanged, nil
+	return resultOutcome(out, "ensure vm replication "+vmName)
 }
