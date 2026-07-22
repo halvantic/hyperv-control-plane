@@ -382,9 +382,16 @@ if ($v) {
   }
   $disks = @()
   try { $disks = @(Get-VMHardDiskDrive -VMName $vm -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path }) } catch {}
+  # Substep errors are tolerated and success is judged by the VM being gone
+  # afterwards: Remove-VM can emit a trailing (non-fatal) error record even after
+  # it has already deregistered the replica, which would otherwise fail the job
+  # despite the cleanup having worked.
   try { Remove-VMReplication -VMName $vm -ErrorAction SilentlyContinue } catch {}
-  if ([string]$v.State -ne 'Off') { Stop-VM -Name $vm -TurnOff -Force -ErrorAction SilentlyContinue }
-  Remove-VM -Name $vm -Force -ErrorAction Stop
+  try { if ([string]$v.State -ne 'Off') { Stop-VM -Name $vm -TurnOff -Force -ErrorAction SilentlyContinue } } catch {}
+  try { Remove-VM -Name $vm -Force -ErrorAction SilentlyContinue } catch {}
+  if (Get-VM -Name $vm -ErrorAction SilentlyContinue) {
+    throw ('failed to remove replica copy ' + $vm + ' - it still exists after Remove-VM')
+  }
   foreach ($d in $disks) { if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
 }`, psQuote(vmName))
 	if err := p.run2(ctx, script); err != nil {
