@@ -223,3 +223,172 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	}
 	return resultOutcome(out, "ensure vm replication "+vmName)
 }
+
+// replicaModeGuard is a PowerShell prelude that loads the VM's replication
+// relationship and fails clearly unless this host holds the Replica copy. Every
+// failover op runs on the replica side; running one on the primary is a common
+// mistake the guard turns into an actionable error instead of a cryptic cmdlet
+// failure. %[1]s is the (already psQuote'd) VM name; %[2]s names the operation.
+func replicaModeGuard(vmVar, op string) string {
+	return fmt.Sprintf(`$r = Get-VMReplication -VMName %[1]s -ErrorAction SilentlyContinue
+if (-not $r) { throw ('%[2]s: no Hyper-V Replica relationship for ' + %[1]s + ' on this host - it runs on the replica target') }
+if ([string]$r.Mode -ne 'Replica') { throw ('%[2]s runs on the Replica copy; this host reports mode ' + [string]$r.Mode) }`, vmVar, op)
+}
+
+// TestFailover starts a non-disruptive test failover of the replica VM: it
+// builds a temporary "<vm> - Test" VM from the latest recovery point on an
+// isolated network and starts it. The primary keeps running and replicating, so
+// this is safe to run any time to prove the replica boots. Tear it down with
+// StopTestFailover. Idempotent: an existing test VM is left running.
+func (p *PowerShell) TestFailover(ctx context.Context, vmName string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+%[1]s
+$testName = %[2]s + ' - Test'
+if (-not (Get-VM -Name $testName -ErrorAction SilentlyContinue)) {
+  Start-VMFailover -VMName %[2]s -AsTest -Confirm:$false | Out-Null
+}
+$tv = Get-VM -Name $testName -ErrorAction SilentlyContinue
+if ($tv -and [string]$tv.State -ne 'Running') { Start-VM -Name $testName -ErrorAction SilentlyContinue | Out-Null }
+'RESULT=OK'`,
+		replicaModeGuard(psQuote(vmName), "test failover"), psQuote(vmName))
+	if _, err := p.run(ctx, script); err != nil {
+		return "", fmt.Errorf("test failover %q: %w", vmName, err)
+	}
+	return "test VM \"" + vmName + " - Test\" running on an isolated network; tear down with Stop test failover", nil
+}
+
+// StopTestFailover tears down a running test failover, removing the temporary
+// test VM (Stop-VMFailover on the replica). A no-op when none is in progress.
+func (p *PowerShell) StopTestFailover(ctx context.Context, vmName string) error {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$testName = %[1]s + ' - Test'
+if (Get-VM -Name $testName -ErrorAction SilentlyContinue) {
+  Stop-VMFailover -VMName %[1]s -Confirm:$false
+}`, psQuote(vmName))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("stop test failover %q: %w", vmName, err)
+	}
+	return nil
+}
+
+// PlannedFailover performs a zero-data-loss planned failover from primaryHost to
+// this (replica) host and reverses replication so the old primary becomes the
+// new replica. Sequence: stop the primary and flush its final delta
+// (Start-VMFailover -Prepare on the primary), complete failover here, reverse
+// the relationship, and start the new primary. The primary must be reachable;
+// for a clustered primary this stops the running VM — the cluster role may need
+// to be taken offline first on some rigs.
+func (p *PowerShell) PlannedFailover(ctx context.Context, vmName, primaryHost string) (string, error) {
+	if strings.TrimSpace(primaryHost) == "" {
+		return "", fmt.Errorf("planned failover %q: primary host is required", vmName)
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+%[1]s
+$primary = %[3]s
+# 1. Turn the primary off (planned failover requires it) and flush the final
+#    delta to the replica so no writes are lost.
+$pv = Get-VM -ComputerName $primary -Name %[2]s -ErrorAction Stop
+if ([string]$pv.State -eq 'Running') { Stop-VM -ComputerName $primary -Name %[2]s -Force -ErrorAction Stop }
+Start-VMFailover -ComputerName $primary -VMName %[2]s -Prepare -Confirm:$false -ErrorAction Stop
+# 2. Complete failover here: this replica becomes the new primary.
+Start-VMFailover -VMName %[2]s -Confirm:$false -ErrorAction Stop
+# 3. Reverse the relationship so the old primary becomes the new replica.
+Set-VMReplication -VMName %[2]s -Reverse -Confirm:$false -ErrorAction Stop
+# 4. Bring the new primary up.
+Start-VM -Name %[2]s -ErrorAction Stop
+'RESULT=OK'`,
+		replicaModeGuard(psQuote(vmName), "planned failover"), psQuote(vmName), psQuote(primaryHost))
+	if _, err := p.run(ctx, script); err != nil {
+		return "", fmt.Errorf("planned failover %q: %w", vmName, err)
+	}
+	return "planned failover complete; " + vmName + " is primary here, replicating back to " + primaryHost, nil
+}
+
+// Failover performs an unplanned failover: brings this replica up as primary
+// from its latest received data, or the named recovery point, after the primary
+// is lost. Replication is left broken (the old primary is gone) until reversed
+// with ReverseReplication once it returns. Cancel with CancelFailover to revert.
+func (p *PowerShell) Failover(ctx context.Context, vmName, recoveryPoint string) (string, error) {
+	rp := ""
+	detail := "unplanned failover complete; " + vmName + " running here from the latest replica data"
+	if strings.TrimSpace(recoveryPoint) != "" {
+		rp = fmt.Sprintf(`$snap = @(Get-VMSnapshot -VMName %[1]s -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq %[2]s })[0]
+if (-not $snap) { throw ('recovery point ' + %[2]s + ' not found on ' + %[1]s) }
+Start-VMFailover -VMName %[1]s -VMRecoverySnapshot $snap -Confirm:$false -ErrorAction Stop`,
+			psQuote(vmName), psQuote(recoveryPoint))
+		detail = "unplanned failover complete; " + vmName + " running here from recovery point \"" + recoveryPoint + "\""
+	} else {
+		rp = fmt.Sprintf(`Start-VMFailover -VMName %[1]s -Confirm:$false -ErrorAction Stop`, psQuote(vmName))
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+%[1]s
+%[2]s
+Start-VM -Name %[3]s -ErrorAction Stop
+'RESULT=OK'`,
+		replicaModeGuard(psQuote(vmName), "unplanned failover"), rp, psQuote(vmName))
+	if _, err := p.run(ctx, script); err != nil {
+		return "", fmt.Errorf("unplanned failover %q: %w", vmName, err)
+	}
+	return detail, nil
+}
+
+// CancelFailover reverts a test or unplanned failover on this host
+// (Stop-VMFailover), returning the VM to the replica state. A no-op error is
+// surfaced rather than swallowed so the operator sees when there was nothing to
+// cancel.
+func (p *PowerShell) CancelFailover(ctx context.Context, vmName string) error {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+Stop-VMFailover -VMName %[1]s -Confirm:$false`, psQuote(vmName))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("cancel failover %q: %w", vmName, err)
+	}
+	return nil
+}
+
+// ReverseReplication commits a pending unplanned failover (if any) and reverses
+// the replication direction so this host — the new primary — replicates back to
+// the former primary. The former primary must be reachable and configured as a
+// replica server (a cluster's broker already accepts; a standalone old primary
+// gets a ReplicaServer spec from the centre's topology rewrite).
+func (p *PowerShell) ReverseReplication(ctx context.Context, vmName string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$r = Get-VMReplication -VMName %[1]s -ErrorAction SilentlyContinue
+if (-not $r) { throw ('reverse replication: no relationship for ' + %[1]s + ' on this host') }
+# A failover that has not been committed leaves recovery points pending; commit
+# them before reversing so the new relationship starts from a clean point.
+if ([string]$r.State -eq 'FailedOverWaitingCompletion') { Complete-VMFailover -VMName %[1]s -Confirm:$false -ErrorAction Stop }
+Set-VMReplication -VMName %[1]s -Reverse -Confirm:$false -ErrorAction Stop
+'RESULT=OK'`, psQuote(vmName))
+	if _, err := p.run(ctx, script); err != nil {
+		return "", fmt.Errorf("reverse replication %q: %w", vmName, err)
+	}
+	return "replication reversed; " + vmName + " now replicates from here to the former primary", nil
+}
+
+// RemoveReplicaVM cleans up an orphaned replica copy on this (replica) host:
+// removes the replica-side relationship, deletes the replica VM, and removes its
+// replica VHDs. This is what unblocks re-enabling replication after a broken
+// disable/enable cycle left a stale copy on the target (Enable-VMReplication then
+// refuses because the target already has that VM). It refuses to run unless the
+// VM here is actually a Replica, so it can never delete a primary/standalone VM.
+func (p *PowerShell) RemoveReplicaVM(ctx context.Context, vmName string) error {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$vm = %[1]s
+$v = Get-VM -Name $vm -ErrorAction SilentlyContinue
+if ($v) {
+  $r = Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue
+  if (-not $r -or [string]$r.Mode -ne 'Replica') {
+    throw ('refusing to remove ' + $vm + ': it is not a replica copy on this host (mode ' + [string]$r.Mode + ') - use Delete VM instead')
+  }
+  $disks = @()
+  try { $disks = @(Get-VMHardDiskDrive -VMName $vm -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path }) } catch {}
+  try { Remove-VMReplication -VMName $vm -ErrorAction SilentlyContinue } catch {}
+  if ([string]$v.State -ne 'Off') { Stop-VM -Name $vm -TurnOff -Force -ErrorAction SilentlyContinue }
+  Remove-VM -Name $vm -Force -ErrorAction Stop
+  foreach ($d in $disks) { if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
+}`, psQuote(vmName))
+	if err := p.run2(ctx, script); err != nil {
+		return fmt.Errorf("remove replica copy %q: %w", vmName, err)
+	}
+	return nil
+}

@@ -414,6 +414,39 @@ type Interface interface {
 	// declared spec: enable + initial replication when absent, adjust when it
 	// drifts, remove when Enabled is false. Idempotent.
 	EnsureVMReplication(ctx context.Context, vmName string, spec types.VMReplicationSpec) (Outcome, error)
+
+	// The failover operations below are imperative Jobs, all run on the REPLICA
+	// host (the target the VM replicates to). They are one-shot events, never
+	// reconciled: the centre records the outcome and rewrites desired state on
+	// success so the reconcile loop honours the inverted topology afterwards.
+
+	// TestFailover starts a non-disruptive test failover (a temporary test VM on
+	// an isolated network); the primary keeps running. Returns a short detail.
+	TestFailover(ctx context.Context, vmName string) (string, error)
+
+	// StopTestFailover tears down a test failover, removing the temporary VM.
+	StopTestFailover(ctx context.Context, vmName string) error
+
+	// PlannedFailover performs a zero-data-loss planned failover from primaryHost
+	// to this replica host and reverses replication so the old primary becomes the
+	// new replica. Returns a short detail.
+	PlannedFailover(ctx context.Context, vmName, primaryHost string) (string, error)
+
+	// Failover performs an unplanned failover after the primary is lost, from the
+	// latest replica data or the named recovery point. Returns a short detail.
+	Failover(ctx context.Context, vmName, recoveryPoint string) (string, error)
+
+	// CancelFailover reverts a test or unplanned failover (Stop-VMFailover).
+	CancelFailover(ctx context.Context, vmName string) error
+
+	// ReverseReplication commits a pending failover and reverses replication so
+	// the new primary replicates back to the former primary. Returns a detail.
+	ReverseReplication(ctx context.Context, vmName string) (string, error)
+
+	// RemoveReplicaVM removes an orphaned replica copy on this host (the replica
+	// relationship, the VM, and its replica VHDs). Refuses to run unless the VM
+	// here is a Replica, so it can never delete a primary/standalone VM.
+	RemoveReplicaVM(ctx context.Context, vmName string) error
 }
 
 // VMEnsureResult is what EnsureVM did.

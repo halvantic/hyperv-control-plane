@@ -863,6 +863,21 @@ const (
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 
+	// Hyper-V Replica failover. All run on the REPLICA host (the target the VM
+	// replicates to), resolved by the centre from the VM's replication spec.
+	// Planned/unplanned failover invert the relationship; the centre rewrites the
+	// VM's desired state (placement + replication direction) when the job
+	// succeeds so the reconcile loop honours the new topology — and keeps honouring
+	// it if the centre goes offline. fromKind/fromName record the VM's placement at
+	// enqueue so the rewrite applies exactly once.
+	JobVMTestFailover       = "VMTestFailover"       // params: vm — non-disruptive test failover (temporary test VM on an isolated network); primary keeps running
+	JobVMStopTestFailover   = "VMStopTestFailover"   // params: vm — tear down a test failover
+	JobVMPlannedFailover    = "VMPlannedFailover"    // params: vm, primaryHost, fromKind, fromName — zero-data-loss planned failover + reverse replication
+	JobVMFailover           = "VMFailover"           // params: vm, recoveryPoint (optional), fromKind, fromName — unplanned failover after the primary is lost
+	JobVMCancelFailover     = "VMCancelFailover"     // params: vm — cancel a test or unplanned failover (Stop-VMFailover)
+	JobVMReverseReplication = "VMReverseReplication" // params: vm, fromKind, fromName — reverse replication so the new primary replicates back to the old primary
+	JobVMRemoveReplica      = "VMRemoveReplica"      // params: vm — run on the replica host: remove the replica relationship and delete the orphaned replica copy (+ its VHDs)
+
 	JobRemoveSwitch   = "RemoveSwitch"   // params: switch — delete a virtual switch from the host
 	JobRemoveMgmtVNIC = "RemoveMgmtVNIC" // params: vnic — remove a management-OS vNIC from the host
 	JobRemoveVM       = "RemoveVM"       // params: vm — stop and delete a VM from the host (hard delete)

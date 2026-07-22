@@ -105,6 +105,20 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobMigrationDelegation:
 		_, err := r.hv.EnsureMigrationDelegation(ctx, splitList(p["nodes"]))
 		return done(err, "configured Kerberos live-migration delegation")
+	case types.JobVMTestFailover:
+		return r.hv.TestFailover(ctx, p["vm"])
+	case types.JobVMStopTestFailover:
+		return done(r.hv.StopTestFailover(ctx, p["vm"]), "stopped test failover of "+p["vm"])
+	case types.JobVMPlannedFailover:
+		return r.hv.PlannedFailover(ctx, p["vm"], p["primaryHost"])
+	case types.JobVMFailover:
+		return r.hv.Failover(ctx, p["vm"], p["recoveryPoint"])
+	case types.JobVMCancelFailover:
+		return done(r.hv.CancelFailover(ctx, p["vm"]), "cancelled failover of "+p["vm"])
+	case types.JobVMReverseReplication:
+		return r.hv.ReverseReplication(ctx, p["vm"])
+	case types.JobVMRemoveReplica:
+		return done(r.hv.RemoveReplicaVM(ctx, p["vm"]), "removed replica copy of "+p["vm"])
 	default:
 		return "", fmt.Errorf("unknown job kind %q", job.Kind)
 	}

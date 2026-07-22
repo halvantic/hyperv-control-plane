@@ -246,11 +246,11 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 	return OutcomeUpdated, nil
 }
 
-func (s *Stub) RemoveSwitch(_ context.Context, _ string) error { return nil }
-func (s *Stub) RemoveVM(_ context.Context, _ string) error     { return nil }
-func (s *Stub) FormatDisk(_ context.Context, _ string) error            { return nil }
-func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error    { return nil }
-func (s *Stub) DestroyCluster(_ context.Context) error         { return nil }
+func (s *Stub) RemoveSwitch(_ context.Context, _ string) error       { return nil }
+func (s *Stub) RemoveVM(_ context.Context, _ string) error           { return nil }
+func (s *Stub) FormatDisk(_ context.Context, _ string) error         { return nil }
+func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error { return nil }
+func (s *Stub) DestroyCluster(_ context.Context) error               { return nil }
 
 func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
 	s.mu.Lock()
@@ -398,7 +398,9 @@ func (s *Stub) PruneManagementVNICs(_ context.Context, _, _ []string) (Outcome, 
 
 func (s *Stub) RemoveMgmtVNIC(_ context.Context, _ string) error { return nil }
 
-func (s *Stub) ResetPoolDisks(_ context.Context) (string, error) { return "RESULT wiped=0 nowPoolable=0 skipped=0", nil }
+func (s *Stub) ResetPoolDisks(_ context.Context) (string, error) {
+	return "RESULT wiped=0 nowPoolable=0 skipped=0", nil
+}
 
 func (s *Stub) ConvergedNetworkReady(_ context.Context, _ []string) (bool, error) { return true, nil }
 
@@ -567,6 +569,28 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 func (s *Stub) EnsureVMReplication(_ context.Context, _ string, _ types.VMReplicationSpec) (Outcome, error) {
 	return OutcomeUnchanged, nil
 }
+
+func (s *Stub) TestFailover(_ context.Context, vm string) (string, error) {
+	return "test failover of " + vm + " (stub)", nil
+}
+
+func (s *Stub) StopTestFailover(_ context.Context, _ string) error { return nil }
+
+func (s *Stub) PlannedFailover(_ context.Context, vm, primaryHost string) (string, error) {
+	return "planned failover of " + vm + " from " + primaryHost + " (stub)", nil
+}
+
+func (s *Stub) Failover(_ context.Context, vm, _ string) (string, error) {
+	return "unplanned failover of " + vm + " (stub)", nil
+}
+
+func (s *Stub) CancelFailover(_ context.Context, _ string) error { return nil }
+
+func (s *Stub) ReverseReplication(_ context.Context, vm string) (string, error) {
+	return "reversed replication of " + vm + " (stub)", nil
+}
+
+func (s *Stub) RemoveReplicaVM(_ context.Context, _ string) error { return nil }
 
 func (s *Stub) RepairHostDNS(_ context.Context, _ string) (string, error) {
 	return "dns repaired (stub)", nil
