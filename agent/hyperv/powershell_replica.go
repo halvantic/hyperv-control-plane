@@ -262,13 +262,31 @@ if ($tv -and [string]$tv.State -ne 'Running') { Start-VM -Name $testName -ErrorA
 	return "test VM \"" + vmName + " - Test\" running; tear down with Stop test failover", nil
 }
 
-// StopTestFailover tears down a running test failover, removing the temporary
-// test VM (Stop-VMFailover on the replica). A no-op when none is in progress.
+// StopTestFailover tears down a test failover, removing the temporary test VM.
+// The clean path is Stop-VMFailover on the relationship (which deletes the test
+// VM and its differencing disks). But that is a no-op when the relationship no
+// longer tracks the test VM — e.g. after a replication reset or reconfiguration
+// — leaving the "<vm> - Test" clone orphaned on the host. So if the clone is
+// still present afterwards, remove it directly. A test VM is a throwaway clone
+// running off differencing disks over the replica's recovery point, so removing
+// it and those child disks never touches the replica's base VHDs.
 func (p *PowerShell) StopTestFailover(ctx context.Context, vmName string) error {
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $testName = %[1]s + ' - Test'
-if (Get-VM -Name $testName -ErrorAction SilentlyContinue) {
-  Stop-VMFailover -VMName %[1]s -Confirm:$false
+# Clean path: cancel the test failover through the relationship if it is tracked.
+try { Stop-VMFailover -VMName %[1]s -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+# Fallback: the clone can survive Stop-VMFailover when the relationship no longer
+# owns it. Remove it (and its own differencing disks) so it does not linger.
+$tv = Get-VM -Name $testName -ErrorAction SilentlyContinue
+if ($tv) {
+  $disks = @()
+  try { $disks = @(Get-VMHardDiskDrive -VMName $testName -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path }) } catch {}
+  try { if ([string]$tv.State -ne 'Off') { Stop-VM -Name $testName -TurnOff -Force -ErrorAction SilentlyContinue } } catch {}
+  try { Remove-VM -Name $testName -Force -ErrorAction SilentlyContinue } catch {}
+  if (Get-VM -Name $testName -ErrorAction SilentlyContinue) {
+    throw ('failed to remove test VM ' + $testName + ' - it still exists after Remove-VM')
+  }
+  foreach ($d in $disks) { if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
 }`, psQuote(vmName))
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("stop test failover %q: %w", vmName, err)

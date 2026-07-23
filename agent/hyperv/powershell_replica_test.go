@@ -76,6 +76,32 @@ func TestReverseReplicationProbesTargetOnFailure(t *testing.T) {
 	}
 }
 
+// TestStopTestFailoverRemovesOrphanedClone guards that tearing down a test
+// failover does not rely solely on Stop-VMFailover (a no-op when the relationship
+// no longer tracks the clone) — it must remove the "<vm> - Test" VM directly if it
+// is still present, so the clone never lingers on the destination host.
+func TestStopTestFailoverRemovesOrphanedClone(t *testing.T) {
+	f := &fakeRunner{}
+	if err := newTestPS(f).StopTestFailover(context.Background(), "Website"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("want 1 script, got %d", len(f.calls))
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		"$testName = 'Website' + ' - Test'",
+		"Stop-VMFailover -VMName 'Website'",
+		"Get-VM -Name $testName",
+		"Remove-VM -Name $testName -Force",
+		"still exists after Remove-VM",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("stop-test script missing %q\n---\n%s", want, s)
+		}
+	}
+}
+
 // TestResultOutcomeRejectsTruncatedOutput guards the marker protocol: a script
 // that exits 0 without reaching its RESULT= line (the silent Select-Object
 // -First pipeline-stop failure) must surface as an error, never as a green
