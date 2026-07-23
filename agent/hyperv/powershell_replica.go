@@ -183,7 +183,20 @@ if (-not $enabled) {
     if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
   }
   if (-not $r) {
-    Enable-VMReplication -VMName $vm -ReplicaServerName $server -ReplicaServerPort $port -AuthenticationType $auth -ReplicationFrequencySec $freq -ErrorAction Stop
+    try {
+      Enable-VMReplication -VMName $vm -ReplicaServerName $server -ReplicaServerPort $port -AuthenticationType $auth -ReplicationFrequencySec $freq -ErrorAction Stop
+    } catch {
+      # "IncludedDisks is not valid" is Hyper-V rejecting the disk set it computed
+      # for the VM — almost always because the VM carries a disk that cannot be
+      # replicated (an orphaned/duplicate VHD, e.g. a leftover replica copy, or a
+      # disk on an inaccessible path). Surface the disk list and the actual cause
+      # instead of the raw, cryptic parameter error.
+      if ($_.Exception.Message -like '*IncludedDisks*') {
+        $paths = @(Get-VMHardDiskDrive -VMName $vm -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path })
+        throw ('cannot enable replication for ' + $vm + ': Hyper-V rejected the disk set. The VM has a disk that cannot be replicated - typically an orphaned or duplicate disk (e.g. a leftover replica VHD) or one on an inaccessible path. Attached disks: ' + ($paths -join '; ') + '. Detach the extra disk so the VM has only the disks it should replicate, then retry.')
+      }
+      throw
+    }
     Start-VMInitialReplication -VMName $vm -ErrorAction Stop
     $changed = $true
   } else {
