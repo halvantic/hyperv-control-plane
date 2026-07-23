@@ -46,6 +46,36 @@ func TestEnsureVMReplicationScriptHandlesStuckStates(t *testing.T) {
 	}
 }
 
+// TestReverseReplicationProbesTargetOnFailure guards that a failed reverse does
+// not surface Hyper-V's bare "Could not reverse replication" — the script must
+// identify the reverse target (the endpoint that is not this host), probe its
+// reachability and Replica server role, and throw an actionable reason.
+func TestReverseReplicationProbesTargetOnFailure(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=OK")}}
+	if _, err := newTestPS(f).ReverseReplication(context.Background(), "Website"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("want 1 script, got %d", len(f.calls))
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		"Set-VMReplication -VMName 'Website' -Reverse",
+		"} catch {",
+		"$r.PrimaryServer",
+		"$r.ReplicaServer",
+		"$_ -split '\\.'",  // target = the endpoint that is not this host
+		"Test-NetConnection",
+		"Get-VMReplicationServer -ComputerName $target",
+		"not reachable on the replica port",
+		"Replica server role is not enabled",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("reverse script missing %q\n---\n%s", want, s)
+		}
+	}
+}
+
 // TestResultOutcomeRejectsTruncatedOutput guards the marker protocol: a script
 // that exits 0 without reaching its RESULT= line (the silent Select-Object
 // -First pipeline-stop failure) must surface as an error, never as a green

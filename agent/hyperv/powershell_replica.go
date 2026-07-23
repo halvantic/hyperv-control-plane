@@ -373,7 +373,41 @@ if (-not $r) { throw ('reverse replication: no relationship for ' + %[1]s + ' on
 # A failover that has not been committed leaves recovery points pending; commit
 # them before reversing so the new relationship starts from a clean point.
 if ([string]$r.State -eq 'FailedOverWaitingCompletion') { Complete-VMFailover -VMName %[1]s -Confirm:$false -ErrorAction Stop }
-Set-VMReplication -VMName %[1]s -Reverse -Confirm:$false -ErrorAction Stop
+try {
+  Set-VMReplication -VMName %[1]s -Reverse -Confirm:$false -ErrorAction Stop
+} catch {
+  # Hyper-V's own message here ("Could not reverse replication") is generic; the
+  # cause is almost always the reverse target — the OTHER endpoint of this
+  # relationship — being unreachable or not yet a Replica server. Probe it and
+  # surface a specific, actionable reason instead of the bare cmdlet error. The
+  # target is whichever endpoint is not this host, so we don't depend on which of
+  # PrimaryServer/ReplicaServer has flipped after the failover.
+  $reason = $_.Exception.Message
+  $local = $env:COMPUTERNAME
+  $target = @([string]$r.PrimaryServer, [string]$r.ReplicaServer) |
+    Where-Object { $_ -and (($_ -split '\.')[0] -ne $local) } | Select-Object -First 1
+  $port = 0; try { $port = [int]$r.ReplicaServerPort } catch {}
+  if ($port -le 0) { $port = 80 }
+  $hint = ''
+  if ($target) {
+    $reachable = $false
+    try { $reachable = [bool](Test-NetConnection -ComputerName $target -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue) } catch {}
+    if (-not $reachable) {
+      $hint = "the former primary '" + $target + "' is not reachable on the replica port (" + $port + "); bring it online, then retry"
+    } else {
+      $enabled = $null
+      try { $enabled = [bool](Get-VMReplicationServer -ComputerName $target -ErrorAction Stop).ReplicationEnabled } catch { $enabled = $null }
+      if ($enabled -eq $false) {
+        $hint = "the former primary '" + $target + "' is reachable but its Replica server role is not enabled; the centre enables it after a failover, so wait for that host's agent to reconcile, then retry"
+      } elseif ($null -eq $enabled) {
+        $hint = "could not query the Replica server role on '" + $target + "'; verify it is online and configured to receive replicas, then retry"
+      } else {
+        $hint = "the former primary '" + $target + "' is reachable with its Replica server role enabled; check the Hyper-V-VMMS-Admin event log on both hosts for the specific reason"
+      }
+    }
+  }
+  if ($hint) { throw ($reason + ' - ' + $hint) } else { throw $reason }
+}
 'RESULT=OK'`, psQuote(vmName))
 	if _, err := p.run(ctx, script); err != nil {
 		return "", fmt.Errorf("reverse replication %q: %w", vmName, err)
