@@ -458,10 +458,29 @@ if (-not $present) {
 	for _, a := range s.NetworkAdapters {
 		an := psQuote(a.Name)
 		sw := psQuote(a.SwitchName)
+		// A missing switch must NOT abort the whole VM reconcile: if it did, an
+		// unrelated networking detail (e.g. a NIC still pointing at a switch that
+		// does not exist on this host after a failover) would wedge everything
+		// else — power, sizing, and crucially replication teardown — leaving the
+		// VM Degraded and its relationship stuck. So tolerate "unable to find a
+		// virtual switch": leave the NIC disconnected and warn, and let the rest
+		// of the reconcile proceed. It reconnects on a later pass once the switch
+		// exists (or the desired switch is corrected).
 		adapters += fmt.Sprintf(`$ad = Get-VMNetworkAdapter -VMName %[1]s | Where-Object { $_.Name -eq %[2]s }
-if (-not $ad) { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s; $changed = $true }
-else { if ($ad.SwitchName -ne %[4]s) { Connect-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s; $changed = $true } }
-`, name, an, sw, psQuote(a.SwitchName))
+if (-not $ad) {
+  try { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
+  catch {
+    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction Stop; $changed = $true; Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
+    else { throw }
+  }
+} elseif ($ad.SwitchName -ne %[3]s) {
+  try { Connect-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
+  catch {
+    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
+    else { throw }
+  }
+}
+`, name, an, sw)
 		// Always drive the VLAN to the desired value: a positive VLAN tags the port
 		// (Access mode); VLAN 0 means native/untagged, which must actively clear any
 		// existing tag (e.g. when a VM moves from a VLAN-100 dvport to a VLAN-0 one).
