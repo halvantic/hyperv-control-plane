@@ -348,6 +348,12 @@ Start-VM -Name %[3]s -ErrorAction Stop
 // cancel.
 func (p *PowerShell) CancelFailover(ctx context.Context, vmName string) error {
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+# Reverting a failed-over replica returns it to the ready-for-replication state,
+# which requires the VM to be off; Stop-VMFailover refuses while it is running.
+# A test failover leaves the base VM off (only the '- Test' clone runs), so this
+# only turns off a real unplanned failover before reverting it.
+$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+if ($vm -and [string]$vm.State -eq 'Running') { Stop-VM -Name %[1]s -Force -ErrorAction Stop }
 Stop-VMFailover -VMName %[1]s -Confirm:$false`, psQuote(vmName))
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("cancel failover %q: %w", vmName, err)
