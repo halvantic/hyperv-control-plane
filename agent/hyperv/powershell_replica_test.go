@@ -39,6 +39,9 @@ func TestEnsureVMReplicationScriptHandlesStuckStates(t *testing.T) {
 		"'Error'",
 		"$health -eq 'Critical'",
 		"replication is configured but unhealthy",
+		// The replica side is a no-op: Set-VMReplication/Resume there fail
+		// "Replication is not enabled" during a failover role swap.
+		"$r.Mode -eq 'Replica'",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("script missing %q\n---\n%s", want, s)

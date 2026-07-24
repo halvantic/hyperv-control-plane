@@ -167,6 +167,15 @@ $r = Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue
 $changed = $false
 if (-not $enabled) {
   if ($r) { Remove-VMReplication -VMName $vm -ErrorAction Stop; $changed = $true }
+} elseif ($r -and [string]$r.Mode -eq 'Replica') {
+  # The primary side owns an existing relationship's settings and health repairs.
+  # If this host holds the Replica copy — which happens transiently right after a
+  # planned/unplanned failover flips the roles, until this host drops the VM from
+  # its assignment — every operation below (Set-VMReplication, the Resume repairs)
+  # fails with "Replication is not enabled". Leave the replica side untouched; the
+  # new primary reconciles the relationship, and this host stops owning the VM on
+  # its next pull.
+  $changed = $false
 } else {
   # A clustered primary can only replicate through its own cluster's Hyper-V
   # Replica Broker; without one Enable-VMReplication fails with a misleading
