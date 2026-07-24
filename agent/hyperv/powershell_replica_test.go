@@ -81,7 +81,7 @@ func TestReverseReplicationProbesTargetOnFailure(t *testing.T) {
 // no longer tracks the clone) — it must remove the "<vm> - Test" VM directly if it
 // is still present, so the clone never lingers on the destination host.
 func TestStopTestFailoverRemovesOrphanedClone(t *testing.T) {
-	f := &fakeRunner{}
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=OK")}}
 	if err := newTestPS(f).StopTestFailover(context.Background(), "Website"); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +95,9 @@ func TestStopTestFailoverRemovesOrphanedClone(t *testing.T) {
 		"Get-VM -Name $testName",
 		"Remove-VM -Name $testName -Force",
 		"still exists after Remove-VM",
+		// The trailing marker keeps a swallowed "no test failover" error from
+		// making powershell.exe exit 1 with no stderr.
+		"'RESULT=OK'",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("stop-test script missing %q\n---\n%s", want, s)

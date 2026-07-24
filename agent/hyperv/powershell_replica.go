@@ -283,10 +283,18 @@ if ($tv -and [string]$tv.State -ne 'Running') { Start-VM -Name $testName -ErrorA
 // still present afterwards, remove it directly. A test VM is a throwaway clone
 // running off differencing disks over the replica's recovery point, so removing
 // it and those child disks never touches the replica's base VHDs.
+//
+// When there is no test failover in progress at all (the replica is simply
+// replicating), there is nothing to tear down — Stop-VMFailover errors with "the
+// current replication state" and is swallowed, and the run completes as a no-op.
+// The trailing RESULT marker is load-bearing: without a successful final
+// statement the swallowed terminating error leaves $? false, and powershell.exe
+// then exits 1 with no stderr — surfacing a spurious "exit status 1:" failure.
 func (p *PowerShell) StopTestFailover(ctx context.Context, vmName string) error {
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $testName = %[1]s + ' - Test'
 # Clean path: cancel the test failover through the relationship if it is tracked.
+# A no test-failover-in-progress error here is expected — nothing to stop.
 try { Stop-VMFailover -VMName %[1]s -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 # Fallback: the clone can survive Stop-VMFailover when the relationship no longer
 # owns it. Remove it (and its own differencing disks) so it does not linger.
@@ -300,8 +308,11 @@ if ($tv) {
     throw ('failed to remove test VM ' + $testName + ' - it still exists after Remove-VM')
   }
   foreach ($d in $disks) { if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
-}`, psQuote(vmName))
-	if err := p.run2(ctx, script); err != nil {
+}
+'RESULT=OK'`, psQuote(vmName))
+	// p.run (not run2): the trailing RESULT=OK statement is what keeps a swallowed
+	// terminating error from leaving $? false and making powershell.exe exit 1.
+	if _, err := p.run(ctx, script); err != nil {
 		return fmt.Errorf("stop test failover %q: %w", vmName, err)
 	}
 	return nil
