@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -138,6 +139,13 @@ type runner struct {
 	// comparably heavy and the set changes rarely.
 	lastObservedVMs []types.ObservedVM
 	haveObservedVMs bool
+
+	// forceScan makes the next cycle re-collect the throttled observations
+	// (resources and the VM inventory) instead of reusing the cache. A finished
+	// job sets it via requestNudge so the centre reflects what the job changed
+	// immediately — e.g. a stopped test failover's clone disappears at once,
+	// rather than lingering until the next throttled refresh.
+	forceScan atomic.Bool
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -146,6 +154,9 @@ func (r *runner) requestNudge() {
 	if r.nudge == nil {
 		return
 	}
+	// Force the nudged cycle to re-scan resources and the VM inventory, not reuse
+	// the throttled cache — set before signalling so the cycle sees it.
+	r.forceScan.Store(true)
 	select {
 	case r.nudge <- struct{}{}:
 	default:
@@ -274,6 +285,10 @@ func (r *runner) keepalive(ctx context.Context, client ballastpb.AgentServiceCli
 // locally for later replay, but the cycle still completes.
 func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient) {
 	r.cycles++
+	// A finished job asks (via requestNudge) for a fresh scan of the throttled
+	// observations so its effect shows up now; read-and-clear it once for the
+	// whole cycle.
+	force := r.forceScan.Swap(false)
 	inv, err := r.hv.CollectInventory(ctx)
 	if err != nil {
 		r.log.Error("collect inventory failed", "err", err)
@@ -286,7 +301,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// and are the heaviest observation, so refresh them only every few cycles and
 	// reuse the last result in between. A job nudge forces a fresh cycle anyway.
 	resources := r.lastResources
-	if !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
+	if force || !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
 		if res, resErr := r.hv.CollectResources(ctx); resErr != nil {
 			r.log.Error("collect resources failed", "err", resErr)
 		} else {
@@ -392,7 +407,7 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	}
 
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
-	st.ObservedVMs = r.observeVMs(ctx)
+	st.ObservedVMs = r.observeVMs(ctx, force)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it
@@ -611,9 +626,9 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 // marks the ones already in this host's desired state as managed, so the centre
 // can list unmanaged VMs for discovery/adoption. Best-effort: on error it
 // reuses the last inventory rather than blanking discovery.
-func (r *runner) observeVMs(ctx context.Context) []types.ObservedVM {
+func (r *runner) observeVMs(ctx context.Context, force bool) []types.ObservedVM {
 	vms := r.lastObservedVMs
-	if !r.haveObservedVMs || r.cycles%resourceRefreshEvery == 0 {
+	if force || !r.haveObservedVMs || r.cycles%resourceRefreshEvery == 0 {
 		if got, err := r.hv.ListObservedVMs(ctx); err != nil {
 			r.log.Warn("list observed vms failed; reusing last inventory", "err", err)
 		} else {
