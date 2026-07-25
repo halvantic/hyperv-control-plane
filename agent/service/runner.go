@@ -42,17 +42,34 @@ func jobTimeoutFor(kind string) time.Duration {
 // generation rather than trusting an "unchanged" answer indefinitely.
 const fullResyncEvery = 20
 
-// resourceRefreshEvery throttles the expensive host-resource observation (switch
-// details, volumes, ISO scan, management-vNIC topology with cluster-IP
-// classification) to every N cycles instead of every cycle. These change rarely,
-// so re-scanning them each 15s cycle is wasted work that inflates cycle time; the
-// last result is reused in between. A job completion nudges an immediate cycle, so
-// operator-driven changes still surface promptly.
-const resourceRefreshEvery = 8
-
-// netProfileRefreshEvery likewise throttles the network-location query (weakest
-// connection-profile category), which changes only when domain reachability does.
-const netProfileRefreshEvery = 4
+// Observation refresh cadences, tiered by how often each class of state actually
+// changes so a 15s cycle is not dominated by rescanning things that rarely move.
+// Each observation is cached and reused between refreshes; the reported status
+// still carries the last-collected value every cycle, so the centre is never
+// missing data — only the RE-collection is throttled. A job completion sets
+// forceScan (via requestNudge) to refresh the operationally-live classes at once.
+const (
+	// observeVMsEvery — the VM inventory (roles, power, replication mode) is the
+	// operationally-live view an operator watches during power/failover ops, so it
+	// refreshes often. It is moderately heavy (Get-VM + per-VM replication), hence
+	// not every single cycle. ~30s at a 15s heartbeat. This is the failover-lag fix:
+	// only the host that runs a failover job gets a forceScan nudge, so the OTHER
+	// side (former primary → replica) relied on this cadence to show its new role.
+	observeVMsEvery = 2
+	// netProfileRefreshEvery — the network-location query (weakest connection-profile
+	// category) changes only when domain reachability does. ~60s.
+	netProfileRefreshEvery = 4
+	// resourceRefreshEvery — switch details, volumes, ISO scan, vNIC topology. Heavy
+	// (the ISO scan walks the filesystem) and changes rarely. ~120s.
+	resourceRefreshEvery = 8
+	// inventoryRefreshEvery — physical hardware (adapters, disks, CPU, memory). Does
+	// not change without a reboot or a hardware event, so collecting it every 15s was
+	// pure waste; ~120s is ample. (Also collected on demand before registration.)
+	inventoryRefreshEvery = 8
+	// identityRefreshEvery — computer name and AD domain. Effectively immutable after
+	// a host is joined, so refresh it only occasionally. ~5min.
+	identityRefreshEvery = 20
+)
 
 // runnerConfig is the agent's runtime configuration, independent of how the
 // process was started (Windows service or console).
@@ -127,17 +144,21 @@ type runner struct {
 	statusMu   sync.Mutex
 	lastStatus *types.HostStatus
 
-	// lastResources / lastNetProfile cache the expensive observations that are
-	// refreshed only every few cycles (see resourceRefreshEvery / netProfileRefreshEvery)
-	// and reused in between, so a 15s cycle is not dominated by rescanning state
-	// that rarely changes.
+	// Caches for the throttled observations (see the *RefreshEvery cadences),
+	// reused between refreshes so a 15s cycle is not dominated by rescanning state
+	// that rarely changes. Each `have*` flag forces a first collection.
 	lastResources  types.HostResources
 	lastNetProfile string
 	haveResources  bool
+	lastInventory  types.HostInventory
+	haveInventory  bool
+	lastIdentity   hyperv.HostIdentity
+	haveIdentity   bool
 
-	// lastObservedVMs caches the host-wide VM inventory (for discovery/adoption),
-	// refreshed on the same throttle as resources since enumerating every VM is
-	// comparably heavy and the set changes rarely.
+	// lastObservedVMs caches the host-wide VM inventory (roles/power/replication)
+	// for discovery/adoption and the operational VM view; refreshed on the
+	// observeVMsEvery cadence (faster than resources — it is what changes during
+	// power/failover ops).
 	lastObservedVMs []types.ObservedVM
 	haveObservedVMs bool
 
@@ -300,17 +321,27 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// observations so its effect shows up now; read-and-clear it once for the
 	// whole cycle.
 	force := r.forceScan.Swap(false)
-	inv, err := r.hv.CollectInventory(ctx)
-	if err != nil {
-		r.log.Error("collect inventory failed", "err", err)
-	}
+
+	// Metrics (CPU/memory/uptime) are live and cheap — collect every cycle.
 	metrics, merr := r.hv.CollectMetrics(ctx)
 	if merr != nil {
 		r.log.Error("collect metrics failed", "err", merr)
 	}
-	// Resources (switch details, volumes, ISO scan, vNIC topology) change rarely
-	// and are the heaviest observation, so refresh them only every few cycles and
-	// reuse the last result in between. A job nudge forces a fresh cycle anyway.
+	// Physical hardware inventory does not change without a reboot, so refresh it
+	// on a slow cadence — but always collect it before we are registered, since
+	// registration reports it.
+	inv := r.lastInventory
+	if !r.haveInventory || force || !r.registered || r.cycles%inventoryRefreshEvery == 0 {
+		if got, ierr := r.hv.CollectInventory(ctx); ierr != nil {
+			r.log.Error("collect inventory failed", "err", ierr)
+		} else {
+			inv = got
+			r.lastInventory = got
+			r.haveInventory = true
+		}
+	}
+	// Resources (switch details, volumes, ISO scan, vNIC topology) are the heaviest
+	// observation and change rarely — refresh on the slow cadence, reuse between.
 	resources := r.lastResources
 	if force || !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
 		if res, resErr := r.hv.CollectResources(ctx); resErr != nil {
@@ -321,9 +352,17 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 			r.haveResources = true
 		}
 	}
-	identity, iderr := r.hv.GetHostIdentity(ctx)
-	if iderr != nil {
-		r.log.Error("get host identity failed", "err", iderr)
+	// Host identity (computer name, AD domain) is effectively immutable after join —
+	// refresh it only occasionally.
+	identity := r.lastIdentity
+	if !r.haveIdentity || r.cycles%identityRefreshEvery == 0 {
+		if id, iderr := r.hv.GetHostIdentity(ctx); iderr != nil {
+			r.log.Error("get host identity failed", "err", iderr)
+		} else {
+			identity = id
+			r.lastIdentity = id
+			r.haveIdentity = true
+		}
 	}
 
 	// Establish identity if we have not confirmed a registration yet. This never
@@ -633,13 +672,14 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 	}
 }
 
-// observeVMs enumerates every VM on the host (throttled, like resources) and
-// marks the ones already in this host's desired state as managed, so the centre
-// can list unmanaged VMs for discovery/adoption. Best-effort: on error it
-// reuses the last inventory rather than blanking discovery.
+// observeVMs enumerates every VM on the host (on the observeVMsEvery cadence, or
+// forced after a job) and marks the ones already in this host's desired state as
+// managed, so the centre can list unmanaged VMs for discovery/adoption and show
+// live roles/power. Best-effort: on error it reuses the last inventory rather
+// than blanking discovery.
 func (r *runner) observeVMs(ctx context.Context, force bool) []types.ObservedVM {
 	vms := r.lastObservedVMs
-	if force || !r.haveObservedVMs || r.cycles%resourceRefreshEvery == 0 {
+	if force || !r.haveObservedVMs || r.cycles%observeVMsEvery == 0 {
 		if got, err := r.hv.ListObservedVMs(ctx); err != nil {
 			r.log.Warn("list observed vms failed; reusing last inventory", "err", err)
 		} else {
