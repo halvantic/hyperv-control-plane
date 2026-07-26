@@ -421,6 +421,15 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 		for _, pv := range resp.GetVms() {
 			vms = append(vms, ballastpb.VMFromProto(pv))
 		}
+		// When the centre changes what VMs this host should run — a create, delete,
+		// migration, or a failover flip that moves a VM on or off this host — the
+		// host's observed VM view is immediately stale. Force a fresh observe THIS
+		// cycle so the change surfaces at once, not on the next observeVMs tick.
+		// This is what makes the OTHER side of a failover (the former primary that
+		// becomes a replica, which never ran the job) reflect its new role promptly.
+		if prev, ok, _ := r.st.LoadDesiredVMs(); !ok || vmSetChanged(prev, vms) {
+			force = true
+		}
 		if serr := r.st.SaveDesiredVMs(vms); serr != nil {
 			r.log.Error("persist desired vms failed", "err", serr)
 		}
@@ -670,6 +679,26 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 	if err != nil {
 		r.log.Warn("cluster status report failed", "err", err)
 	}
+}
+
+// vmSetChanged reports whether the desired VM set differs between two pulls, by
+// name and generation — so an added, removed, or respecced VM triggers a fresh
+// observe. Order-independent; generation catches an in-place spec change (e.g. a
+// failover flip rewriting placement/replication) even when the name set is equal.
+func vmSetChanged(a, b []types.VM) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	seen := make(map[string]int64, len(a))
+	for _, vm := range a {
+		seen[vm.Meta.Name] = vm.Meta.Generation
+	}
+	for _, vm := range b {
+		if g, ok := seen[vm.Meta.Name]; !ok || g != vm.Meta.Generation {
+			return true
+		}
+	}
+	return false
 }
 
 // observeVMs enumerates every VM on the host (on the observeVMsEvery cadence, or
