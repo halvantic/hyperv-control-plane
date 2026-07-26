@@ -32,6 +32,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.CreateVMCheckpoint(ctx, p["vm"], p["name"]), "checkpoint created")
 	case types.JobVMExport:
 		return done(r.hv.ExportVM(ctx, p["vm"], p["path"]), "exported to "+p["path"])
+	case types.JobVMClone:
+		return done(r.hv.CloneVM(ctx, p["vm"], p["name"], p["folder"]), "cloned "+p["vm"]+" to "+p["name"])
 	case types.JobFetchISO:
 		return done(r.hv.FetchISO(ctx, p["url"], p["dest"]), "downloaded ISO "+p["name"])
 	case types.JobGuestJoinDomain:

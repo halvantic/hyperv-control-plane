@@ -321,6 +321,13 @@ type Interface interface {
 	// ExportVM exports the VM (config + VHDs) to a directory. Imperative Job.
 	ExportVM(ctx context.Context, vmName, path string) error
 
+	// CloneVM makes an independent copy of an Off source VM into folder: it copies
+	// the source's VHD(s), creates a new VM (fresh identity, dynamic MAC) matching
+	// the source's generation/CPU/memory, and connects the NIC to the source's
+	// switch. The source must be Off (its disk is locked while running). Imperative
+	// Job. The centre then adopts the new VM into desired state.
+	CloneVM(ctx context.Context, srcName, newName, folder string) error
+
 	// FetchISO downloads an ISO from url (the centre's ISO library over HTTP) to
 	// dest on this host, creating dest's parent folder. Used to place an uploaded
 	// ISO onto a CSV so any node can boot a VM from it. Agent-local (no WinRM) and

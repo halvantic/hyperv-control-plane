@@ -31,6 +31,42 @@ func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
 	return nil
 }
 
+// CloneVM copies an Off source VM into an independent new VM in folder. It copies
+// each source VHD (first → <new>.vhdx, extras → <new>-N.vhdx), creates the new VM
+// matching the source's generation / CPU / (dynamic) memory with a fresh identity
+// and a dynamic MAC, and connects the first NIC to the source's switch. The
+// source must be Off — a running VM's VHDX is locked, so a live copy is refused.
+func (p *PowerShell) CloneVM(ctx context.Context, srcName, newName, folder string) error {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$src=%[1]s; $new=%[2]s; $folder=%[3]s
+$s = Get-VM -Name $src -ErrorAction Stop
+if ([string]$s.State -ne 'Off') { throw ('source VM ' + $src + ' must be Off to clone (its disk is locked while it runs) - stop it first') }
+if (Get-VM -Name $new -ErrorAction SilentlyContinue) { throw ('a VM named ' + $new + ' already exists on this host') }
+$srcDisks = @(Get-VMHardDiskDrive -VMName $src | ForEach-Object { [string]$_.Path })
+if ($srcDisks.Count -eq 0) { throw ('source VM ' + $src + ' has no disks to clone') }
+if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+$newDisks = @()
+for ($i=0; $i -lt $srcDisks.Count; $i++) {
+  $fn = if ($i -eq 0) { $new + '.vhdx' } else { $new + '-' + $i + '.vhdx' }
+  $dest = Join-Path $folder $fn
+  if (Test-Path -LiteralPath $dest) { throw ('target disk already exists: ' + $dest) }
+  Copy-Item -LiteralPath $srcDisks[$i] -Destination $dest -Force
+  $newDisks += $dest
+}
+$gen = [int]$s.Generation
+New-VM -Name $new -Generation $gen -MemoryStartupBytes ([int64]$s.MemoryStartup) -VHDPath $newDisks[0] | Out-Null
+for ($i=1; $i -lt $newDisks.Count; $i++) { Add-VMHardDiskDrive -VMName $new -Path $newDisks[$i] }
+Set-VM -Name $new -ProcessorCount ([int]$s.ProcessorCount)
+if ($s.DynamicMemoryEnabled) { Set-VM -Name $new -DynamicMemory -MemoryMinimumBytes ([int64]$s.MemoryMinimum) -MemoryMaximumBytes ([int64]$s.MemoryMaximum) }
+$sn = @(Get-VMNetworkAdapter -VMName $src)[0]
+if ($sn -and [string]$sn.SwitchName) { Get-VMNetworkAdapter -VMName $new | Connect-VMNetworkAdapter -SwitchName ([string]$sn.SwitchName) }
+'RESULT=OK'`, psQuote(srcName), psQuote(newName), psQuote(folder))
+	if _, err := p.run(ctx, script); err != nil {
+		return fmt.Errorf("clone vm %q to %q: %w", srcName, newName, err)
+	}
+	return nil
+}
+
 func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) error {
 	// Idempotent: skip when the ISO is already present. Fetch to a temp file then
 	// move into place so an interrupted transfer never looks complete.

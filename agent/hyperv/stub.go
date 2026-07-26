@@ -506,6 +506,7 @@ func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return
 // CreateVMCheckpoint / ExportVM / AddClusterNode / EvictClusterNode record the job ran.
 func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
 func (s *Stub) ExportVM(_ context.Context, _, _ string) error                       { return nil }
+func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error                     { return nil }
 func (s *Stub) FetchISO(_ context.Context, _, _ string) error                       { return nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }

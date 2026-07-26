@@ -850,6 +850,7 @@ const (
 	JobVMApplyCheck   = "VMApplyCheckpoint"  // params: vm, name
 	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name
 	JobVMExport       = "VMExport"           // params: vm, path
+	JobVMClone        = "VMClone"            // params: vm (source), name (new), folder (target) — copy an Off VM into an independent new one
 	JobClusterAddNode = "ClusterAddNode"     // params: node
 	JobClusterEvict   = "ClusterEvict"       // params: node
 	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)
