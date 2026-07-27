@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"context"
-	"time"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -175,19 +174,14 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 
 // ReconcileVMs reconciles every VM placed on this host, returning one result per
 // VM in input order. It never stops at the first failure: each VM is independent
-// and its status should reflect its own outcome.
-// vmReconcileTimeout bounds a single VM's reconcile so one VM whose Hyper-V
-// operation blocks (a wedged VHD, an unresponsive cluster group) cannot stall the
-// reconcile of every other VM. execPowerShell honours the context, so the
-// deadline terminates the underlying powershell.exe.
-const vmReconcileTimeout = 45 * time.Second
-
+// and its status should reflect its own outcome. The whole cycle is bounded by the
+// caller; a single VM is not separately timed out, because one VM's reconcile is a
+// sequence of cmdlet calls (a fixed-VHD create alone can run for minutes) and a
+// per-VM deadline would abort legitimate long work mid-flight.
 func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM) []VMResult {
 	out := make([]VMResult, 0, len(vms))
 	for _, vm := range vms {
-		vctx, cancel := context.WithTimeout(ctx, vmReconcileTimeout)
-		out = append(out, r.ReconcileVM(vctx, vm))
-		cancel()
+		out = append(out, r.ReconcileVM(ctx, vm))
 	}
 	return out
 }

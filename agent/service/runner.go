@@ -42,21 +42,22 @@ func jobTimeoutFor(kind string) time.Duration {
 // generation rather than trusting an "unchanged" answer indefinitely.
 const fullResyncEvery = 20
 
-// Reconcile timeouts make the loop bulletproof: a PowerShell call that blocks
-// (an unresponsive cluster/CSV query, a wedged Hyper-V operation) is killed when
-// its context deadline passes — execPowerShell uses exec.CommandContext, so the
-// deadline terminates the process — instead of hanging the cycle forever. Jobs
-// and liveness already run on their own goroutines; these bound reconcile so one
-// stuck call can never wedge the whole agent.
+// The reconcile cycle is bounded so a blocked PowerShell call (an unresponsive
+// cluster/CSV query, a wedged Hyper-V op) can never hang the agent forever:
+// execPowerShell uses exec.CommandContext, so the deadline terminates the
+// process. Only the WHOLE cycle is bounded, not each operation — a host reconcile
+// is a sequence of many cmdlet calls (per-switch, per-vNIC, prune, DNS) that on a
+// busy cluster member legitimately takes well over a minute, so bounding a single
+// operation would kill working work mid-sequence and flag the host Degraded.
+// Jobs and liveness run on their own goroutines, so a slow cycle never delays an
+// operator action or makes the host look offline.
 const (
-	// cycleTimeout caps an entire reconcile cycle. Generous enough for a legitimately
-	// slow pass (S2D/cluster queries on a busy node) but guarantees the loop always
-	// regains control and retries.
-	cycleTimeout = 3 * time.Minute
-	// reconcileOpTimeout caps a single reconcile operation (host, one VM, cluster)
-	// so one hung operation is abandoned quickly and the rest of the cycle proceeds.
-	reconcileOpTimeout = 60 * time.Second
-	// collectTimeout caps an observation (inventory, metrics, resources, VM list).
+	// cycleTimeout caps an entire reconcile cycle — a generous backstop that lets a
+	// legitimately slow pass complete while guaranteeing the loop always regains
+	// control and retries (a true wedge recovers within this window).
+	cycleTimeout = 5 * time.Minute
+	// collectTimeout caps a single best-effort read (e.g. a console screen capture)
+	// so a wedged capture cannot eat the cycle budget.
 	collectTimeout = 45 * time.Second
 )
 
@@ -523,9 +524,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
-		rctx, rcancel := context.WithTimeout(ctx, reconcileOpTimeout)
-		res, rerr := r.reconciler.Reconcile(rctx, cached, secrets)
-		rcancel()
+		res, rerr := r.reconciler.Reconcile(ctx, cached, secrets)
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		if rerr != nil {
@@ -565,9 +564,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// avoids a last-writer-wins race between members clobbering each other's view
 	// (e.g. one member observing groups, another reporting none).
 	if assignment != nil {
-		cctx, ccancel := context.WithTimeout(ctx, reconcileOpTimeout)
-		cres, cerr := r.reconciler.ReconcileCluster(cctx, *assignment)
-		ccancel()
+		cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
 		if cerr != nil {
 			r.log.Error("cluster reconcile incomplete", "err", cerr)
 		}
