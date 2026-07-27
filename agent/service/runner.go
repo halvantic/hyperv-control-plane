@@ -42,6 +42,24 @@ func jobTimeoutFor(kind string) time.Duration {
 // generation rather than trusting an "unchanged" answer indefinitely.
 const fullResyncEvery = 20
 
+// Reconcile timeouts make the loop bulletproof: a PowerShell call that blocks
+// (an unresponsive cluster/CSV query, a wedged Hyper-V operation) is killed when
+// its context deadline passes — execPowerShell uses exec.CommandContext, so the
+// deadline terminates the process — instead of hanging the cycle forever. Jobs
+// and liveness already run on their own goroutines; these bound reconcile so one
+// stuck call can never wedge the whole agent.
+const (
+	// cycleTimeout caps an entire reconcile cycle. Generous enough for a legitimately
+	// slow pass (S2D/cluster queries on a busy node) but guarantees the loop always
+	// regains control and retries.
+	cycleTimeout = 3 * time.Minute
+	// reconcileOpTimeout caps a single reconcile operation (host, one VM, cluster)
+	// so one hung operation is abandoned quickly and the rest of the cycle proceeds.
+	reconcileOpTimeout = 60 * time.Second
+	// collectTimeout caps an observation (inventory, metrics, resources, VM list).
+	collectTimeout = 45 * time.Second
+)
+
 // Observation refresh cadences, tiered by how often each class of state actually
 // changes so a 15s cycle is not dominated by rescanning things that rarely move.
 // Each observation is cached and reused between refreshes; the reported status
@@ -362,8 +380,13 @@ func (r *runner) pollJobs(ctx context.Context, client ballastpb.AgentServiceClie
 // state, reconciles (next step), and reports status. Every centre interaction
 // is best-effort: a failure flips the agent to Autonomous and journals status
 // locally for later replay, but the cycle still completes.
-func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient) {
+func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClient) {
 	r.cycles++
+	// Bound the whole cycle: if any operation hangs, the deadline cancels it (and
+	// kills the underlying powershell.exe) so the loop always regains control and
+	// the next cycle retries — the cycle can never wedge the agent.
+	ctx, cancel := context.WithTimeout(parent, cycleTimeout)
+	defer cancel()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
 	// whole cycle.
@@ -500,7 +523,9 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
-		res, rerr := r.reconciler.Reconcile(ctx, cached, secrets)
+		rctx, rcancel := context.WithTimeout(ctx, reconcileOpTimeout)
+		res, rerr := r.reconciler.Reconcile(rctx, cached, secrets)
+		rcancel()
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		if rerr != nil {
@@ -540,7 +565,9 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// avoids a last-writer-wins race between members clobbering each other's view
 	// (e.g. one member observing groups, another reporting none).
 	if assignment != nil {
-		cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+		cctx, ccancel := context.WithTimeout(ctx, reconcileOpTimeout)
+		cres, cerr := r.reconciler.ReconcileCluster(cctx, *assignment)
+		ccancel()
 		if cerr != nil {
 			r.log.Error("cluster reconcile incomplete", "err", cerr)
 		}
@@ -554,11 +581,11 @@ func (r *runner) cycle(ctx context.Context, client ballastpb.AgentServiceClient)
 	// host spec. Reporting is best-effort and skipped when autonomous.
 	r.reconcileVMs(ctx, client, autonomous)
 
-	// Imperative jobs the centre queued for this host. Only run when the centre
-	// is reachable — jobs are one-shot actions, never cached or replayed.
-	if err == nil {
-		r.runJobs(ctx, client, resp.GetJobs())
-	}
+	// Imperative jobs are NOT run here. They are handled by the dedicated pollJobs
+	// goroutine (under the long-lived root context, every few seconds), so a slow
+	// or hung reconcile cycle never delays an operator action — and so a job's
+	// goroutine is never tied to this cycle's timeout-bounded context, which would
+	// otherwise kill a long job (a live migration) when the cycle returns.
 }
 
 // runJobs launches each pending job in the background so a long or stuck host
@@ -651,8 +678,12 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 		}
 		st := r.buildVMStatus(res)
 		// Capture a console thumbnail for running VMs (best-effort, read-only).
+		// Bounded so a wedged capture can't stall the whole status report.
 		if res.PowerState == types.VMPowerRunning {
-			if png, serr := r.hv.GetVMScreen(ctx, res.Name); serr != nil {
+			sctx, scancel := context.WithTimeout(ctx, collectTimeout)
+			png, serr := r.hv.GetVMScreen(sctx, res.Name)
+			scancel()
+			if serr != nil {
 				r.log.Warn("vm screen capture failed", "vm", res.Name, "err", serr)
 			} else {
 				st.ScreenPNG = png

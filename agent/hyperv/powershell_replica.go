@@ -477,7 +477,10 @@ func (p *PowerShell) RemoveReplicaVM(ctx context.Context, vmName string) error {
 $vm = %[1]s
 $v = Get-VM -Name $vm -ErrorAction SilentlyContinue
 if ($v) {
-  $r = Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue
+  # Take the first relationship: extended replication (a replica that is itself
+  # replicated onward) makes Get-VMReplication return an array, and [string]$r.Mode
+  # would then join to "Replica Replica" and fail a plain -ne 'Replica' check.
+  $r = @(Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue)[0]
   if (-not $r -or [string]$r.Mode -ne 'Replica') {
     throw ('refusing to remove ' + $vm + ': it is not a replica copy on this host (mode ' + [string]$r.Mode + ') - use Delete VM instead')
   }
