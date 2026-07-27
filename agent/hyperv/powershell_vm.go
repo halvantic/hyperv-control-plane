@@ -413,6 +413,33 @@ if (%[2]s) {
 		startAction = fmt.Sprintf("Set-VM -Name %s %s\n", name, arg)
 	}
 
+	// Secure Boot (Gen 2 only): converge the UEFI policy so a Linux guest can boot
+	// (its shim is signed under the Microsoft UEFI CA, not the Windows template).
+	// Applied only when it differs and only while the VM is off (a firmware change
+	// requires it stopped), flagging $pending otherwise — same as CPU/memory.
+	firmware := ""
+	if gen == 2 {
+		enable, tmpl := "On", "MicrosoftWindows"
+		switch strings.ToLower(s.SecureBoot) {
+		case "off":
+			enable = "Off"
+		case "linux", "uefi", "microsoftueficertificateauthority":
+			tmpl = "MicrosoftUEFICertificateAuthority"
+		}
+		firmware = fmt.Sprintf(`$fw = Get-VMFirmware -VMName %[1]s
+$wantSb = %[2]s
+$wantTmpl = %[3]s
+$isOn = ([string]$fw.SecureBoot -eq 'On')
+if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.SecureBootTemplate -ne $wantTmpl)) {
+  if ($running) { $pending = $true } else {
+    if ($wantSb -eq 'On') { Set-VMFirmware -VMName %[1]s -EnableSecureBoot On -SecureBootTemplate $wantTmpl }
+    else { Set-VMFirmware -VMName %[1]s -EnableSecureBoot Off }
+    $changed = $true
+  }
+}
+`, name, psQuote(enable), psQuote(tmpl))
+	}
+
 	disks := ""
 	for _, d := range s.Disks {
 		path := psQuote(d.Path)
@@ -575,9 +602,9 @@ $cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
-%[6]s%[7]s%[8]s%[9]s
+%[13]s%[6]s%[7]s%[8]s%[9]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

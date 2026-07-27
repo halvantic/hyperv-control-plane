@@ -1027,6 +1027,14 @@ type VMSpec struct {
 	// Zero is treated as 2 by the agent.
 	HyperVGeneration int `json:"hyperVGeneration,omitempty"`
 
+	// SecureBoot sets the Gen 2 UEFI Secure Boot policy. "" or "windows" uses the
+	// default Microsoft Windows template; "linux" uses the Microsoft UEFI CA
+	// template — required for most Linux guests, whose shim is signed under it, so
+	// the Windows template rejects them ("the signed image's hash is not allowed").
+	// "off" disables Secure Boot. Ignored for Gen 1. A firmware change needs the VM
+	// stopped, so it settles on the next power-off (like processor/memory).
+	SecureBoot string `json:"secureBoot,omitempty"`
+
 	// ProcessorCount is the number of virtual processors assigned.
 	ProcessorCount int `json:"processorCount"`
 
