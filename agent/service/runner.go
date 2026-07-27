@@ -88,6 +88,17 @@ const (
 	// identityRefreshEvery — computer name and AD domain. Effectively immutable after
 	// a host is joined, so refresh it only occasionally. ~5min.
 	identityRefreshEvery = 20
+	// clusterReconcileEvery — the cluster-wide reconcile (the Failover-Clustering
+	// feature, S2D/CSV provisioning, the Replica Broker, migration delegation) is the
+	// most expensive and most hang-prone pass, yet cluster desired state changes very
+	// rarely. So it is edge-triggered — run at once when the cluster's Generation
+	// changes (an operator edit) or after a job (forceScan) — and otherwise only on
+	// this slow idle sweep (~2min) as a drift/retry/post-reboot safety net. Failover
+	// Clustering owns availability and quorum between sweeps regardless. The centre
+	// keeps the last reported cluster status between passes, so this does not blank
+	// the UI; the one thing it can lag is an *unplanned* failover's owner node (a
+	// planned move goes through a job, which forces an immediate pass).
+	clusterReconcileEvery = 8
 )
 
 // runnerConfig is the agent's runtime configuration, independent of how the
@@ -127,6 +138,11 @@ type runner struct {
 
 	// cycles counts heartbeat cycles, used to schedule a periodic full resync.
 	cycles int
+
+	// lastClusterGen is the cluster Generation the last cluster reconcile ran
+	// against, so a change (an operator edit) edge-triggers an immediate pass
+	// between the slow idle sweeps (see clusterReconcileEvery).
+	lastClusterGen int64
 
 	// registered is true once a registration round-trip has been confirmed.
 	// Until then each cycle retries registration; the retry never blocks the
@@ -563,13 +579,22 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// only the former REPORTS cluster status: it is the single authority, which
 	// avoids a last-writer-wins race between members clobbering each other's view
 	// (e.g. one member observing groups, another reporting none).
+	//
+	// This is the expensive, hang-prone pass and cluster desired state changes
+	// rarely, so it is edge-triggered: run at once when the cluster's Generation
+	// changes or a job asked for a rescan (force), and otherwise only on a slow idle
+	// sweep as a drift/retry/post-reboot safety net (see clusterReconcileEvery).
 	if assignment != nil {
-		cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
-		if cerr != nil {
-			r.log.Error("cluster reconcile incomplete", "err", cerr)
-		}
-		if assignment.IsFormer {
-			r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
+		if force || genChanged || r.cycles%clusterReconcileEvery == 0 {
+			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+			if cerr != nil {
+				r.log.Error("cluster reconcile incomplete", "err", cerr)
+			}
+			r.lastClusterGen = assignment.Cluster.Meta.Generation
+			if assignment.IsFormer {
+				r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
+			}
 		}
 	}
 
