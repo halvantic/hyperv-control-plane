@@ -163,7 +163,12 @@ $server = %[3]s
 $port = %[4]d
 $auth = %[5]s
 $freq = %[6]d
-$r = Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue
+# The VM must exist on THIS host to reconcile its replication. For a clustered VM
+# only the current owner has it; a non-owner member (which the centre may still
+# deliver the desired VM to) has nothing to do — Enable-VMReplication would fail
+# "unable to find a virtual machine". No-op there; the owner reconciles it.
+if (-not (Get-VM -Name $vm -ErrorAction SilentlyContinue)) { 'RESULT=NOOP'; return }
+$r = @(Get-VMReplication -VMName $vm -ErrorAction SilentlyContinue)[0]
 $changed = $false
 if (-not $enabled) {
   if ($r) { Remove-VMReplication -VMName $vm -ErrorAction Stop; $changed = $true }
