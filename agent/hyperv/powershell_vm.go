@@ -363,6 +363,39 @@ func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult,
 	return r, nil
 }
 
+// normaliseBootOrder maps declared boot-order tokens onto the canonical device
+// categories the reconcile script understands ("Drive", "DVD", "Network", and
+// "Floppy" for Gen 1 only), tolerating common aliases and casing, dropping
+// unknown or gen-inapplicable entries, and de-duplicating while preserving order.
+// Returns nil when nothing usable remains, which leaves the boot order unmanaged.
+func normaliseBootOrder(order []string, gen int) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range order {
+		var t string
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "drive", "disk", "hdd", "harddrive", "harddisk", "ide", "scsi":
+			t = "Drive"
+		case "dvd", "cd", "optical", "iso":
+			t = "DVD"
+		case "network", "net", "pxe", "legacynetworkadapter", "networkadapter":
+			t = "Network"
+		case "floppy":
+			if gen != 1 {
+				continue // no floppy on Gen 2 UEFI
+			}
+			t = "Floppy"
+		default:
+			continue
+		}
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // ensureVMScript builds the convergence script for one VM. It is split out so it
 // stays readable; the logic is in-script (like EnsureCSV) since it is a sequence
 // of idempotent cmdlet checks rather than a single decision.
@@ -438,6 +471,58 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
   }
 }
 `, name, psQuote(enable), psQuote(tmpl))
+	}
+
+	// Boot order: order the VM's actual boot entries by the declared device-category
+	// priority. Runs after disks/adapters/ISO are attached (below) so the entries it
+	// reorders exist. Like Secure Boot, a firmware/BIOS change needs the VM off, so
+	// it flags $pending while running and settles on the next power-off. Empty spec
+	// leaves the order unmanaged.
+	bootOrder := ""
+	if toks := normaliseBootOrder(s.BootOrder, gen); len(toks) > 0 {
+		want := psStringList(toks)
+		if gen == 1 {
+			// Gen 1 BIOS StartupOrder is an ordered set of the four device categories.
+			// Map ours onto the BootDevice enum names, then append any not listed so
+			// the full set is always supplied (Set-VMBios requires it).
+			bootOrder = fmt.Sprintf(`$want = @(%[2]s)
+$map = @{ 'Drive'='IDE'; 'DVD'='CD'; 'Network'='LegacyNetworkAdapter'; 'Floppy'='Floppy' }
+$all = @('CD','IDE','LegacyNetworkAdapter','Floppy')
+$ord = @()
+foreach ($t in $want) { if ($map.ContainsKey($t)) { $d = $map[$t]; if ($ord -notcontains $d) { $ord += $d } } }
+foreach ($d in $all) { if ($ord -notcontains $d) { $ord += $d } }
+$bios = Get-VMBios -VMName %[1]s
+$cur = (($bios.StartupOrder | ForEach-Object { [string]$_ }) -join ',')
+if ($cur -ne ($ord -join ',')) {
+  if ($running) { $pending = $true } else { Set-VMBios -VMName %[1]s -StartupOrder $ord; $changed = $true }
+}
+`, name, want)
+		} else {
+			// Gen 2 UEFI: classify each existing boot entry by its underlying device
+			// and rebuild the order — listed categories first (in declared order,
+			// preserving each category's internal order), then everything else so no
+			// entry is dropped (Set-VMFirmware -BootOrder needs the complete set).
+			bootOrder = fmt.Sprintf(`$want = @(%[2]s)
+$fw = Get-VMFirmware -VMName %[1]s
+$entries = @($fw.BootOrder)
+if ($entries.Count -gt 0) {
+  $cls = {
+    param($e)
+    $n = ''
+    try { $n = $e.Device.GetType().Name } catch {}
+    if ($n -eq 'DvdDrive') { 'DVD' } elseif ($n -eq 'HardDiskDrive') { 'Drive' } elseif ($n -like '*NetworkAdapter*') { 'Network' } else { 'Other' }
+  }
+  $ordered = @()
+  foreach ($t in $want) { foreach ($e in $entries) { if ((& $cls $e) -eq $t) { $ordered += $e } } }
+  foreach ($e in $entries) { if ($ordered -notcontains $e) { $ordered += $e } }
+  $curSig = (($entries | ForEach-Object { & $cls $_ }) -join ',')
+  $wantSig = (($ordered | ForEach-Object { & $cls $_ }) -join ',')
+  if ($curSig -ne $wantSig) {
+    if ($running) { $pending = $true } else { Set-VMFirmware -VMName %[1]s -BootOrder $ordered; $changed = $true }
+  }
+}
+`, name, want)
+		}
 	}
 
 	disks := ""
@@ -602,9 +687,9 @@ $cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
-%[13]s%[6]s%[7]s%[8]s%[9]s
+%[13]s%[6]s%[7]s%[8]s%[9]s%[14]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder)
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

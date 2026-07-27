@@ -1035,6 +1035,16 @@ type VMSpec struct {
 	// stopped, so it settles on the next power-off (like processor/memory).
 	SecureBoot string `json:"secureBoot,omitempty"`
 
+	// BootOrder is the firmware boot priority, most-preferred first, expressed as
+	// device categories rather than specific devices so it stays stable as disks
+	// and NICs change: "Drive" (a virtual hard disk), "DVD" (an ISO/optical drive),
+	// "Network" (PXE), and, for Generation 1 only, "Floppy". The agent orders the
+	// VM's actual boot entries to match — a Gen 2 UEFI BootOrder or a Gen 1 BIOS
+	// StartupOrder — and appends any device categories not listed. Empty means the
+	// boot order is unmanaged (Hyper-V's default is left untouched). Like a
+	// firmware change, it settles on the next power-off.
+	BootOrder []string `json:"bootOrder,omitempty"`
+
 	// ProcessorCount is the number of virtual processors assigned.
 	ProcessorCount int `json:"processorCount"`
 

@@ -46,6 +46,49 @@ func TestEnsureVMScriptNoDiskNoPath(t *testing.T) {
 	}
 }
 
+// A Gen 2 VM with a boot order rebuilds the UEFI BootOrder from the declared
+// device-category priority (DVD before Drive), and only while the VM is off.
+func TestEnsureVMScriptGen2BootOrder(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{MemoryStartupBytes: 4294967296, BootOrder: []string{"DVD", "Drive", "Network"}},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	if !strings.Contains(s, "$want = @('DVD','Drive','Network')") { // wrapped array literal
+
+		t.Fatalf("script does not set the desired boot order:\n%s", s)
+	}
+	if !strings.Contains(s, "Set-VMFirmware -VMName 'Web01' -BootOrder $ordered") {
+		t.Fatalf("script does not apply the Gen 2 boot order:\n%s", s)
+	}
+	if !strings.Contains(s, "if ($running) { $pending = $true }") {
+		t.Fatalf("boot order should defer while the VM runs:\n%s", s)
+	}
+}
+
+// A Gen 1 VM maps the categories onto the BIOS StartupOrder enum and always
+// supplies the full device set. Floppy is only valid here, not on Gen 2.
+func TestEnsureVMScriptGen1BootOrderMapsBios(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Legacy01"},
+		Spec: types.VMSpec{MemoryStartupBytes: 2147483648, BootOrder: []string{"DVD", "Drive"}},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 1)
+	if !strings.Contains(s, "Set-VMBios -VMName 'Legacy01' -StartupOrder $ord") {
+		t.Fatalf("Gen 1 boot order should use Set-VMBios StartupOrder:\n%s", s)
+	}
+	if strings.Contains(s, "Set-VMFirmware") {
+		t.Fatalf("Gen 1 must not touch UEFI firmware:\n%s", s)
+	}
+	// Gen 2 drops Floppy; Gen 1 keeps it.
+	if got := normaliseBootOrder([]string{"Floppy", "Drive"}, 2); len(got) != 1 || got[0] != "Drive" {
+		t.Fatalf("Gen 2 should drop Floppy, got %v", got)
+	}
+	if got := normaliseBootOrder([]string{"Floppy", "Drive"}, 1); len(got) != 2 {
+		t.Fatalf("Gen 1 should keep Floppy, got %v", got)
+	}
+}
+
 // MigrateVM issues a shared-nothing Move-VM (backgrounded for progress polling)
 // to the destination host, streams progress from PROGRESS lines, and returns the
 // DONE summary.
