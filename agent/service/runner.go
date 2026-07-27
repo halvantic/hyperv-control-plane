@@ -222,6 +222,15 @@ func (r *runner) run(ctx context.Context) error {
 	// a busy host.
 	go r.keepalive(ctx, client)
 
+	// Imperative jobs (stop/restart/checkpoint/…) are one-shot operator actions
+	// that must feel immediate. They arrive on the pull, but the reconcile cycle
+	// pulls only every heartbeat AND runs jobs at its tail — after host/VM/cluster
+	// reconcile — so a slow or stuck cycle (S2D/cluster queries on a busy member)
+	// leaves a queued job Pending for many seconds while the keepalive still shows
+	// the host online. Poll for jobs on a short, dedicated interval, decoupled from
+	// reconcile, so a stop/restart is picked up within a couple of seconds.
+	go r.pollJobs(ctx, client)
+
 	// One immediate cycle so state is fresh on startup, then on a ticker.
 	r.cycle(ctx, client)
 
@@ -305,6 +314,44 @@ func (r *runner) keepalive(ctx context.Context, client ballastpb.AgentServiceCli
 				Status:   ballastpb.StatusToProto(*st),
 			}); err != nil {
 				r.log.Debug("keepalive report failed", "err", err)
+			}
+		}
+	}
+}
+
+// jobPollInterval is how often the dedicated job poll checks for queued
+// imperative actions — short enough that stop/restart/checkpoint feel immediate,
+// independent of the (potentially slow) reconcile cycle.
+const jobPollInterval = 3 * time.Second
+
+// pollJobs picks up and runs queued imperative jobs on a short interval, so an
+// operator action is not held hostage by the reconcile cycle's cadence or a slow
+// pass. It sends the known generation so the desired-state part of the pull is a
+// cheap "unchanged"; only the jobs are acted on here (runJobs is dedup-safe, so
+// running alongside the cycle never double-executes). Best-effort: an unreachable
+// centre just retries next tick, and jobs never run autonomously anyway.
+func (r *runner) pollJobs(ctx context.Context, client ballastpb.AgentServiceClient) {
+	t := time.NewTicker(jobPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if r.uid == "" {
+				continue // not registered yet; the first cycle establishes identity
+			}
+			known, _, _ := r.st.LoadDesiredHost()
+			resp, err := client.PullDesiredState(ctx, &ballastpb.PullDesiredStateRequest{
+				HostName:        r.cfg.hostName,
+				Uid:             r.uid,
+				KnownGeneration: known.Meta.Generation,
+			})
+			if err != nil {
+				continue
+			}
+			if jobs := resp.GetJobs(); len(jobs) > 0 {
+				r.runJobs(ctx, client, jobs)
 			}
 		}
 	}
