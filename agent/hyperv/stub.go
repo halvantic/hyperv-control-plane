@@ -428,6 +428,14 @@ func (s *Stub) ListObservedVMs(_ context.Context) ([]types.ObservedVM, error) {
 	return out, nil
 }
 
+// WatchVMState is a no-op subscription for the stub: it emits no events and
+// simply blocks until the context is cancelled, so the supervising loop treats
+// it as a live-but-idle watcher rather than a failed one to restart.
+func (s *Stub) WatchVMState(ctx context.Context, _ func()) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (s *Stub) EnsureVM(_ context.Context, vm types.VM) (VMEnsureResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

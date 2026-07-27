@@ -203,6 +203,12 @@ type runner struct {
 	// immediately — e.g. a stopped test failover's clone disappears at once,
 	// rather than lingering until the next throttled refresh.
 	forceScan atomic.Bool
+
+	// forceObserveVMs forces just the VM observation next cycle, without the
+	// heavier resource/inventory rescan forceScan triggers. The VM-state watcher
+	// sets it (via requestObserveNudge) so a power change surfaces within a couple
+	// of seconds while an event storm cannot churn the expensive scans.
+	forceObserveVMs atomic.Bool
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -214,6 +220,21 @@ func (r *runner) requestNudge() {
 	// Force the nudged cycle to re-scan resources and the VM inventory, not reuse
 	// the throttled cache — set before signalling so the cycle sees it.
 	r.forceScan.Store(true)
+	select {
+	case r.nudge <- struct{}{}:
+	default:
+	}
+}
+
+// requestObserveNudge asks for an immediate cycle that refreshes only the VM
+// observation, not the heavier resource/inventory scans. The VM-state watcher
+// uses this so a power change is reflected promptly without the cost (or the
+// event-storm amplification) of a full forceScan. Non-blocking and coalescing.
+func (r *runner) requestObserveNudge() {
+	if r.nudge == nil {
+		return
+	}
+	r.forceObserveVMs.Store(true)
 	select {
 	case r.nudge <- struct{}{}:
 	default:
@@ -265,6 +286,12 @@ func (r *runner) run(ctx context.Context) error {
 	// the host online. Poll for jobs on a short, dedicated interval, decoupled from
 	// reconcile, so a stop/restart is picked up within a couple of seconds.
 	go r.pollJobs(ctx, client)
+
+	// Subscribe to VM power-state changes so a stop/start/pause is reflected within
+	// a couple of seconds instead of waiting for the polled observe tier. This only
+	// nudges a re-observe — the periodic cycle stays the source of truth, so a
+	// dropped subscription or missed event costs latency, never correctness.
+	go r.watchVMState(ctx)
 
 	// One immediate cycle so state is fresh on startup, then on a ticker.
 	r.cycle(ctx, client)
@@ -392,6 +419,47 @@ func (r *runner) pollJobs(ctx context.Context, client ballastpb.AgentServiceClie
 	}
 }
 
+// watchVMState supervises the VM power-state subscription: it runs the watcher,
+// and if it ends (the CIM provider restarts, the query faults, powershell.exe
+// exits) re-establishes it after a bounded backoff, until ctx is cancelled. Each
+// change nudges a light re-observe; the subscription carries no state, so a gap
+// while it restarts only defers to the periodic cycle. Purely an optimisation, so
+// a persistent failure degrades to plain polling rather than breaking anything.
+func (r *runner) watchVMState(ctx context.Context) {
+	const (
+		baseBackoff = 2 * time.Second
+		maxBackoff  = 60 * time.Second
+	)
+	backoff := baseBackoff
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		start := time.Now()
+		err := r.hv.WatchVMState(ctx, r.requestObserveNudge)
+		if ctx.Err() != nil {
+			return
+		}
+		// A watcher that ran for a good while then ended is a transient provider
+		// blip, not a config problem — reset the backoff so it re-subscribes fast.
+		if time.Since(start) > 2*maxBackoff {
+			backoff = baseBackoff
+		}
+		r.log.Warn("vm state watcher ended; re-subscribing", "err", err, "backoff", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
 // cycle is one heartbeat. It collects inventory once, then in order:
 // (best-effort) registers if not yet registered, pulls and caches desired
 // state, reconciles (next step), and reports status. Every centre interaction
@@ -406,8 +474,10 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	defer cancel()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
-	// whole cycle.
+	// whole cycle. observeForce is the lighter VM-only variant the state watcher
+	// raises — it refreshes the VM view without the resource/inventory rescan.
 	force := r.forceScan.Swap(false)
+	observeForce := r.forceObserveVMs.Swap(false)
 
 	// Metrics (CPU/memory/uptime) are live and cheap — collect every cycle.
 	metrics, merr := r.hv.CollectMetrics(ctx)
@@ -553,7 +623,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	}
 
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
-	st.ObservedVMs = r.observeVMs(ctx, force)
+	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it

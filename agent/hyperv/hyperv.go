@@ -287,6 +287,16 @@ type Interface interface {
 	// Ballast is added to existing infrastructure. Pure read.
 	ListObservedVMs(ctx context.Context) ([]types.ObservedVM, error)
 
+	// WatchVMState subscribes to VM power-state changes on the host and calls
+	// onEvent once per change, so the agent can re-observe immediately instead of
+	// waiting for the next polled cycle. It blocks until ctx is cancelled or the
+	// subscription ends (provider restart, error), returning the reason so the
+	// caller can re-establish it. The callback carries NO state: it only nudges a
+	// re-observe — the reconcile still reads actual vs desired itself, so a missed
+	// or spurious event is harmless and the periodic cycle remains the source of
+	// truth. Purely an optimisation layered on the poll.
+	WatchVMState(ctx context.Context, onEvent func()) error
+
 	// EnsureVM makes the VM described by vm exist on this host and match its
 	// configuration (processor count, memory, disks, network adapters),
 	// idempotently. It does not change power state — that is SetVMPowerState, so
