@@ -33,6 +33,38 @@ func TestEnsureVMScriptCreatesPerVMFolder(t *testing.T) {
 	}
 }
 
+// A host whose Hyper-V cannot enumerate VMs must fail the reconcile, not report
+// the VM as already matching desired state. One corrupt VM registration makes
+// Get-VM throw for EVERY VM on that host; the old lookup swallowed that with
+// -ErrorAction SilentlyContinue, the cluster-group check then read the null as
+// "owned by another node", and the pass returned unchanged — so a blind host
+// reported every clustered VM green while nothing could be read or applied.
+func TestEnsureVMScriptDistinguishesMissingFromBrokenHyperV(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{MemoryStartupBytes: 4294967296},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+
+	// The lookup must be a guarded Stop, not a silent swallow.
+	if strings.Contains(s, `Get-VM -Name 'Web01' -ErrorAction SilentlyContinue`) {
+		t.Error("VM lookup still swallows every error; a broken host reads as 'VM absent'")
+	}
+	if !strings.Contains(s, `try { $vm = Get-VM -Name 'Web01' -ErrorAction Stop }`) {
+		t.Errorf("VM lookup should be a guarded -ErrorAction Stop:\n%s", s)
+	}
+	// Only a genuine "not found" may be treated as absent; anything else throws.
+	for _, want := range []string{
+		`$msg -notlike '*unable to find*'`,
+		"cannot enumerate VMs on this host",
+		"throw (",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script missing %q — a Hyper-V fault must be raised, not ignored:\n%s", want, s)
+		}
+	}
+}
+
 // A VM with no disk has no datastore folder to derive, so it falls back to the
 // host default path (no -Path) — behaviour unchanged.
 func TestEnsureVMScriptNoDiskNoPath(t *testing.T) {

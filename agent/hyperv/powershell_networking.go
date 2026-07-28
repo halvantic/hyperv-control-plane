@@ -517,12 +517,26 @@ if ($removed.Count -gt 0) { 'RESULT=REMOVED ' + ($removed -join ',') } else { 'R
 	return OutcomeUnchanged, nil
 }
 
-// GetNetworkProfile returns the weakest Windows network-location category across
-// the host's connection profiles: "Public" if any NIC is Public, else "Private"
-// if any is Private, else "DomainAuthenticated". Empty when none are reported.
-// The UI shows it as a coloured pill; Public/Private link to the repair action.
+// GetNetworkProfile returns the host's Windows network-location category: the
+// weakest ("Public" beats "Private" beats "DomainAuthenticated") across the
+// connection profiles that carry a default gateway. Empty when none are
+// reported. The UI shows it as a coloured pill; Public/Private link to the
+// repair action.
+//
+// Only gateway-bearing NICs count. A converged host's storage and live-migration
+// vNICs sit on isolated subnets with no domain controller to authenticate
+// against, so Windows correctly categorises them Private — and weakest-wins
+// across every profile therefore reported Private on every properly built host,
+// drowning out the management NIC and offering a repair that cannot help. What
+// the pill is for is the domain-facing NIC's category: a management NIC stuck on
+// Public or Private is what breaks cross-node WMI/RPC. Fall back to all profiles
+// when none has a gateway, so a host mid-build still reports something.
 func (p *PowerShell) GetNetworkProfile(ctx context.Context) (string, error) {
-	const script = `$cats = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NetworkCategory })
+	const script = `$gwIdx = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.InterfaceIndex })
+$profs = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)
+$sel = @($profs | Where-Object { $gwIdx -contains [int]$_.InterfaceIndex })
+if ($sel.Count -eq 0) { $sel = $profs }
+$cats = @($sel | ForEach-Object { [string]$_.NetworkCategory })
 if ($cats -contains 'Public') { 'Public' }
 elseif ($cats -contains 'Private') { 'Private' }
 elseif ($cats -contains 'DomainAuthenticated') { 'DomainAuthenticated' }

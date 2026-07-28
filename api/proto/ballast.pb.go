@@ -4020,7 +4020,15 @@ type VMSpec struct {
 	AutomaticStartAction VMStartAction           `protobuf:"varint,9,opt,name=automatic_start_action,json=automaticStartAction,proto3,enum=ballast.v1.VMStartAction" json:"automatic_start_action,omitempty"`
 	IsoPath              string                  `protobuf:"bytes,10,opt,name=iso_path,json=isoPath,proto3" json:"iso_path,omitempty"`
 	// replication, when set, replicates this VM with Hyper-V Replica.
-	Replication   *VMReplicationSpec `protobuf:"bytes,11,opt,name=replication,proto3" json:"replication,omitempty"`
+	Replication *VMReplicationSpec `protobuf:"bytes,11,opt,name=replication,proto3" json:"replication,omitempty"`
+	// secure_boot is the Gen 2 UEFI Secure Boot policy: "" or "windows" for the
+	// Microsoft Windows template, "linux" for the Microsoft UEFI CA template
+	// (required by most Linux guests), "off" to disable it.
+	SecureBoot string `protobuf:"bytes,12,opt,name=secure_boot,json=secureBoot,proto3" json:"secure_boot,omitempty"`
+	// boot_order is the firmware boot priority as device categories, most
+	// preferred first: "Drive", "DVD", "Network", and "Floppy" on Gen 1. Empty
+	// leaves the boot order unmanaged.
+	BootOrder     []string `protobuf:"bytes,13,rep,name=boot_order,json=bootOrder,proto3" json:"boot_order,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4128,6 +4136,20 @@ func (x *VMSpec) GetIsoPath() string {
 func (x *VMSpec) GetReplication() *VMReplicationSpec {
 	if x != nil {
 		return x.Replication
+	}
+	return nil
+}
+
+func (x *VMSpec) GetSecureBoot() string {
+	if x != nil {
+		return x.SecureBoot
+	}
+	return ""
+}
+
+func (x *VMSpec) GetBootOrder() []string {
+	if x != nil {
+		return x.BootOrder
 	}
 	return nil
 }
@@ -5120,7 +5142,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x02VM\x12*\n" +
 	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12&\n" +
 	"\x04spec\x18\x02 \x01(\v2\x12.ballast.v1.VMSpecR\x04spec\x12,\n" +
-	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\x83\x05\n" +
+	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xc3\x05\n" +
 	"\x06VMSpec\x129\n" +
 	"\tplacement\x18\x01 \x01(\v2\x1b.ballast.v1.VMPlacementSpecR\tplacement\x12+\n" +
 	"\x11hyperv_generation\x18\x02 \x01(\x05R\x10hypervGeneration\x12'\n" +
@@ -5133,7 +5155,11 @@ const file_ballast_proto_rawDesc = "" +
 	"\x16automatic_start_action\x18\t \x01(\x0e2\x19.ballast.v1.VMStartActionR\x14automaticStartAction\x12\x19\n" +
 	"\biso_path\x18\n" +
 	" \x01(\tR\aisoPath\x12?\n" +
-	"\vreplication\x18\v \x01(\v2\x1d.ballast.v1.VMReplicationSpecR\vreplication\"\x8e\x02\n" +
+	"\vreplication\x18\v \x01(\v2\x1d.ballast.v1.VMReplicationSpecR\vreplication\x12\x1f\n" +
+	"\vsecure_boot\x18\f \x01(\tR\n" +
+	"secureBoot\x12\x1d\n" +
+	"\n" +
+	"boot_order\x18\r \x03(\tR\tbootOrder\"\x8e\x02\n" +
 	"\x11VMReplicationSpec\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vtarget_host\x18\x02 \x01(\tR\n" +

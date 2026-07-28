@@ -67,34 +67,101 @@ if ($sn -and [string]$sn.SwitchName) { Get-VMNetworkAdapter -VMName $new | Conne
 	return nil
 }
 
-func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) error {
+func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) (string, error) {
 	// Idempotent: skip when the ISO is already present. Fetch to a temp file then
 	// move into place so an interrupted transfer never looks complete.
 	//
 	// Source can be a UNC/local path or an http(s) URL:
 	//   - UNC (\\server\share\x.iso) or local (D:\x.iso): Copy-Item, direct and
 	//     resumable-safe — the robust way to place a large ISO, no centre hop.
-	//   - URL: prefer BITS (Start-BitsTransfer — resumable, retries, built for
-	//     multi-GB) and fall back to Invoke-WebRequest if BITS is unavailable.
-	//     Invoke-WebRequest buffering/timeouts are what made large uploads stall.
+	//   - URL: a streaming, resumable download.
+	//
+	// Start-BitsTransfer is deliberately NOT used, and must not be reintroduced.
+	// BITS creates its transfer job in the caller's logon session; the agent runs
+	// as a Windows service in Session 0 with no interactive logon, so every call
+	// fails ERROR_NOT_LOGGED_ON ("the user has not logged on to the network").
+	// That failure was swallowed by a bare catch for months, so every multi-GB
+	// fetch silently took an Invoke-WebRequest fallback that buffers, cannot
+	// resume, and died on long transfers ("an existing connection was forcibly
+	// closed"), restarting from zero each retry.
+	//
+	// Instead: stream the response straight to disk with HttpClient
+	// (ResponseHeadersRead, so nothing is buffered in memory) and resume with a
+	// Range request on retry, picking up from the bytes already on disk. The
+	// centre serves ISOs with http.ServeContent, which honours Range. A server
+	// that ignores Range answers 200 rather than 206, which is detected and
+	// restarts the file cleanly rather than corrupting it by appending.
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
 		"$dest=%[1]s; $url=%[2]s; "+
 		"if (Test-Path $dest) { return }; "+
 		"$dir=Split-Path -Parent $dest; if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; "+
 		"$tmp=$dest + [char]46 + 'download'; "+
-		"if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }; "+
+		// A leftover temp file is either an abandoned transfer (delete it and
+		// retry) or one another process still holds open. Removing it used to be
+		// -ErrorAction SilentlyContinue, so a locked file fell through to the
+		// download and died with a bare "the process cannot access the file".
+		// Distinguish the two: a lock means a concurrent placement, and saying so
+		// is the difference between an operator retrying and an operator guessing.
+		"if (Test-Path $tmp) { "+
+		"  try { Remove-Item $tmp -Force -ErrorAction Stop } "+
+		"  catch { throw ('a transfer of this ISO is already in progress on this host (' + $tmp + ' is open in another process); wait for it to finish, or delete that file if it was abandoned') } "+
+		"}; "+
 		"if ($url -like '\\\\*' -or $url -match '^[A-Za-z]:\\\\') { "+
 		"  Copy-Item -LiteralPath $url -Destination $tmp -Force "+
 		"} else { "+
-		"  $ok=$false; "+
-		"  try { Import-Module BitsTransfer -ErrorAction Stop; Start-BitsTransfer -Source $url -Destination $tmp -ErrorAction Stop; $ok=$true } catch {}; "+
-		"  if (-not $ok) { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing } "+
+		"  Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue; "+
+		"  $attempt=0; $maxAttempts=5; $done=$false; $lastErr=''; $resumed=0; "+
+		"  while (-not $done -and $attempt -lt $maxAttempts) { "+
+		"    $attempt++; "+
+		"    $have=0; if (Test-Path $tmp) { $have=[int64](Get-Item $tmp).Length }; "+
+		"    $h=$null; $resp=$null; $fs=$null; "+
+		"    try { "+
+		"      $h=New-Object System.Net.Http.HttpClient; "+
+		"      $h.Timeout=[TimeSpan]::FromHours(6); "+
+		"      $req=New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $url); "+
+		"      if ($have -gt 0) { $req.Headers.Range=New-Object System.Net.Http.Headers.RangeHeaderValue($have, $null) }; "+
+		"      $resp=$h.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult(); "+
+		"      if (-not $resp.IsSuccessStatusCode) { throw ('HTTP ' + [int]$resp.StatusCode + ' ' + [string]$resp.ReasonPhrase) }; "+
+		// 206 means the server honoured the Range and we append; a 200 to a ranged
+		// request means it ignored it and is resending the whole body, so the file
+		// must be truncated or the two copies would be concatenated.
+		"      $append=($have -gt 0 -and [int]$resp.StatusCode -eq 206); "+
+		"      if ($have -gt 0 -and -not $append) { $have=0 }; "+
+		"      if ($append) { $resumed=$resumed+1 }; "+
+		"      $mode=[System.IO.FileMode]::Create; if ($append) { $mode=[System.IO.FileMode]::Append }; "+
+		"      $fs=New-Object System.IO.FileStream($tmp, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None); "+
+		"      $stream=$resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult(); "+
+		"      $stream.CopyTo($fs, 1048576); "+
+		"      $done=$true "+
+		"    } catch { "+
+		"      $lastErr=[string]$_.Exception.Message "+
+		"    } finally { "+
+		"      if ($fs) { $fs.Dispose() }; if ($resp) { $resp.Dispose() }; if ($h) { $h.Dispose() } "+
+		"    }; "+
+		"    if (-not $done -and $attempt -lt $maxAttempts) { Start-Sleep -Seconds ([Math]::Min(30, 3 * $attempt)) } "+
+		"  }; "+
+		"  if (-not $done) { throw ('download failed after ' + $attempt + ' attempt(s): ' + $lastErr) }; "+
+		"  if ($resumed -gt 0) { Write-Output ('NOTE=transfer resumed ' + $resumed + ' time(s) after a dropped connection') } "+
 		"}; "+
 		"Move-Item -Force -Path $tmp -Destination $dest", psQuote(dest), psQuote(url))
-	if err := p.run2(ctx, script); err != nil {
-		return fmt.Errorf("fetch iso to %q: %w", dest, err)
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("fetch iso to %q: %w", dest, err)
 	}
-	return nil
+	return firstMarkerValue(string(out), "NOTE="), nil
+}
+
+// firstMarkerValue returns the text after the first line beginning with prefix,
+// or "" when no line carries it. Scripts use it to hand back an advisory note
+// alongside a plain success, without turning the note into an error.
+func firstMarkerValue(out, prefix string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(after)
+		}
+	}
+	return ""
 }
 
 func (p *PowerShell) ApplyVMCheckpoint(ctx context.Context, vmName, checkpointName string) error {

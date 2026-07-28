@@ -71,6 +71,11 @@ type Stub struct {
 	// so tests can exercise the reconciler's VM failure path.
 	FailVM string
 
+	// FailVMState, when set, makes GetVMState for the matching VM name return an
+	// error — a host whose Hyper-V cannot be read. Tests use it to prove the VM is
+	// not reported as a healthy VM with no observed state.
+	FailVMState string
+
 	// FailVMHostPaths, when true, makes EnsureVMHostPaths return an error, so tests
 	// can exercise the reconciler's best-effort (advisory, non-degrading) path.
 	FailVMHostPaths bool
@@ -411,6 +416,9 @@ func (s *Stub) RebuildStoragePool(_ context.Context) (string, error) {
 func (s *Stub) GetVMState(_ context.Context, name string) (VMState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.FailVMState != "" && s.FailVMState == name {
+		return VMState{}, fmt.Errorf("stub: forced failure reading VM state for %q", name)
+	}
 	vm, ok := s.vms[name]
 	if !ok {
 		return VMState{}, nil
@@ -515,7 +523,7 @@ func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return
 func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
 func (s *Stub) ExportVM(_ context.Context, _, _ string) error                       { return nil }
 func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error                     { return nil }
-func (s *Stub) FetchISO(_ context.Context, _, _ string) error                       { return nil }
+func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)            { return "", nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
 func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error              { return nil }

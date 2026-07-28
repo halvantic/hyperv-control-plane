@@ -956,6 +956,8 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		DesiredPowerState:    vmPowerStateToProto(s.DesiredPowerState),
 		AutomaticStartAction: vmStartActionToProto(s.AutomaticStartAction),
 		IsoPath:              s.ISOPath,
+		SecureBoot:           s.SecureBoot,
+		BootOrder:            append([]string(nil), s.BootOrder...),
 	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
@@ -1004,6 +1006,8 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		DesiredPowerState:    vmPowerStateFromProto(s.GetDesiredPowerState()),
 		AutomaticStartAction: vmStartActionFromProto(s.GetAutomaticStartAction()),
 		ISOPath:              s.GetIsoPath(),
+		SecureBoot:           s.GetSecureBoot(),
+		BootOrder:            append([]string(nil), s.GetBootOrder()...),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{

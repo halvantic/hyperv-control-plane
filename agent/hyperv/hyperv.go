@@ -342,7 +342,12 @@ type Interface interface {
 	// dest on this host, creating dest's parent folder. Used to place an uploaded
 	// ISO onto a CSV so any node can boot a VM from it. Agent-local (no WinRM) and
 	// idempotent: a no-op when dest already exists. Imperative Job.
-	FetchISO(ctx context.Context, url, dest string) error
+	//
+	// Returns a note describing anything notable about how the transfer ran —
+	// empty on the normal BITS path, and naming why BITS was skipped when the
+	// Invoke-WebRequest fallback was used. That fallback is the fragile one, so an
+	// operator needs to see that it happened even on success.
+	FetchISO(ctx context.Context, url, dest string) (string, error)
 
 	// GuestJoinDomain joins the VM's guest OS to domain (then reboots the guest)
 	// via PowerShell Direct. guestUser/guestPass authenticate into the guest;

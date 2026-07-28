@@ -108,14 +108,17 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 		}
 	}
 
-	// A processor-count or static-memory change cannot apply while the VM runs;
-	// surface it and hold ObservedGeneration back (Progressing, not Degraded)
-	// until the VM is stopped, rather than failing every cycle.
+	// Processor count, static memory, Secure Boot and boot order cannot apply
+	// while the VM runs; surface it and hold ObservedGeneration back (Progressing,
+	// not Degraded) until the VM is stopped, rather than failing every cycle.
+	// The agent does not stop the VM itself — power is the operator's to command —
+	// so a VM desired Running holds here until they stop it, and the message has
+	// to say so or the operator sees "Progressing" forever with no idea why.
 	pending := ensured.PendingPowerOff
 	if pending {
 		res.Conditions = append(res.Conditions, types.Condition{
 			Type: "VMConfig/" + vm.Meta.Name, Status: false, Reason: "RequiresPowerOff",
-			Message:            "processor/memory change settles once the VM is stopped",
+			Message:            "a processor, memory, Secure Boot or boot-order change needs the VM off; stop it and it applies on the next reconcile",
 			LastTransitionTime: r.now(),
 		})
 		r.log.Info("vm config change pending power-off", "vm", vm.Meta.Name)
@@ -142,10 +145,18 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 	}
 
 	// Observe the settled VM for status. A read failure does not fail the pass —
-	// the configuration and power were honoured; we just report less detail.
+	// the configuration and power were honoured; we just report less detail. It is
+	// still surfaced as a condition: without one the VM reported Ready carrying no
+	// power state at all, and the console filled that silence with the DESIRED
+	// power state, so a VM nobody could read looked like a running, healthy one.
 	state, serr := r.hv.GetVMState(ctx, vm.Meta.Name)
 	if serr != nil {
 		r.log.Warn("get vm state failed; reporting without runtime metrics", "vm", vm.Meta.Name, "err", serr)
+		res.Conditions = append(res.Conditions, types.Condition{
+			Type: "VMObserved/" + vm.Meta.Name, Status: false, Reason: "ObserveFailed",
+			Message:            "cannot read this VM's live state from the host: " + serr.Error(),
+			LastTransitionTime: r.now(),
+		})
 	} else {
 		res.PowerState = state.PowerState
 		res.VMID = state.ID

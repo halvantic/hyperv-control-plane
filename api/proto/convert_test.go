@@ -135,6 +135,18 @@ func sampleVM() types.VM {
 			},
 			DesiredPowerState:    types.VMPowerRunning,
 			AutomaticStartAction: types.VMStartIfWasRunning,
+			ISOPath:              `C:\ClusterStorage\Volume1\ISOs\boot.iso`,
+			SecureBoot:           "linux",
+			BootOrder:            []string{"DVD", "Drive", "Network"},
+			Replication: &types.VMReplicationSpec{
+				Enabled:            true,
+				TargetHost:         "host04",
+				TargetCluster:      "cluster02",
+				ReplicaServer:      "host04.lab.local",
+				FrequencySeconds:   300,
+				AuthenticationType: "Kerberos",
+				Port:               80,
+			},
 		},
 		Status: types.VMStatus{
 			Phase:               types.PhaseReady,
@@ -159,6 +171,29 @@ func TestVMRoundTrip(t *testing.T) {
 	got := VMFromProto(VMToProto(in))
 	if !reflect.DeepEqual(in, got) {
 		t.Fatalf("round trip mismatch:\n in:  %#v\n got: %#v", in, got)
+	}
+}
+
+// The round-trip test only proves a field survives if the sample actually sets
+// it: a field the proto never carries round-trips perfectly as its zero value.
+// SecureBoot and BootOrder were added to VMSpec but not to the proto, and the
+// gap went unnoticed for exactly this reason — the centre stored them, the agent
+// received empty values, defaulted Secure Boot to on, and reported the VM as
+// already matching desired state while a Linux guest refused to boot.
+//
+// So require every exported VMSpec field to be non-zero in the sample. Adding a
+// field to the schema now fails here until it is populated, which in turn makes
+// the round trip prove the proto carries it.
+func TestSampleVMSpecCoversEveryField(t *testing.T) {
+	v := reflect.ValueOf(sampleVM().Spec)
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if v.Field(i).IsZero() {
+			t.Errorf("sampleVM does not set VMSpec.%s, so TestVMRoundTrip cannot prove the proto carries it — populate it", f.Name)
+		}
 	}
 }
 

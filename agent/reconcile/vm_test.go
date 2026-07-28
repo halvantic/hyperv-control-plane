@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
@@ -129,6 +130,39 @@ func TestReconcileVMSizingChangeWhileRunningIsPending(t *testing.T) {
 	}
 	if reason, _ := reasonByType(res.Conditions, "VMConfig/web01"); reason != "RequiresPowerOff" {
 		t.Fatalf("want RequiresPowerOff condition, got %q", reason)
+	}
+}
+
+// A VM whose live state cannot be read must say so. Without a condition the VM
+// reported Ready carrying no power state at all, and the console then displayed
+// the DESIRED power state in its place — so a VM on a host nobody could read
+// showed as "Running", and its menu offered Stop for a VM that was already off.
+func TestReconcileVMUnreadableStateIsSurfaced(t *testing.T) {
+	stub := stubWithSwitch()
+	r := testReconciler(stub)
+	desired := vmDesired(types.VMPowerRunning)
+
+	// Create it normally first, then make its live state unreadable.
+	r.ReconcileVM(context.Background(), desired)
+	stub.FailVMState = "web01"
+	res := r.ReconcileVM(context.Background(), desired)
+
+	reason, _ := reasonByType(res.Conditions, "VMObserved/web01")
+	if reason != "ObserveFailed" {
+		t.Fatalf("want an ObserveFailed condition, got %q (conditions: %+v)", reason, res.Conditions)
+	}
+	var msg string
+	for _, c := range res.Conditions {
+		if c.Type == "VMObserved/web01" {
+			msg = c.Message
+		}
+	}
+	if !strings.Contains(msg, "cannot read this VM's live state") {
+		t.Errorf("the condition should explain the failure, got %q", msg)
+	}
+	// The power state must stay empty rather than being invented.
+	if res.PowerState != "" {
+		t.Errorf("power state should be unset when unreadable, got %q", res.PowerState)
 	}
 }
 

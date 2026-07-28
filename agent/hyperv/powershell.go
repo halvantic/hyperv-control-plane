@@ -163,12 +163,16 @@ func startsWithJSON(b []byte) bool {
 // unmarshals straight into types.HostInventory.
 //
 // A physical adapter is reported as management when it carries a statically
-// configured (Manual) IPv4 address — that is the host's management identity (the
-// address it is known by in DNS), and such a NIC must never be teamed into a
-// vSwitch. A DHCP-assigned address does not make a NIC management: it is free to
-// assign to a switch, so its IP is not reported (the frontend treats a NIC with
-// no host IP and no switch as free). A NIC bound to a vSwitch carries no IP here
-// (the address lives on its management-OS vNIC), so it is naturally not flagged.
+// configured (Manual) IPv4 address AND a default gateway — that is the host's
+// management identity (the address it is known by in DNS), and such a NIC must
+// never be teamed into a vSwitch. The gateway matters: a converged host's
+// storage and live-migration NICs are static too, but sit on isolated fabric
+// subnets with no default route and no domain presence, and treating one as the
+// host's address yields a WinRM target nothing can reach. A DHCP-assigned
+// address does not make a NIC management either: it is free to assign to a
+// switch, so its IP is not reported (the frontend treats a NIC with no host IP
+// and no switch as free). A NIC bound to a vSwitch carries no IP here (the
+// address lives on its management-OS vNIC), so it is naturally not flagged.
 //
 // The floating cluster IP is also a Manual address, but it is not a management
 // identity — it lives on whichever node currently owns the cluster core group and
@@ -193,7 +197,14 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   # Default-route next hop on this NIC, so a re-homed management IP can keep the
   # host's default route on the converged switch's vNIC.
   $gw = [string]((Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $static; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
+  # A static IP alone does not make a NIC the management NIC: storage and
+  # live-migration NICs are static too, on isolated fabric subnets with no
+  # default route. The gateway is what separates the routable, domain-facing
+  # NIC from fabric NICs, so require it. The IP is still reported for a static
+  # fabric NIC — callers use "carries an IP" to refuse teaming it into a vSwitch,
+  # and that guard must keep firing for storage/live-migration NICs.
+  $isMgmt = $static -and $gw -ne ''
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}

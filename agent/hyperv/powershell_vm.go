@@ -672,7 +672,22 @@ $ErrorActionPreference = 'Stop'
 $created = $false
 $changed = $false
 $pending = $false
-$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+# Look the VM up, distinguishing "this host does not have it" from "this host's
+# Hyper-V cannot answer". A plain -ErrorAction SilentlyContinue conflates them:
+# when VMMS is inconsistent (one bad registration makes Get-VM throw "Hyper-V
+# encountered an error trying to access an object"), $vm came back null, the
+# cluster-group check below then concluded the VM was simply owned elsewhere,
+# and the whole reconcile returned "unchanged" — reporting every VM on a blind
+# host as "already matches desired state". A host that cannot enumerate its VMs
+# must fail loudly and go Degraded, never report green.
+$vm = $null
+try { $vm = Get-VM -Name %[1]s -ErrorAction Stop }
+catch {
+  $msg = [string]$_.Exception.Message
+  if ($msg -notlike '*unable to find*' -and $msg -notlike '*not find a virtual machine*') {
+    throw ('cannot enumerate VMs on this host (Hyper-V is not answering): ' + $msg)
+  }
+}
 if (-not $vm) {
   $ownedElsewhere = $false
 %[10]s  if ($ownedElsewhere) {
@@ -683,7 +698,10 @@ if (-not $vm) {
   $created = $true
 }
 $running = $false
-$cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+# By here the VM exists (found above, or just created), so a failure to read it
+# back is a host fault, not an absent VM. Let it propagate: guessing "not
+# running" would apply firmware/CPU/memory changes to a live VM.
+$cur = Get-VM -Name %[1]s -ErrorAction Stop
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s

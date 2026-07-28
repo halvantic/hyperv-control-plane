@@ -35,7 +35,12 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobVMClone:
 		return done(r.hv.CloneVM(ctx, p["vm"], p["name"], p["folder"]), "cloned "+p["vm"]+" to "+p["name"])
 	case types.JobFetchISO:
-		return done(r.hv.FetchISO(ctx, p["url"], p["dest"]), "downloaded ISO "+p["name"])
+		note, err := r.hv.FetchISO(ctx, p["url"], p["dest"])
+		msg := "downloaded ISO " + p["name"]
+		if note != "" {
+			msg += " (" + note + ")"
+		}
+		return done(err, msg)
 	case types.JobGuestJoinDomain:
 		return done(r.hv.GuestJoinDomain(ctx, p["vm"], p["domain"], p["ou"], p["guestUser"], p["guestPass"], p["domainUser"], p["domainPass"]),
 			"joined "+p["vm"]+" to "+p["domain"]+" (guest rebooting)")

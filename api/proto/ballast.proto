@@ -575,6 +575,14 @@ message VMSpec {
   string iso_path = 10;
   // replication, when set, replicates this VM with Hyper-V Replica.
   VMReplicationSpec replication = 11;
+  // secure_boot is the Gen 2 UEFI Secure Boot policy: "" or "windows" for the
+  // Microsoft Windows template, "linux" for the Microsoft UEFI CA template
+  // (required by most Linux guests), "off" to disable it.
+  string secure_boot = 12;
+  // boot_order is the firmware boot priority as device categories, most
+  // preferred first: "Drive", "DVD", "Network", and "Floppy" on Gen 1. Empty
+  // leaves the boot order unmanaged.
+  repeated string boot_order = 13;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the
