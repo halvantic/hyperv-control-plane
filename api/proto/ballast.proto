@@ -511,6 +511,12 @@ message ClusterPool {
   string operational = 5;
   int32 unhealthy_disks = 6;
   int32 total_disks = 7;
+  // resyncing reports an observed repair/regeneration job, with its completion
+  // and kind. A rebuilding pool reports non-Healthy transiently; without this
+  // the centre cannot tell it apart from one that is genuinely broken.
+  bool resyncing = 8;
+  int32 resync_percent = 9;
+  string resync_job = 10;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.
@@ -526,6 +532,12 @@ message ClusterCSV {
   string name = 1;
   string owner_node = 2;
   string state = 3;
+  // Health of the backing virtual disk, observed separately from pool health —
+  // a volume and its pool fail independently. detached_reason "By Policy" is the
+  // normal resting state for a clustered volume, not a fault.
+  string health = 4;
+  string operational = 5;
+  string detached_reason = 6;
 }
 
 // ClusterVM is one highly-available VM role as observed by the cluster.
@@ -642,6 +654,12 @@ message VMStatus {
   string observed_json = 14; // VMObserved marshalled as JSON (CPU/mem/disks/adapters)
   // replication is the VM's observed Hyper-V Replica state, when it has one.
   VMReplicationStatus replication = 15;
+  // memory_demand_bytes is what the guest actually wants; assigned memory equals
+  // startup on a static-memory VM and so cannot express usage. Zero when the VM
+  // is off or integration services are not reporting. memory_status is Hyper-V's
+  // verdict ("OK"/"Low"/"Warning").
+  uint64 memory_demand_bytes = 16;
+  string memory_status = 17;
 }
 
 // VMReplicationStatus is a VM's observed Hyper-V Replica state.

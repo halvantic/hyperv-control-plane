@@ -3671,8 +3671,14 @@ type ClusterPool struct {
 	Operational    string `protobuf:"bytes,5,opt,name=operational,proto3" json:"operational,omitempty"`
 	UnhealthyDisks int32  `protobuf:"varint,6,opt,name=unhealthy_disks,json=unhealthyDisks,proto3" json:"unhealthy_disks,omitempty"`
 	TotalDisks     int32  `protobuf:"varint,7,opt,name=total_disks,json=totalDisks,proto3" json:"total_disks,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// resyncing reports an observed repair/regeneration job, with its completion
+	// and kind. A rebuilding pool reports non-Healthy transiently; without this
+	// the centre cannot tell it apart from one that is genuinely broken.
+	Resyncing     bool   `protobuf:"varint,8,opt,name=resyncing,proto3" json:"resyncing,omitempty"`
+	ResyncPercent int32  `protobuf:"varint,9,opt,name=resync_percent,json=resyncPercent,proto3" json:"resync_percent,omitempty"`
+	ResyncJob     string `protobuf:"bytes,10,opt,name=resync_job,json=resyncJob,proto3" json:"resync_job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClusterPool) Reset() {
@@ -3754,6 +3760,27 @@ func (x *ClusterPool) GetTotalDisks() int32 {
 	return 0
 }
 
+func (x *ClusterPool) GetResyncing() bool {
+	if x != nil {
+		return x.Resyncing
+	}
+	return false
+}
+
+func (x *ClusterPool) GetResyncPercent() int32 {
+	if x != nil {
+		return x.ResyncPercent
+	}
+	return 0
+}
+
+func (x *ClusterPool) GetResyncJob() string {
+	if x != nil {
+		return x.ResyncJob
+	}
+	return ""
+}
+
 // ClusterGroup is one clustered role/group as observed by the cluster.
 type ClusterGroup struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -3825,12 +3852,18 @@ func (x *ClusterGroup) GetGroupType() string {
 
 // ClusterCSV is one Cluster Shared Volume as observed by the cluster.
 type ClusterCSV struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	OwnerNode     string                 `protobuf:"bytes,2,opt,name=owner_node,json=ownerNode,proto3" json:"owner_node,omitempty"`
-	State         string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	OwnerNode string                 `protobuf:"bytes,2,opt,name=owner_node,json=ownerNode,proto3" json:"owner_node,omitempty"`
+	State     string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	// Health of the backing virtual disk, observed separately from pool health —
+	// a volume and its pool fail independently. detached_reason "By Policy" is the
+	// normal resting state for a clustered volume, not a fault.
+	Health         string `protobuf:"bytes,4,opt,name=health,proto3" json:"health,omitempty"`
+	Operational    string `protobuf:"bytes,5,opt,name=operational,proto3" json:"operational,omitempty"`
+	DetachedReason string `protobuf:"bytes,6,opt,name=detached_reason,json=detachedReason,proto3" json:"detached_reason,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ClusterCSV) Reset() {
@@ -3880,6 +3913,27 @@ func (x *ClusterCSV) GetOwnerNode() string {
 func (x *ClusterCSV) GetState() string {
 	if x != nil {
 		return x.State
+	}
+	return ""
+}
+
+func (x *ClusterCSV) GetHealth() string {
+	if x != nil {
+		return x.Health
+	}
+	return ""
+}
+
+func (x *ClusterCSV) GetOperational() string {
+	if x != nil {
+		return x.Operational
+	}
+	return ""
+}
+
+func (x *ClusterCSV) GetDetachedReason() string {
+	if x != nil {
+		return x.DetachedReason
 	}
 	return ""
 }
@@ -4502,9 +4556,15 @@ type VMStatus struct {
 	Checkpoints         []*VMCheckpoint        `protobuf:"bytes,13,rep,name=checkpoints,proto3" json:"checkpoints,omitempty"`
 	ObservedJson        string                 `protobuf:"bytes,14,opt,name=observed_json,json=observedJson,proto3" json:"observed_json,omitempty"` // VMObserved marshalled as JSON (CPU/mem/disks/adapters)
 	// replication is the VM's observed Hyper-V Replica state, when it has one.
-	Replication   *VMReplicationStatus `protobuf:"bytes,15,opt,name=replication,proto3" json:"replication,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Replication *VMReplicationStatus `protobuf:"bytes,15,opt,name=replication,proto3" json:"replication,omitempty"`
+	// memory_demand_bytes is what the guest actually wants; assigned memory equals
+	// startup on a static-memory VM and so cannot express usage. Zero when the VM
+	// is off or integration services are not reporting. memory_status is Hyper-V's
+	// verdict ("OK"/"Low"/"Warning").
+	MemoryDemandBytes uint64 `protobuf:"varint,16,opt,name=memory_demand_bytes,json=memoryDemandBytes,proto3" json:"memory_demand_bytes,omitempty"`
+	MemoryStatus      string `protobuf:"bytes,17,opt,name=memory_status,json=memoryStatus,proto3" json:"memory_status,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *VMStatus) Reset() {
@@ -4640,6 +4700,20 @@ func (x *VMStatus) GetReplication() *VMReplicationStatus {
 		return x.Replication
 	}
 	return nil
+}
+
+func (x *VMStatus) GetMemoryDemandBytes() uint64 {
+	if x != nil {
+		return x.MemoryDemandBytes
+	}
+	return 0
+}
+
+func (x *VMStatus) GetMemoryStatus() string {
+	if x != nil {
+		return x.MemoryStatus
+	}
+	return ""
 }
 
 // VMReplicationStatus is a VM's observed Hyper-V Replica state.
@@ -5111,7 +5185,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x05state\x18\x04 \x01(\tR\x05state\"7\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\xeb\x01\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\xcf\x02\n" +
 	"\vClusterPool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\traw_bytes\x18\x02 \x01(\x04R\brawBytes\x12'\n" +
@@ -5120,20 +5194,28 @@ const file_ballast_proto_rawDesc = "" +
 	"\voperational\x18\x05 \x01(\tR\voperational\x12'\n" +
 	"\x0funhealthy_disks\x18\x06 \x01(\x05R\x0eunhealthyDisks\x12\x1f\n" +
 	"\vtotal_disks\x18\a \x01(\x05R\n" +
-	"totalDisks\"v\n" +
+	"totalDisks\x12\x1c\n" +
+	"\tresyncing\x18\b \x01(\bR\tresyncing\x12%\n" +
+	"\x0eresync_percent\x18\t \x01(\x05R\rresyncPercent\x12\x1d\n" +
+	"\n" +
+	"resync_job\x18\n" +
+	" \x01(\tR\tresyncJob\"v\n" +
 	"\fClusterGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"owner_node\x18\x02 \x01(\tR\townerNode\x12\x14\n" +
 	"\x05state\x18\x03 \x01(\tR\x05state\x12\x1d\n" +
 	"\n" +
-	"group_type\x18\x04 \x01(\tR\tgroupType\"U\n" +
+	"group_type\x18\x04 \x01(\tR\tgroupType\"\xb8\x01\n" +
 	"\n" +
 	"ClusterCSV\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"owner_node\x18\x02 \x01(\tR\townerNode\x12\x14\n" +
-	"\x05state\x18\x03 \x01(\tR\x05state\"T\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x16\n" +
+	"\x06health\x18\x04 \x01(\tR\x06health\x12 \n" +
+	"\voperational\x18\x05 \x01(\tR\voperational\x12'\n" +
+	"\x0fdetached_reason\x18\x06 \x01(\tR\x0edetachedReason\"T\n" +
 	"\tClusterVM\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -5187,7 +5269,7 @@ const file_ballast_proto_rawDesc = "" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x12\x1f\n" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
-	"macAddress\"\x8e\x05\n" +
+	"macAddress\"\xe3\x05\n" +
 	"\bVMStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x129\n" +
@@ -5210,7 +5292,9 @@ const file_ballast_proto_rawDesc = "" +
 	"guest_fqdn\x18\f \x01(\tR\tguestFqdn\x12:\n" +
 	"\vcheckpoints\x18\r \x03(\v2\x18.ballast.v1.VMCheckpointR\vcheckpoints\x12#\n" +
 	"\robserved_json\x18\x0e \x01(\tR\fobservedJson\x12A\n" +
-	"\vreplication\x18\x0f \x01(\v2\x1f.ballast.v1.VMReplicationStatusR\vreplication\"\x86\x02\n" +
+	"\vreplication\x18\x0f \x01(\v2\x1f.ballast.v1.VMReplicationStatusR\vreplication\x12.\n" +
+	"\x13memory_demand_bytes\x18\x10 \x01(\x04R\x11memoryDemandBytes\x12#\n" +
+	"\rmemory_status\x18\x11 \x01(\tR\fmemoryStatus\"\x86\x02\n" +
 	"\x13VMReplicationStatus\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x16\n" +

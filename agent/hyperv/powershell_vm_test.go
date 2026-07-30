@@ -93,8 +93,14 @@ func TestEnsureVMScriptGen2BootOrder(t *testing.T) {
 	if !strings.Contains(s, "Set-VMFirmware -VMName 'Web01' -BootOrder $ordered") {
 		t.Fatalf("script does not apply the Gen 2 boot order:\n%s", s)
 	}
-	if !strings.Contains(s, "if ($running) { $pending = $true }") {
-		t.Fatalf("boot order should defer while the VM runs:\n%s", s)
+	if !strings.Contains(s, "if ($running) { $pending = $true; $pendingWhat += ('boot order") {
+		t.Fatalf("boot order should defer while the VM runs, recording why:\n%s", s)
+	}
+	// The deferral must name what differs. A bare "$pending = $true" left the
+	// operator with four candidate causes and no way to spot a check drifting
+	// falsely against a VM that already matches desired.
+	if !strings.Contains(s, "pendingDetail = ($pendingWhat -join '; ')") {
+		t.Fatalf("the pending reason must be reported back:\n%s", s)
 	}
 }
 

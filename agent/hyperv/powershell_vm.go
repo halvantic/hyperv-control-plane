@@ -40,6 +40,8 @@ type vmObservation struct {
 	ID                  string            `json:"id"`
 	PowerState          string            `json:"powerState"`
 	AssignedMemoryBytes uint64            `json:"assignedMemoryBytes"`
+	MemoryDemandBytes   uint64            `json:"memoryDemandBytes"`
+	MemoryStatus        string            `json:"memoryStatus"`
 	CPUUsagePercent     int               `json:"cpuUsagePercent"`
 	UptimeSeconds       int64             `json:"uptimeSeconds"`
 	GuestOS             string            `json:"guestOS"`
@@ -141,6 +143,15 @@ try {
   id                  = [string]$vm.Id
   powerState          = [string]$vm.State
   assignedMemoryBytes = [uint64]$vm.MemoryAssigned
+  # What the guest actually wants, as opposed to what the host handed it.
+  # Assigned equals startup for a static-memory VM, so assigned-vs-configured is
+  # always full and says nothing about usage. Demand is the real figure, and
+  # Hyper-V reports it for static and dynamic VMs alike provided the guest's
+  # integration services are running — it is 0 when they are not, or when the VM
+  # is off, which the console must present as "unavailable" rather than as zero
+  # usage. MemoryStatus ("OK"/"Low"/"Warning") is the host's own verdict.
+  memoryDemandBytes   = [uint64]$vm.MemoryDemand
+  memoryStatus        = [string]$vm.MemoryStatus
   cpuUsagePercent     = [int]$vm.CPUUsage
   uptimeSeconds       = [int64]$vm.Uptime.TotalSeconds
   guestOS             = [string]$os
@@ -212,6 +223,8 @@ try {
 		ID:                  obs.ID,
 		PowerState:          powerStateFromHyperV(obs.PowerState),
 		AssignedMemoryBytes: obs.AssignedMemoryBytes,
+		MemoryDemandBytes:   obs.MemoryDemandBytes,
+		MemoryStatus:        obs.MemoryStatus,
 		CPUUsagePercent:     obs.CPUUsagePercent,
 		UptimeSeconds:       obs.UptimeSeconds,
 		GuestOS:             obs.GuestOS,
@@ -344,14 +357,15 @@ func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult,
 		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
 	}
 	var res struct {
-		Created         bool `json:"created"`
-		Changed         bool `json:"changed"`
-		PendingPowerOff bool `json:"pendingPowerOff"`
+		Created         bool   `json:"created"`
+		Changed         bool   `json:"changed"`
+		PendingPowerOff bool   `json:"pendingPowerOff"`
+		PendingDetail   string `json:"pendingDetail"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
 		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
 	}
-	r := VMEnsureResult{PendingPowerOff: res.PendingPowerOff}
+	r := VMEnsureResult{PendingPowerOff: res.PendingPowerOff, PendingDetail: res.PendingDetail}
 	switch {
 	case res.Created:
 		r.Outcome = OutcomeCreated
@@ -412,7 +426,7 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 	procScript := ""
 	if s.ProcessorCount > 0 {
 		procScript = fmt.Sprintf(`if ((Get-VMProcessor -VMName %[1]s).Count -ne %[2]d) {
-  if ($running) { $pending = $true } else { Set-VMProcessor -VMName %[1]s -Count %[2]d; $changed = $true }
+  if ($running) { $pending = $true; $pendingWhat += 'processor count' } else { Set-VMProcessor -VMName %[1]s -Count %[2]d; $changed = $true }
 }`, name, s.ProcessorCount)
 	}
 
@@ -435,7 +449,7 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 	if memDiff != "" {
 		memScript = fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
 if (%[2]s) {
-  if ($running) { $pending = $true } else { %[3]s; $changed = $true }
+  if ($running) { $pending = $true; $pendingWhat += 'memory' } else { %[3]s; $changed = $true }
 }`, name, memDiff, memApply)
 	}
 
@@ -464,7 +478,7 @@ $wantSb = %[2]s
 $wantTmpl = %[3]s
 $isOn = ([string]$fw.SecureBoot -eq 'On')
 if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.SecureBootTemplate -ne $wantTmpl)) {
-  if ($running) { $pending = $true } else {
+  if ($running) { $pending = $true; $pendingWhat += ('Secure Boot (want ' + $wantSb + '/' + $wantTmpl + ', have ' + [string]$fw.SecureBoot + '/' + [string]$fw.SecureBootTemplate + ')') } else {
     if ($wantSb -eq 'On') { Set-VMFirmware -VMName %[1]s -EnableSecureBoot On -SecureBootTemplate $wantTmpl }
     else { Set-VMFirmware -VMName %[1]s -EnableSecureBoot Off }
     $changed = $true
@@ -494,7 +508,7 @@ foreach ($d in $all) { if ($ord -notcontains $d) { $ord += $d } }
 $bios = Get-VMBios -VMName %[1]s
 $cur = (($bios.StartupOrder | ForEach-Object { [string]$_ }) -join ',')
 if ($cur -ne ($ord -join ',')) {
-  if ($running) { $pending = $true } else { Set-VMBios -VMName %[1]s -StartupOrder $ord; $changed = $true }
+  if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + ($ord -join '>') + ', have ' + ($cur) + ')') } else { Set-VMBios -VMName %[1]s -StartupOrder $ord; $changed = $true }
 }
 `, name, want)
 		} else {
@@ -518,7 +532,7 @@ if ($entries.Count -gt 0) {
   $curSig = (($entries | ForEach-Object { & $cls $_ }) -join ',')
   $wantSig = (($ordered | ForEach-Object { & $cls $_ }) -join ',')
   if ($curSig -ne $wantSig) {
-    if ($running) { $pending = $true } else { Set-VMFirmware -VMName %[1]s -BootOrder $ordered; $changed = $true }
+    if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + $wantSig + ', have ' + $curSig + ')') } else { Set-VMFirmware -VMName %[1]s -BootOrder $ordered; $changed = $true }
   }
 }
 `, name, want)
@@ -672,6 +686,7 @@ $ErrorActionPreference = 'Stop'
 $created = $false
 $changed = $false
 $pending = $false
+$pendingWhat = @()
 # Look the VM up, distinguishing "this host does not have it" from "this host's
 # Hyper-V cannot answer". A plain -ErrorAction SilentlyContinue conflates them:
 # when VMMS is inconsistent (one bad registration makes Get-VM throw "Hyper-V
@@ -706,7 +721,7 @@ if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
 %[13]s%[6]s%[7]s%[8]s%[9]s%[14]s
-[pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending } | ConvertTo-Json -Compress
+[pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; ') } | ConvertTo-Json -Compress
 `, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder)
 }
 

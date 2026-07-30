@@ -214,7 +214,8 @@ func clusterPoolToStatus(p *hyperv.ClusterPool) *types.ClusterPoolStatus {
 		return nil
 	}
 	return &types.ClusterPoolStatus{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
-		Health: p.Health, Operational: p.Operational, UnhealthyDisks: p.UnhealthyDisks, TotalDisks: p.TotalDisks}
+		Health: p.Health, Operational: p.Operational, UnhealthyDisks: p.UnhealthyDisks, TotalDisks: p.TotalDisks,
+		Resyncing: p.Resyncing, ResyncPercent: p.ResyncPercent, ResyncJob: p.ResyncJob}
 }
 
 func clusterNodesToStatus(ns []hyperv.ClusterNodeState) []types.ClusterNodeStatus {
@@ -244,7 +245,8 @@ func clusterGroupsToStatus(gs []hyperv.ClusterGroup) []types.ClusterGroupStatus 
 func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
 	out := make([]types.CSVStatus, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, types.CSVStatus{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State})
+		out = append(out, types.CSVStatus{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State,
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
 	}
 	return out
 }

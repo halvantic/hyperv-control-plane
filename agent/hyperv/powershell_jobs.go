@@ -117,7 +117,10 @@ func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) (string, er
 		"    $h=$null; $resp=$null; $fs=$null; "+
 		"    try { "+
 		"      $h=New-Object System.Net.Http.HttpClient; "+
-		"      $h.Timeout=[TimeSpan]::FromHours(6); "+
+		// With ResponseHeadersRead this bounds only the header phase, so keep it
+		// short — a server that never answers should fail fast. The body is
+		// bounded separately by the per-read idle timeout below.
+		"      $h.Timeout=[TimeSpan]::FromMinutes(5); "+
 		"      $req=New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $url); "+
 		"      if ($have -gt 0) { $req.Headers.Range=New-Object System.Net.Http.Headers.RangeHeaderValue($have, $null) }; "+
 		"      $resp=$h.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult(); "+
@@ -131,7 +134,22 @@ func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) (string, er
 		"      $mode=[System.IO.FileMode]::Create; if ($append) { $mode=[System.IO.FileMode]::Append }; "+
 		"      $fs=New-Object System.IO.FileStream($tmp, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None); "+
 		"      $stream=$resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult(); "+
-		"      $stream.CopyTo($fs, 1048576); "+
+		// Copy chunk by chunk with an idle timeout rather than Stream.CopyTo.
+		// CopyTo has no read deadline: HttpClient.Timeout does not cover the body
+		// once headers are read, so a stalled or half-open connection blocks
+		// forever and the retry/resume below can never fire — observed live as a
+		// transfer frozen at 183MB while the server had already finished the
+		// request 8 minutes earlier. A read that delivers nothing for idleSeconds
+		// is treated as dead, which unwinds into the retry and resumes by Range.
+		"      $idleMs=60000; $buf=New-Object byte[] 1048576; "+
+		"      while ($true) { "+
+		"        $rt=$stream.ReadAsync($buf,0,$buf.Length); "+
+		"        if (-not $rt.Wait($idleMs)) { throw ('transfer stalled: no data for ' + [int]($idleMs/1000) + 's') }; "+
+		"        $n=$rt.Result; if ($n -le 0) { break }; "+
+		"        $fs.Write($buf,0,$n) "+
+		"      }; "+
+		// Only a body that ran to a clean end counts as done; anything else falls
+		// through to a resumed retry.
 		"      $done=$true "+
 		"    } catch { "+
 		"      $lastErr=[string]$_.Exception.Message "+

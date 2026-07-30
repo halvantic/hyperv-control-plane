@@ -482,6 +482,9 @@ type VMEnsureResult struct {
 	// change could not be applied because the VM is running; it will settle once
 	// the VM is stopped. Disks and adapters (hot-pluggable) are still applied.
 	PendingPowerOff bool
+	// PendingDetail names WHICH change is waiting, with wanted-vs-actual. Without
+	// it a VM stuck Progressing gives no clue which of four checks is unsatisfied.
+	PendingDetail string
 }
 
 // VMState is the observed state of one VM on the host.
@@ -505,8 +508,14 @@ type VMState struct {
 	// AssignedMemoryBytes, CPUUsagePercent and UptimeSeconds are best-effort
 	// runtime metrics, zero when the VM is off or not observed.
 	AssignedMemoryBytes uint64
-	CPUUsagePercent     int
-	UptimeSeconds       int64
+	// MemoryDemandBytes is what the guest actually wants. Assigned equals startup
+	// for a static-memory VM, so it cannot express usage; demand can. Zero when
+	// the VM is off or its integration services are not reporting.
+	MemoryDemandBytes uint64
+	// MemoryStatus is Hyper-V's own verdict: "OK", "Low", "Warning".
+	MemoryStatus    string
+	CPUUsagePercent int
+	UptimeSeconds   int64
 	// Checkpoints is the VM's current set of Hyper-V checkpoints (snapshots).
 	Checkpoints []types.VMCheckpoint
 	// Observed is the VM's actual configuration (CPU/memory/disks/adapters), for
@@ -576,6 +585,11 @@ type ClusterPool struct {
 	Operational    string
 	UnhealthyDisks int
 	TotalDisks     int
+	// Resyncing and its detail report an observed repair/regeneration job, so a
+	// pool that is rebuilding itself is not mistaken for one that is broken.
+	Resyncing     bool
+	ResyncPercent int
+	ResyncJob     string
 }
 
 // ClusterNetworkInfo is one cluster network: its name, subnet (CIDR), role
@@ -614,6 +628,11 @@ type ClusterCSV struct {
 	Name      string
 	OwnerNode string
 	State     string
+	// Health of the BACKING VIRTUAL DISK, observed separately from the pool's so
+	// a volume fault is not attributed to healthy storage underneath it.
+	Health         string
+	Operational    string
+	DetachedReason string
 }
 
 // ClusterFormation is the input to New-Cluster: the cluster to create and the

@@ -57,10 +57,19 @@ func TestFetchISOScriptShape(t *testing.T) {
 		"RangeHeaderValue",                         // resumable
 		"[int]$resp.StatusCode -eq 206",            // resume only on a real partial response
 		"download failed after",                    // retries are exhausted, then reported
+		"$rt.Wait($idleMs)",                        // the body read has a deadline
+		"transfer stalled",                         // and a stall is an error, not a hang
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script missing %q\n---\n%s", want, script)
 		}
+	}
+	// Stream.CopyTo has no read deadline — HttpClient.Timeout stops covering the
+	// body once headers are read, so a half-open connection blocks forever and
+	// the resume logic never gets to run. This was observed live: a transfer
+	// frozen at 183MB while the server had finished the request 8 minutes prior.
+	if strings.Contains(script, "CopyTo(") {
+		t.Error("body copy is back on Stream.CopyTo; a stalled connection will hang forever")
 	}
 	// Start-BitsTransfer cannot work from the agent's Session 0 service context
 	// (ERROR_NOT_LOGGED_ON) — reintroducing it silently reinstates the bug.

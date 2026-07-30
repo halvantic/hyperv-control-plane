@@ -13,6 +13,17 @@ type clusterOwnedObs struct {
 	GroupType string `json:"groupType,omitempty"`
 }
 
+// clusterCSVObs is a CSV plus the health of the virtual disk behind it, which is
+// observed separately from the pool's — the two fail independently.
+type clusterCSVObs struct {
+	Name           string `json:"name"`
+	Owner          string `json:"owner"`
+	State          string `json:"state"`
+	Health         string `json:"health"`
+	Operational    string `json:"operational"`
+	DetachedReason string `json:"detachedReason"`
+}
+
 type clusterObservation struct {
 	Exists     bool                `json:"exists"`
 	Known      bool                `json:"known"`
@@ -20,7 +31,7 @@ type clusterObservation struct {
 	Members    []string            `json:"members"`
 	Nodes      []clusterOwnedObs   `json:"nodes"`
 	Groups     []clusterOwnedObs   `json:"groups"`
-	CSVs       []clusterOwnedObs   `json:"csvs"`
+	CSVs       []clusterCSVObs     `json:"csvs"`
 	ClusterVMs []clusterOwnedObs   `json:"clustervms"`
 	Pool       *clusterPoolObs     `json:"pool"`
 	Networks   []clusterNetworkObs `json:"networks"`
@@ -34,6 +45,9 @@ type clusterPoolObs struct {
 	Operational    string `json:"operational"`
 	UnhealthyDisks int    `json:"unhealthyDisks"`
 	TotalDisks     int    `json:"totalDisks"`
+	Resyncing      bool   `json:"resyncing"`
+	ResyncPercent  int    `json:"resyncPercent"`
+	ResyncJob      string `json:"resyncJob"`
 }
 
 type clusterNetworkObs struct {
@@ -64,15 +78,51 @@ $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
 $nodes = @($nodeObjs | ForEach-Object { $_.name })
 $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State; groupType = [string]$_.GroupType } })
+# Volume health is observed separately from pool health: the two fail
+# independently, and attributing a volume's problem to the pool sends the
+# operator to repair storage that is fine. A CSV is named "Cluster Virtual Disk
+# (<volume>)", so match it back to its virtual disk by that inner name.
+$vds = @{}
+foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
+  $vds[[string]$vd.FriendlyName] = $vd
+}
 $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object {
-  [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
+  $csvName = [string]$_.Name
+  $vdName = $csvName
+  if ($csvName -match '\(([^)]+)\)\s*$') { $vdName = $Matches[1] }
+  $vd = $vds[$vdName]
+  $h = ''; $op = ''; $dr = ''
+  if ($vd) {
+    $h = [string]$vd.HealthStatus
+    $op = [string]($vd.OperationalStatus -join ',')
+    $dr = [string]$vd.DetachedReason
+  }
+  [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
 $pool = if ($sp) {
   $pd = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue)
   $bad = @($pd | Where-Object { $_.HealthStatus -ne 'Healthy' }).Count
-  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count }
+  # Observe whether S2D is actively rebuilding rather than inferring "broken"
+  # from health alone. A repair/regeneration job makes the pool, its virtual
+  # disks and some physical disks report non-Healthy while it runs — that is
+  # normal, self-resolving work, not a fault needing operator action. Reporting
+  # the job is what lets the console say "rebuilding, 12%" instead of telling
+  # someone to repair a pool that is already repairing itself.
+  $rjob = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.JobState -in @('Running','Starting','Suspended') -and
+    ([string]$_.Name -match 'Repair|Regener|Resync|Rebalance|Optimi')
+  }) | Sort-Object -Property @{ Expression = { [int]$_.PercentComplete } } | Select-Object -First 1
+  $resync = [bool]$rjob
+  $rpct = 0; $rname = ''
+  if ($rjob) {
+    $rpct = [int]$rjob.PercentComplete
+    # Job names look like "<volume>-Repair"; report the kind, not the volume.
+    $rname = [string]$rjob.Name
+    if ($rname -match '-([A-Za-z]+)$') { $rname = $Matches[1] }
+  }
+  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname }
 } else { $null }
 $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
@@ -96,7 +146,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	}
 	csvs := make([]ClusterCSV, 0, len(obs.CSVs))
 	for _, v := range obs.CSVs {
-		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State})
+		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State,
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
 	}
 	cvms := make([]ClusterVM, 0, len(obs.ClusterVMs))
 	for _, v := range obs.ClusterVMs {
@@ -109,7 +160,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	var pool *ClusterPool
 	if obs.Pool != nil {
 		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes,
-			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks, TotalDisks: obs.Pool.TotalDisks}
+			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks, TotalDisks: obs.Pool.TotalDisks,
+			Resyncing: obs.Pool.Resyncing, ResyncPercent: obs.Pool.ResyncPercent, ResyncJob: obs.Pool.ResyncJob}
 	}
 	netw := make([]ClusterNetworkInfo, 0, len(obs.Networks))
 	for _, n := range obs.Networks {

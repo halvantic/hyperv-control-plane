@@ -759,6 +759,21 @@ type ClusterPoolStatus struct {
 	UnhealthyDisks int `json:"unhealthyDisks,omitempty"`
 	// TotalDisks is the pool's physical-disk count, for context.
 	TotalDisks int `json:"totalDisks,omitempty"`
+
+	// Resyncing reports that Storage Spaces Direct is actively rebuilding data —
+	// a repair or regeneration job is running. This must be distinguished from a
+	// pool that is degraded and stuck: a resync is normal, self-resolving work
+	// (it follows volume creation, a disk replacement or a node returning), and
+	// it makes the pool and its disks report non-Healthy transiently. Telling an
+	// operator to "repair the pool" while it is already repairing is wrong, and
+	// running a Repair or Rebuild on top of a live resync is actively harmful, so
+	// the observed job is reported rather than inferred from health alone.
+	Resyncing bool `json:"resyncing,omitempty"`
+	// ResyncPercent is the running job's completion (0-100), and ResyncJob names
+	// what is running (e.g. "Repair", "Regeneration") so the console can say what
+	// is happening rather than that something is wrong.
+	ResyncPercent int    `json:"resyncPercent,omitempty"`
+	ResyncJob     string `json:"resyncJob,omitempty"`
 }
 
 // ClusterNodeStatus is a cluster node and its observed state — Up, Paused (the
@@ -795,6 +810,19 @@ type CSVStatus struct {
 	Name      string `json:"name"`
 	OwnerNode string `json:"ownerNode,omitempty"`
 	State     string `json:"state,omitempty"`
+
+	// Health and Operational are the BACKING VIRTUAL DISK's status, observed
+	// separately from the pool's. A pool and its volumes fail independently: a
+	// volume can be detached or degraded while every disk and the pool itself are
+	// Healthy. Without this the console had only pool health to go on and blamed
+	// the pool for a volume's problem — telling the operator to repair storage
+	// that was fine. Empty when the volume could not be matched to the CSV.
+	Health      string `json:"health,omitempty"`
+	Operational string `json:"operational,omitempty"`
+	// DetachedReason explains an unattached volume. "By Policy" is the normal
+	// resting state for a clustered volume (the cluster owns attachment), so it
+	// must not be read as a fault.
+	DetachedReason string `json:"detachedReason,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,6 +1254,18 @@ type VMStatus struct {
 	// AssignedMemoryBytes is the memory currently assigned (meaningful under
 	// dynamic memory). Best effort; zero when not observed.
 	AssignedMemoryBytes uint64 `json:"assignedMemoryBytes,omitempty"`
+
+	// MemoryDemandBytes is what the guest is actually asking for. Assigned memory
+	// equals startup memory on a static-memory VM, so "assigned vs configured" is
+	// 100% by definition and measures nothing — demand is the figure that shows
+	// real usage, and Hyper-V reports it for static and dynamic VMs alike.
+	// Zero when the VM is off or its integration services are not reporting, in
+	// which case usage is unknown and must not be shown as zero.
+	MemoryDemandBytes uint64 `json:"memoryDemandBytes,omitempty"`
+
+	// MemoryStatus is Hyper-V's own verdict on the VM's memory pressure:
+	// "OK", "Low" (the guest wants more than it has) or "Warning".
+	MemoryStatus string `json:"memoryStatus,omitempty"`
 
 	// CPUUsagePercent is the VM's host-CPU load. Best effort; zero when not
 	// observed.

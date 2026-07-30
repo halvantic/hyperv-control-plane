@@ -116,12 +116,20 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 	// to say so or the operator sees "Progressing" forever with no idea why.
 	pending := ensured.PendingPowerOff
 	if pending {
+		// Name the change and what differs. "a processor, memory, Secure Boot or
+		// boot-order change" left an operator with four candidates and no way to
+		// tell which — and no way to spot a check that is drifting falsely against
+		// a VM that already matches.
+		msg := "a configuration change needs the VM off; stop it and it applies on the next reconcile"
+		if d := ensured.PendingDetail; d != "" {
+			msg = d + " needs the VM off; stop it and it applies on the next reconcile"
+		}
 		res.Conditions = append(res.Conditions, types.Condition{
 			Type: "VMConfig/" + vm.Meta.Name, Status: false, Reason: "RequiresPowerOff",
-			Message:            "a processor, memory, Secure Boot or boot-order change needs the VM off; stop it and it applies on the next reconcile",
+			Message:            msg,
 			LastTransitionTime: r.now(),
 		})
-		r.log.Info("vm config change pending power-off", "vm", vm.Meta.Name)
+		r.log.Info("vm config change pending power-off", "vm", vm.Meta.Name, "detail", ensured.PendingDetail)
 	}
 
 	// Power is imperative, not a continuously-enforced desired state: an operator

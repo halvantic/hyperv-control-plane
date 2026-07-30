@@ -771,7 +771,8 @@ func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
 		return nil
 	}
 	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
-		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks), TotalDisks: int32(p.TotalDisks)}
+		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks), TotalDisks: int32(p.TotalDisks),
+		Resyncing: p.Resyncing, ResyncPercent: int32(p.ResyncPercent), ResyncJob: p.ResyncJob}
 }
 
 func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
@@ -779,7 +780,8 @@ func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
 		return nil
 	}
 	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes(),
-		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()), TotalDisks: int(p.GetTotalDisks())}
+		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()), TotalDisks: int(p.GetTotalDisks()),
+		Resyncing: p.GetResyncing(), ResyncPercent: int(p.GetResyncPercent()), ResyncJob: p.GetResyncJob()}
 }
 
 func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {
@@ -825,7 +827,8 @@ func clusterGroupsToProto(gs []types.ClusterGroupStatus) []*ClusterGroup {
 func clusterCSVsToProto(vs []types.CSVStatus) []*ClusterCSV {
 	out := make([]*ClusterCSV, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, &ClusterCSV{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State})
+		out = append(out, &ClusterCSV{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State,
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
 	}
 	return out
 }
@@ -861,7 +864,8 @@ func clusterGroupsFromProto(gs []*ClusterGroup) []types.ClusterGroupStatus {
 func clusterCSVsFromProto(vs []*ClusterCSV) []types.CSVStatus {
 	out := make([]types.CSVStatus, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, types.CSVStatus{Name: v.GetName(), OwnerNode: v.GetOwnerNode(), State: v.GetState()})
+		out = append(out, types.CSVStatus{Name: v.GetName(), OwnerNode: v.GetOwnerNode(), State: v.GetState(),
+			Health: v.GetHealth(), Operational: v.GetOperational(), DetachedReason: v.GetDetachedReason()})
 	}
 	return out
 }
@@ -1051,6 +1055,8 @@ func VMStatusToProto(s types.VMStatus) *VMStatus {
 		ObservedGeneration:  s.ObservedGeneration,
 		PowerState:          vmPowerStateToProto(s.PowerState),
 		AssignedMemoryBytes: s.AssignedMemoryBytes,
+		MemoryDemandBytes:   s.MemoryDemandBytes,
+		MemoryStatus:        s.MemoryStatus,
 		CpuUsagePercent:     int32(s.CPUUsagePercent),
 		UptimeSeconds:       s.UptimeSeconds,
 		Conditions:          conditionsToProto(s.Conditions),
@@ -1157,6 +1163,8 @@ func VMStatusFromProto(s *VMStatus) types.VMStatus {
 		ObservedGeneration:  s.GetObservedGeneration(),
 		PowerState:          vmPowerStateFromProto(s.GetPowerState()),
 		AssignedMemoryBytes: s.GetAssignedMemoryBytes(),
+		MemoryDemandBytes:   s.GetMemoryDemandBytes(),
+		MemoryStatus:        s.GetMemoryStatus(),
 		CPUUsagePercent:     int(s.GetCpuUsagePercent()),
 		UptimeSeconds:       s.GetUptimeSeconds(),
 		Conditions:          conditionsFromProto(s.GetConditions()),
