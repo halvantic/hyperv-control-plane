@@ -340,3 +340,45 @@ func TestEnsureVMReplicationStillWaitsForAnOnlineBroker(t *testing.T) {
 		t.Fatalf("a VM must not be told to replicate through a broker that is down\n---\n%s", s)
 	}
 }
+
+// A broker that will not come online must (a) try the one targeted remediation
+// for the cause seen live, and (b) report what Windows already knows.
+//
+// The broker binds a network listener to its own client access point name, so a
+// node that cannot resolve that name fails with 0x80072AF9 "No such host is
+// known" — with the Network Name resource sitting Online, because a name can come
+// online without its DNS record landing where the node looks. This rig sat Failed
+// for hours while that exact sentence was in the VMMS log and the console said
+// only "is Failed".
+func TestEnsureReplicaBrokerSelfHealsAndReportsTheReason(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureReplicaBroker(context.Background(), types.ReplicaBrokerSpec{
+		Name: "ReplBroker", StaticIP: "192.168.1.235",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		// Self-heal: force the CAP to re-register in DNS, then retry.
+		"Update-ClusterNetworkNameResource",
+		// Only the group's own Network Name, and only while it is failing.
+		"$_.ResourceType -eq 'Network Name'",
+		// Then report the reason Windows recorded, not just the state.
+		"Microsoft-Windows-Hyper-V-VMMS-Admin",
+		"Microsoft-Windows-FailoverClustering/Operational",
+		"Windows reports: ",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("broker self-heal/diagnosis missing %q\n---\n%s", want, s)
+		}
+	}
+	// The remediation must not run on a healthy broker — it sits behind the
+	// not-Online check, so a converged pass stays a pure no-op read.
+	// Matched on the piped invocation, not the bare cmdlet name: the comment
+	// above it explains the remediation and would otherwise match first.
+	heal := strings.Index(s, "$nn | Update-ClusterNetworkNameResource")
+	gate := strings.Index(s, "if ([string]$res.State -ne 'Online') {")
+	if gate < 0 || heal < gate {
+		t.Error("the DNS re-registration must be gated behind the broker actually failing")
+	}
+}

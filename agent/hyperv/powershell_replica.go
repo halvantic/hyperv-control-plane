@@ -180,6 +180,26 @@ if ($res -and [string]$res.State -ne 'Online') {
   $res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
 }
 if (-not $res) { throw ('the Hyper-V Replica Broker resource is missing from group ' + $name) }
+
+# SELF-HEAL: re-register the client access point in DNS, then try once more.
+#
+# The broker starts a network listener bound to its OWN client access point name.
+# If the node cannot resolve that name the listener cannot start and the resource
+# fails with 0x80072AF9 "No such host is known" — which is what happened on this
+# rig, and it happens with the Network Name resource sitting Online, because a
+# name can come online without its DNS record landing where the node looks.
+# Update-ClusterNetworkNameResource is the documented remediation: it forces the
+# name to re-register in DNS and AD. It is idempotent, touches only this group's
+# own name, and runs only when the broker is actually failing — never on a
+# healthy pass.
+if ([string]$res.State -ne 'Online') {
+  foreach ($nn in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $name -and $_.ResourceType -eq 'Network Name' })) {
+    try { $nn | Update-ClusterNetworkNameResource -ErrorAction Stop | Out-Null; $changed = $true } catch {}
+  }
+  $res | Start-ClusterResource -ErrorAction SilentlyContinue | Out-Null
+  $res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
+}
+
 if ([string]$res.State -ne 'Online') {
   # Name what is actually holding it back. A broker fails when its client access
   # point cannot come online — an AD computer object for the name that is denied
@@ -189,7 +209,24 @@ if ([string]$res.State -ne 'Online') {
   $bad = @(Get-ClusterResource -ErrorAction SilentlyContinue |
     Where-Object { [string]$_.OwnerGroup -eq $name -and [string]$_.State -ne 'Online' } |
     ForEach-Object { $_.Name + ' [' + $_.ResourceType + '] ' + [string]$_.State })
-  throw ('Hyper-V Replica Broker ' + $name + ' is ' + [string]$res.State + ' - not online in this group: ' + ($bad -join '; '))
+  # Windows has already written WHY to the event logs; report it rather than
+  # leaving the operator to pull a cluster log by hand. This rig sat Failed for
+  # hours while "failed to start the network listener on destination node
+  # 'HVNEW01': No such host is known" was sitting in the VMMS log the whole time.
+  # Clustering's own channel names the resource; VMMS carries the underlying
+  # reason, which is the useful half.
+  $why = @()
+  foreach ($ch in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')) {
+    try {
+      $evs = @(Get-WinEvent -FilterHashtable @{ LogName = $ch; Level = 1,2,3; StartTime = (Get-Date).AddMinutes(-20) } -ErrorAction Stop |
+        Where-Object { $_.Message -match 'Replica|Broker|listener' } |
+        Select-Object -First 2)
+      foreach ($e in $evs) { $why += (($e.Message -split '\r?\n')[0].Trim()) }
+    } catch {}
+  }
+  $msg = 'Hyper-V Replica Broker ' + $name + ' is ' + [string]$res.State + ' - not online in this group: ' + ($bad -join '; ')
+  if ($why.Count -gt 0) { $msg += '. Windows reports: ' + (($why | Select-Object -Unique) -join ' | ') }
+  throw $msg
 }
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 		psQuote(spec.Name), staticIP, psQuote(spec.StaticIP))
