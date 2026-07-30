@@ -115,8 +115,12 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 // broker resource, started. Run on the former. Idempotent: a present, online
 // broker is a no-op.
 func (p *PowerShell) EnsureReplicaBroker(ctx context.Context, spec types.ReplicaBrokerSpec) (Outcome, error) {
-	if spec.Name == "" {
-		return OutcomeUnchanged, fmt.Errorf("ensure replica broker: broker name is required")
+	// An over-long name is checked here as well as at the centre, because an
+	// existing broker authored before the check will otherwise keep failing with
+	// nothing but "is Failed" — the truncation is invisible from every angle
+	// except the AD object, which is not somewhere an operator thinks to look.
+	if err := types.ValidateNetBIOSName("Replica Broker", spec.Name); err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure replica broker: %w", err)
 	}
 	staticIP := ""
 	if spec.StaticIP != "" {
@@ -387,6 +391,20 @@ if (-not $enabled) {
       if ($_.Exception.Message -like '*IncludedDisks*') {
         $paths = @(Get-VMHardDiskDrive -VMName $vm -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path })
         throw ('cannot enable replication for ' + $vm + ': Hyper-V rejected the disk set. The VM has a disk that cannot be replicated - typically an orphaned or duplicate disk (e.g. a leftover replica VHD) or one on an inaccessible path. Attached disks: ' + ($paths -join '; ') + '. Detach the extra disk so the VM has only the disks it should replicate, then retry.')
+      }
+      # "not in a state to accept replication" is the target refusing, and Hyper-V
+      # never says why. By far the most common cause is that the target ALREADY
+      # holds a replica copy of this VM, left by an earlier relationship - which
+      # is observable by simply asking it. Seen live: a replica of 'Linux' sat Off
+      # on the target while every setting on both sides was correct, and the only
+      # symptom was this sentence.
+      if ($_.Exception.Message -like '*not in a state to accept replication*') {
+        $existing = $null
+        try { $existing = Get-VM -ComputerName $server -Name $vm -ErrorAction Stop } catch {}
+        if ($existing -and [string]$existing.ReplicationMode -eq 'Replica') {
+          throw ('cannot enable replication for ' + $vm + ': ' + $server + ' already holds a replica copy of it, left by an earlier relationship. Remove that replica copy on ' + $server + ' (the console offers "Remove replica copy" on it), then retry.')
+        }
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' is not accepting replication, and does not already hold a replica of this VM. Check it has the Replica server role enabled, an authorization entry permitting this primary, and its replica storage path present. Hyper-V reported: ' + $_.Exception.Message)
       }
       throw
     }

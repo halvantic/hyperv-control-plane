@@ -31,6 +31,11 @@ type Reconciler struct {
 
 	// now is injectable so tests can pin condition timestamps.
 	now func() time.Time
+
+	// transients tracks how long each condition has been failing with a known
+	// in-flight signature, so a settling operation reads as progressing but a
+	// stuck one still escalates to a real failure. See transient.go.
+	transients *transientTracker
 }
 
 // New returns a Reconciler driving the given host interface.
@@ -38,7 +43,7 @@ func New(hv hyperv.Interface, log *slog.Logger) *Reconciler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Reconciler{hv: hv, log: log, now: func() time.Time { return time.Now().UTC() }}
+	return &Reconciler{hv: hv, log: log, now: func() time.Time { return time.Now().UTC() }, transients: newTransientTracker()}
 }
 
 // Result is the outcome of one reconcile pass, for the agent to fold into the
@@ -479,11 +484,37 @@ func (r *Reconciler) condition(condType string, out hyperv.Outcome, err error) t
 		LastTransitionTime: r.now(),
 	}
 	if err != nil {
+		// A failure with a known in-flight signature is reported as SETTLING
+		// rather than failed — the operation is expected to succeed on a later
+		// pass with no operator action, and a red condition for a few seconds of
+		// normal churn teaches people to ignore red.
+		//
+		// But only for a bounded time. Past transientWindow the original error is
+		// reported as the failure it has become. Without that escalation this
+		// would be the very defect the rest of this package exists to prevent: a
+		// condition that reads calm while nothing works.
+		if what := transientSignature(err); what != "" {
+			elapsed, within := r.transients.observe(condType, r.now())
+			if within {
+				c.Status = true
+				c.Reason = "Settling"
+				c.Message = what + " — retrying (" + elapsed.Round(time.Second).String() + ")"
+				return c
+			}
+			c.Status = false
+			c.Reason = "ApplyFailed"
+			c.Message = err.Error() + " (still failing after " + elapsed.Round(time.Second).String() + "; no longer treated as transient)"
+			return c
+		}
+		r.transients.clear(condType)
 		c.Status = false
 		c.Reason = "ApplyFailed"
 		c.Message = err.Error()
 		return c
 	}
+	// Succeeded: forget any transient history, or a later unrelated one would
+	// inherit this start time and escalate early.
+	r.transients.clear(condType)
 	c.Status = true
 	switch out {
 	case hyperv.OutcomeCreated:

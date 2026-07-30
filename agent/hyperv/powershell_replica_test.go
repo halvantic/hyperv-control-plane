@@ -39,6 +39,11 @@ func TestEnsureVMReplicationScriptHandlesStuckStates(t *testing.T) {
 		"'Error'",
 		"$health -eq 'Critical'",
 		"replication is configured but unhealthy",
+		// The target refusing is reported with its actual cause where that is
+		// observable: an existing replica copy left by an earlier relationship.
+		"not in a state to accept replication",
+		"already holds a replica copy of it",
+		"Get-VM -ComputerName $server -Name $vm",
 		// The replica side is a no-op: Set-VMReplication/Resume there fail
 		// "Replication is not enabled" during a failover role swap.
 		"$r.Mode -eq 'Replica'",

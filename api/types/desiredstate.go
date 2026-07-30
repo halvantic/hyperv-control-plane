@@ -680,7 +680,8 @@ type ClusterMgmtVNIC struct {
 // individual node.
 type ReplicaBrokerSpec struct {
 	// Name is the broker's client access point (computer object) name, e.g.
-	// "Newer-Broker". Required.
+	// "Newer-Broker". Required, and at most MaxNetBIOSName characters — see
+	// ValidateNetBIOSName for why a longer one fails in a way nothing reports.
 	Name string `json:"name"`
 
 	// StaticIP optionally assigns the client access point a static address;
