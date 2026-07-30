@@ -738,6 +738,14 @@ type ClusterNetworkStatus struct {
 	CIDR  string `json:"cidr,omitempty"`
 	Role  string `json:"role,omitempty"`
 	State string `json:"state,omitempty"`
+
+	// Metric is what actually decides where cluster and CSV/SMB traffic goes:
+	// among the networks enabled for cluster use, the LOWEST metric wins.
+	// Windows assigns it automatically, preferring networks with no gateway, so
+	// an operator cannot infer it from the role — and when a storage network
+	// misbehaves, "which network is storage actually on" is the first question
+	// and the console could not answer it.
+	Metric int `json:"metric,omitempty"`
 }
 
 // ClusterPoolStatus is the S2D storage pool's capacity and health. Free is

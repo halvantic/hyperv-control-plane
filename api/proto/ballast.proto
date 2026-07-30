@@ -492,6 +492,10 @@ message ClusterNetwork {
   string cidr = 2;
   string role = 3;
   string state = 4;
+  // metric decides which network actually carries cluster and CSV/SMB traffic:
+  // among networks enabled for cluster use, the lowest metric wins. Role alone
+  // does not answer "where is storage traffic going".
+  int32 metric = 5;
 }
 
 message ClusterNode {

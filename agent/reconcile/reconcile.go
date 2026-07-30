@@ -254,9 +254,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// every pass — not just as an operator-triggered job — makes the host heal
 	// itself, and it works while the centre is offline. This is host hygiene, not
 	// desired spec, so it is best-effort: surface a condition, never degrade the
-	// host or hold its generation back. Only run it where the agent manages
-	// networking (a switch or management vNIC is declared).
-	if len(net.Switches) > 0 || len(net.ManagementVNICs) > 0 {
+	// host or hold its generation back.
+	//
+	// It runs where the agent manages networking (a switch or management vNIC is
+	// declared) AND on any cluster member. A member's NIC on Public silently
+	// blocks the cluster and SMB traffic that carries CSV I/O, whoever created
+	// the adapter — observed live as storage and live-migration vNICs flipping to
+	// Public, which took a CSV degraded and surfaced as four unrelated-looking
+	// failures (an undreadable VHDX path, a provider error, a denied directory
+	// creation). Gating that hygiene on Ballast having authored the switch left
+	// the hosts that most need it doing nothing.
+	if len(net.Switches) > 0 || len(net.ManagementVNICs) > 0 || desired.Spec.ClusterMembership != nil {
 		out, err := r.hv.EnsureNetworkProfilesPrivate(ctx)
 		conds = append(conds, r.advisoryCondition("NetworkProfile", out, err))
 		if err != nil {

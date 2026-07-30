@@ -202,3 +202,69 @@ func TestVMFromProtoNil(t *testing.T) {
 		t.Fatalf("expected zero VM from nil, got %#v", got)
 	}
 }
+
+// sampleClusterStatus is fully populated for the same reason sampleVM is: a
+// field the proto never carries round-trips perfectly as its zero value, so a
+// sample that leaves fields unset proves nothing.
+func sampleClusterStatus() types.ClusterStatus {
+	return types.ClusterStatus{
+		Phase:              types.PhaseReady,
+		ObservedGeneration: 7,
+		FormedMembers:      []string{"n1", "n2"},
+		S2DEnabled:         true,
+		Nodes:              []types.ClusterNodeStatus{{Name: "n1", State: "Up"}},
+		Groups:             []types.ClusterGroupStatus{{Name: "Cluster Group", OwnerNode: "n1", State: "Online", GroupType: "Cluster"}},
+		VMs:                []types.ClusterVMStatus{{Name: "Web01", OwnerNode: "n2", State: "Online"}},
+		CSVs: []types.CSVStatus{{
+			Name: "Cluster Virtual Disk (Vol01)", OwnerNode: "n1", State: "Online",
+			Health: "Warning", Operational: "Degraded", DetachedReason: "By Policy",
+		}},
+		Pool: &types.ClusterPoolStatus{
+			Name: "S2D on c1", RawBytes: 1 << 40, AllocatedBytes: 1 << 38,
+			Health: "Warning", Operational: "Degraded", UnhealthyDisks: 1, TotalDisks: 12,
+			Resyncing: true, ResyncPercent: 41, ResyncJob: "Repair",
+		},
+		Networks: []types.ClusterNetworkStatus{{
+			Name: "Cluster Network 2", CIDR: "10.0.50.0/24", Role: "Cluster", State: "Up", Metric: 30000,
+		}},
+		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
+	}
+}
+
+// Cluster status crosses the wire like everything else, and until now nothing
+// proved it. The pool's resync fields, the CSVs' own health, and the networks'
+// metric were all added to the schema without a round-trip test — each could
+// have been dropped by the proto and reported as a confident zero.
+func TestClusterStatusRoundTrip(t *testing.T) {
+	in := sampleClusterStatus()
+	got := ClusterStatusFromProto(ClusterStatusToProto(in))
+	if !reflect.DeepEqual(in, got) {
+		t.Fatalf("round trip mismatch:\n in:  %#v\n got: %#v", in, got)
+	}
+}
+
+// As with VMSpec: require every exported field of the nested status structs to
+// be set, so adding one fails here until the sample populates it and the round
+// trip is made to prove the proto carries it.
+func TestSampleClusterStatusCoversEveryField(t *testing.T) {
+	st := sampleClusterStatus()
+	check := func(name string, v reflect.Value) {
+		t.Helper()
+		for i := 0; i < v.NumField(); i++ {
+			f := v.Type().Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			if v.Field(i).IsZero() {
+				t.Errorf("sampleClusterStatus does not set %s.%s, so the round trip cannot prove the proto carries it — populate it", name, f.Name)
+			}
+		}
+	}
+	check("ClusterStatus", reflect.ValueOf(st))
+	check("ClusterPoolStatus", reflect.ValueOf(*st.Pool))
+	check("CSVStatus", reflect.ValueOf(st.CSVs[0]))
+	check("ClusterNetworkStatus", reflect.ValueOf(st.Networks[0]))
+	check("ClusterNodeStatus", reflect.ValueOf(st.Nodes[0]))
+	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
+	check("ClusterVMStatus", reflect.ValueOf(st.VMs[0]))
+}

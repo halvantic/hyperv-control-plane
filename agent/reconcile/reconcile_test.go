@@ -297,3 +297,27 @@ func TestReconcileDetectsUpdate(t *testing.T) {
 		t.Fatalf("switch reason: want Updated, got %q", reason)
 	}
 }
+
+// A cluster member heals a NIC stranded on Public even when the agent authored
+// none of its networking. A member NIC on Public blocks the cluster and SMB
+// traffic that carries CSV I/O regardless of who created the adapter, so the
+// hygiene cannot be conditional on Ballast managing the switch — that left the
+// hosts most in need of it doing nothing.
+func TestReconcileHealsPublicProfileOnAClusterMemberWithoutManagedNetworking(t *testing.T) {
+	stub := &hyperv.Stub{NetworkProfilePublic: true}
+	r := testReconciler(stub)
+
+	host := types.Host{
+		Meta: types.ObjectMeta{Name: "member01", Generation: 1},
+		Spec: types.HostSpec{
+			ClusterMembership: &types.ClusterMembershipSpec{ClusterName: "bcluster2"},
+		},
+	}
+	res, err := r.Reconcile(context.Background(), host, nil)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if reason, ok := reasonByType(res.Conditions, "NetworkProfile"); !ok || reason != "Updated" {
+		t.Fatalf("a cluster member must heal its own profiles: want Updated, got %q (present=%v)", reason, ok)
+	}
+}

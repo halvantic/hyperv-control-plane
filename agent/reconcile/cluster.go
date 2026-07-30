@@ -204,7 +204,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 func clusterNetworksToStatus(ns []hyperv.ClusterNetworkInfo) []types.ClusterNetworkStatus {
 	out := make([]types.ClusterNetworkStatus, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, types.ClusterNetworkStatus{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State})
+		out = append(out, types.ClusterNetworkStatus{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State, Metric: n.Metric})
 	}
 	return out
 }

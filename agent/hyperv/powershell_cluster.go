@@ -51,10 +51,11 @@ type clusterPoolObs struct {
 }
 
 type clusterNetworkObs struct {
-	Name  string `json:"name"`
-	CIDR  string `json:"cidr"`
-	Role  string `json:"role"`
-	State string `json:"state"`
+	Name   string `json:"name"`
+	CIDR   string `json:"cidr"`
+	Role   string `json:"role"`
+	State  string `json:"state"`
+	Metric int    `json:"metric"`
 }
 
 // clusterStateScript observes membership plus clustered groups/roles and CSV
@@ -110,16 +111,38 @@ $pool = if ($sp) {
   # normal, self-resolving work, not a fault needing operator action. Reporting
   # the job is what lets the console say "rebuilding, 12%" instead of telling
   # someone to repair a pool that is already repairing itself.
-  $rjob = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object {
+  # No "| Select-Object -First 1": the -First pipeline stop can abort the whole
+  # script after a storage cmdlet, exiting 0 with no output marker.
+  $rjobs = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object {
     [string]$_.JobState -in @('Running','Starting','Suspended') -and
     ([string]$_.Name -match 'Repair|Regener|Resync|Rebalance|Optimi')
-  }) | Sort-Object -Property @{ Expression = { [int]$_.PercentComplete } } | Select-Object -First 1
-  $resync = [bool]$rjob
+  })
+  $resync = ($rjobs.Count -gt 0)
   $rpct = 0; $rname = ''
-  if ($rjob) {
-    $rpct = [int]$rjob.PercentComplete
+  if ($resync) {
+    # Progress comes from the BYTE counters, not PercentComplete. Storage Spaces
+    # leaves PercentComplete at 0 for the whole of a running repair on many
+    # builds — it is populated for some job types and not others — so reading it
+    # reported "rebuilding 0%" for the entire rebuild and made the figure
+    # worthless. BytesProcessed/BytesTotal are populated; summing them across the
+    # jobs gives the rebuild's real overall progress.
+    $tot = 0.0; $don = 0.0
+    foreach ($j in $rjobs) {
+      if ($j.BytesTotal) { $tot += [double]$j.BytesTotal }
+      if ($j.BytesProcessed) { $don += [double]$j.BytesProcessed }
+    }
+    if ($tot -gt 0) {
+      $rpct = [int][math]::Round(($don / $tot) * 100)
+    } else {
+      # No byte counters: fall back to the LEAST-progressed job, so several jobs
+      # report the work still outstanding rather than one that has finished.
+      $pcts = @($rjobs | ForEach-Object { [int]$_.PercentComplete })
+      if ($pcts.Count -gt 0) { $rpct = [int](($pcts | Measure-Object -Minimum).Minimum) }
+    }
+    if ($rpct -lt 0) { $rpct = 0 }
+    if ($rpct -gt 100) { $rpct = 100 }
     # Job names look like "<volume>-Repair"; report the kind, not the volume.
-    $rname = [string]$rjob.Name
+    $rname = [string]$rjobs[0].Name
     if ($rname -match '-([A-Za-z]+)$') { $rname = $Matches[1] }
   }
   [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname }
@@ -127,7 +150,11 @@ $pool = if ($sp) {
 $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
   $role = switch ([int]$_.Role) { 0 { 'None' } 1 { 'Cluster' } 3 { 'ClusterAndClient' } default { [string]$_.Role } }
-  [pscustomobject]@{ name = [string]$_.Name; cidr = ([string]$_.Address + '/' + $bits); role = $role; state = [string]$_.State } })
+  # Metric is what decides where cluster and CSV/SMB traffic actually goes:
+  # lowest metric wins among the networks enabled for cluster use. Windows
+  # assigns it automatically (preferring networks with no gateway), so the role
+  # alone never answers "which network is storage on".
+  [pscustomobject]@{ name = [string]$_.Name; cidr = ([string]$_.Address + '/' + $bits); role = $role; state = [string]$_.State; metric = [int]$_.Metric } })
 [pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets) } | ConvertTo-Json -Compress -Depth 4
 `
 
@@ -165,7 +192,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	}
 	netw := make([]ClusterNetworkInfo, 0, len(obs.Networks))
 	for _, n := range obs.Networks {
-		netw = append(netw, ClusterNetworkInfo{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State})
+		netw = append(netw, ClusterNetworkInfo{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State, Metric: n.Metric})
 	}
 	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw}, nil
 }

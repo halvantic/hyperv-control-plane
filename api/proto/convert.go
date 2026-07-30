@@ -753,7 +753,7 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 func clusterNetworksToProto(ns []types.ClusterNetworkStatus) []*ClusterNetwork {
 	out := make([]*ClusterNetwork, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, &ClusterNetwork{Name: n.Name, Cidr: n.CIDR, Role: n.Role, State: n.State})
+		out = append(out, &ClusterNetwork{Name: n.Name, Cidr: n.CIDR, Role: n.Role, State: n.State, Metric: int32(n.Metric)})
 	}
 	return out
 }
@@ -761,7 +761,7 @@ func clusterNetworksToProto(ns []types.ClusterNetworkStatus) []*ClusterNetwork {
 func clusterNetworksFromProto(ns []*ClusterNetwork) []types.ClusterNetworkStatus {
 	out := make([]types.ClusterNetworkStatus, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, types.ClusterNetworkStatus{Name: n.GetName(), CIDR: n.GetCidr(), Role: n.GetRole(), State: n.GetState()})
+		out = append(out, types.ClusterNetworkStatus{Name: n.GetName(), CIDR: n.GetCidr(), Role: n.GetRole(), State: n.GetState(), Metric: int(n.GetMetric())})
 	}
 	return out
 }

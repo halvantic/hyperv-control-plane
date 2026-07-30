@@ -3539,11 +3539,15 @@ func (x *ClusterStatus) GetNetworks() []*ClusterNetwork {
 }
 
 type ClusterNetwork struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Cidr          string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
-	Role          string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
-	State         string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Cidr  string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Role  string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
+	State string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	// metric decides which network actually carries cluster and CSV/SMB traffic:
+	// among networks enabled for cluster use, the lowest metric wins. Role alone
+	// does not answer "where is storage traffic going".
+	Metric        int32 `protobuf:"varint,5,opt,name=metric,proto3" json:"metric,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3604,6 +3608,13 @@ func (x *ClusterNetwork) GetState() string {
 		return x.State
 	}
 	return ""
+}
+
+func (x *ClusterNetwork) GetMetric() int32 {
+	if x != nil {
+		return x.Metric
+	}
+	return 0
 }
 
 type ClusterNode struct {
@@ -5177,12 +5188,13 @@ const file_ballast_proto_rawDesc = "" +
 	"\x05nodes\x18\t \x03(\v2\x17.ballast.v1.ClusterNodeR\x05nodes\x12+\n" +
 	"\x04pool\x18\n" +
 	" \x01(\v2\x17.ballast.v1.ClusterPoolR\x04pool\x126\n" +
-	"\bnetworks\x18\v \x03(\v2\x1a.ballast.v1.ClusterNetworkR\bnetworks\"b\n" +
+	"\bnetworks\x18\v \x03(\v2\x1a.ballast.v1.ClusterNetworkR\bnetworks\"z\n" +
 	"\x0eClusterNetwork\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x12\x12\n" +
 	"\x04role\x18\x03 \x01(\tR\x04role\x12\x14\n" +
-	"\x05state\x18\x04 \x01(\tR\x05state\"7\n" +
+	"\x05state\x18\x04 \x01(\tR\x05state\x12\x16\n" +
+	"\x06metric\x18\x05 \x01(\x05R\x06metric\"7\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\"\xcf\x02\n" +

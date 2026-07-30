@@ -609,6 +609,9 @@ type ClusterNetworkInfo struct {
 	CIDR  string
 	Role  string
 	State string
+	// Metric decides which network carries cluster and CSV/SMB traffic — lowest
+	// wins among those enabled for cluster use.
+	Metric int
 }
 
 // ClusterVM is one highly-available VM role and its current owner.
