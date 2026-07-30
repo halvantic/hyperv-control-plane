@@ -521,6 +521,11 @@ message ClusterPool {
   bool resyncing = 8;
   int32 resync_percent = 9;
   string resync_job = 10;
+  // resync_remaining_bytes is the outstanding work across the running jobs. The
+  // percentage resets when one job ends and the next begins, so it cannot show
+  // overall progress; this can, and separates a converging rebuild from one that
+  // keeps restarting.
+  uint64 resync_remaining_bytes = 11;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.

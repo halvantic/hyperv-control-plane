@@ -599,7 +599,11 @@ type ClusterPool struct {
 	// pool that is rebuilding itself is not mistaken for one that is broken.
 	Resyncing     bool
 	ResyncPercent int
-	ResyncJob     string
+	// ResyncRemainingBytes is the outstanding work across the running jobs. The
+	// percentage resets when one job ends and the next begins; this does not, so
+	// it is what tells a converging rebuild from one that keeps restarting.
+	ResyncRemainingBytes uint64
+	ResyncJob            string
 }
 
 // ClusterNetworkInfo is one cluster network: its name, subnet (CIDR), role

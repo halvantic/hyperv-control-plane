@@ -215,7 +215,8 @@ func clusterPoolToStatus(p *hyperv.ClusterPool) *types.ClusterPoolStatus {
 	}
 	return &types.ClusterPoolStatus{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
 		Health: p.Health, Operational: p.Operational, UnhealthyDisks: p.UnhealthyDisks, TotalDisks: p.TotalDisks,
-		Resyncing: p.Resyncing, ResyncPercent: p.ResyncPercent, ResyncJob: p.ResyncJob}
+		Resyncing: p.Resyncing, ResyncPercent: p.ResyncPercent, ResyncJob: p.ResyncJob,
+		ResyncRemainingBytes: p.ResyncRemainingBytes}
 }
 
 func clusterNodesToStatus(ns []hyperv.ClusterNodeState) []types.ClusterNodeStatus {

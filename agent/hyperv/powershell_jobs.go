@@ -717,14 +717,41 @@ func (p *PowerShell) EnsureNetworkProfilesPrivate(ctx context.Context) (Outcome,
 	const script = `$ErrorActionPreference='Stop'
 $changed = 0
 $failed = @()
+$stuck = 0
 foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
   if ($prof.NetworkCategory -eq 'Public') {
     try {
       Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop
       $changed++
     } catch {
+      # "network marked 'Identifying...'" is not a permanent failure — it is NLA
+      # still deciding, and Set-NetConnectionProfile refuses while it does. On an
+      # isolated storage/live-migration VLAN with no gateway or DNS, that state
+      # can persist, so a heal that only ever calls Set gives up every pass and
+      # the NIC stays Public for ever. Observed live: a Storage vNIC sat Public
+      # while this ran on every cycle, blocking the SMB traffic carrying CSV I/O
+      # and taking a volume degraded. Restarting NLA forces re-identification,
+      # which is what the operator-run repair does and why that one works.
       $failed += ($prof.InterfaceAlias + ': ' + $_.Exception.Message)
+      if ($_.Exception.Message -match 'Identifying') { $stuck++ }
     }
+  }
+}
+if ($stuck -gt 0) {
+  try {
+    Restart-Service NlaSvc -Force -ErrorAction Stop
+    Start-Sleep -Seconds 4
+    # Re-try the ones that were mid-identification; NLA may also have promoted
+    # them straight to DomainAuthenticated, which is better than Private.
+    $failed = @()
+    foreach ($prof in (Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+      if ($prof.NetworkCategory -eq 'Public') {
+        try { Set-NetConnectionProfile -InterfaceIndex $prof.InterfaceIndex -NetworkCategory Private -ErrorAction Stop; $changed++ }
+        catch { $failed += ($prof.InterfaceAlias + ': ' + $_.Exception.Message) }
+      }
+    }
+  } catch {
+    $failed += ('NLA restart failed: ' + $_.Exception.Message)
   }
 }
 'changed=' + $changed + ' failed=' + $failed.Count + $(if ($failed) { ' :: ' + ($failed -join '; ') } else { '' })`

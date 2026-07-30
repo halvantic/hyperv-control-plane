@@ -296,3 +296,47 @@ func TestEnsureReplicaBrokerLeavesAddressAloneWhenUndeclared(t *testing.T) {
 		t.Fatalf("an undeclared address must leave the CAP alone\n---\n%s", s)
 	}
 }
+
+// The replica-server step waits for the broker to EXIST, never for it to be
+// Online. Waiting for Online deadlocked the two against each other: the broker
+// resource cannot come online until the members accept replica traffic, and this
+// step refused to configure them until the broker was online. Observed live —
+// three cluster members stuck on "waiting for the Hyper-V Replica Broker to come
+// online (currently Failed)" while the broker sat Failed for want of exactly the
+// configuration being withheld, and the standalone host in the same fabric
+// configured itself without trouble.
+func TestEnsureReplicaServerDoesNotWaitForTheBrokerToBeOnline(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureReplicaServer(context.Background(), types.ReplicaServerSpec{
+		Enabled: true, AuthenticationType: "Kerberos", DefaultStorageLocation: `C:\ClusterStorage\Vol01\Replica`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+	// An absent broker is still a legitimate wait: without one the query itself
+	// fails with a misleading ObjectNotFound.
+	if !strings.Contains(s, "broker to be provisioned") {
+		t.Fatalf("an absent broker should still be waited on explicitly\n---\n%s", s)
+	}
+	// But its STATE must not gate the configuration. Asserted against the code
+	// rather than the message, so the comment explaining why can keep saying it.
+	if strings.Contains(s, "$broker.State -ne 'Online'") {
+		t.Error("gating on the broker being Online deadlocks it against the configuration it needs")
+	}
+}
+
+// The same guard in EnsureVMReplication is NOT a deadlock and must stay: a VM
+// genuinely cannot replicate through a broker that is down, and enabling a VM's
+// replication does nothing to bring the broker up. Only the host-level
+// replica-server configuration is part of the cycle.
+func TestEnsureVMReplicationStillWaitsForAnOnlineBroker(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureVMReplication(context.Background(), "Website", types.VMReplicationSpec{
+		Enabled: true, ReplicaServer: "hv04.example.test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.calls[0]; !strings.Contains(s, "$broker.State -ne 'Online'") {
+		t.Fatalf("a VM must not be told to replicate through a broker that is down\n---\n%s", s)
+	}
+}

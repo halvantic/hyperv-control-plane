@@ -780,8 +780,21 @@ type ClusterPoolStatus struct {
 	// ResyncPercent is the running job's completion (0-100), and ResyncJob names
 	// what is running (e.g. "Repair", "Regeneration") so the console can say what
 	// is happening rather than that something is wrong.
-	ResyncPercent int    `json:"resyncPercent,omitempty"`
-	ResyncJob     string `json:"resyncJob,omitempty"`
+	ResyncPercent int `json:"resyncPercent,omitempty"`
+
+	// ResyncRemainingBytes is the work still outstanding across the running jobs.
+	// It exists because the PERCENTAGE cannot be trusted as overall progress: a
+	// finished job vanishes from Get-StorageJob, so when the next one starts the
+	// percentage drops back toward zero. Observed live going 21% -> 84% -> 0.
+	//
+	// There is no knowable total to measure the whole rebuild against, so rather
+	// than invent continuity across jobs that cannot be correlated, report the
+	// figure that IS comparable across them. It also separates the two causes of
+	// a reset: across phases the remaining bytes trend down (the rebuild is
+	// converging), whereas a repair that keeps restarting returns to the same
+	// value and retains nothing — a fault that otherwise looks like slow progress.
+	ResyncRemainingBytes uint64 `json:"resyncRemainingBytes,omitempty"`
+	ResyncJob            string `json:"resyncJob,omitempty"`
 }
 
 // ClusterNodeStatus is a cluster node and its observed state — Up, Paused (the
@@ -942,6 +955,13 @@ const (
 	// its client access point (network name + IP). Run on the former. Clear
 	// Cluster.Spec.ReplicaBroker first or the reconcile recreates it.
 	JobRemoveReplicaBroker = "RemoveReplicaBroker" // run on the former: params: group (optional) — delete the Replica Broker role and its CAP (destructive)
+
+	// JobResync forces an immediate full reconcile on the host. It does no work
+	// itself: every completed job already triggers a nudge, which pulls desired
+	// state in full (ignoring the generation short-circuit), re-collects the
+	// throttled inventory/resource/VM observations and runs the cluster pass
+	// regardless of its edge trigger. Read-only and safe to run at any time.
+	JobResync = "Resync" // no params — force an immediate full reconcile on this host
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
 

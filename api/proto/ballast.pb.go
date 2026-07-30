@@ -3688,8 +3688,13 @@ type ClusterPool struct {
 	Resyncing     bool   `protobuf:"varint,8,opt,name=resyncing,proto3" json:"resyncing,omitempty"`
 	ResyncPercent int32  `protobuf:"varint,9,opt,name=resync_percent,json=resyncPercent,proto3" json:"resync_percent,omitempty"`
 	ResyncJob     string `protobuf:"bytes,10,opt,name=resync_job,json=resyncJob,proto3" json:"resync_job,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// resync_remaining_bytes is the outstanding work across the running jobs. The
+	// percentage resets when one job ends and the next begins, so it cannot show
+	// overall progress; this can, and separates a converging rebuild from one that
+	// keeps restarting.
+	ResyncRemainingBytes uint64 `protobuf:"varint,11,opt,name=resync_remaining_bytes,json=resyncRemainingBytes,proto3" json:"resync_remaining_bytes,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ClusterPool) Reset() {
@@ -3790,6 +3795,13 @@ func (x *ClusterPool) GetResyncJob() string {
 		return x.ResyncJob
 	}
 	return ""
+}
+
+func (x *ClusterPool) GetResyncRemainingBytes() uint64 {
+	if x != nil {
+		return x.ResyncRemainingBytes
+	}
+	return 0
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.
@@ -5197,7 +5209,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x06metric\x18\x05 \x01(\x05R\x06metric\"7\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\xcf\x02\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\x85\x03\n" +
 	"\vClusterPool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\traw_bytes\x18\x02 \x01(\x04R\brawBytes\x12'\n" +
@@ -5211,7 +5223,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\x0eresync_percent\x18\t \x01(\x05R\rresyncPercent\x12\x1d\n" +
 	"\n" +
 	"resync_job\x18\n" +
-	" \x01(\tR\tresyncJob\"v\n" +
+	" \x01(\tR\tresyncJob\x124\n" +
+	"\x16resync_remaining_bytes\x18\v \x01(\x04R\x14resyncRemainingBytes\"v\n" +
 	"\fClusterGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +

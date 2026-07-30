@@ -772,7 +772,8 @@ func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
 	}
 	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
 		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks), TotalDisks: int32(p.TotalDisks),
-		Resyncing: p.Resyncing, ResyncPercent: int32(p.ResyncPercent), ResyncJob: p.ResyncJob}
+		Resyncing: p.Resyncing, ResyncPercent: int32(p.ResyncPercent), ResyncJob: p.ResyncJob,
+		ResyncRemainingBytes: p.ResyncRemainingBytes}
 }
 
 func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
@@ -781,7 +782,8 @@ func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
 	}
 	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes(),
 		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()), TotalDisks: int(p.GetTotalDisks()),
-		Resyncing: p.GetResyncing(), ResyncPercent: int(p.GetResyncPercent()), ResyncJob: p.GetResyncJob()}
+		Resyncing: p.GetResyncing(), ResyncPercent: int(p.GetResyncPercent()), ResyncJob: p.GetResyncJob(),
+		ResyncRemainingBytes: p.GetResyncRemainingBytes()}
 }
 
 func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {

@@ -540,7 +540,11 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// number. Without this the agent would trust the "unchanged" answer forever.
 	known, _, _ := r.st.LoadDesiredHost()
 	knownGen := known.Meta.Generation
-	if r.cycles%fullResyncEvery == 0 {
+	// A forced cycle also pulls in full. An operator asking for a reconcile is
+	// usually asking precisely because they doubt what the agent is holding, and
+	// the generation-match short-circuit is the one thing that could keep a stale
+	// cache alive across the request.
+	if force || r.cycles%fullResyncEvery == 0 {
 		knownGen = 0
 	}
 	resp, err := client.PullDesiredState(ctx, &ballastpb.PullDesiredStateRequest{

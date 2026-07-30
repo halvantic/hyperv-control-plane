@@ -60,16 +60,24 @@ $auth = %[2]s
 $port = %[3]d
 $storage = %[4]s
 # On a cluster member the replication-server configuration hangs off the
-# Hyper-V Replica Broker; before the broker role is online even the query
-# fails with a misleading ObjectNotFound. Say what is actually being waited
-# on — the reconcile retries every pass until the former's broker lands.
+# Hyper-V Replica Broker; with no broker at all even the query fails with a
+# misleading ObjectNotFound, so an absent broker is still worth waiting on
+# explicitly. The reconcile retries every pass until the former's broker lands.
+#
+# But it waits only for the broker to EXIST, never for it to be Online. Waiting
+# for Online deadlocked the two against each other: the broker resource cannot
+# come online until the members accept replica traffic, and this refused to
+# configure them until the broker was online. Observed live — three cluster
+# members stuck on "waiting for the Hyper-V Replica Broker to come online
+# (currently Failed)" while the broker sat Failed for want of exactly the
+# configuration this step was withholding. The standalone host in the same
+# fabric configured itself without trouble, which is what gave it away.
 $clussvc = Get-Service ClusSvc -ErrorAction SilentlyContinue
 if ($enabled -and $clussvc -and $clussvc.Status -eq 'Running') {
   # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
   # abort the whole script (exit 0, no output marker) after cluster cmdlets.
   $broker = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
   if (-not $broker) { throw 'a cluster node accepts replica traffic only via the Hyper-V Replica Broker - waiting for the cluster''s broker to be provisioned' }
-  if ([string]$broker.State -ne 'Online') { throw ('waiting for the Hyper-V Replica Broker to come online (currently ' + $broker.State + ')') }
 }
 $rs = Get-VMReplicationServer -ErrorAction Stop
 $changed = $false

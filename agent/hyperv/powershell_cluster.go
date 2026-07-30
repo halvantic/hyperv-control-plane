@@ -38,16 +38,17 @@ type clusterObservation struct {
 }
 
 type clusterPoolObs struct {
-	Name           string `json:"name"`
-	RawBytes       uint64 `json:"rawBytes"`
-	AllocatedBytes uint64 `json:"allocatedBytes"`
-	Health         string `json:"health"`
-	Operational    string `json:"operational"`
-	UnhealthyDisks int    `json:"unhealthyDisks"`
-	TotalDisks     int    `json:"totalDisks"`
-	Resyncing      bool   `json:"resyncing"`
-	ResyncPercent  int    `json:"resyncPercent"`
-	ResyncJob      string `json:"resyncJob"`
+	Name            string `json:"name"`
+	RawBytes        uint64 `json:"rawBytes"`
+	AllocatedBytes  uint64 `json:"allocatedBytes"`
+	Health          string `json:"health"`
+	Operational     string `json:"operational"`
+	UnhealthyDisks  int    `json:"unhealthyDisks"`
+	TotalDisks      int    `json:"totalDisks"`
+	Resyncing       bool   `json:"resyncing"`
+	ResyncPercent   int    `json:"resyncPercent"`
+	ResyncJob       string `json:"resyncJob"`
+	ResyncRemaining uint64 `json:"resyncRemaining"`
 }
 
 type clusterNetworkObs struct {
@@ -118,7 +119,7 @@ $pool = if ($sp) {
     ([string]$_.Name -match 'Repair|Regener|Resync|Rebalance|Optimi')
   })
   $resync = ($rjobs.Count -gt 0)
-  $rpct = 0; $rname = ''
+  $rpct = 0; $rname = ''; $rrem = [uint64]0
   if ($resync) {
     # Progress comes from the BYTE counters, not PercentComplete. Storage Spaces
     # leaves PercentComplete at 0 for the whole of a running repair on many
@@ -131,6 +132,13 @@ $pool = if ($sp) {
       if ($j.BytesTotal) { $tot += [double]$j.BytesTotal }
       if ($j.BytesProcessed) { $don += [double]$j.BytesProcessed }
     }
+    # Outstanding work. The percentage cannot express overall progress: a
+    # finished job disappears from Get-StorageJob, so the next one starts the
+    # count again — seen live going 21% to 84% to 0. This figure IS comparable
+    # across jobs. It trends down across a rebuild's phases, and stays put when a
+    # repair keeps restarting and retaining nothing, which is the one thing that
+    # tells those two apart.
+    if ($tot -gt $don) { $rrem = [uint64]($tot - $don) }
     if ($tot -gt 0) {
       $rpct = [int][math]::Round(($don / $tot) * 100)
     } else {
@@ -145,7 +153,7 @@ $pool = if ($sp) {
     $rname = [string]$rjobs[0].Name
     if ($rname -match '-([A-Za-z]+)$') { $rname = $Matches[1] }
   }
-  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname }
+  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname; resyncRemaining = $rrem }
 } else { $null }
 $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
@@ -188,7 +196,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	if obs.Pool != nil {
 		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes,
 			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks, TotalDisks: obs.Pool.TotalDisks,
-			Resyncing: obs.Pool.Resyncing, ResyncPercent: obs.Pool.ResyncPercent, ResyncJob: obs.Pool.ResyncJob}
+			Resyncing: obs.Pool.Resyncing, ResyncPercent: obs.Pool.ResyncPercent, ResyncJob: obs.Pool.ResyncJob,
+			ResyncRemainingBytes: obs.Pool.ResyncRemaining}
 	}
 	netw := make([]ClusterNetworkInfo, 0, len(obs.Networks))
 	for _, n := range obs.Networks {

@@ -85,6 +85,11 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.RemoveMgmtVNIC(ctx, p["vnic"]), "removed management vNIC "+p["vnic"])
 	case types.JobRemoveVM:
 		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
+	case types.JobResync:
+		// Deliberately does nothing. The value is in the nudge the runner fires
+		// when any job completes: an immediate cycle, a full desired-state pull
+		// and a fresh scan of everything the cadences otherwise throttle.
+		return "reconcile requested", nil
 	case types.JobRemoveReplicaBroker:
 		return r.hv.RemoveReplicaBroker(ctx, p["group"])
 	case types.JobRemoveCSV:
