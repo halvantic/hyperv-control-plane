@@ -67,7 +67,7 @@ func TestReverseReplicationProbesTargetOnFailure(t *testing.T) {
 		"} catch {",
 		"$r.PrimaryServer",
 		"$r.ReplicaServer",
-		"$_ -split '\\.'",  // target = the endpoint that is not this host
+		"$_ -split '\\.'", // target = the endpoint that is not this host
 		"Test-NetConnection",
 		"Get-VMReplicationServer -ComputerName $target",
 		"not reachable on the replica port",
@@ -124,5 +124,47 @@ func TestResultOutcomeRejectsTruncatedOutput(t *testing.T) {
 	}
 	if _, err := resultOutcome(nil, "op"); err == nil {
 		t.Fatal("empty output must be an error")
+	}
+}
+
+// TestEnsureReplicaBrokerChecksTheResourceNotTheGroup guards the fix for a
+// broker that reported healthy while it was Failed. The role's group can be
+// Online while the Virtual Machine Replication Broker resource under it is
+// Failed, and it is the RESOURCE that EnsureVMReplication waits on — so
+// checking only the group made this role report a green condition on every
+// pass while every clustered VM sat blocked on "waiting for the Hyper-V
+// Replica Broker to come online (currently Failed)", with nothing acting to
+// clear it.
+func TestEnsureReplicaBrokerChecksTheResourceNotTheGroup(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	ps := newTestPS(f)
+	if _, err := ps.EnsureReplicaBroker(context.Background(), types.ReplicaBrokerSpec{
+		Name: "ReplBroker", StaticIP: "192.168.1.210",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		// The group and the resource are re-read AFTER the create/start work;
+		// the objects captured before it are snapshots, and a just-added
+		// resource is Offline.
+		"$grp = Get-ClusterGroup -Name $name -ErrorAction Stop",
+		// Starting the group is not enough: a resource that has exhausted its
+		// restart threshold stays Failed until it is started itself.
+		"Start-ClusterResource -Name $res.Name",
+		// The broker's own state decides the outcome.
+		"if ([string]$res.State -ne 'Online')",
+		// A broker that will not come online names the resource holding it back
+		// rather than leaving the operator with the VM-side wait alone.
+		"not online in this group",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("replica broker script missing %q\n---\n%s", want, s)
+		}
+	}
+	// The old script decided everything from $grp.State alone and could not see
+	// a Failed broker under an Online group.
+	if strings.Contains(s, "if ($grp.State -ne 'Online')") {
+		t.Fatal("broker health must not be inferred from the group state alone")
 	}
 }

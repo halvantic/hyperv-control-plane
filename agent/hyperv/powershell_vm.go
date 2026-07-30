@@ -410,6 +410,76 @@ func normaliseBootOrder(order []string, gen int) []string {
 	return out
 }
 
+// The boot-order scripts are constants rather than inline literals so a test can
+// execute the real thing against stubbed cmdlets. Both enforce ONLY the relative
+// order of the device categories the operator declared, among the slots those
+// devices already occupy; an entry in no declared category keeps its position.
+//
+// The earlier version sorted undeclared entries to the end and compared the whole
+// sequence. That reported a difference where the declared intent was already
+// satisfied. On Gen 2 it did so permanently: a UEFI boot list normally carries a
+// file entry (the Windows Boot Manager) which has no .Device and so classifies as
+// 'Other', and Windows writes it first on install and re-promotes it on boot.
+// Declaring "DVD, Drive, Network" says nothing about where that entry belongs, so
+// demoting it was the agent inventing intent — and because Windows put it back,
+// the diff never cleared. Every such VM reported "boot order (want
+// DVD,Drive,Network,Other, have Other,DVD,Drive,Network) needs the VM off" on
+// every pass, for a boot order that already matched.
+//
+// %[1]s is the quoted VM name, %[2]s the quoted declared-category list.
+
+// Gen 1 BIOS: StartupOrder is an ordered set of the four device categories, and
+// Set-VMBios requires the complete set, so the rebuild starts from the current
+// list and only permutes the declared devices within it.
+const gen1BootOrderScript = `$want = @(%[2]s)
+$map = @{ 'Drive'='IDE'; 'DVD'='CD'; 'Network'='LegacyNetworkAdapter'; 'Floppy'='Floppy' }
+$decl = @()
+foreach ($t in $want) { if ($map.ContainsKey($t)) { $d = $map[$t]; if ($decl -notcontains $d) { $decl += $d } } }
+$bios = Get-VMBios -VMName %[1]s
+$cur = @($bios.StartupOrder | ForEach-Object { [string]$_ })
+$curDecl = @($cur | Where-Object { $decl -contains $_ })
+if ($curDecl.Count -gt 1 -and ($curDecl -join ',') -ne ($decl -join ',')) {
+  if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + ($decl -join ',') + ', have ' + ($curDecl -join ',') + ')') } else {
+    $ord = @(); $k = 0
+    foreach ($d in $cur) { if ($decl -contains $d) { $ord += $decl[$k]; $k++ } else { $ord += $d } }
+    Set-VMBios -VMName %[1]s -StartupOrder $ord; $changed = $true
+  }
+}
+`
+
+// Gen 2 UEFI: entries are objects, classified by their backing device. Fewer than
+// two declared entries means there is no relative order to enforce.
+const gen2BootOrderScript = `$want = @(%[2]s)
+$fw = Get-VMFirmware -VMName %[1]s
+$entries = @($fw.BootOrder)
+if ($entries.Count -gt 0) {
+  $cls = {
+    param($e)
+    $n = ''
+    try { $n = $e.Device.GetType().Name } catch {}
+    if ($n -eq 'DvdDrive') { 'DVD' } elseif ($n -eq 'HardDiskDrive') { 'Drive' } elseif ($n -like '*NetworkAdapter*') { 'Network' } else { 'Other' }
+  }
+  $named = @($entries | Where-Object { $want -contains (& $cls $_) })
+  if ($named.Count -gt 1) {
+    $sorted = @()
+    foreach ($t in $want) { foreach ($e in $named) { if ((& $cls $e) -eq $t) { $sorted += $e } } }
+    $curSig = (($named | ForEach-Object { & $cls $_ }) -join ',')
+    $wantSig = (($sorted | ForEach-Object { & $cls $_ }) -join ',')
+    if ($curSig -ne $wantSig) {
+      if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + $wantSig + ', have ' + $curSig + ')') } else {
+        # Set-VMFirmware needs every entry, so fill each managed slot from $sorted
+        # and leave undeclared entries where they are.
+        $ordered = @(); $k = 0
+        foreach ($e in $entries) {
+          if ($want -contains (& $cls $e)) { $ordered += $sorted[$k]; $k++ } else { $ordered += $e }
+        }
+        Set-VMFirmware -VMName %[1]s -BootOrder $ordered; $changed = $true
+      }
+    }
+  }
+}
+`
+
 // ensureVMScript builds the convergence script for one VM. It is split out so it
 // stays readable; the logic is in-script (like EnsureCSV) since it is a sequence
 // of idempotent cmdlet checks rather than a single decision.
@@ -496,46 +566,9 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
 	if toks := normaliseBootOrder(s.BootOrder, gen); len(toks) > 0 {
 		want := psStringList(toks)
 		if gen == 1 {
-			// Gen 1 BIOS StartupOrder is an ordered set of the four device categories.
-			// Map ours onto the BootDevice enum names, then append any not listed so
-			// the full set is always supplied (Set-VMBios requires it).
-			bootOrder = fmt.Sprintf(`$want = @(%[2]s)
-$map = @{ 'Drive'='IDE'; 'DVD'='CD'; 'Network'='LegacyNetworkAdapter'; 'Floppy'='Floppy' }
-$all = @('CD','IDE','LegacyNetworkAdapter','Floppy')
-$ord = @()
-foreach ($t in $want) { if ($map.ContainsKey($t)) { $d = $map[$t]; if ($ord -notcontains $d) { $ord += $d } } }
-foreach ($d in $all) { if ($ord -notcontains $d) { $ord += $d } }
-$bios = Get-VMBios -VMName %[1]s
-$cur = (($bios.StartupOrder | ForEach-Object { [string]$_ }) -join ',')
-if ($cur -ne ($ord -join ',')) {
-  if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + ($ord -join '>') + ', have ' + ($cur) + ')') } else { Set-VMBios -VMName %[1]s -StartupOrder $ord; $changed = $true }
-}
-`, name, want)
+			bootOrder = fmt.Sprintf(gen1BootOrderScript, name, want)
 		} else {
-			// Gen 2 UEFI: classify each existing boot entry by its underlying device
-			// and rebuild the order — listed categories first (in declared order,
-			// preserving each category's internal order), then everything else so no
-			// entry is dropped (Set-VMFirmware -BootOrder needs the complete set).
-			bootOrder = fmt.Sprintf(`$want = @(%[2]s)
-$fw = Get-VMFirmware -VMName %[1]s
-$entries = @($fw.BootOrder)
-if ($entries.Count -gt 0) {
-  $cls = {
-    param($e)
-    $n = ''
-    try { $n = $e.Device.GetType().Name } catch {}
-    if ($n -eq 'DvdDrive') { 'DVD' } elseif ($n -eq 'HardDiskDrive') { 'Drive' } elseif ($n -like '*NetworkAdapter*') { 'Network' } else { 'Other' }
-  }
-  $ordered = @()
-  foreach ($t in $want) { foreach ($e in $entries) { if ((& $cls $e) -eq $t) { $ordered += $e } } }
-  foreach ($e in $entries) { if ($ordered -notcontains $e) { $ordered += $e } }
-  $curSig = (($entries | ForEach-Object { & $cls $_ }) -join ',')
-  $wantSig = (($ordered | ForEach-Object { & $cls $_ }) -join ',')
-  if ($curSig -ne $wantSig) {
-    if ($running) { $pending = $true; $pendingWhat += ('boot order (want ' + $wantSig + ', have ' + $curSig + ')') } else { Set-VMFirmware -VMName %[1]s -BootOrder $ordered; $changed = $true }
-  }
-}
-`, name, want)
+			bootOrder = fmt.Sprintf(gen2BootOrderScript, name, want)
 		}
 	}
 

@@ -124,13 +124,42 @@ if (-not $grp) {
   $changed = $true
   $grp = Get-ClusterGroup -Name $name -ErrorAction Stop
 }
-$res = Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and $_.OwnerGroup -eq $name }
+$res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
 if (-not $res) {
-  $res = Add-ClusterResource -Name 'Virtual Machine Replication Broker' -Type 'Virtual Machine Replication Broker' -Group $name
+  Add-ClusterResource -Name 'Virtual Machine Replication Broker' -Type 'Virtual Machine Replication Broker' -Group $name | Out-Null
   Set-ClusterResourceDependency -Resource 'Virtual Machine Replication Broker' -Dependency ('[' + $name + ']')
   $changed = $true
 }
-if ($grp.State -ne 'Online') { Start-ClusterGroup -Name $name | Out-Null; $changed = $true }
+# Re-read after the mutations above: those objects are snapshots, and a resource
+# that has just been added is Offline.
+#
+# The broker RESOURCE's state is what matters, not the group's. Replication waits
+# on the resource (Get-ClusterResource ... 'Virtual Machine Replication Broker'),
+# and a group reports Online while the broker under it is Failed — so checking
+# only the group reported this role healthy on every pass while every VM's
+# replication sat blocked on "waiting for the Hyper-V Replica Broker to come
+# online (currently Failed)". Starting the group is also not enough: a resource
+# that has exhausted its restart threshold stays Failed until started itself.
+$grp = Get-ClusterGroup -Name $name -ErrorAction Stop
+if ([string]$grp.State -ne 'Online') { Start-ClusterGroup -Name $name -ErrorAction SilentlyContinue | Out-Null; $changed = $true }
+$res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
+if ($res -and [string]$res.State -ne 'Online') {
+  Start-ClusterResource -Name $res.Name -ErrorAction SilentlyContinue | Out-Null
+  $changed = $true
+  $res = Get-ClusterResource -Name $res.Name -ErrorAction SilentlyContinue
+}
+if (-not $res) { throw ('the Hyper-V Replica Broker resource is missing from group ' + $name) }
+if ([string]$res.State -ne 'Online') {
+  # Name what is actually holding it back. A broker fails when its client access
+  # point cannot come online — an AD computer object for the name that is denied
+  # or duplicated, or a static IP that is in use or on no cluster network — and
+  # the failing resource is the diagnosis. Without this the operator only ever
+  # saw the VM-side "waiting for the broker", which says nothing about why.
+  $bad = @(Get-ClusterResource -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.OwnerGroup -eq $name -and [string]$_.State -ne 'Online' } |
+    ForEach-Object { $_.Name + ' [' + $_.ResourceType + '] ' + [string]$_.State })
+  throw ('Hyper-V Replica Broker ' + $name + ' is ' + [string]$res.State + ' - not online in this group: ' + ($bad -join '; '))
+}
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 		psQuote(spec.Name), staticIP)
 	out, err := p.run(ctx, script)
