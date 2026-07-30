@@ -523,7 +523,7 @@ func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return
 func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
 func (s *Stub) ExportVM(_ context.Context, _, _ string) error                       { return nil }
 func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error                     { return nil }
-func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)            { return "", nil }
+func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)             { return "", nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
 func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error              { return nil }
@@ -581,6 +581,10 @@ func (s *Stub) EnsureReplicaServer(_ context.Context, _ types.ReplicaServerSpec)
 
 func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec) (Outcome, error) {
 	return OutcomeUnchanged, nil
+}
+
+func (s *Stub) RemoveReplicaBroker(_ context.Context) (string, error) {
+	return "no Hyper-V Replica Broker in this cluster (stub)", nil
 }
 
 func (s *Stub) EnsureVMReplication(_ context.Context, _ string, _ types.VMReplicationSpec) (Outcome, error) {

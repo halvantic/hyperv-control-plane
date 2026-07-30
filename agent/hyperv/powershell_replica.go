@@ -169,6 +169,66 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	return resultOutcome(out, "ensure replica broker")
 }
 
+// RemoveReplicaBroker deletes the Hyper-V Replica Broker role and the client
+// access point group it lives in — the broker resource, its Network Name and its
+// IP addresses. Run on the former. Idempotent: no broker is a no-op.
+//
+// The broker is found by RESOURCE TYPE rather than by the declared name, so a
+// broker whose group was renamed, or one left behind by a spec that no longer
+// declares it, is still removed. Removing the group is the only way to clear the
+// client access point with it; deleting the broker resource alone would strand
+// an empty CAP holding its name and IP.
+func (p *PowerShell) RemoveReplicaBroker(ctx context.Context) (string, error) {
+	script := `
+$ErrorActionPreference = 'Stop'
+Import-Module FailoverClusters
+# @(...) not "| Select-Object -First 1": the -First pipeline stop can abort the
+# whole script (exit 0, no output marker) after cluster cmdlets.
+$brokers = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })
+if ($brokers.Count -eq 0) { 'RESULT=NOOP no Hyper-V Replica Broker in this cluster'; return }
+$groups = @($brokers | ForEach-Object { [string]$_.OwnerGroup } | Sort-Object -Unique)
+$caps = @()
+foreach ($g in $groups) {
+  # Record the CAP name before it goes: recreating under the same name can be
+  # blocked by the AD computer object this leaves behind, and the operator needs
+  # to know which name to clear.
+  foreach ($nn in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $g -and $_.ResourceType -eq 'Network Name' })) {
+    $dns = ($nn | Get-ClusterParameter -Name DnsName -ErrorAction SilentlyContinue).Value
+    if ($dns) { $caps += [string]$dns }
+  }
+  # Offline first: Remove-ClusterGroup -RemoveResources will not take a group
+  # whose resources are still online.
+  Stop-ClusterGroup -Name $g -ErrorAction SilentlyContinue | Out-Null
+  try { Remove-ClusterGroup -Name $g -RemoveResources -Force -ErrorAction Stop }
+  catch {
+    # A single resource that refuses to go offline blocks the whole group; drop
+    # the resources individually, then the group.
+    foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $g })) {
+      Remove-ClusterResource -Name $r.Name -Force -ErrorAction SilentlyContinue
+    }
+    Remove-ClusterGroup -Name $g -Force -ErrorAction Stop
+  }
+}
+# Verify rather than trust: a group removal that silently left the broker behind
+# would otherwise report success and leave the operator recreating onto a
+# conflict.
+$left = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })
+if ($left.Count -gt 0) { throw ('the broker is still present after removal: ' + (($left | ForEach-Object { [string]$_.Name }) -join ', ')) }
+$msg = 'RESULT=REMOVED ' + ($groups -join ', ')
+if ($caps.Count -gt 0) { $msg += ' (client access point ' + (($caps | Sort-Object -Unique) -join ', ') + ' - clear its AD computer object before reusing the name)' }
+$msg
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("remove replica broker: %w", err)
+	}
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	return msg, nil
+}
+
 // EnsureVMReplication drives one VM's Hyper-V Replica relationship to spec.
 // Absent + enabled: Enable-VMReplication then Start-VMInitialReplication.
 // Present but drifted (server/frequency): Set-VMReplication. Present but

@@ -930,6 +930,11 @@ const (
 
 	JobClusterDestroy = "ClusterDestroy" // run on the former: remove VM roles, disable S2D, Remove-Cluster -CleanupAD (destructive)
 
+	// JobRemoveReplicaBroker removes the Hyper-V Replica Broker cluster role and
+	// its client access point (network name + IP). Run on the former. Clear
+	// Cluster.Spec.ReplicaBroker first or the reconcile recreates it.
+	JobRemoveReplicaBroker = "RemoveReplicaBroker" // run on the former: delete the Replica Broker role and its CAP (destructive)
+
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
 
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)

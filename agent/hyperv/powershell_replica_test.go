@@ -168,3 +168,53 @@ func TestEnsureReplicaBrokerChecksTheResourceNotTheGroup(t *testing.T) {
 		t.Fatal("broker health must not be inferred from the group state alone")
 	}
 }
+
+// TestRemoveReplicaBrokerScript guards the cleanup path. Removing the broker
+// resource on its own would strand the client access point holding the broker's
+// name and IP, so the whole group goes; and a removal that quietly left the
+// broker behind must fail rather than report success and send the operator to
+// recreate onto a conflict.
+func TestRemoveReplicaBrokerScript(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=REMOVED bcluster2-Broker")}}
+	ps := newTestPS(f)
+	msg, err := ps.RemoveReplicaBroker(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg != "REMOVED bcluster2-Broker" {
+		t.Fatalf("want the RESULT= marker stripped, got %q", msg)
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		// Found by TYPE, so a renamed group or a broker left behind by a cleared
+		// spec is still removed.
+		"$_.ResourceType -eq 'Virtual Machine Replication Broker'",
+		// The group goes, not just the resource — that is what clears the CAP.
+		"Remove-ClusterGroup -Name $g -RemoveResources -Force",
+		// -RemoveResources will not take a group whose resources are still online.
+		"Stop-ClusterGroup -Name $g",
+		// A single stuck resource must not block the whole removal.
+		"Remove-ClusterResource -Name $r.Name -Force",
+		// Verified, not assumed.
+		"the broker is still present after removal",
+		// The operator needs the CAP name to clear its AD object.
+		"clear its AD computer object before reusing the name",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("remove broker script missing %q\n---\n%s", want, s)
+		}
+	}
+}
+
+// An empty cluster is a no-op, not an error: the job is also the way to clean up
+// after a spec that no longer declares a broker, and running it twice must be safe.
+func TestRemoveReplicaBrokerNoBrokerIsNoop(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP no Hyper-V Replica Broker in this cluster")}}
+	msg, err := newTestPS(f).RemoveReplicaBroker(context.Background())
+	if err != nil {
+		t.Fatalf("an absent broker must not be an error: %v", err)
+	}
+	if !strings.Contains(msg, "no Hyper-V Replica Broker") {
+		t.Fatalf("want the no-op reported, got %q", msg)
+	}
+}
