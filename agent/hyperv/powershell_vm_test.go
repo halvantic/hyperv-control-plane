@@ -176,3 +176,36 @@ func TestMigrateVMScriptFailure(t *testing.T) {
 		t.Fatalf("expected transport failure, got %v", err)
 	}
 }
+
+// A disk is only created when its directory is demonstrably reachable. Test-Path
+// returns false both for a missing file and for a path whose volume cannot be
+// read — a CSV offline, mid-rebuild, or owned by another node — and treating the
+// second as "the disk is missing" would write a blank VHDX over the real one's
+// path. Observed live: a degraded CSV produced New-VHD's bare "Failed to create
+// the virtual hard disk" on VMs that already existed.
+func TestEnsureVMScriptWillNotCreateADiskOnAnUnreadableVolume(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Windows"},
+		Spec: types.VMSpec{
+			MemoryStartupBytes: 4294967296,
+			Disks:              []types.VMDiskSpec{{Path: `C:\ClusterStorage\Datastore 1\Windows\Windows.vhdx`, SizeBytes: 137438953472}},
+		},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	for _, want := range []string{
+		// The directory is checked before anything is created.
+		"$dir = Split-Path",
+		"New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop",
+		// And an unreachable one is an error naming the real cause.
+		"the volume may be offline, still rebuilding, or owned by another node",
+		"Not creating a new disk over a path that cannot be read",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("disk creation guard missing %q\n---\n%s", want, s)
+		}
+	}
+	// The bare form — create whenever Test-Path is false — must not come back.
+	if strings.Contains(s, ")) { New-VHD -Path ") {
+		t.Error("New-VHD must not run on a Test-Path miss alone; an unreadable volume looks identical to a missing file")
+	}
+}

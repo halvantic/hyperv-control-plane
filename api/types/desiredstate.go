@@ -933,7 +933,7 @@ const (
 	// JobRemoveReplicaBroker removes the Hyper-V Replica Broker cluster role and
 	// its client access point (network name + IP). Run on the former. Clear
 	// Cluster.Spec.ReplicaBroker first or the reconcile recreates it.
-	JobRemoveReplicaBroker = "RemoveReplicaBroker" // run on the former: delete the Replica Broker role and its CAP (destructive)
+	JobRemoveReplicaBroker = "RemoveReplicaBroker" // run on the former: params: group (optional) — delete the Replica Broker role and its CAP (destructive)
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
 

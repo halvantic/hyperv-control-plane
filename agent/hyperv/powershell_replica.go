@@ -117,6 +117,7 @@ func (p *PowerShell) EnsureReplicaBroker(ctx context.Context, spec types.Replica
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 Import-Module FailoverClusters
 $name = %[1]s
+$wantIP = %[3]s
 $grp = Get-ClusterGroup -Name $name -ErrorAction SilentlyContinue
 $changed = $false
 if (-not $grp) {
@@ -130,6 +131,23 @@ if (-not $res) {
   Set-ClusterResourceDependency -Resource 'Virtual Machine Replication Broker' -Dependency ('[' + $name + ']')
   $changed = $true
 }
+# Reconcile the client access point's ADDRESS. -StaticAddress only applies when
+# Add-ClusterServerRole creates the role, so on an existing broker a changed
+# StaticIP was silently ignored: desired state named one address, the broker
+# answered on another, and the pass reported converged. Only the IPv4 resource is
+# touched — the CAP's IPv6 address is the cluster's own business.
+if ($wantIP -ne '') {
+  foreach ($ipr in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $name -and $_.ResourceType -eq 'IP Address' })) {
+    $curIP = [string]($ipr | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value
+    if ($curIP -ne '' -and $curIP -ne $wantIP) {
+      # The address can only be changed while the resource is offline; the start
+      # block below brings the group back up.
+      $ipr | Stop-ClusterResource -ErrorAction SilentlyContinue | Out-Null
+      $ipr | Set-ClusterParameter -Name Address -Value $wantIP -ErrorAction Stop
+      $changed = $true
+    }
+  }
+}
 # Re-read after the mutations above: those objects are snapshots, and a resource
 # that has just been added is Offline.
 #
@@ -140,13 +158,18 @@ if (-not $res) {
 # replication sat blocked on "waiting for the Hyper-V Replica Broker to come
 # online (currently Failed)". Starting the group is also not enough: a resource
 # that has exhausted its restart threshold stays Failed until started itself.
-$grp = Get-ClusterGroup -Name $name -ErrorAction Stop
-if ([string]$grp.State -ne 'Online') { Start-ClusterGroup -Name $name -ErrorAction SilentlyContinue | Out-Null; $changed = $true }
+#
+# The start calls pipe the OBJECT rather than passing -Name: these cmdlets type
+# -Name as a StringCollection and reject a plain string with "Cannot convert
+# '<name>' to the type ...". Piping binds -InputObject, which needs no conversion.
+$grp = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]
+if (-not $grp) { throw ('the Hyper-V Replica Broker group ' + $name + ' is missing after provisioning it') }
+if ([string]$grp.State -ne 'Online') { $grp | Start-ClusterGroup -ErrorAction SilentlyContinue | Out-Null; $changed = $true }
 $res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
 if ($res -and [string]$res.State -ne 'Online') {
-  Start-ClusterResource -Name $res.Name -ErrorAction SilentlyContinue | Out-Null
+  $res | Start-ClusterResource -ErrorAction SilentlyContinue | Out-Null
   $changed = $true
-  $res = Get-ClusterResource -Name $res.Name -ErrorAction SilentlyContinue
+  $res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' -and [string]$_.OwnerGroup -eq $name })[0]
 }
 if (-not $res) { throw ('the Hyper-V Replica Broker resource is missing from group ' + $name) }
 if ([string]$res.State -ne 'Online') {
@@ -161,7 +184,7 @@ if ([string]$res.State -ne 'Online') {
   throw ('Hyper-V Replica Broker ' + $name + ' is ' + [string]$res.State + ' - not online in this group: ' + ($bad -join '; '))
 }
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
-		psQuote(spec.Name), staticIP)
+		psQuote(spec.Name), staticIP, psQuote(spec.StaticIP))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure replica broker %q: %w", spec.Name, err)
@@ -178,15 +201,25 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 // declares it, is still removed. Removing the group is the only way to clear the
 // client access point with it; deleting the broker resource alone would strand
 // an empty CAP holding its name and IP.
-func (p *PowerShell) RemoveReplicaBroker(ctx context.Context) (string, error) {
-	script := `
+func (p *PowerShell) RemoveReplicaBroker(ctx context.Context, group string) (string, error) {
+	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 Import-Module FailoverClusters
+$want = %[1]s
 # @(...) not "| Select-Object -First 1": the -First pipeline stop can abort the
 # whole script (exit 0, no output marker) after cluster cmdlets.
 $brokers = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })
-if ($brokers.Count -eq 0) { 'RESULT=NOOP no Hyper-V Replica Broker in this cluster'; return }
-$groups = @($brokers | ForEach-Object { [string]$_.OwnerGroup } | Sort-Object -Unique)
+$groups = @($brokers | ForEach-Object { [string]$_.OwnerGroup })
+# The named group is removed even when it holds no broker resource. A broker
+# whose resource was deleted on its own leaves the client access point behind —
+# an empty group still holding the broker's name and IP, which is then exactly
+# what blocks recreating under that name. Finding by resource type alone cannot
+# see it, so the caller's name is the second way in.
+if ($want -ne '' -and @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $want }).Count -gt 0) {
+  $groups += $want
+}
+$groups = @($groups | Sort-Object -Unique)
+if ($groups.Count -eq 0) { 'RESULT=NOOP no Hyper-V Replica Broker or leftover broker group in this cluster'; return }
 $caps = @()
 foreach ($g in $groups) {
   # Record the CAP name before it goes: recreating under the same name can be
@@ -196,28 +229,40 @@ foreach ($g in $groups) {
     $dns = ($nn | Get-ClusterParameter -Name DnsName -ErrorAction SilentlyContinue).Value
     if ($dns) { $caps += [string]$dns }
   }
-  # Offline first: Remove-ClusterGroup -RemoveResources will not take a group
-  # whose resources are still online.
-  Stop-ClusterGroup -Name $g -ErrorAction SilentlyContinue | Out-Null
-  try { Remove-ClusterGroup -Name $g -RemoveResources -Force -ErrorAction Stop }
-  catch {
-    # A single resource that refuses to go offline blocks the whole group; drop
-    # the resources individually, then the group.
-    foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $g })) {
-      Remove-ClusterResource -Name $r.Name -Force -ErrorAction SilentlyContinue
+  # Pass the group OBJECT, never -Name. These cmdlets type -Name as a
+  # StringCollection, and binding a plain string to it fails with "Cannot convert
+  # '<group>' to the type ..." — which is what killed the first version of this
+  # against a real cluster. Piping the object binds -InputObject, which needs no
+  # conversion at all.
+  $grpObj = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $g })[0]
+  if ($grpObj) {
+    # Offline first: -RemoveResources will not take a group whose resources are
+    # still online.
+    $grpObj | Stop-ClusterGroup -ErrorAction SilentlyContinue | Out-Null
+    try { $grpObj | Remove-ClusterGroup -RemoveResources -Force -ErrorAction Stop }
+    catch {
+      # A single resource that refuses to go offline blocks the whole group; drop
+      # the resources individually, then the group.
+      foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq $g })) {
+        $r | Remove-ClusterResource -Force -ErrorAction SilentlyContinue
+      }
+      $again = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $g })[0]
+      if ($again) { $again | Remove-ClusterGroup -Force -ErrorAction Stop }
     }
-    Remove-ClusterGroup -Name $g -Force -ErrorAction Stop
   }
 }
-# Verify rather than trust: a group removal that silently left the broker behind
-# would otherwise report success and leave the operator recreating onto a
-# conflict.
+# Verify rather than trust, and verify BOTH: a run that removed the broker
+# resource but left its group behind would otherwise report success while the
+# client access point still holds the name and IP — which is the state that then
+# blocks recreating under that name.
 $left = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })
 if ($left.Count -gt 0) { throw ('the broker is still present after removal: ' + (($left | ForEach-Object { [string]$_.Name }) -join ', ')) }
+$stillThere = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $groups -contains [string]$_.Name })
+if ($stillThere.Count -gt 0) { throw ('the broker group is still present after removal: ' + (($stillThere | ForEach-Object { [string]$_.Name }) -join ', ')) }
 $msg = 'RESULT=REMOVED ' + ($groups -join ', ')
 if ($caps.Count -gt 0) { $msg += ' (client access point ' + (($caps | Sort-Object -Unique) -join ', ') + ' - clear its AD computer object before reusing the name)' }
 $msg
-`
+`, psQuote(group))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return "", fmt.Errorf("remove replica broker: %w", err)

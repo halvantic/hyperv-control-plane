@@ -86,7 +86,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobRemoveVM:
 		return done(r.hv.RemoveVM(ctx, p["vm"]), "removed VM "+p["vm"])
 	case types.JobRemoveReplicaBroker:
-		return r.hv.RemoveReplicaBroker(ctx)
+		return r.hv.RemoveReplicaBroker(ctx, p["group"])
 	case types.JobRemoveCSV:
 		return done(r.hv.RemoveCSV(ctx, p["volume"]), "removed volume "+p["volume"])
 	case types.JobFormatDisk:

@@ -583,7 +583,7 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 	return OutcomeUnchanged, nil
 }
 
-func (s *Stub) RemoveReplicaBroker(_ context.Context) (string, error) {
+func (s *Stub) RemoveReplicaBroker(_ context.Context, _ string) (string, error) {
 	return "no Hyper-V Replica Broker in this cluster (stub)", nil
 }
 

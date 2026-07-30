@@ -147,11 +147,13 @@ func TestEnsureReplicaBrokerChecksTheResourceNotTheGroup(t *testing.T) {
 	for _, want := range []string{
 		// The group and the resource are re-read AFTER the create/start work;
 		// the objects captured before it are snapshots, and a just-added
-		// resource is Offline.
-		"$grp = Get-ClusterGroup -Name $name -ErrorAction Stop",
+		// resource is Offline. The re-read fetches the object (rather than
+		// naming it) because the start calls below need something to pipe.
+		"$grp = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]",
+		"$grp | Start-ClusterGroup",
 		// Starting the group is not enough: a resource that has exhausted its
 		// restart threshold stays Failed until it is started itself.
-		"Start-ClusterResource -Name $res.Name",
+		"$res | Start-ClusterResource",
 		// The broker's own state decides the outcome.
 		"if ([string]$res.State -ne 'Online')",
 		// A broker that will not come online names the resource holding it back
@@ -167,6 +169,27 @@ func TestEnsureReplicaBrokerChecksTheResourceNotTheGroup(t *testing.T) {
 	if strings.Contains(s, "if ($grp.State -ne 'Online')") {
 		t.Fatal("broker health must not be inferred from the group state alone")
 	}
+	assertNoClusterNameBinding(t, s)
+}
+
+// The Failover Clustering cmdlets type -Name as a StringCollection, so binding a
+// plain string to it fails at RUNTIME with "Cannot convert '<name>' to the type
+// ...". Nothing catches that at build time and the script reads perfectly well —
+// the first Remove-ClusterGroup shipped this way and died on a real cluster.
+// Passing the object binds -InputObject, which needs no conversion.
+func assertNoClusterNameBinding(t *testing.T, script string) {
+	t.Helper()
+	for _, bad := range []string{
+		"Start-ClusterGroup -Name",
+		"Stop-ClusterGroup -Name",
+		"Remove-ClusterGroup -Name",
+		"Start-ClusterResource -Name",
+		"Remove-ClusterResource -Name",
+	} {
+		if strings.Contains(script, bad) {
+			t.Errorf("%q binds a string to a StringCollection parameter; pipe the object instead", bad)
+		}
+	}
 }
 
 // TestRemoveReplicaBrokerScript guards the cleanup path. Removing the broker
@@ -177,7 +200,7 @@ func TestEnsureReplicaBrokerChecksTheResourceNotTheGroup(t *testing.T) {
 func TestRemoveReplicaBrokerScript(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=REMOVED bcluster2-Broker")}}
 	ps := newTestPS(f)
-	msg, err := ps.RemoveReplicaBroker(context.Background())
+	msg, err := ps.RemoveReplicaBroker(context.Background(), "bcluster2-Broker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,31 +213,86 @@ func TestRemoveReplicaBrokerScript(t *testing.T) {
 		// spec is still removed.
 		"$_.ResourceType -eq 'Virtual Machine Replication Broker'",
 		// The group goes, not just the resource — that is what clears the CAP.
-		"Remove-ClusterGroup -Name $g -RemoveResources -Force",
+		"$grpObj | Remove-ClusterGroup -RemoveResources -Force",
 		// -RemoveResources will not take a group whose resources are still online.
-		"Stop-ClusterGroup -Name $g",
+		"$grpObj | Stop-ClusterGroup",
 		// A single stuck resource must not block the whole removal.
-		"Remove-ClusterResource -Name $r.Name -Force",
+		"$r | Remove-ClusterResource -Force",
+		// The group is fetched as an object, never bound by name.
+		"$grpObj = @(Get-ClusterGroup",
 		// Verified, not assumed.
 		"the broker is still present after removal",
 		// The operator needs the CAP name to clear its AD object.
 		"clear its AD computer object before reusing the name",
+		// The named group is removed even with no broker resource in it: a broker
+		// resource deleted on its own strands the client access point, which still
+		// holds the name and IP and then blocks recreating under that name.
+		"$want = 'bcluster2-Broker'",
+		"$groups += $want",
+		// Both the resource AND the group are verified gone.
+		"the broker group is still present after removal",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("remove broker script missing %q\n---\n%s", want, s)
 		}
 	}
+	assertNoClusterNameBinding(t, s)
 }
 
 // An empty cluster is a no-op, not an error: the job is also the way to clean up
 // after a spec that no longer declares a broker, and running it twice must be safe.
 func TestRemoveReplicaBrokerNoBrokerIsNoop(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP no Hyper-V Replica Broker in this cluster")}}
-	msg, err := newTestPS(f).RemoveReplicaBroker(context.Background())
+	msg, err := newTestPS(f).RemoveReplicaBroker(context.Background(), "")
 	if err != nil {
 		t.Fatalf("an absent broker must not be an error: %v", err)
 	}
 	if !strings.Contains(msg, "no Hyper-V Replica Broker") {
 		t.Fatalf("want the no-op reported, got %q", msg)
+	}
+}
+
+// The client access point's address is desired state like anything else.
+// -StaticAddress only applies when Add-ClusterServerRole CREATES the role, so on
+// an existing broker a changed StaticIP was ignored and the pass still reported
+// converged — desired state naming one address while the broker answered on
+// another.
+func TestEnsureReplicaBrokerReconcilesAChangedStaticIP(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureReplicaBroker(context.Background(), types.ReplicaBrokerSpec{
+		Name: "ReplBroker", StaticIP: "192.168.1.211",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+	for _, want := range []string{
+		`$wantIP = '192.168.1.211'`,
+		// Compared against what the resource actually holds, not assumed from
+		// whatever created it.
+		"Get-ClusterParameter -Name Address",
+		"$curIP -ne $wantIP",
+		// The address only takes while the resource is offline.
+		"$ipr | Stop-ClusterResource",
+		"Set-ClusterParameter -Name Address -Value $wantIP",
+		// IPv4 only: the CAP's IPv6 address is the cluster's own business.
+		"$_.ResourceType -eq 'IP Address'",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("broker script missing %q\n---\n%s", want, s)
+		}
+	}
+	assertNoClusterNameBinding(t, s)
+}
+
+// No declared address means DHCP — the CAP's address is then not ours to touch.
+func TestEnsureReplicaBrokerLeavesAddressAloneWhenUndeclared(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureReplicaBroker(context.Background(), types.ReplicaBrokerSpec{
+		Name: "ReplBroker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.calls[0]; !strings.Contains(s, `$wantIP = ''`) {
+		t.Fatalf("an undeclared address must leave the CAP alone\n---\n%s", s)
 	}
 }

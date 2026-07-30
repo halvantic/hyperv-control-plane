@@ -581,7 +581,22 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
 			if d.Dynamic {
 				sizeFlag = fmt.Sprintf("-Dynamic -SizeBytes %d", d.SizeBytes)
 			}
-			create = fmt.Sprintf("if (-not (Test-Path %[1]s)) { New-VHD -Path %[1]s %[2]s | Out-Null; $changed = $true }\n", path, sizeFlag)
+			// Test-Path is false for BOTH "the file is not there" and "I cannot read
+			// its volume" — a CSV that is offline, mid-rebuild, or owned by another
+			// node reads exactly like a missing disk. Those are not the same thing,
+			// and acting on the second reading would put a blank VHDX where the real
+			// one lives. Only create when the containing directory is demonstrably
+			// reachable; otherwise fail with the actual reason instead of New-VHD's
+			// bare "Failed to create the virtual hard disk".
+			create = fmt.Sprintf(`if (-not (Test-Path %[1]s)) {
+  $dir = Split-Path %[1]s -Parent
+  if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+    try { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+    catch { throw ('refusing to create ' + %[1]s + ': its directory cannot be read or created from this host (' + $_.Exception.Message + ') - the volume may be offline, still rebuilding, or owned by another node. Not creating a new disk over a path that cannot be read') }
+  }
+  New-VHD -Path %[1]s %[2]s | Out-Null; $changed = $true
+}
+`, path, sizeFlag)
 		}
 		// Consider the desired disk present if it is the attached file OR an
 		// ancestor of an attached differencing disk — when the VM has a

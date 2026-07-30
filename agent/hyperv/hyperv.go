@@ -436,7 +436,11 @@ type Interface interface {
 	// client access point it lives in. Run on the former. Idempotent: a cluster
 	// with no broker is a no-op. The caller must clear the declared broker from
 	// desired state first, or the next reconcile provisions it again.
-	RemoveReplicaBroker(ctx context.Context) (string, error)
+	//
+	// group optionally names the broker's cluster group, and is removed even if it
+	// no longer holds a broker resource — a broker resource deleted on its own
+	// strands the client access point, which still holds the name and IP.
+	RemoveReplicaBroker(ctx context.Context, group string) (string, error)
 
 	// EnsureVMReplication drives one VM's Hyper-V Replica relationship to the
 	// declared spec: enable + initial replication when absent, adjust when it
