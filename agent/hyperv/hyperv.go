@@ -338,6 +338,21 @@ type Interface interface {
 	// Job. The centre then adopts the new VM into desired state.
 	CloneVM(ctx context.Context, srcName, newName, folder string) error
 
+	// CaptureTemplate copies vmName's first VHDX to dest (a path in the template
+	// library) and returns the captured image's size in bytes. When generalise is
+	// set it first runs sysprep /generalize in the guest over PowerShell Direct,
+	// which needs a guest-local administrator credential and waits for the guest
+	// to shut itself down; the source VM is left generalised, i.e. no longer a
+	// usable machine. Otherwise the VM must already be Off. Imperative Job.
+	CaptureTemplate(ctx context.Context, vmName, dest string, generalise bool, guestUser, guestPass string) (uint64, error)
+
+	// DeployFromTemplate copies a template image from src to dest and, when
+	// unattend is non-empty, mounts the copy and writes it to
+	// \Windows\Panther\Unattend.xml so the guest customises itself on first boot.
+	// It does NOT create the VM: the centre authors the VM's desired state when
+	// this job succeeds and the reconcile loop builds it. Imperative Job.
+	DeployFromTemplate(ctx context.Context, src, dest, unattend string) error
+
 	// FetchISO downloads an ISO from url (the centre's ISO library over HTTP) to
 	// dest on this host, creating dest's parent folder. Used to place an uploaded
 	// ISO onto a CSV so any node can boot a VM from it. Agent-local (no WinRM) and

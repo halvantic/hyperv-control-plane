@@ -34,6 +34,13 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.ExportVM(ctx, p["vm"], p["path"]), "exported to "+p["path"])
 	case types.JobVMClone:
 		return done(r.hv.CloneVM(ctx, p["vm"], p["name"], p["folder"]), "cloned "+p["vm"]+" to "+p["name"])
+	case types.JobVMCaptureTemplate:
+		n, err := r.hv.CaptureTemplate(ctx, p["vm"], p["dest"], p["generalise"] == "true", p["guestUser"], p["guestPass"])
+		// The size travels back inside the message; types owns that format, and
+		// the centre records it on the template. See types.FormatCaptureResult.
+		return done(err, types.FormatCaptureResult(p["template"], p["dest"], n))
+	case types.JobVMDeployFromTemplate:
+		return done(r.hv.DeployFromTemplate(ctx, p["source"], p["dest"], p["unattend"]), "deployed "+p["vm"]+"'s disk from template "+p["template"])
 	case types.JobFetchISO:
 		note, err := r.hv.FetchISO(ctx, p["url"], p["dest"])
 		msg := "downloaded ISO " + p["name"]

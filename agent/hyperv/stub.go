@@ -520,9 +520,15 @@ func (s *Stub) RestartVM(_ context.Context, name string) error {
 func (s *Stub) GetVMScreen(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 
 // CreateVMCheckpoint / ExportVM / AddClusterNode / EvictClusterNode record the job ran.
-func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
-func (s *Stub) ExportVM(_ context.Context, _, _ string) error                       { return nil }
-func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error                     { return nil }
+func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return nil }
+func (s *Stub) ExportVM(_ context.Context, _, _ string) error           { return nil }
+func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error         { return nil }
+
+func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _ bool, _, _ string) (uint64, error) {
+	return 0, nil
+}
+
+func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string) error          { return nil }
 func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)             { return "", nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }

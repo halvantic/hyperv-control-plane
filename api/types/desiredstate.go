@@ -17,6 +17,8 @@
 package types
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -968,6 +970,14 @@ const (
 
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
+
+	// VM templates. Both are pure disk work: capture copies a VM's VHDX into the
+	// library, deploy copies it back out and injects the guest's unattend. The
+	// deploy deliberately does NOT create the VM — the centre authors the VM's
+	// desired state when the job succeeds and the ordinary reconciler builds it,
+	// so a deployed VM is indistinguishable from any other from then on.
+	JobVMCaptureTemplate    = "VMCaptureTemplate"    // params: vm, dest, template, generalise, guestUser, guestPass — sysprep (optional) then copy the VM's first VHDX into the library
+	JobVMDeployFromTemplate = "VMDeployFromTemplate" // params: source, dest, vm, unattend, vmspec — copy the template VHDX to dest and inject the unattend
 )
 
 // sensitiveJobParams are Job.Params keys whose values are credential material.
@@ -975,9 +985,14 @@ const (
 // stored job once it reaches a terminal state, so secrets do not linger at rest
 // in the job history. The agent receives the real values over the gRPC job
 // channel before the job completes, so scrubbing afterwards costs it nothing.
+// "unattend" is here because a generated unattend.xml embeds the guest's local
+// administrator password and the domain-join credential in the clear. It has to
+// reach the agent to be written into the image, but it must not sit in the job
+// history afterwards or appear in any view of the job.
 var sensitiveJobParams = map[string]bool{
 	"guestuser": true, "guestpass": true, "domainuser": true, "domainpass": true,
 	"username": true, "password": true, "pass": true, "pw": true, "secret": true,
+	"unattend": true,
 }
 
 // IsSensitiveJobParam reports whether a Job.Params key carries credential
@@ -1374,4 +1389,193 @@ type VMCheckpoint struct {
 	Type       string    `json:"type,omitempty"` // Standard or Production
 	CreatedAt  time.Time `json:"createdAt,omitempty"`
 	IsCurrent  bool      `json:"isCurrent,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// VM templates
+// ---------------------------------------------------------------------------
+
+// VMTemplate is a reusable VM definition: a hardware profile, a guest
+// customisation profile, and a generalised (sysprepped) VHDX held in the
+// library.
+//
+// A template is deliberately NOT desired state. Nothing reconciles towards one,
+// no agent is ever given one, and it has no Generation/ObservedGeneration
+// relationship — deploying from a template AUTHORS a VM's desired state, and
+// from that moment the ordinary per-VM reconciler owns the result. So this is
+// centre-only metadata in the same category as Site and Dvport: it needs no
+// proto and never crosses the agent wire, and deleting a template afterwards
+// takes nothing with it.
+type VMTemplate struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+
+	// SourceDiskPath is the generalised VHDX this template deploys from, and
+	// SourceHost / SourceCluster say who can read it: a host-local volume is
+	// readable only by that host, while a CSV path is readable by any member of
+	// the cluster (which is what makes a template usable across a cluster).
+	SourceDiskPath string `json:"sourceDiskPath"`
+	SourceHost     string `json:"sourceHost,omitempty"`
+	SourceCluster  string `json:"sourceCluster,omitempty"`
+
+	// DiskSizeBytes is the captured VHDX's size on disk, observed at capture. It
+	// is what a deploy needs to check free space against; zero means unknown.
+	DiskSizeBytes uint64 `json:"diskSizeBytes,omitempty"`
+
+	// Generalised records whether sysprep /generalize ran during capture. False
+	// means the image still carries a machine identity (SID, computer name,
+	// domain membership), so every VM deployed from it is a duplicate of the
+	// original — legitimate when the operator generalised it themselves or the
+	// image is a Linux golden disk, and worth warning about otherwise.
+	Generalised bool `json:"generalised,omitempty"`
+
+	// Hardware profile. These mirror the VMSpec fields a template fixes; a
+	// deploy may override the sizing ones per VM.
+	HyperVGeneration   int                    `json:"hyperVGeneration,omitempty"`
+	SecureBoot         string                 `json:"secureBoot,omitempty"`
+	ProcessorCount     int                    `json:"processorCount,omitempty"`
+	MemoryStartupBytes uint64                 `json:"memoryStartupBytes,omitempty"`
+	DynamicMemory      *DynamicMemorySpec     `json:"dynamicMemory,omitempty"`
+	BootOrder          []string               `json:"bootOrder,omitempty"`
+	NetworkAdapters    []VMNetworkAdapterSpec `json:"networkAdapters,omitempty"`
+
+	// AdditionalDisks are blank data disks created alongside the deployed copy
+	// of the template image. SizeBytes must be set — a zero-sized entry means
+	// "attach an existing VHDX", which has no meaning for a new VM.
+	AdditionalDisks []VMDiskSpec `json:"additionalDisks,omitempty"`
+
+	// Guest customises the guest OS on first boot. Nil leaves the image exactly
+	// as captured.
+	Guest *GuestProfileSpec `json:"guest,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	CreatedBy string    `json:"createdBy,omitempty"`
+
+	Status VMTemplateStatus `json:"status,omitempty"`
+}
+
+// Template phases. A capture copies a multi-gigabyte VHDX and can run for many
+// minutes, so a template exists in the library — visibly unfinished — for the
+// whole of it, rather than appearing only once the copy lands.
+const (
+	TemplateCapturing = "Capturing"
+	TemplateReady     = "Ready"
+	TemplateFailed    = "Failed"
+)
+
+// VMTemplateStatus tracks a capture through to a usable image. Only Ready
+// templates can be deployed.
+type VMTemplateStatus struct {
+	Phase string `json:"phase,omitempty"`
+
+	// Message explains a Failed capture, or what a Capturing one is doing.
+	Message string `json:"message,omitempty"`
+
+	// JobID is the capture job, so the console can link the template to its
+	// progress and the operator can read the failure where it happened.
+	JobID string `json:"jobId,omitempty"`
+
+	CapturedAt time.Time `json:"capturedAt,omitempty"`
+}
+
+// Deployable reports whether a template can be deployed from.
+func (t VMTemplate) Deployable() bool {
+	return t.Status.Phase == TemplateReady && t.SourceDiskPath != ""
+}
+
+// A capture has one fact to hand back that the centre stores rather than
+// displays — the size of the image it produced. A job reports its outcome as a
+// human-readable message and nothing else, so the size travels inside that
+// message, and these two functions are the only place its shape is defined. A
+// message the parse does not recognise yields zero, which the centre records as
+// "size unknown"; it never guesses.
+const capturedBytesMarker = " bytes)"
+
+// FormatCaptureResult builds a capture job's success message. It reads as prose
+// and parses exactly.
+func FormatCaptureResult(template, dest string, sizeBytes uint64) string {
+	return fmt.Sprintf("captured %s to %s (%d%s", template, dest, sizeBytes, capturedBytesMarker)
+}
+
+// ParseCapturedBytes recovers the image size from a capture job's message,
+// returning 0 when the message does not carry one.
+func ParseCapturedBytes(message string) uint64 {
+	end := strings.LastIndex(message, capturedBytesMarker)
+	if end < 0 {
+		return 0
+	}
+	start := strings.LastIndex(message[:end], "(")
+	if start < 0 {
+		return 0
+	}
+	n, err := strconv.ParseUint(message[start+1:end], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// GuestProfileSpec is how a deployed guest customises itself on first boot.
+//
+// For a Windows guest this becomes an unattend.xml injected into the copied
+// VHDX before the VM is ever created, so the specialise pass consumes it before
+// the guest finishes booting. That matters: it needs no guest credentials (a
+// generalised image has no account yet), no integration services, no network,
+// and it sets the computer name before the machine can register a wrong one in
+// DNS. The existing PowerShell Direct jobs (GuestJoinDomain, GuestSetIP) remain
+// the right tool for day-2 changes to a VM that is already running; they are
+// complements, not alternatives.
+//
+// The profile itself holds no secrets — it NAMES vault secrets, which the
+// centre resolves only at deploy, when it generates the unattend.
+type GuestProfileSpec struct {
+	// OSFamily selects the customisation mechanism. "windows" generates an
+	// unattend.xml. Empty means the guest is left exactly as the image has it.
+	// Linux (cloud-init via a seed ISO) is a separate mechanism, not a variation
+	// on this one, and is not implemented.
+	OSFamily string `json:"osFamily,omitempty"`
+
+	// TimeZone is a Windows time-zone id ("New Zealand Standard Time").
+	TimeZone string `json:"timeZone,omitempty"`
+
+	// Locale is a BCP-47 tag ("en-NZ") used for the UI language, input locale
+	// and regional settings.
+	Locale string `json:"locale,omitempty"`
+
+	OrganisationName string `json:"organisationName,omitempty"`
+
+	// AdminPasswordSecret names a vault secret whose "password" value becomes
+	// the guest's local Administrator password. Empty leaves the account
+	// disabled, which means nobody can log in until the guest is domain-joined
+	// — legitimate, but rarely what is wanted.
+	AdminPasswordSecret string `json:"adminPasswordSecret,omitempty"`
+
+	// ProductKeySecret names a vault secret holding a "key" value. Empty relies
+	// on KMS/AVMA activation, which is the norm on a licensed Hyper-V host.
+	ProductKeySecret string `json:"productKeySecret,omitempty"`
+
+	// DomainJoin joins the guest during the specialise pass — before first
+	// logon, in the same reboot, rather than joining afterwards.
+	DomainJoin *GuestDomainJoinSpec `json:"domainJoin,omitempty"`
+
+	// Workgroup names the workgroup to join when DomainJoin is nil.
+	Workgroup string `json:"workgroup,omitempty"`
+
+	// RunOnce are commands run at first logon, in order.
+	RunOnce []string `json:"runOnce,omitempty"`
+}
+
+// GuestDomainJoinSpec joins a deployed guest to Active Directory as part of its
+// first boot. It mirrors HostSpec's DomainJoin: the credential is a vault secret
+// name, never inline.
+type GuestDomainJoinSpec struct {
+	Domain string `json:"domain"`
+
+	// OUPath is the LDAP DN of the OU to place the computer object in. Empty
+	// uses the domain's default computers container.
+	OUPath string `json:"ouPath,omitempty"`
+
+	// CredentialSecret names a vault secret with "username" and "password"
+	// values for an account permitted to join computers to the domain.
+	CredentialSecret string `json:"credentialSecret,omitempty"`
 }
