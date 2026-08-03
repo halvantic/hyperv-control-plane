@@ -203,6 +203,18 @@ message HostSpec {
   LiveMigrationSpec live_migration = 10;
   // replica_server, when set, makes this host accept Hyper-V Replica traffic.
   ReplicaServerSpec replica_server = 11;
+  // maintenance takes the host out of service for planned work. It MUST cross
+  // the wire: the centre stores the intent but the agent is what drains the
+  // node, so a field the proto drops means the operator asks and nothing
+  // happens — the console shows "draining" for ever over a node still running
+  // their VMs.
+  MaintenanceSpec maintenance = 12;
+}
+
+// MaintenanceSpec declares a host is deliberately out of service.
+message MaintenanceSpec {
+  bool enabled = 1;
+  string reason = 2;
 }
 
 // ReplicaServerSpec makes a host a Hyper-V Replica target.
@@ -258,6 +270,10 @@ message HostStatus {
   // ObservedVM marshalled as JSON — how the centre discovers VMs on existing
   // infrastructure so the UI can list and adopt them.
   repeated string observed_vms_json = 15;
+  // in_maintenance is OBSERVED: the node is actually out of service, roles gone
+  // and (on S2D) its storage out of the pool. Without it the centre could never
+  // tell "asked to drain" from "drained".
+  bool in_maintenance = 16;
 }
 
 message HostMetrics {

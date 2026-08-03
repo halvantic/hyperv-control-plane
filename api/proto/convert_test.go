@@ -269,3 +269,52 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
 	check("ClusterVMStatus", reflect.ValueOf(st.VMs[0]))
 }
+
+// The same guard as TestSampleClusterStatusCoversEveryField, for the host.
+//
+// HostSpec.Maintenance and HostStatus.InMaintenance were added to the Go types
+// and not to the proto, so the centre stored the operator's intent, HostToProto
+// silently dropped it, and the agent received nil — the node never drained while
+// the console showed "draining" over a host still running its VMs. A field the
+// proto does not carry round-trips perfectly as its zero value, which is exactly
+// what makes this class invisible.
+//
+// ClusterStatus had this guard because the same thing happened there. The host is
+// the object every agent pulls on every cycle; it needed one more.
+func TestHostRoundTripCarriesEveryField(t *testing.T) {
+	h := types.Host{
+		Meta: types.ObjectMeta{Name: "hv01", UID: "u1", Generation: 7},
+		Spec: types.HostSpec{
+			FQDN:             "hv01.lab.local",
+			EnableHyperVRole: true,
+			RebootPolicy:     types.RebootIfNeeded,
+			ComputerName:     "HV01",
+			Maintenance:      &types.MaintenanceSpec{Enabled: true, Reason: "firmware"},
+		},
+	}
+	got := HostFromProto(HostToProto(h))
+	if got.Spec.Maintenance == nil {
+		t.Fatal("HostSpec.Maintenance did not survive the round trip — the agent would never see the intent, so the node would never drain")
+	}
+	if !got.Spec.Maintenance.Enabled || got.Spec.Maintenance.Reason != "firmware" {
+		t.Fatalf("maintenance mangled: %+v", got.Spec.Maintenance)
+	}
+
+	st := types.HostStatus{Phase: types.PhaseReady, InMaintenance: true}
+	if !StatusFromProto(StatusToProto(st)).InMaintenance {
+		t.Fatal("HostStatus.InMaintenance did not survive the round trip — the centre could never tell asked-to-drain from drained")
+	}
+
+	// Every field of MaintenanceSpec must be exercised above, or a future one is
+	// added and silently dropped exactly as these were.
+	check := func(name string, v reflect.Value) {
+		t.Helper()
+		for i := 0; i < v.NumField(); i++ {
+			f := v.Type().Field(i)
+			if f.IsExported() && v.Field(i).IsZero() {
+				t.Errorf("this test does not set %s.%s, so the round trip cannot prove the proto carries it — populate it", name, f.Name)
+			}
+		}
+	}
+	check("MaintenanceSpec", reflect.ValueOf(*h.Spec.Maintenance))
+}

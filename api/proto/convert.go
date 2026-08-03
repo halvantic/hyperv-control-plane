@@ -431,6 +431,9 @@ func specToProto(s types.HostSpec) *HostSpec {
 			DefaultStorageLocation: r.DefaultStorageLocation,
 		}
 	}
+	if m := s.Maintenance; m != nil {
+		out.Maintenance = &MaintenanceSpec{Enabled: m.Enabled, Reason: m.Reason}
+	}
 	return out
 }
 
@@ -477,6 +480,9 @@ func specFromProto(s *HostSpec) types.HostSpec {
 			DefaultStorageLocation: r.GetDefaultStorageLocation(),
 		}
 	}
+	if m := s.GetMaintenance(); m != nil {
+		out.Maintenance = &types.MaintenanceSpec{Enabled: m.GetEnabled(), Reason: m.GetReason()}
+	}
 	return out
 }
 
@@ -490,6 +496,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		Domain:             s.Domain,
 		AgentVersion:       s.AgentVersion,
 		NetworkProfile:     s.NetworkProfile,
+		InMaintenance:      s.InMaintenance,
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -588,6 +595,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		Domain:             s.GetDomain(),
 		AgentVersion:       s.GetAgentVersion(),
 		NetworkProfile:     s.GetNetworkProfile(),
+		InMaintenance:      s.GetInMaintenance(),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),
