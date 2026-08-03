@@ -72,8 +72,23 @@ $v = Ensure-BallastVMRegistered $vm
 if (-not $v) { throw ('after sysprep, ' + $vm + ' is neither registered with Hyper-V nor an offline cluster role on this host') }
 `)
 	}
-	b.WriteString(`if ([string]$v.State -ne 'Off') {
-  throw ('VM ' + $vm + ' must be Off to capture: a running VM holds its VHDX open, so the copy would be of a disk being written to. It is ' + [string]$v.State + '.')
+	// Hyper-V has more than two power states, and they fail for different reasons.
+	// Saying "a running VM holds its VHDX open" about a SAVED VM is simply untrue —
+	// a saved VM is not running and does not hold the file open — and it sends the
+	// operator looking for something to stop that is already stopped.
+	//
+	// Saved matters here because it is where a clustered VM usually lands:
+	// AutomaticStopAction defaults to Save, so taking a role offline saves the VM
+	// rather than shutting it down.
+	b.WriteString(`$state = [string]$v.State
+if ($state -eq 'Saved') {
+  throw ('VM ' + $vm + ' is in a SAVED state, not Off. Its disk is not locked, but it holds writes that were still in memory when it was saved, so an image copied now would behave like one taken from a machine that crashed. Either start it and shut the guest down cleanly, or discard the saved state (Remove-VMSavedState -VMName ''' + $vm + ''') to leave it Off — that throws away the saved memory, which for a template source is usually what you want. Note a clustered VM saves rather than shuts down when its role goes offline, because AutomaticStopAction defaults to Save.')
+}
+if ($state -ne 'Off') {
+  if ($state -eq 'Running' -or $state -eq 'Paused') {
+    throw ('VM ' + $vm + ' must be Off to capture: it is ' + $state + ', and holds its VHDX open, so the copy would be of a disk being written to.')
+  }
+  throw ('VM ' + $vm + ' must be Off to capture; it is ' + $state + '. Wait for it to settle, then capture again.')
 }
 $disks = @(Get-VMHardDiskDrive -VMName $vm | ForEach-Object { [string]$_.Path })
 if ($disks.Count -eq 0) { throw ('VM ' + $vm + ' has no disks to capture') }

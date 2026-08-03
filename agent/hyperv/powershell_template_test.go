@@ -32,8 +32,18 @@ func TestCaptureTemplateScriptGeneralise(t *testing.T) {
 
 	for _, s := range []string{plain, gen} {
 		// The VM must be Off before the copy: a running VM holds its VHDX open.
-		if !strings.Contains(s, "-ne 'Off'") {
+		if !strings.Contains(s, "$state -ne 'Off'") {
 			t.Fatal("capture must refuse a VM that is not Off")
+		}
+		// Saved is neither Running nor Off, and it is where a clustered VM lands
+		// when its role goes offline (AutomaticStopAction defaults to Save). Saying
+		// "a running VM holds its VHDX open" about it is untrue and sends the
+		// operator looking for something to stop that is already stopped.
+		if !strings.Contains(s, "$state -eq 'Saved'") {
+			t.Fatal("Saved must be diagnosed on its own terms, not as a running VM")
+		}
+		if !strings.Contains(s, "Remove-VMSavedState") {
+			t.Fatal("the Saved refusal must name the way out of it")
 		}
 		// Copy via a temp name so an interrupted capture never leaves something
 		// at the template's path that looks like a finished image.

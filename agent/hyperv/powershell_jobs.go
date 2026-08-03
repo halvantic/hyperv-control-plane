@@ -56,7 +56,11 @@ $src=%[1]s; $new=%[2]s; $folder=%[3]s
 `, psQuote(srcName), psQuote(newName), psQuote(folder)) +
 		clusteredVMRegisterPrelude("$src") +
 		`$s = $__vm
-if ([string]$s.State -ne 'Off') { throw ('source VM ' + $src + ' must be Off to clone (its disk is locked while it runs) - stop it first') }
+$state = [string]$s.State
+if ($state -eq 'Saved') {
+  throw ('source VM ' + $src + ' is in a SAVED state, not Off. Its disk is not locked, but it holds writes that were still in memory when it was saved, so the clone would behave like a machine that crashed. Start it and shut the guest down cleanly, or discard the saved state (Remove-VMSavedState) to leave it Off. A clustered VM saves rather than shuts down when its role goes offline, because AutomaticStopAction defaults to Save.')
+}
+if ($state -ne 'Off') { throw ('source VM ' + $src + ' must be Off to clone: it is ' + $state + ', and holds its disk open while it runs - stop it first') }
 if (Get-VM -Name $new -ErrorAction SilentlyContinue) { throw ('a VM named ' + $new + ' already exists on this host') }
 $srcDisks = @(Get-VMHardDiskDrive -VMName $src | ForEach-Object { [string]$_.Path })
 if ($srcDisks.Count -eq 0) { throw ('source VM ' + $src + ' has no disks to clone') }
