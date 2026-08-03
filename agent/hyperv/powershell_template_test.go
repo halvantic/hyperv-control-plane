@@ -299,12 +299,16 @@ func TestMaintenanceHandlesS2DStorage(t *testing.T) {
 			t.Fatal("the storage half must be retried while it is still not out")
 		}
 	}
-	// Order both ways: roles off before storage, storage back before roles.
-	if strings.Index(enter, "Suspend-ClusterNode") > strings.Index(enter, "Set-BallastStorageMaintenance 'HVNEW03' $true") {
-		t.Fatal("roles must drain before the storage goes into maintenance")
+	// STORAGE FIRST on the way out. Pausing immediately degrades every virtual
+	// disk (a copy is on an unavailable node), and Enable-StorageMaintenanceMode
+	// refuses while any disk lacks redundancy — so draining first makes the
+	// storage half impossible by its own side effect. Proven on the rig.
+	if strings.Index(enter, "Set-BallastStorageMaintenance 'HVNEW03' $true") > strings.Index(enter, "Suspend-ClusterNode") {
+		t.Fatal("storage must go into maintenance BEFORE the node is paused, or pausing degrades the disks and the storage half is refused")
 	}
-	if strings.Index(exit, "Set-BallastStorageMaintenance 'HVNEW03' $false") > strings.Index(exit, "Resume-ClusterNode") {
-		t.Fatal("storage must come back before the node accepts roles again")
+	// And the mirror coming back: the node returns before the flag is released.
+	if strings.Index(exit, "Resume-ClusterNode") > strings.Index(exit, "Set-BallastStorageMaintenance 'HVNEW03' $false") {
+		t.Fatal("the node must be resumed before its storage maintenance flag is released")
 	}
 	// And the observation has to report it, or "in maintenance" would mean only
 	// that the roles left.

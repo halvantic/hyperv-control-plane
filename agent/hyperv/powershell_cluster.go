@@ -128,8 +128,14 @@ $pool = if ($sp) {
   # someone to repair a pool that is already repairing itself.
   # No "| Select-Object -First 1": the -First pipeline stop can abort the whole
   # script after a storage cmdlet, exiting 0 with no output marker.
+  # A SUSPENDED job is not a rebuild. S2D queues repair jobs and suspends them
+  # while a node is merely paused — they sit at 0 bytes processed and do nothing
+  # until the node is gone for good. Counting them as "rebuilding" reported a
+  # rebuild that was permanently at 0%, which is the same false-progress the
+  # PercentComplete fix removed, and it fired storage alarms every time an
+  # operator drained a node deliberately.
   $rjobs = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object {
-    [string]$_.JobState -in @('Running','Starting','Suspended') -and
+    [string]$_.JobState -in @('Running','Starting') -and
     ([string]$_.Name -match 'Repair|Regener|Resync|Rebalance|Optimi')
   })
   $resync = ($rjobs.Count -gt 0)
@@ -605,23 +611,35 @@ $storageErr = ''
 # succeed while the storage half is refused, and acting only when the pause
 # changed meant the reconciler never came back to finish the job — the node sat
 # drained with its disks still in the pool, being repaired around, for ever.
+# STORAGE FIRST, then the roles — the reverse of what the documented S2D
+# sequence implies, and the rig showed why. Pausing a node immediately marks
+# every virtual disk Degraded (a copy now sits on an unavailable node) and
+# queues repair jobs. Enable-StorageMaintenanceMode then refuses, because it
+# will not release storage while a virtual disk lacks redundancy — so pausing
+# first makes the storage half impossible, permanently, by its own side effect.
+#
+# Enabling maintenance mode while everything is still healthy is accepted, and
+# tells S2D the disks are deliberately going away before they do.
+#
+# Exit is the mirror: bring the node back first so its copies are available
+# again, then release the maintenance flag.
 if ($intent -eq 'enter') {
-  if (-not $paused) {
-    Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
-    $changed = $true
-  }
   if (-not $storageOut) {
     $storageErr = Set-BallastStorageMaintenance %[1]s $true
     if (-not $storageErr) { $changed = $true }
   }
-} elseif ($intent -eq 'exit') {
-  if ($storageOut) {
-    $storageErr = Set-BallastStorageMaintenance %[1]s $false
-    if (-not $storageErr) { $changed = $true }
+  if (-not $paused) {
+    Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
+    $changed = $true
   }
+} elseif ($intent -eq 'exit') {
   if ($paused) {
     Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
     $changed = $true
+  }
+  if ($storageOut) {
+    $storageErr = Set-BallastStorageMaintenance %[1]s $false
+    if (-not $storageErr) { $changed = $true }
   }
 }
 if ($changed) {
