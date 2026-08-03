@@ -878,3 +878,52 @@ try {
 	}
 	return res, nil
 }
+
+// MoveVMStorage relocates a VM's files to folder — Hyper-V storage migration,
+// which runs live: the VM keeps running while its disks are mirrored across and
+// then switched over.
+//
+// Every destination path is dictated explicitly rather than handed to
+// -DestinationStoragePath, which would let Hyper-V impose its own layout
+// (<dest>\Virtual Hard Disks\...). Two reasons. It keeps a moved VM laid out the
+// same way as one Ballast created or deployed, and — the load-bearing one — it
+// makes the resulting paths predictable, so the centre can author them into
+// desired state when the job succeeds instead of guessing where they ended up.
+func (p *PowerShell) MoveVMStorage(ctx context.Context, vm, folder string, onProgress ProgressFunc) (string, error) {
+	script := "$ErrorActionPreference='Stop'\n$vm = " + psQuote(vm) + "; $folder = " + psQuote(folder) + "\n" +
+		clusteredVMRegisterPrelude("$vm") +
+		`$state = [string]$__vm.State
+if ($state -eq 'Saved') {
+  throw ('VM ' + $vm + ' is Saved. Storage migration cannot move a saved VM, because its memory image is tied to where the files are. Discard the saved state (leaving it Off) or start it, then move.')
+}
+$disks = @(Get-VMHardDiskDrive -VMName $vm)
+if ($disks.Count -eq 0) { throw ('VM ' + $vm + ' has no disks to move') }
+if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+# Test-Path is false both for absent and for unreadable, so prove the destination
+# is reachable before a live migration starts writing gigabytes at it.
+if (-not (Test-Path -LiteralPath $folder)) {
+  throw ('the destination ' + $folder + ' is not reachable from this host (an offline CSV, or a volume owned by another node, reads exactly like a missing folder)')
+}
+$vhds = @()
+foreach ($d in $disks) {
+  $src = [string]$d.Path
+  $target = Join-Path $folder (Split-Path -Leaf $src)
+  if ($src -ieq $target) { continue }
+  if (Test-Path -LiteralPath $target) { throw ('a disk already exists at ' + $target + '; move to a different datastore or clear it first') }
+  $vhds += @{ SourceFilePath = $src; DestinationFilePath = $target }
+}
+if ($vhds.Count -eq 0) { 'DONE ' + $vm + ' is already on that datastore'; return }
+# migrateWithProgress hands $path and $mt to the background job by position, so
+# the move command inside it sees these names and not the ones used above.
+$path = $folder
+$mt = $vhds
+` + migrateWithProgress("Move-VMStorage -VMName $vm -VirtualMachinePath $path -SnapshotFilePath $path -SmartPagingFilePath $path -Vhds $mt") + `
+Write-Output ('DONE moved ' + $vm + ' storage to ' + $folder)
+` + clusteredVMRestoreSuffix
+	result := "moved " + vm + " storage to " + folder
+	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
+	if err != nil {
+		return "", fmt.Errorf("move storage of %q to %q: %w", vm, folder, err)
+	}
+	return result, nil
+}

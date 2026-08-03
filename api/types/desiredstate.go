@@ -915,14 +915,14 @@ func (s JobState) Terminal() bool {
 // Job kinds. Params carry the operands (e.g. "vm" for a VM name, "node" for a
 // cluster node, "target" for a migration destination).
 const (
-	JobVMStart        = "VMStart"            // params: vm
-	JobVMStop         = "VMStop"             // params: vm
-	JobVMRestart      = "VMRestart"          // params: vm — one-shot guest restart
-	JobVMCheckpoint   = "VMCheckpoint"       // params: vm, name
-	JobVMApplyCheck   = "VMApplyCheckpoint"  // params: vm, name
-	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name
-	JobVMExport       = "VMExport"           // params: vm, path
-	JobVMClone        = "VMClone"            // params: vm (source), name (new), folder (target) — copy an Off VM into an independent new one
+	JobVMStart       = "VMStart"            // params: vm
+	JobVMStop        = "VMStop"             // params: vm
+	JobVMRestart     = "VMRestart"          // params: vm — one-shot guest restart
+	JobVMCheckpoint  = "VMCheckpoint"       // params: vm, name
+	JobVMApplyCheck  = "VMApplyCheckpoint"  // params: vm, name
+	JobVMRemoveCheck = "VMRemoveCheckpoint" // params: vm, name
+	JobVMExport      = "VMExport"           // params: vm, path
+	JobVMClone       = "VMClone"            // params: vm (source), name (new), folder (target) — copy an Off VM into an independent new one
 
 	// JobVMDiscardSavedState throws away a saved VM's memory image so it becomes
 	// Off. A clustered VM lands in Saved rather than Off whenever its role goes
@@ -931,16 +931,23 @@ const (
 	// writes that were still in memory. Discarding is the way out and, unlike
 	// starting the VM, it does not disturb a generalised image.
 	JobVMDiscardSavedState = "VMDiscardSavedState" // params: vm
-	JobClusterAddNode = "ClusterAddNode"     // params: node
-	JobClusterEvict   = "ClusterEvict"       // params: node
-	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)
-	JobNodeResume     = "NodeResume"         // params: node — resume into the cluster
+	JobClusterAddNode      = "ClusterAddNode"      // params: node
+	JobClusterEvict        = "ClusterEvict"        // params: node
+	JobNodeDrain           = "NodeDrain"           // params: node — pause + move roles off (maintenance)
+	JobNodeResume          = "NodeResume"          // params: node — resume into the cluster
 
-	JobClusterMoveGroup    = "ClusterMoveGroup"    // params: group, node — move/fail over a clustered role to node
-	JobClusterMoveCSV      = "ClusterMoveCSV"      // params: volume, node — move CSV ownership to node
-	JobClusterValidate     = "ClusterValidate"     // params: nodes (optional, comma list), include (optional) — Test-Cluster
-	JobClusterMoveVM       = "ClusterMoveVM"       // params: vm, node — live-migrate a clustered VM role to node
-	JobMigrateVM           = "MigrateVM"           // params: vm, destHost, destPath — shared-nothing live migration of a standalone VM to another host (run on the source host)
+	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
+	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
+	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
+	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
+	JobMigrateVM        = "MigrateVM"        // params: vm, destHost, destPath — shared-nothing live migration of a standalone VM to another host (run on the source host)
+
+	// JobVMMoveStorage relocates a VM's files to another datastore WITHOUT moving
+	// the VM itself — Hyper-V storage migration, which runs live. The centre
+	// dictates the destination path of every file rather than letting Hyper-V
+	// choose a layout, so it can author the VM's new desired disk paths when the
+	// job succeeds. params: vm, dest (datastore root; files land in <dest>\<vm>).
+	JobVMMoveStorage       = "VMMoveStorage"
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 

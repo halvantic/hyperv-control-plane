@@ -348,6 +348,12 @@ type Interface interface {
 	// and can be copied. Ignored unless the VM is Saved.
 	CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string) (uint64, error)
 
+	// MoveVMStorage relocates a VM's files into folder without moving the VM —
+	// Hyper-V storage migration, which runs live. Every destination path is
+	// dictated explicitly so the result is predictable and the centre can author
+	// the new disk paths into desired state. Reports progress. Imperative Job.
+	MoveVMStorage(ctx context.Context, vm, folder string, onProgress ProgressFunc) (string, error)
+
 	// DiscardVMSavedState turns a Saved VM into an Off one by throwing away its
 	// saved memory. A clustered VM is Saved rather than Off whenever its role
 	// goes offline (AutomaticStopAction defaults to Save), and a saved VM cannot

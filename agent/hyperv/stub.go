@@ -528,8 +528,11 @@ func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _, _ bool, _, _ s
 	return 0, nil
 }
 
-func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string) error          { return nil }
-func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error               { return nil }
+func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string) error { return nil }
+func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error      { return nil }
+func (s *Stub) MoveVMStorage(_ context.Context, vm, folder string, _ ProgressFunc) (string, error) {
+	return "moved " + vm + " storage to " + folder, nil
+}
 func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)             { return "", nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
