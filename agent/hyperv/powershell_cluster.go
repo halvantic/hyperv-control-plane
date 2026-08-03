@@ -504,6 +504,12 @@ type NodeMaintenanceState struct {
 	// so the pool waits for its disks instead of repairing around them. On an S2D
 	// cluster a node is not really out of service until this is true.
 	StorageOut bool
+	// StorageError is why the storage half was refused, empty when it was not.
+	// S2D declines to release a node's disks while a virtual disk has lost
+	// redundancy — a real safety check, not something to force — so this can be
+	// set on a node whose roles drained perfectly. Swallowed, it left the console
+	// on "Draining" with nothing to explain why.
+	StorageError string
 }
 
 // MaintenanceIntent says what a pass should do about a node's availability.
@@ -568,37 +574,62 @@ $changed = $false
 # back, storage first, so the node is contributing again before it accepts
 # roles. try/catch because a cluster without S2D has no scale units, which is
 # not an error.
+# The reason a refusal is RETURNED rather than swallowed: S2D declines to
+# release a node's disks while a virtual disk has lost redundancy ("Currently
+# unsafe to perform the operation"). That is a real safety check and must not be
+# forced — but it is also temporary, so the operator needs to be told why the
+# node is not fully out rather than watching "Draining" for ever.
 function Set-BallastStorageMaintenance($n, $on) {
   try {
     $su = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue |
       Where-Object { [string]$_.FriendlyName -eq $n })
-    if ($su.Count -eq 0) { return }
+    if ($su.Count -eq 0) { return '' }
     if ($on) { $su[0] | Enable-StorageMaintenanceMode -ErrorAction Stop }
     else { $su[0] | Disable-StorageMaintenanceMode -ErrorAction Stop }
-  } catch {}
+    return ''
+  } catch {
+    return ((($_.Exception.Message -split "`+"`r?`n"+`") | Where-Object { $_.Trim() } | Select-Object -First 3) -join ' ')
+  }
 }
-if ($intent -eq 'enter' -and -not $paused) {
-  Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
-  Set-BallastStorageMaintenance %[1]s $true
-  $changed = $true
-} elseif ($intent -eq 'exit' -and $paused) {
-  Set-BallastStorageMaintenance %[1]s $false
-  Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
-  $changed = $true
+function Get-BallastStorageOut($n) {
+  try {
+    $su = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue |
+      Where-Object { [string]$_.FriendlyName -eq $n })
+    if ($su.Count -eq 0) { return $false }
+    return ((@($su[0].OperationalStatus) -join ',') -match 'Maintenance')
+  } catch { return $false }
+}
+$storageOut = Get-BallastStorageOut %[1]s
+$storageErr = ''
+# Both halves converge on EVERY pass, not just on the transition. The pause can
+# succeed while the storage half is refused, and acting only when the pause
+# changed meant the reconciler never came back to finish the job — the node sat
+# drained with its disks still in the pool, being repaired around, for ever.
+if ($intent -eq 'enter') {
+  if (-not $paused) {
+    Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
+    $changed = $true
+  }
+  if (-not $storageOut) {
+    $storageErr = Set-BallastStorageMaintenance %[1]s $true
+    if (-not $storageErr) { $changed = $true }
+  }
+} elseif ($intent -eq 'exit') {
+  if ($storageOut) {
+    $storageErr = Set-BallastStorageMaintenance %[1]s $false
+    if (-not $storageErr) { $changed = $true }
+  }
+  if ($paused) {
+    Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
+    $changed = $true
+  }
 }
 if ($changed) {
   $n = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0]
   if ($n) { $state = [string]$n.State; $drain = [string]$n.DrainStatus; $paused = ($state -eq 'Paused') }
+  $storageOut = Get-BallastStorageOut %[1]s
 }
-# Report whether the node's storage is out too, so "in maintenance" means the
-# whole node is out of service rather than only its roles.
-$storageOut = $false
-try {
-  $su = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue |
-    Where-Object { [string]$_.FriendlyName -eq %[1]s })
-  if ($su.Count -gt 0) { $storageOut = ((@($su[0].OperationalStatus) -join ',') -match 'Maintenance') }
-} catch {}
-[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; changed=$changed } | ConvertTo-Json -Compress`,
+[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; storageError=$storageErr; changed=$changed } | ConvertTo-Json -Compress`,
 		psQuote(node), psQuote(intentWord(intent)))
 }
 
@@ -610,16 +641,17 @@ func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, int
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, err)
 	}
 	var obs struct {
-		Member     bool `json:"member"`
-		Paused     bool `json:"paused"`
-		Draining   bool `json:"draining"`
-		StorageOut bool `json:"storageOut"`
-		Changed    bool `json:"changed"`
+		Member       bool   `json:"member"`
+		Paused       bool   `json:"paused"`
+		Draining     bool   `json:"draining"`
+		StorageOut   bool   `json:"storageOut"`
+		StorageError string `json:"storageError"`
+		Changed      bool   `json:"changed"`
 	}
 	if derr := decodeJSON(out, &obs); derr != nil {
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, derr)
 	}
-	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining, StorageOut: obs.StorageOut}
+	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining, StorageOut: obs.StorageOut, StorageError: obs.StorageError}
 	if obs.Changed {
 		return OutcomeUpdated, st, nil
 	}

@@ -279,8 +279,24 @@ func TestMaintenanceHandlesS2DStorage(t *testing.T) {
 			t.Fatal("the node's storage must be taken out with it, or S2D repairs around disks that have not gone")
 		}
 		// A cluster without S2D has no scale units; that is not a failure.
-		if !strings.Contains(s, "if ($su.Count -eq 0) { return }") {
+		if !strings.Contains(s, "if ($su.Count -eq 0) { return '' }") {
 			t.Fatal("a cluster with no S2D scale units must be tolerated, not failed")
+		}
+		// The refusal must be RETURNED by the storage helper, not swallowed. S2D
+		// declines to release a node's disks while a virtual disk has lost
+		// redundancy, and a bare catch left the console on "Draining" with nothing
+		// to explain why. (Other bare catches in this script are legitimate: an
+		// absent Get-ClusterNode means "not a cluster node", not a failure.)
+		if !strings.Contains(s, "return ((($_.Exception.Message") {
+			t.Fatal("Set-BallastStorageMaintenance must return the refusal, not swallow it")
+		}
+		if !strings.Contains(s, "storageError=$storageErr") {
+			t.Fatal("the reason the storage half was refused must reach the centre")
+		}
+		// Both halves converge every pass: the pause can land while the storage is
+		// refused, and acting only on the transition never comes back to finish.
+		if !strings.Contains(s, "if (-not $storageOut) {") {
+			t.Fatal("the storage half must be retried while it is still not out")
 		}
 	}
 	// Order both ways: roles off before storage, storage back before roles.

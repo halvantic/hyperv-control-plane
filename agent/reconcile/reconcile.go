@@ -374,7 +374,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	{
 		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent)
 		if intent != hyperv.MaintenanceObserve || err != nil {
-			conds = append(conds, r.condition("Maintenance", out, err))
+			c := r.condition("Maintenance", out, err)
+			// S2D can refuse to release the node's disks while a virtual disk has
+			// lost redundancy. The roles have still drained, so this is not a
+			// failure — but it is the difference between "out of service" and
+			// "paused with its disks still being repaired around", and the operator
+			// cannot act on it unless it is said. The retry happens every pass.
+			if err == nil && ms.StorageError != "" {
+				c.Status = false
+				c.Reason = "StorageNotReleased"
+				c.Message = "roles have drained, but the node's storage is still in the pool: " + ms.StorageError +
+					" — retrying each pass; it usually clears once the pool finishes repairing"
+			}
+			conds = append(conds, c)
 		}
 		switch {
 		case err != nil:
