@@ -52,12 +52,6 @@ type Reconciler struct {
 	// half-hour of legitimate work. The reconciler knowing what its own agent
 	// started beats teaching it to recognise how each conflict happens to fail.
 	vmBusy func(name string) (kind string, busy bool)
-
-	// lastWantedMaintenance remembers whether the previous pass wanted the node
-	// paused, so clearing maintenance still runs one resume pass after the spec
-	// field is dropped. Without it a host would stay paused for ever once the
-	// field went away — the intent is gone, so nothing would ask to undo it.
-	lastWantedMaintenance bool
 }
 
 // SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
@@ -357,23 +351,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// moment it is asked, but it is not OUT OF SERVICE until its roles have moved.
 	// Reporting maintenance before then would tell an operator it is safe to
 	// reboot a node still running their VMs.
-	// Observed on EVERY pass, acted on only when maintenance is declared (or was,
-	// and is being cleared). A node can be paused by someone who never went
-	// through Ballast — Failover Cluster Manager, a script — and reading it always
-	// is what stops the console quietly disagreeing with the cluster. Not acting
-	// is equally deliberate: resuming a node an operator paused by hand would
-	// undo a decision Ballast knows nothing about.
+	// Desired state decides, on every pass, with nothing remembered between them.
+	//
+	// This used to consult a REMEMBERED "did the last pass want maintenance", so a
+	// resume only happened if the same agent process had seen the drain. Clearing
+	// maintenance while the agent was restarting — an agent update, a reboot —
+	// left the node paused for ever, because nothing afterwards knew to undo it.
+	// Any state that has to survive a restart belongs in desired state, and it
+	// already does.
+	//
+	// So: declared means Enter, not declared means Exit. Exit is a no-op on a node
+	// that is not paused, which makes it safe to send every cycle.
+	//
+	// The corollary is that a node paused outside Ballast IS resumed, and that is
+	// the right call however uncomfortable. The alternative — leaving it paused
+	// and labelling it "paused outside Ballast" — asserted something the centre
+	// cannot know (Ballast's own drain JOB paused nodes without recording it, and
+	// so did a failed resume), and it left the operator with a node nothing would
+	// ever fix. Desired state wins here exactly as it does for a switch or an IP;
+	// the way to keep a node paused is to declare maintenance.
 	wantMaintenance := desired.Spec.Maintenance != nil && desired.Spec.Maintenance.Enabled
-	intent := hyperv.MaintenanceObserve
-	switch {
-	case wantMaintenance:
+	intent := hyperv.MaintenanceExit
+	if wantMaintenance {
 		intent = hyperv.MaintenanceEnter
-	case r.lastWantedMaintenance:
-		intent = hyperv.MaintenanceExit
 	}
 	{
 		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent)
-		if intent != hyperv.MaintenanceObserve || err != nil {
+		// Only report when something actually happened or is wrong. Exit runs every
+		// cycle on every host and is a no-op almost always; a condition each time
+		// would be pure noise.
+		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" {
 			c := r.condition("Maintenance", out, err)
 			// S2D can refuse to release the node's disks while a virtual disk has
 			// lost redundancy. The roles have still drained, so this is not a
@@ -413,10 +420,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			draining = ms.Draining
 		}
 	}
-	// Remember so clearing maintenance still runs a resume pass on the next cycle
-	// after the spec drops the field entirely.
-	r.lastWantedMaintenance = wantMaintenance
-
 	res := Result{
 		InMaintenance:   inMaintenance,
 		Draining:        draining,
