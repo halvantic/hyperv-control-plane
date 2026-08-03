@@ -109,3 +109,45 @@ func TestRecentLimit(t *testing.T) {
 			recent[0].Status.ObservedGeneration, recent[1].Status.ObservedGeneration)
 	}
 }
+
+// A job result the centre could not accept must survive to be replayed. Without
+// this an agent that finished work while the centre was unreachable lost the
+// outcome for good, and the job read Running in the console for ever — seen when
+// the centre's machine slept through a storage migration.
+func TestPendingJobResults(t *testing.T) {
+	s := openTemp(t)
+
+	if got, err := s.PendingResults(); err != nil || len(got) != 0 {
+		t.Fatalf("a fresh store has nothing pending: %+v err=%v", got, err)
+	}
+	if err := s.AppendPendingResult("job-1", types.JobSucceeded, "moved storage"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendPendingResult("job-2", types.JobFailed, "no"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.PendingResults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Order matters: a job's states are a sequence, and delivering them out of
+	// order would report an older one last.
+	if len(got) != 2 || got[0].JobID != "job-1" || got[1].JobID != "job-2" {
+		t.Fatalf("results must replay in the order they happened: %+v", got)
+	}
+	if got[0].State != types.JobSucceeded || got[0].Message != "moved storage" {
+		t.Fatalf("result not preserved: %+v", got[0])
+	}
+	if got[0].Time.IsZero() {
+		t.Fatal("the queued-at time must be recorded, so a replay can say how old it is")
+	}
+
+	if err := s.DropPendingResult(got[0].Seq); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.PendingResults()
+	if len(after) != 1 || after[0].JobID != "job-2" {
+		t.Fatalf("only the delivered one may be dropped: %+v", after)
+	}
+}

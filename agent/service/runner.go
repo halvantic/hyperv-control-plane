@@ -570,6 +570,13 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 				"host", desired.Meta.Name, "generation", desired.Meta.Generation)
 		}
 	}
+	// The centre answered, so anything the agent finished while it was away can be
+	// delivered now. Before status, and before the work below: a job that completed
+	// during an outage should settle the moment contact returns, not linger Running
+	// until an operator gives up and cancels it.
+	if err == nil {
+		r.replayJobResults(ctx, client)
+	}
 	// Cluster assignment is only acted on when the centre is reachable: once a
 	// cluster exists, Failover Clustering maintains it without the centre.
 	if err == nil {
@@ -749,10 +756,50 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 }
 
 func (r *runner) reportJob(ctx context.Context, client ballastpb.AgentServiceClient, id string, state types.JobState, msg string) {
-	if _, err := client.ReportJobResult(ctx, &ballastpb.ReportJobResultRequest{
+	_, err := client.ReportJobResult(ctx, &ballastpb.ReportJobResultRequest{
 		HostName: r.cfg.hostName, Uid: r.uid, JobId: id, State: string(state), Message: msg,
-	}); err != nil {
-		r.log.Warn("report job result failed", "id", id, "err", err)
+	})
+	if err == nil {
+		return
+	}
+	r.log.Warn("report job result failed", "id", id, "state", state, "err", err)
+	// A TERMINAL result that cannot be delivered is queued and replayed when the
+	// centre returns — the same treatment the status journal has always had.
+	// Without it an agent that finished work while the centre was unreachable lost
+	// the outcome for good, and the job read Running in the console for ever.
+	//
+	// Progress notes are dropped instead: they describe a moment that has passed
+	// by the time the centre is back, and replaying "20%" for a job that has since
+	// finished would be worse than saying nothing.
+	if !state.Terminal() {
+		return
+	}
+	if serr := r.st.AppendPendingResult(id, state, msg); serr != nil {
+		r.log.Error("queue undelivered job result", "id", id, "err", serr)
+	}
+}
+
+// replayJobResults delivers terminal job results the agent could not report when
+// they happened. Called on each cycle once the centre is reachable, before status,
+// so a job that finished during an outage settles as soon as contact is back
+// rather than waiting for an operator to notice and cancel it.
+func (r *runner) replayJobResults(ctx context.Context, client ballastpb.AgentServiceClient) {
+	pending, err := r.st.PendingResults()
+	if err != nil {
+		r.log.Error("read pending job results", "err", err)
+		return
+	}
+	for _, p := range pending {
+		if _, err := client.ReportJobResult(ctx, &ballastpb.ReportJobResultRequest{
+			HostName: r.cfg.hostName, Uid: r.uid, JobId: p.JobID, State: string(p.State), Message: p.Message,
+		}); err != nil {
+			// Still unreachable: stop and keep the rest for the next cycle, in order.
+			return
+		}
+		if derr := r.st.DropPendingResult(p.Seq); derr != nil {
+			r.log.Error("drop delivered job result", "id", p.JobID, "err", derr)
+		}
+		r.log.Info("replayed a job result the centre missed", "id", p.JobID, "state", p.State, "queuedAt", p.Time)
 	}
 }
 

@@ -28,6 +28,8 @@ var (
 
 	keyHost = []byte("host")
 	keyVMs  = []byte("vms")
+	// bucketResults holds terminal job results the centre has not accepted yet.
+	bucketResults = []byte("results")
 )
 
 // Store is the agent's embedded store. Safe for concurrent use: bbolt
@@ -53,7 +55,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bbolt at %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketDesired, bucketJournal} {
+		for _, b := range [][]byte{bucketDesired, bucketJournal, bucketResults} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -234,4 +236,85 @@ func itob(v uint64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, v)
 	return b
+}
+
+// ---------------------------------------------------------------------------
+// Pending job results
+// ---------------------------------------------------------------------------
+
+// PendingResult is a job outcome the agent produced but could not deliver.
+//
+// The status journal has always been replayed when the centre returns — that is
+// the autonomy story — but a job's RESULT was fire-and-forget: reportJob logged a
+// warning and moved on. So an agent that finished work while the centre was
+// unreachable lost the outcome for ever, and the job sat Running in the console
+// until somebody cancelled it.
+//
+// Seen on a storage migration: the centre's machine slept mid-move, the agent
+// completed the migration, and hours later the files were in their new home
+// while the job still read "live migration 20%". The work was never at risk. The
+// record of it was.
+//
+// Only TERMINAL results are worth keeping. Progress notes describe a moment that
+// has passed by the time the centre is back, and replaying "20%" for a job that
+// finished would be worse than silence.
+type PendingResult struct {
+	Seq     uint64         `json:"seq"`
+	Time    time.Time      `json:"time"`
+	JobID   string         `json:"jobId"`
+	State   types.JobState `json:"state"`
+	Message string         `json:"message"`
+}
+
+// AppendPendingResult records an undelivered terminal job result for replay.
+func (s *Store) AppendPendingResult(jobID string, state types.JobState, msg string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucketResults)
+		if err != nil {
+			return err
+		}
+		seq, err := b.NextSequence()
+		if err != nil {
+			return err
+		}
+		e := PendingResult{Seq: seq, Time: time.Now().UTC(), JobID: jobID, State: state, Message: msg}
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		return b.Put(itob(seq), raw)
+	})
+}
+
+// PendingResults returns the undelivered job results in the order they happened,
+// which is the order they must be replayed in: a job's states are a sequence, and
+// delivering them out of order would report an older one last.
+func (s *Store) PendingResults() ([]PendingResult, error) {
+	var out []PendingResult
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketResults)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var e PendingResult
+			if err := json.Unmarshal(v, &e); err != nil {
+				return nil // a corrupt entry must not block the rest
+			}
+			out = append(out, e)
+			return nil
+		})
+	})
+	return out, err
+}
+
+// DropPendingResult removes a result once the centre has accepted it.
+func (s *Store) DropPendingResult(seq uint64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketResults)
+		if b == nil {
+			return nil
+		}
+		return b.Delete(itob(seq))
+	})
 }

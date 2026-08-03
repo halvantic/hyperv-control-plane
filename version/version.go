@@ -3,4 +3,4 @@
 // a stale agent binary and surface an "update required" indicator.
 package version
 
-const Version = "0.3.97-slice"
+const Version = "0.3.98-slice"
