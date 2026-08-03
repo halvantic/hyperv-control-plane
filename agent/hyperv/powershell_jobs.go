@@ -37,9 +37,25 @@ func (p *PowerShell) ExportVM(ctx context.Context, vmName, path string) error {
 // and a dynamic MAC, and connects the first NIC to the source's switch. The
 // source must be Off — a running VM's VHDX is locked, so a live copy is refused.
 func (p *PowerShell) CloneVM(ctx context.Context, srcName, newName, folder string) error {
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+	script := cloneVMScript(srcName, newName, folder)
+	if _, err := p.run(ctx, script); err != nil {
+		return fmt.Errorf("clone vm %q to %q: %w", srcName, newName, err)
+	}
+	return nil
+}
+
+// cloneVMScript is built as a pure function so its content is unit-tested
+// without a host, like the template scripts.
+func cloneVMScript(srcName, newName, folder string) string {
+	// A clustered source that is Off is an OFFLINE ROLE, and an offline role is
+	// deregistered from Hyper-V — so the state a clone requires is the state in
+	// which Get-VM cannot find the VM. The prelude registers it for the duration
+	// and puts it back; see clusteredVMRegisterPrelude.
+	return fmt.Sprintf(`$ErrorActionPreference='Stop'
 $src=%[1]s; $new=%[2]s; $folder=%[3]s
-$s = Get-VM -Name $src -ErrorAction Stop
+`, psQuote(srcName), psQuote(newName), psQuote(folder)) +
+		clusteredVMRegisterPrelude("$src") +
+		`$s = $__vm
 if ([string]$s.State -ne 'Off') { throw ('source VM ' + $src + ' must be Off to clone (its disk is locked while it runs) - stop it first') }
 if (Get-VM -Name $new -ErrorAction SilentlyContinue) { throw ('a VM named ' + $new + ' already exists on this host') }
 $srcDisks = @(Get-VMHardDiskDrive -VMName $src | ForEach-Object { [string]$_.Path })
@@ -60,11 +76,8 @@ Set-VM -Name $new -ProcessorCount ([int]$s.ProcessorCount)
 if ($s.DynamicMemoryEnabled) { Set-VM -Name $new -DynamicMemory -MemoryMinimumBytes ([int64]$s.MemoryMinimum) -MemoryMaximumBytes ([int64]$s.MemoryMaximum) }
 $sn = @(Get-VMNetworkAdapter -VMName $src)[0]
 if ($sn -and [string]$sn.SwitchName) { Get-VMNetworkAdapter -VMName $new | Connect-VMNetworkAdapter -SwitchName ([string]$sn.SwitchName) }
-'RESULT=OK'`, psQuote(srcName), psQuote(newName), psQuote(folder))
-	if _, err := p.run(ctx, script); err != nil {
-		return fmt.Errorf("clone vm %q to %q: %w", srcName, newName, err)
-	}
-	return nil
+'RESULT=OK'` +
+		clusteredVMRestoreSuffix
 }
 
 func (p *PowerShell) FetchISO(ctx context.Context, url, dest string) (string, error) {

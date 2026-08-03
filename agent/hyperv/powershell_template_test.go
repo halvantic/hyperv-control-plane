@@ -107,6 +107,63 @@ func TestDeployFromTemplateScriptUnattend(t *testing.T) {
 	}
 }
 
+// A clustered VM that is Off is an OFFLINE ROLE, and Failover Clustering
+// deregisters it from Hyper-V — so the state a disk copy requires is the state
+// in which Get-VM cannot find it. Both scripts must register it for the duration
+// and put it back, or clone and capture can never work on a clustered VM.
+func TestDiskCopyScriptsHandleAnOfflineClusterRole(t *testing.T) {
+	scripts := map[string]string{
+		"capture":            captureTemplateScript(false),
+		"capture generalise": captureTemplateScript(true),
+		"clone":              cloneVMScript("Windows", "Windows-clone", `C:\ClusterStorage\DS1\Windows-clone`),
+	}
+	for name, s := range scripts {
+		t.Run(name, func(t *testing.T) {
+			// It must not hard-fail on Get-VM before trying the cluster.
+			if strings.Contains(s, "Get-VM -Name $vm -ErrorAction Stop") || strings.Contains(s, "Get-VM -Name $src -ErrorAction Stop") {
+				t.Fatal("Get-VM must not be -ErrorAction Stop: an offline cluster role is not a missing VM")
+			}
+			if !strings.Contains(s, "Ensure-BallastVMRegistered") {
+				t.Fatal("the script must go through Ensure-BallastVMRegistered")
+			}
+			// Only the CONFIGURATION resource may be started. Starting the VM
+			// resource would boot the guest, which is the opposite of what a copy
+			// of its disk needs.
+			if !strings.Contains(s, "'Virtual Machine Configuration'") {
+				t.Fatal("only the Virtual Machine Configuration resource may be brought online")
+			}
+			if strings.Contains(s, "Start-ClusterGroup") {
+				t.Fatal("starting the whole group would power the VM on")
+			}
+			// The repository's rule: cluster cmdlets take objects, not names.
+			if strings.Contains(s, "Start-ClusterResource -Name") || strings.Contains(s, "Stop-ClusterResource -Name") {
+				t.Fatal("cluster resource cmdlets must bind -InputObject, not -Name")
+			}
+			// The operator's role state must survive the operation.
+			if !strings.Contains(s, "Stop-ClusterResource -InputObject $global:__broughtOnline") {
+				t.Fatal("a role brought online for the copy must be put back")
+			}
+			if !strings.Contains(s, "} finally {") {
+				t.Fatal("the restore must be in a finally block, or a failed copy leaves the role changed")
+			}
+		})
+	}
+}
+
+// Sysprep shuts a clustered guest down, which takes its role offline and
+// deregisters it. Waiting for State -eq 'Off' would then never be satisfied, so
+// the VM vanishing has to count as the shutdown completing.
+func TestGeneraliseWaitTreatsDeregistrationAsShutdown(t *testing.T) {
+	s := captureTemplateScript(true)
+	if !strings.Contains(s, "$g = Get-VM -Name $vm -ErrorAction SilentlyContinue") || !strings.Contains(s, "if (-not $g) { break }") {
+		t.Fatal("the sysprep wait must break when the VM deregisters, not spin until the timeout")
+	}
+	// And it has to come back before its disks can be read.
+	if !strings.Contains(s, "$v = Ensure-BallastVMRegistered $vm") {
+		t.Fatal("the VM must be re-registered after sysprep so its disks can be read")
+	}
+}
+
 func TestParseMarkerUint(t *testing.T) {
 	tests := []struct {
 		name string

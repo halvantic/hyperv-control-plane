@@ -408,3 +408,67 @@ func (p *PowerShell) FormCluster(ctx context.Context, f ClusterFormation) error 
 	}
 	return nil
 }
+
+// A clustered VM's registration with Hyper-V IS a cluster resource: the "Virtual
+// Machine Configuration" resource in the VM's group. When the role is taken
+// Offline that resource goes offline too, and the VM is DEREGISTERED from Hyper-V
+// on every node — Get-VM cannot see it anywhere, and says so with "Hyper-V was
+// unable to find a virtual machine with name X".
+//
+// That reads exactly like a deleted VM, and it is not: the group, the resources,
+// the configuration and the disks are all intact and the VM comes straight back
+// when the role is started. It was diagnosed on the live rig after a stop, a
+// failed clone and a failed capture all pointed at a VM nobody had touched.
+//
+// It also creates a catch-22 for any operation that copies a VM's disk. Those
+// need the VM Off, because a running VM holds its VHDX open — but for a clustered
+// VM, Off means the role is Offline, which means there is no VM to find.
+//
+// clusteredVMRegisterPrelude resolves it: when Get-VM comes up empty and the VM
+// is an offline cluster role, it brings ONLY the configuration resource online.
+// That registers the VM with Hyper-V and leaves it Off — the same state a
+// clustered VM is in between being created and first started — without starting
+// it. clusteredVMRestoreSuffix puts it back afterwards, so the operator's role
+// state is unchanged either way.
+//
+// The scripts using this must place the body between the two, and must define
+// nothing named $__vm, $__broughtOnline or $__cfg of their own.
+func clusteredVMRegisterPrelude(vmVar string) string {
+	return `
+$global:__broughtOnline = $null
+function Ensure-BallastVMRegistered {
+  param([string]$n)
+  $v = Get-VM -Name $n -ErrorAction SilentlyContinue
+  if ($v) { return $v }
+  # Get-ClusterResource is absent on a standalone host, which is a legitimate
+  # "no, it is not a cluster role" rather than an error.
+  $cfg = @(Get-ClusterResource -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.OwnerGroup -eq $n -and [string]$_.ResourceType -eq 'Virtual Machine Configuration' })
+  if ($cfg.Count -eq 0) { return $null }
+  Start-ClusterResource -InputObject $cfg[0] -ErrorAction Stop | Out-Null
+  if (-not $global:__broughtOnline) { $global:__broughtOnline = $cfg[0] }
+  $deadline = (Get-Date).AddSeconds(60)
+  while ($true) {
+    $v = Get-VM -Name $n -ErrorAction SilentlyContinue
+    if ($v) { return $v }
+    if ((Get-Date) -gt $deadline) {
+      throw ('the cluster role for ' + $n + ' came online but Hyper-V still does not see the VM after 60 seconds')
+    }
+    Start-Sleep -Seconds 2
+  }
+}
+$__vm = Ensure-BallastVMRegistered ` + vmVar + `
+if (-not $__vm) {
+  throw ('no virtual machine named ' + ` + vmVar + ` + ' exists on this host, and it is not an offline cluster role here either. If it is clustered it may have moved to another node.')
+}
+try {
+`
+}
+
+const clusteredVMRestoreSuffix = `
+} finally {
+  if ($global:__broughtOnline) {
+    try { Stop-ClusterResource -InputObject $global:__broughtOnline -ErrorAction Stop | Out-Null } catch {}
+  }
+}
+`

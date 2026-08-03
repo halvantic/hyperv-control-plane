@@ -29,7 +29,12 @@ func captureTemplateScript(generalise bool) string {
 	b.WriteString(`$ErrorActionPreference = 'Stop'
 $vm = $env:BALLAST_CAP_VM
 $dest = $env:BALLAST_CAP_DEST
-$v = Get-VM -Name $vm -ErrorAction Stop
+`)
+	// A clustered VM that is Off is an OFFLINE ROLE, and an offline role is not
+	// registered with Hyper-V at all — so the very state a capture requires is the
+	// state in which the VM cannot be found. See clusteredVMRegisterPrelude.
+	b.WriteString(clusteredVMRegisterPrelude("$vm"))
+	b.WriteString(`$v = $__vm
 `)
 	if generalise {
 		b.WriteString(`if ([string]$v.State -ne 'Running') {
@@ -50,14 +55,21 @@ Invoke-Command -VMName $vm -Credential $gcred -ScriptBlock {
 }
 $deadline = (Get-Date).AddMinutes(60)
 while ($true) {
-  $st = [string](Get-VM -Name $vm).State
+  # A CLUSTERED VM shutting itself down takes its role offline, which deregisters
+  # it from Hyper-V — so the VM vanishing here means sysprep finished, not that
+  # something went wrong. Waiting for State -eq 'Off' would never be satisfied.
+  $g = Get-VM -Name $vm -ErrorAction SilentlyContinue
+  if (-not $g) { break }
+  $st = [string]$g.State
   if ($st -eq 'Off') { break }
   if ((Get-Date) -gt $deadline) {
     throw ('timed out after 60 minutes waiting for ' + $vm + ' to shut down after sysprep (it is ' + $st + '). Sysprep logs its own failures in the guest at C:\Windows\System32\Sysprep\Panther.')
   }
   Start-Sleep -Seconds 10
 }
-$v = Get-VM -Name $vm
+# Re-register if the shutdown deregistered it, so its disks can be read.
+$v = Ensure-BallastVMRegistered $vm
+if (-not $v) { throw ('after sysprep, ' + $vm + ' is neither registered with Hyper-V nor an offline cluster role on this host') }
 `)
 	}
 	b.WriteString(`if ([string]$v.State -ne 'Off') {
@@ -92,6 +104,7 @@ Move-Item -LiteralPath $tmp -Destination $dest -Force
 'BYTES=' + [string]((Get-Item -LiteralPath $dest).Length)
 'RESULT=OK'
 `)
+	b.WriteString(clusteredVMRestoreSuffix)
 	return b.String()
 }
 
