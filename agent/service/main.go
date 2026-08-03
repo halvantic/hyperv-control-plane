@@ -118,6 +118,10 @@ func main() {
 		st:         st,
 		reconciler: reconcile.New(hv, log),
 	}
+	// Let the reconcile loop see what the job runner is holding, so it stands off
+	// a VM being moved, cloned or captured instead of fighting the operation and
+	// reporting it Degraded for the whole of its run.
+	r.reconciler.SetVMBusy(r.vmBusy)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

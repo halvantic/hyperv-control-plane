@@ -164,6 +164,11 @@ type runner struct {
 	// not launch them twice. Guarded by jobsMu.
 	jobsMu       sync.Mutex
 	jobsInflight map[string]struct{}
+	// jobsVMs counts the in-flight jobs holding each VM, by lower-cased VM name,
+	// so the reconciler can stand off a VM being moved, cloned or captured rather
+	// than fighting the job and reporting Degraded throughout. A count, not a
+	// flag: two jobs can legitimately name the same VM.
+	jobsVMs map[string]string
 
 	// nudge lets a finished job ask the main loop to run an extra cycle now,
 	// instead of waiting for the next heartbeat, so the centre reflects the new
@@ -700,12 +705,23 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 			continue
 		}
 		r.jobsInflight[job.ID] = struct{}{}
+		// Record which VM this job holds, if any, so the reconcile loop leaves it
+		// alone until the job is done.
+		if vmName := job.Params["vm"]; vmName != "" && jobHoldsVM(job.Kind) {
+			if r.jobsVMs == nil {
+				r.jobsVMs = make(map[string]string)
+			}
+			r.jobsVMs[strings.ToLower(vmName)] = job.Kind
+		}
 		r.jobsMu.Unlock()
 
 		go func(job types.Job) {
 			defer func() {
 				r.jobsMu.Lock()
 				delete(r.jobsInflight, job.ID)
+				if vmName := job.Params["vm"]; vmName != "" {
+					delete(r.jobsVMs, strings.ToLower(vmName))
+				}
 				r.jobsMu.Unlock()
 				// Ask for an immediate follow-up cycle so the centre reflects
 				// whatever this job changed (VM owner/power, storage, cluster)
@@ -962,4 +978,30 @@ func (r *runner) reportStatus(ctx context.Context, client ballastpb.AgentService
 			r.log.Error("mark delivered failed", "seq", e.Seq, "err", merr)
 		}
 	}
+}
+
+// jobHoldsVM reports whether a job kind takes exclusive hold of a VM's files
+// while it runs, so the reconcile loop must not touch that VM meanwhile.
+//
+// Only the kinds that actually conflict. A power action or a guest command runs
+// happily alongside a reconcile and standing off for those would delay settling
+// for no reason — the point is to stop the reconciler fighting an operation that
+// owns the VM's disks, not to pause on any activity at all.
+func jobHoldsVM(kind string) bool {
+	switch kind {
+	case types.JobVMMoveStorage, types.JobMigrateVM, types.JobClusterMoveVM,
+		types.JobVMClone, types.JobVMCaptureTemplate, types.JobVMExport,
+		types.JobVMDiscardSavedState,
+		types.JobVMApplyCheck, types.JobVMRemoveCheck:
+		return true
+	}
+	return false
+}
+
+// vmBusy reports whether an imperative job is currently holding a VM, and which.
+func (r *runner) vmBusy(name string) (string, bool) {
+	r.jobsMu.Lock()
+	defer r.jobsMu.Unlock()
+	kind, ok := r.jobsVMs[strings.ToLower(name)]
+	return kind, ok
 }

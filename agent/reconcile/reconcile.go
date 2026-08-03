@@ -36,7 +36,27 @@ type Reconciler struct {
 	// in-flight signature, so a settling operation reads as progressing but a
 	// stuck one still escalates to a real failure. See transient.go.
 	transients *transientTracker
+
+	// vmBusy reports that an imperative job is operating on a VM right now, and
+	// with what. The reconciler stands off that VM until the job finishes.
+	//
+	// A job that moves or copies a VM's files takes exclusive hold of it: Hyper-V
+	// refuses Set-VM during a storage migration, a clone holds the VHDX, a
+	// capture needs the disk quiet. Reconciling regardless produced ApplyFailed
+	// every 15 seconds and marked the VM Degraded for the whole of an operation
+	// that was succeeding — red for work in progress, which is how people learn
+	// to ignore red.
+	//
+	// Deliberately not another transient error signature: those match on error
+	// text and expire after two minutes, while a storage migration is a
+	// half-hour of legitimate work. The reconciler knowing what its own agent
+	// started beats teaching it to recognise how each conflict happens to fail.
+	vmBusy func(name string) (kind string, busy bool)
 }
+
+// SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
+// reconciler behaves as before and reconciles everything.
+func (r *Reconciler) SetVMBusy(f func(name string) (string, bool)) { r.vmBusy = f }
 
 // New returns a Reconciler driving the given host interface.
 func New(hv hyperv.Interface, log *slog.Logger) *Reconciler {

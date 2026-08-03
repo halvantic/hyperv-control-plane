@@ -64,6 +64,25 @@ type VMResult struct {
 func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 	res := VMResult{Name: vm.Meta.Name}
 
+	// Stand off a VM an imperative job currently holds. Hyper-V refuses to modify
+	// a VM mid storage-migration, and a clone or capture needs its disk quiet, so
+	// reconciling would fail on every pass and report Degraded for the whole of an
+	// operation that is working. Progressing is the honest phase: the VM is not
+	// settled, nothing is wrong, and the reason is named.
+	if r.vmBusy != nil {
+		if kind, busy := r.vmBusy(vm.Meta.Name); busy {
+			res.Phase = types.PhaseProgressing
+			res.Conditions = append(res.Conditions, types.Condition{
+				Type:               "VM/" + vm.Meta.Name,
+				Status:             false, // not met yet, and not a failure
+				Reason:             "JobInProgress",
+				Message:            "standing off while " + kind + " runs on this VM — it holds the VM's files",
+				LastTransitionTime: r.now(),
+			})
+			return res
+		}
+	}
+
 	ensured, err := r.hv.EnsureVM(ctx, vm)
 	res.Conditions = append(res.Conditions, r.condition("VM/"+vm.Meta.Name, ensured.Outcome, err))
 	if err != nil {

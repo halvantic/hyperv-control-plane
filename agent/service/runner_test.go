@@ -173,3 +173,43 @@ func TestNoReRegisterOnceRegistered(t *testing.T) {
 		t.Fatalf("want 1 register call across two cycles, got %d", up.registerCalls)
 	}
 }
+
+// A job that holds a VM's files must stop the reconcile loop touching that VM.
+// Hyper-V refuses Set-VM during a storage migration, so reconciling regardless
+// reported ApplyFailed every cycle and marked the VM Degraded for the whole of an
+// operation that was succeeding.
+func TestJobHoldsVM(t *testing.T) {
+	holds := []string{
+		types.JobVMMoveStorage, types.JobMigrateVM, types.JobClusterMoveVM,
+		types.JobVMClone, types.JobVMCaptureTemplate, types.JobVMExport,
+		types.JobVMDiscardSavedState,
+	}
+	for _, k := range holds {
+		if !jobHoldsVM(k) {
+			t.Fatalf("%s takes hold of the VM's files and must stand the reconciler off", k)
+		}
+	}
+	// A power action or a guest command runs happily alongside a reconcile;
+	// standing off for those would delay settling for no reason.
+	for _, k := range []string{types.JobVMStart, types.JobVMStop, types.JobGuestSetIP, types.JobResync} {
+		if jobHoldsVM(k) {
+			t.Fatalf("%s does not hold the VM's files; standing off would only delay settling", k)
+		}
+	}
+}
+
+// The claim is per VM name and case-insensitive, and it is released when the job
+// finishes — a VM left marked busy would never reconcile again.
+func TestVMBusyClaimAndRelease(t *testing.T) {
+	r := &runner{jobsVMs: map[string]string{"windows": types.JobVMMoveStorage}}
+	if kind, busy := r.vmBusy("Windows"); !busy || kind != types.JobVMMoveStorage {
+		t.Fatalf("busy lookup must be case-insensitive: kind=%q busy=%v", kind, busy)
+	}
+	if _, busy := r.vmBusy("Linux"); busy {
+		t.Fatal("an unrelated VM must not be held")
+	}
+	delete(r.jobsVMs, "windows")
+	if _, busy := r.vmBusy("Windows"); busy {
+		t.Fatal("the claim must be released when the job finishes")
+	}
+}
