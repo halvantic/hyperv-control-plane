@@ -247,7 +247,8 @@ func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
 	out := make([]types.CSVStatus, 0, len(vs))
 	for _, v := range vs {
 		out = append(out, types.CSVStatus{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State,
-			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason,
+			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes})
 	}
 	return out
 }

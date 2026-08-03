@@ -847,6 +847,26 @@ type CSVStatus struct {
 	// resting state for a clustered volume (the cluster owns attachment), so it
 	// must not be read as a fault.
 	DetachedReason string `json:"detachedReason,omitempty"`
+
+	// SizeBytes and FreeBytes are the VOLUME's observed capacity — what the
+	// filesystem actually offers — not the backing virtual disk's allocation.
+	//
+	// They exist so a CSV's declared size (CSVSpec.SizeBytes) can be compared
+	// against reality. EnsureCSV creates a volume and then, on every later pass,
+	// returns as soon as it finds one with that name: the declared size is never
+	// looked at again. So changing it today bumps the generation, settles, and
+	// reports converged while nothing happened — the same shape as a broker's
+	// StaticIP being applied only at creation.
+	//
+	// Reporting the volume rather than the virtual disk is deliberate. Growing a
+	// CSV is two steps (grow the virtual disk, then extend the partition into
+	// it), and a half-done grow leaves the virtual disk larger with the usable
+	// space unchanged. Reading the virtual disk would confirm a resize that never
+	// reached the filesystem.
+	//
+	// Zero means the size was not observed, never that the volume is empty.
+	SizeBytes uint64 `json:"sizeBytes,omitempty"`
+	FreeBytes uint64 `json:"freeBytes,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

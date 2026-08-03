@@ -665,6 +665,12 @@ type ClusterCSV struct {
 	Health         string
 	Operational    string
 	DetachedReason string
+
+	// SizeBytes/FreeBytes are the VOLUME's capacity as the cluster reports it,
+	// not the backing virtual disk's. Those differ whenever a grow reached the
+	// virtual disk but not the filesystem.
+	SizeBytes uint64
+	FreeBytes uint64
 }
 
 // ClusterFormation is the input to New-Cluster: the cluster to create and the

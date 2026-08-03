@@ -547,6 +547,12 @@ message ClusterCSV {
   string health = 4;
   string operational = 5;
   string detached_reason = 6;
+  // The VOLUME's capacity, not the backing virtual disk's: a grow that reached
+  // the virtual disk but not the filesystem leaves those two disagreeing, and
+  // the volume is the one that says what is usable. Carried so a CSV's declared
+  // size can be compared with reality.
+  uint64 size_bytes = 7;
+  uint64 free_bytes = 8;
 }
 
 // ClusterVM is one highly-available VM role as observed by the cluster.

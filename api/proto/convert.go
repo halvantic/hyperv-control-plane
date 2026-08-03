@@ -830,7 +830,8 @@ func clusterCSVsToProto(vs []types.CSVStatus) []*ClusterCSV {
 	out := make([]*ClusterCSV, 0, len(vs))
 	for _, v := range vs {
 		out = append(out, &ClusterCSV{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State,
-			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason,
+			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes})
 	}
 	return out
 }
@@ -867,7 +868,8 @@ func clusterCSVsFromProto(vs []*ClusterCSV) []types.CSVStatus {
 	out := make([]types.CSVStatus, 0, len(vs))
 	for _, v := range vs {
 		out = append(out, types.CSVStatus{Name: v.GetName(), OwnerNode: v.GetOwnerNode(), State: v.GetState(),
-			Health: v.GetHealth(), Operational: v.GetOperational(), DetachedReason: v.GetDetachedReason()})
+			Health: v.GetHealth(), Operational: v.GetOperational(), DetachedReason: v.GetDetachedReason(),
+			SizeBytes: v.GetSizeBytes(), FreeBytes: v.GetFreeBytes()})
 	}
 	return out
 }

@@ -22,6 +22,8 @@ type clusterCSVObs struct {
 	Health         string `json:"health"`
 	Operational    string `json:"operational"`
 	DetachedReason string `json:"detachedReason"`
+	SizeBytes      uint64 `json:"sizeBytes"`
+	FreeBytes      uint64 `json:"freeBytes"`
 }
 
 type clusterObservation struct {
@@ -99,7 +101,19 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
     $op = [string]($vd.OperationalStatus -join ',')
     $dr = [string]$vd.DetachedReason
   }
-  [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr } })
+  # Size comes from the VOLUME, not the backing virtual disk, and the difference
+  # is the whole point of reporting it. Growing a volume is two steps — grow the
+  # virtual disk, then extend the partition into it — and a half-done resize
+  # leaves the virtual disk larger while the usable space is unchanged. Reporting
+  # the virtual disk's size would confirm a resize that never reached the
+  # filesystem.
+  $sz = [uint64]0; $free = [uint64]0
+  $info = $_.SharedVolumeInfo
+  if ($info -and $info.Partition) {
+    $sz = [uint64]$info.Partition.Size
+    $free = [uint64]$info.Partition.FreeSpace
+  }
+  [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr; sizeBytes = $sz; freeBytes = $free } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
@@ -182,7 +196,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	csvs := make([]ClusterCSV, 0, len(obs.CSVs))
 	for _, v := range obs.CSVs {
 		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State,
-			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason})
+			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason,
+			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes})
 	}
 	cvms := make([]ClusterVM, 0, len(obs.ClusterVMs))
 	for _, v := range obs.ClusterVMs {
