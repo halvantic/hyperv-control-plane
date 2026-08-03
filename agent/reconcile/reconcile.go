@@ -357,10 +357,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// moment it is asked, but it is not OUT OF SERVICE until its roles have moved.
 	// Reporting maintenance before then would tell an operator it is safe to
 	// reboot a node still running their VMs.
+	// Observed on EVERY pass, acted on only when maintenance is declared (or was,
+	// and is being cleared). A node can be paused by someone who never went
+	// through Ballast — Failover Cluster Manager, a script — and reading it always
+	// is what stops the console quietly disagreeing with the cluster. Not acting
+	// is equally deliberate: resuming a node an operator paused by hand would
+	// undo a decision Ballast knows nothing about.
 	wantMaintenance := desired.Spec.Maintenance != nil && desired.Spec.Maintenance.Enabled
-	if wantMaintenance || r.lastWantedMaintenance {
-		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, wantMaintenance)
-		conds = append(conds, r.condition("Maintenance", out, err))
+	intent := hyperv.MaintenanceObserve
+	switch {
+	case wantMaintenance:
+		intent = hyperv.MaintenanceEnter
+	case r.lastWantedMaintenance:
+		intent = hyperv.MaintenanceExit
+	}
+	{
+		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent)
+		if intent != hyperv.MaintenanceObserve || err != nil {
+			conds = append(conds, r.condition("Maintenance", out, err))
+		}
 		switch {
 		case err != nil:
 			failures++
@@ -373,9 +388,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 				changed = true
 				r.log.Info("node maintenance reconciled", "want", wantMaintenance, "outcome", out)
 			}
-			// A standalone host has nothing to pause, so honouring the intent is
-			// simply holding it: the centre is what acts on it.
-			inMaintenance = wantMaintenance && (!ms.IsMember || (ms.Paused && !ms.Draining))
+			// Report what is TRUE, not what was asked. A standalone host has
+			// nothing to pause, so holding the intent is honouring it; a member is
+			// out of service only once its roles have actually gone. A node paused
+			// by someone else still reports paused — the console shows that as a
+			// divergence rather than pretending it is in service.
+			inMaintenance = (!ms.IsMember && wantMaintenance) || (ms.Paused && !ms.Draining)
 			draining = ms.Draining
 		}
 	}

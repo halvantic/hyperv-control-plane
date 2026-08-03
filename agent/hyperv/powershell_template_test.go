@@ -243,3 +243,25 @@ func TestDiscardSavedStateScript(t *testing.T) {
 		t.Fatal("the result must be verified, not assumed")
 	}
 }
+
+// The drain must not pass -Wait. On Suspend-ClusterNode it is a SWITCH, not a
+// timeout, so "-Wait 0" binds 0 positionally to -Name — a StringCollection — the
+// same trap as the cluster cmdlets fixed in d113ecc. Verified against the real
+// cmdlet's syntax on the rig before it ever ran.
+func TestMaintenanceScriptDoesNotMisuseWait(t *testing.T) {
+	s := maintenanceScript("HVNEW03", MaintenanceEnter)
+	if strings.Contains(s, "-Wait") {
+		t.Fatal("Suspend-ClusterNode -Wait is a switch, not a timeout; passing it (or a value) blocks the cycle or misbinds -Name")
+	}
+	if !strings.Contains(s, "Suspend-ClusterNode -Name") || !strings.Contains(s, "-Drain") {
+		t.Fatal("entering maintenance must drain, not merely pause")
+	}
+	// Observe must never act: a node paused outside Ballast stays paused.
+	if !strings.Contains(s, "$intent -eq 'enter'") || !strings.Contains(s, "$intent -eq 'exit'") {
+		t.Fatal("acting must be gated on an explicit intent, so an observe pass changes nothing")
+	}
+	// DrainStatus is what separates "paused" from "safe to reboot".
+	if !strings.Contains(s, "DrainStatus") || !strings.Contains(s, "InProgress") {
+		t.Fatal("the drain's progress must be observed; paused alone does not mean the roles have gone")
+	}
+}

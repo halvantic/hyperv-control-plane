@@ -502,18 +502,45 @@ type NodeMaintenanceState struct {
 	Draining bool
 }
 
-// EnsureNodeMaintenance drives a cluster node to the wanted availability and
-// reports what the cluster now says. Idempotent: a paused node asked to pause is
-// unchanged.
+// MaintenanceIntent says what a pass should do about a node's availability.
 //
-// Draining is initiated with -Wait 0 rather than blocking. Suspend-ClusterNode
-// waits for every role to move by default, which on a busy node is minutes of
-// live migration — inside a reconcile pass that would hold the whole cycle and
-// look like a hang. A reconciler converges over passes instead: initiate here,
-// observe the drain finishing on a later one.
-func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, want bool) (Outcome, NodeMaintenanceState, error) {
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$want = %[2]s
+// Observe exists because a node can be paused by someone who never went through
+// Ballast — Failover Cluster Manager, a script, a half-finished job. Reading the
+// state on every pass and only ACTING when maintenance is declared keeps that
+// visible instead of the console quietly disagreeing with the cluster, and stops
+// the reconciler resuming a node an operator paused by hand for a reason.
+type MaintenanceIntent int
+
+const (
+	MaintenanceObserve MaintenanceIntent = iota
+	MaintenanceEnter
+	MaintenanceExit
+)
+
+func intentWord(i MaintenanceIntent) string {
+	switch i {
+	case MaintenanceEnter:
+		return "enter"
+	case MaintenanceExit:
+		return "exit"
+	default:
+		return "observe"
+	}
+}
+
+// maintenanceScript is built by a pure function so its content is pinned by
+// tests without a host, like the template and clone scripts.
+//
+// The drain deliberately does NOT pass -Wait. On Suspend-ClusterNode that is a
+// SWITCH, not a timeout: without it the drain is initiated and the cmdlet
+// returns, which is what a reconciler wants — waiting would hold the whole cycle
+// for minutes of live migration and look like a hang. "-Wait 0" would be worse
+// than wrong, because 0 then binds positionally to -Name, a StringCollection —
+// the same trap as the cluster cmdlets fixed in d113ecc. Checked against the
+// cmdlet's real syntax on a live cluster before it ever ran.
+func maintenanceScript(node string, intent MaintenanceIntent) string {
+	return fmt.Sprintf(`$ErrorActionPreference='Stop'
+$intent = %[2]s
 # Get-ClusterNode is absent on a host with no FailoverClusters module, and
 # returns nothing for a host that is not a member. Both mean "not a cluster
 # node", which is not an error — maintenance on a standalone host is a
@@ -525,10 +552,10 @@ $state = [string]$n.State
 $drain = [string]$n.DrainStatus
 $paused = ($state -eq 'Paused')
 $changed = $false
-if ($want -and -not $paused) {
-  Suspend-ClusterNode -Name %[1]s -Drain -Wait 0 -ErrorAction Stop | Out-Null
+if ($intent -eq 'enter' -and -not $paused) {
+  Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
   $changed = $true
-} elseif (-not $want -and $paused) {
+} elseif ($intent -eq 'exit' -and $paused) {
   Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
   $changed = $true
 }
@@ -537,9 +564,13 @@ if ($changed) {
   if ($n) { $state = [string]$n.State; $drain = [string]$n.DrainStatus; $paused = ($state -eq 'Paused') }
 }
 [pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); changed=$changed } | ConvertTo-Json -Compress`,
-		psQuote(node), psBool(want))
+		psQuote(node), psQuote(intentWord(intent)))
+}
 
-	out, err := p.run(ctx, script)
+// EnsureNodeMaintenance reads a cluster node's availability and, when the intent
+// says so, drives it. Idempotent: a paused node asked to pause is unchanged.
+func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, intent MaintenanceIntent) (Outcome, NodeMaintenanceState, error) {
+	out, err := p.run(ctx, maintenanceScript(node, intent))
 	if err != nil {
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, err)
 	}
