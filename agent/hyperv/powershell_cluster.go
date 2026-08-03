@@ -500,6 +500,10 @@ type NodeMaintenanceState struct {
 	// actually left — reporting maintenance before then would tell an operator it
 	// is safe to reboot a node still running their workloads.
 	Draining bool
+	// StorageOut means the node's S2D scale unit is in storage maintenance mode,
+	// so the pool waits for its disks instead of repairing around them. On an S2D
+	// cluster a node is not really out of service until this is true.
+	StorageOut bool
 }
 
 // MaintenanceIntent says what a pass should do about a node's availability.
@@ -552,10 +556,33 @@ $state = [string]$n.State
 $drain = [string]$n.DrainStatus
 $paused = ($state -eq 'Paused')
 $changed = $false
+# Storage maintenance mode is the other half of taking an S2D node out, and
+# leaving it out is not harmless: S2D treats a paused node's disks as
+# UNAVAILABLE and starts repairing data that was never lost — real I/O, a burst
+# of "pool rebuilding" alarms, and reduced resiliency for the duration. Observed
+# on the rig: draining one node of a three-node cluster began a 52 GB repair.
+# Enabling maintenance mode tells S2D the disks are deliberately going away and
+# to wait for them instead.
+#
+# Order matters both ways: drain the roles, THEN the storage; and on the way
+# back, storage first, so the node is contributing again before it accepts
+# roles. try/catch because a cluster without S2D has no scale units, which is
+# not an error.
+function Set-BallastStorageMaintenance($n, $on) {
+  try {
+    $su = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue |
+      Where-Object { [string]$_.FriendlyName -eq $n })
+    if ($su.Count -eq 0) { return }
+    if ($on) { $su[0] | Enable-StorageMaintenanceMode -ErrorAction Stop }
+    else { $su[0] | Disable-StorageMaintenanceMode -ErrorAction Stop }
+  } catch {}
+}
 if ($intent -eq 'enter' -and -not $paused) {
   Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
+  Set-BallastStorageMaintenance %[1]s $true
   $changed = $true
 } elseif ($intent -eq 'exit' -and $paused) {
+  Set-BallastStorageMaintenance %[1]s $false
   Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
   $changed = $true
 }
@@ -563,7 +590,15 @@ if ($changed) {
   $n = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0]
   if ($n) { $state = [string]$n.State; $drain = [string]$n.DrainStatus; $paused = ($state -eq 'Paused') }
 }
-[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); changed=$changed } | ConvertTo-Json -Compress`,
+# Report whether the node's storage is out too, so "in maintenance" means the
+# whole node is out of service rather than only its roles.
+$storageOut = $false
+try {
+  $su = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.FriendlyName -eq %[1]s })
+  if ($su.Count -gt 0) { $storageOut = ((@($su[0].OperationalStatus) -join ',') -match 'Maintenance') }
+} catch {}
+[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; changed=$changed } | ConvertTo-Json -Compress`,
 		psQuote(node), psQuote(intentWord(intent)))
 }
 
@@ -575,15 +610,16 @@ func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, int
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, err)
 	}
 	var obs struct {
-		Member   bool `json:"member"`
-		Paused   bool `json:"paused"`
-		Draining bool `json:"draining"`
-		Changed  bool `json:"changed"`
+		Member     bool `json:"member"`
+		Paused     bool `json:"paused"`
+		Draining   bool `json:"draining"`
+		StorageOut bool `json:"storageOut"`
+		Changed    bool `json:"changed"`
 	}
 	if derr := decodeJSON(out, &obs); derr != nil {
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, derr)
 	}
-	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining}
+	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining, StorageOut: obs.StorageOut}
 	if obs.Changed {
 		return OutcomeUpdated, st, nil
 	}

@@ -265,3 +265,34 @@ func TestMaintenanceScriptDoesNotMisuseWait(t *testing.T) {
 		t.Fatal("the drain's progress must be observed; paused alone does not mean the roles have gone")
 	}
 }
+
+// Draining an S2D node without also putting its storage into maintenance makes
+// S2D treat the paused node's disks as unavailable and repair data that was
+// never lost. Seen on the rig: draining one node of three began a 52 GB repair
+// and a burst of pool-rebuilding alarms.
+func TestMaintenanceHandlesS2DStorage(t *testing.T) {
+	enter := maintenanceScript("HVNEW03", MaintenanceEnter)
+	exit := maintenanceScript("HVNEW03", MaintenanceExit)
+
+	for _, s := range []string{enter, exit} {
+		if !strings.Contains(s, "Enable-StorageMaintenanceMode") || !strings.Contains(s, "Disable-StorageMaintenanceMode") {
+			t.Fatal("the node's storage must be taken out with it, or S2D repairs around disks that have not gone")
+		}
+		// A cluster without S2D has no scale units; that is not a failure.
+		if !strings.Contains(s, "if ($su.Count -eq 0) { return }") {
+			t.Fatal("a cluster with no S2D scale units must be tolerated, not failed")
+		}
+	}
+	// Order both ways: roles off before storage, storage back before roles.
+	if strings.Index(enter, "Suspend-ClusterNode") > strings.Index(enter, "Set-BallastStorageMaintenance 'HVNEW03' $true") {
+		t.Fatal("roles must drain before the storage goes into maintenance")
+	}
+	if strings.Index(exit, "Set-BallastStorageMaintenance 'HVNEW03' $false") > strings.Index(exit, "Resume-ClusterNode") {
+		t.Fatal("storage must come back before the node accepts roles again")
+	}
+	// And the observation has to report it, or "in maintenance" would mean only
+	// that the roles left.
+	if !strings.Contains(enter, "storageOut=$storageOut") {
+		t.Fatal("storage maintenance state must be reported")
+	}
+}

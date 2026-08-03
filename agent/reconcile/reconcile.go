@@ -393,7 +393,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			// out of service only once its roles have actually gone. A node paused
 			// by someone else still reports paused — the console shows that as a
 			// divergence rather than pretending it is in service.
-			inMaintenance = (!ms.IsMember && wantMaintenance) || (ms.Paused && !ms.Draining)
+			// On an S2D cluster the node is only really out of service once its
+			// STORAGE is out too — until then the pool is repairing around disks
+			// that have not actually gone, and rebooting would make that real.
+			inMaintenance = (!ms.IsMember && wantMaintenance) ||
+				(ms.Paused && !ms.Draining && (ms.StorageOut || !wantMaintenance))
 			draining = ms.Draining
 		}
 	}
