@@ -140,6 +140,16 @@ type HostSpec struct {
 	// ClusterSpec.ReplicaBroker and applies per node; replication then targets
 	// the broker's client access point, not an individual node.
 	ReplicaServer *ReplicaServerSpec `json:"replicaServer,omitempty"`
+
+	// Maintenance takes the host out of service for planned work. It is DESIRED
+	// STATE, not a job, and that is the whole point: drain and resume already
+	// existed as one-shot jobs, but nothing remembered the intent afterwards, so a
+	// deliberately drained host was indistinguishable from a broken one. As a spec
+	// field the agent re-asserts it every pass (a node that reboots and rejoins
+	// comes back paused if that is still the intent), it survives the centre going
+	// offline, and the centre can act on it — placement skips the host and its
+	// alarms stop shouting about a machine somebody is deliberately working on.
+	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
 }
 
 // ReplicaServerSpec makes a host a Hyper-V Replica target.
@@ -221,6 +231,12 @@ type HostStatus struct {
 	// RebootRequired is true when spec cannot be fully honoured until reboot
 	// and RebootPolicy forbids the agent doing it autonomously.
 	RebootRequired bool `json:"rebootRequired"`
+
+	// InMaintenance is true when the host is actually out of service — for a
+	// cluster member, its node is paused. Observed, not echoed: the declared
+	// intent is in the spec, and a host that has been TOLD to drain but has not
+	// finished doing so is not yet drained.
+	InMaintenance bool `json:"inMaintenance,omitempty"`
 
 	// Autonomous is true when the agent is currently running on its
 	// last-honoured cached state because the control plane is unreachable.
@@ -417,6 +433,21 @@ type PhysicalDisk struct {
 	// DriveLetter is the Windows drive letter assigned to this disk's primary
 	// partition (e.g. "E"), empty when the disk is raw or pooled.
 	DriveLetter string `json:"driveLetter,omitempty"`
+}
+
+// MaintenanceSpec declares that a host is out of service for planned work.
+//
+// For a CLUSTER MEMBER this means the node is paused and its roles moved off —
+// pausing without draining would leave VMs running on a node about to be
+// rebooted, which is not what anyone means by maintenance. For a standalone host
+// there is nothing to drain, so it is purely a centre-side fact: no new
+// placements, and its alarms are stood down.
+type MaintenanceSpec struct {
+	Enabled bool `json:"enabled"`
+
+	// Reason is shown wherever the state is: the next operator to look at a
+	// drained host should not have to ask why it is drained.
+	Reason string `json:"reason,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

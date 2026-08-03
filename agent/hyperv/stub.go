@@ -67,6 +67,10 @@ type Stub struct {
 	EnableS2DCalled bool
 	CSVs            []string
 
+	// MaintenancePaused models whether this stub node is paused, so tests can
+	// drive the reconciler's maintenance decision in both directions.
+	MaintenancePaused bool
+
 	// FailVM, when set, makes EnsureVM for the matching VM name return an error,
 	// so tests can exercise the reconciler's VM failure path.
 	FailVM string
@@ -530,6 +534,22 @@ func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _, _ bool, _, _ s
 
 func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string) error { return nil }
 func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error      { return nil }
+
+// EnsureNodeMaintenance models pausing/resuming this node. A stub not in a
+// cluster reports no membership, mirroring a standalone host where maintenance
+// has nothing to enforce locally.
+func (s *Stub) EnsureNodeMaintenance(_ context.Context, _ string, want bool) (Outcome, NodeMaintenanceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ClusterExists {
+		return OutcomeUnchanged, NodeMaintenanceState{}, nil
+	}
+	if s.MaintenancePaused == want {
+		return OutcomeUnchanged, NodeMaintenanceState{IsMember: true, Paused: want}, nil
+	}
+	s.MaintenancePaused = want
+	return OutcomeUpdated, NodeMaintenanceState{IsMember: true, Paused: want}, nil
+}
 func (s *Stub) MoveVMStorage(_ context.Context, vm, folder string, _ ProgressFunc) (string, error) {
 	return "moved " + vm + " storage to " + folder, nil
 }

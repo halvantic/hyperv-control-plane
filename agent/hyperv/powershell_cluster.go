@@ -487,3 +487,74 @@ const clusteredVMRestoreSuffix = `
   }
 }
 `
+
+// NodeMaintenanceState is what the cluster says about this node's availability.
+type NodeMaintenanceState struct {
+	// IsMember is false on a host that is not in a cluster at all, where
+	// maintenance is purely a centre-side fact and there is nothing to pause.
+	IsMember bool
+	// Paused means the node accepts no roles.
+	Paused bool
+	// Draining means roles are still moving off. A node is paused the instant the
+	// drain is asked for, but it is not OUT OF SERVICE until its VMs have
+	// actually left — reporting maintenance before then would tell an operator it
+	// is safe to reboot a node still running their workloads.
+	Draining bool
+}
+
+// EnsureNodeMaintenance drives a cluster node to the wanted availability and
+// reports what the cluster now says. Idempotent: a paused node asked to pause is
+// unchanged.
+//
+// Draining is initiated with -Wait 0 rather than blocking. Suspend-ClusterNode
+// waits for every role to move by default, which on a busy node is minutes of
+// live migration — inside a reconcile pass that would hold the whole cycle and
+// look like a hang. A reconciler converges over passes instead: initiate here,
+// observe the drain finishing on a later one.
+func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, want bool) (Outcome, NodeMaintenanceState, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$want = %[2]s
+# Get-ClusterNode is absent on a host with no FailoverClusters module, and
+# returns nothing for a host that is not a member. Both mean "not a cluster
+# node", which is not an error — maintenance on a standalone host is a
+# centre-side fact with nothing to enforce here.
+$n = $null
+try { $n = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0] } catch {}
+if (-not $n) { [pscustomobject]@{ member=$false; paused=$false; draining=$false; changed=$false } | ConvertTo-Json -Compress; return }
+$state = [string]$n.State
+$drain = [string]$n.DrainStatus
+$paused = ($state -eq 'Paused')
+$changed = $false
+if ($want -and -not $paused) {
+  Suspend-ClusterNode -Name %[1]s -Drain -Wait 0 -ErrorAction Stop | Out-Null
+  $changed = $true
+} elseif (-not $want -and $paused) {
+  Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
+  $changed = $true
+}
+if ($changed) {
+  $n = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0]
+  if ($n) { $state = [string]$n.State; $drain = [string]$n.DrainStatus; $paused = ($state -eq 'Paused') }
+}
+[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); changed=$changed } | ConvertTo-Json -Compress`,
+		psQuote(node), psBool(want))
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, err)
+	}
+	var obs struct {
+		Member   bool `json:"member"`
+		Paused   bool `json:"paused"`
+		Draining bool `json:"draining"`
+		Changed  bool `json:"changed"`
+	}
+	if derr := decodeJSON(out, &obs); derr != nil {
+		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, derr)
+	}
+	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining}
+	if obs.Changed {
+		return OutcomeUpdated, st, nil
+	}
+	return OutcomeUnchanged, st, nil
+}

@@ -406,6 +406,15 @@ type Interface interface {
 	// mode). Imperative Job.
 	DrainNode(ctx context.Context, node string) error
 
+	// EnsureNodeMaintenance drives a cluster node to the wanted availability —
+	// paused and drained, or back in service — and reports what the cluster says.
+	// Idempotent, and a no-op on a host that is not a cluster member, where
+	// maintenance is a centre-side fact with nothing to enforce locally.
+	//
+	// This is the declarative counterpart to the Drain/Resume jobs below: the jobs
+	// act once, this keeps the intent true across reboots and rejoins.
+	EnsureNodeMaintenance(ctx context.Context, node string, want bool) (Outcome, NodeMaintenanceState, error)
+
 	// ResumeNode brings a paused cluster node back into service. Imperative Job.
 	ResumeNode(ctx context.Context, node string) error
 

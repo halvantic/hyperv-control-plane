@@ -622,13 +622,14 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// given. ObservedGeneration only advances when the spec is fully honoured.
 	phase := types.PhasePending
 	var conds []types.Condition
-	var hyperVInstalled, rebootRequired bool
+	var hyperVInstalled, rebootRequired, inMaintenance bool
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
 		res, rerr := r.reconciler.Reconcile(ctx, cached, secrets)
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
+		inMaintenance = res.InMaintenance
 		if rerr != nil {
 			r.log.Error("reconcile incomplete", "err", rerr)
 		}
@@ -638,7 +639,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		}
 	}
 
-	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired)
+	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
@@ -975,12 +976,13 @@ func (r *runner) observeVMs(ctx context.Context, force bool) []types.ObservedVM 
 // buildStatus assembles the status to report. ObservedGeneration carries the
 // last fully-honoured generation, so the centre can tell when the host is
 // settled even across an autonomy window.
-func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics, resources types.HostResources, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired bool) types.HostStatus {
+func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics, resources types.HostResources, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired, inMaintenance bool) types.HostStatus {
 	return types.HostStatus{
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,
 		HyperVInstalled:    hyperVInstalled,
 		RebootRequired:     rebootRequired,
+		InMaintenance:      inMaintenance,
 		Autonomous:         autonomous,
 		AgentVersion:       agentVersion,
 		LastContact:        time.Now().UTC(),

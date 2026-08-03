@@ -52,6 +52,12 @@ type Reconciler struct {
 	// half-hour of legitimate work. The reconciler knowing what its own agent
 	// started beats teaching it to recognise how each conflict happens to fail.
 	vmBusy func(name string) (kind string, busy bool)
+
+	// lastWantedMaintenance remembers whether the previous pass wanted the node
+	// paused, so clearing maintenance still runs one resume pass after the spec
+	// field is dropped. Without it a host would stay paused for ever once the
+	// field went away — the intent is gone, so nothing would ask to undo it.
+	lastWantedMaintenance bool
 }
 
 // SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
@@ -90,6 +96,13 @@ type Result struct {
 	// reboot and RebootPolicy forbids the agent rebooting autonomously.
 	RebootRequired bool
 
+	// InMaintenance is true when the host is actually out of service: the
+	// declared intent is honoured AND, for a cluster member, its roles have
+	// finished moving off. Draining says the move is still under way — paused but
+	// not yet safe to reboot.
+	InMaintenance bool
+	Draining      bool
+
 	// Conditions records one machine-readable fact per reconciled resource.
 	Conditions []types.Condition
 }
@@ -105,6 +118,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		failures        int
 		firstErr        error
 		hyperVInstalled bool
+		inMaintenance   bool
+		draining        bool
 	)
 
 	// Identity comes first: the host should have its final name, management IP
@@ -333,7 +348,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Maintenance is desired state, so it is re-asserted every pass rather than
+	// applied once by a job. That is what makes it survive: a node that reboots
+	// and rejoins its cluster comes back paused if the operator still wants it
+	// paused, and it stays paused while the centre is unreachable.
+	//
+	// Draining is not instant, and the difference matters. The node is paused the
+	// moment it is asked, but it is not OUT OF SERVICE until its roles have moved.
+	// Reporting maintenance before then would tell an operator it is safe to
+	// reboot a node still running their VMs.
+	wantMaintenance := desired.Spec.Maintenance != nil && desired.Spec.Maintenance.Enabled
+	if wantMaintenance || r.lastWantedMaintenance {
+		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, wantMaintenance)
+		conds = append(conds, r.condition("Maintenance", out, err))
+		switch {
+		case err != nil:
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ensure maintenance: %w", err)
+			}
+			r.log.Error("ensure node maintenance failed", "want", wantMaintenance, "err", err)
+		default:
+			if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("node maintenance reconciled", "want", wantMaintenance, "outcome", out)
+			}
+			// A standalone host has nothing to pause, so honouring the intent is
+			// simply holding it: the centre is what acts on it.
+			inMaintenance = wantMaintenance && (!ms.IsMember || (ms.Paused && !ms.Draining))
+			draining = ms.Draining
+		}
+	}
+	// Remember so clearing maintenance still runs a resume pass on the next cycle
+	// after the spec drops the field entirely.
+	r.lastWantedMaintenance = wantMaintenance
+
 	res := Result{
+		InMaintenance:   inMaintenance,
+		Draining:        draining,
 		Conditions:      conds,
 		Changed:         changed,
 		Honoured:        failures == 0,
