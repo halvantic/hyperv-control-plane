@@ -9,8 +9,8 @@ import "testing"
 // never wording that also appears in a comment.
 
 func TestCaptureTemplateScriptGeneralise(t *testing.T) {
-	plain := captureTemplateScript(false)
-	gen := captureTemplateScript(true)
+	plain := captureTemplateScript(false, false)
+	gen := captureTemplateScript(true, false)
 
 	// Sysprep must appear only when generalising was actually asked for. A
 	// capture that generalises when it was not asked to destroys the source VM's
@@ -123,8 +123,8 @@ func TestDeployFromTemplateScriptUnattend(t *testing.T) {
 // and put it back, or clone and capture can never work on a clustered VM.
 func TestDiskCopyScriptsHandleAnOfflineClusterRole(t *testing.T) {
 	scripts := map[string]string{
-		"capture":            captureTemplateScript(false),
-		"capture generalise": captureTemplateScript(true),
+		"capture":            captureTemplateScript(false, false),
+		"capture generalise": captureTemplateScript(true, false),
 		"clone":              cloneVMScript("Windows", "Windows-clone", `C:\ClusterStorage\DS1\Windows-clone`),
 	}
 	for name, s := range scripts {
@@ -164,7 +164,7 @@ func TestDiskCopyScriptsHandleAnOfflineClusterRole(t *testing.T) {
 // deregisters it. Waiting for State -eq 'Off' would then never be satisfied, so
 // the VM vanishing has to count as the shutdown completing.
 func TestGeneraliseWaitTreatsDeregistrationAsShutdown(t *testing.T) {
-	s := captureTemplateScript(true)
+	s := captureTemplateScript(true, false)
 	if !strings.Contains(s, "$g = Get-VM -Name $vm -ErrorAction SilentlyContinue") || !strings.Contains(s, "if (-not $g) { break }") {
 		t.Fatal("the sysprep wait must break when the VM deregisters, not spin until the timeout")
 	}
@@ -194,5 +194,52 @@ func TestParseMarkerUint(t *testing.T) {
 				t.Fatalf("parseMarkerUint(%q) = %d, want %d", tt.out, got, tt.want)
 			}
 		})
+	}
+}
+
+// A saved VM cannot be captured, and a clustered VM is Saved rather than Off
+// whenever its role goes offline. Discarding the saved state has to be something
+// the centre can do, or the only way out is PowerShell on a node — which is the
+// one thing this product exists to remove.
+func TestCaptureCanDiscardSavedStateItself(t *testing.T) {
+	plain := captureTemplateScript(false, false)
+	discard := captureTemplateScript(false, true)
+
+	// Match the INVOCATION, not the name: the Saved refusal names the cmdlet in
+	// its message text, so a bare substring is present in both scripts. This file
+	// has been bitten by matching prose before.
+	const call = "Remove-VMSavedState -VMName $vm -ErrorAction Stop"
+	if strings.Contains(plain, call) {
+		t.Fatal("a capture must not discard saved memory unless it was asked to")
+	}
+	if !strings.Contains(discard, call) {
+		t.Fatal("the capture must be able to discard the saved state itself")
+	}
+	// Only Saved. An Off VM needs nothing, and a Running one is a different
+	// refusal — discarding is not a way to stop a VM.
+	if !strings.Contains(discard, "if ([string]$v.State -eq 'Saved') {") {
+		t.Fatal("only a Saved VM may have its state discarded")
+	}
+	// It has to happen before the Off check, or the capture refuses the very
+	// state it was told to clear.
+	if strings.Index(discard, "Remove-VMSavedState") > strings.Index(discard, "$state -eq 'Saved'") {
+		t.Fatal("the discard must precede the state checks")
+	}
+}
+
+// The standalone job is the same operation for a VM that is merely stuck Saved.
+func TestDiscardSavedStateScript(t *testing.T) {
+	s := discardSavedStateScript()
+	if !strings.Contains(s, "Ensure-BallastVMRegistered") {
+		t.Fatal("a saved clustered VM is deregistered while its role is offline; it must be registered first")
+	}
+	if !strings.Contains(s, "'RESULT=NOOP'") {
+		t.Fatal("an already-Off VM must be a no-op, so this is safe to run ahead of anything needing Off")
+	}
+	if !strings.Contains(s, "$state -ne 'Saved'") {
+		t.Fatal("a VM that is neither Off nor Saved must be refused, not silently left alone")
+	}
+	if !strings.Contains(s, "$after -ne 'Off'") {
+		t.Fatal("the result must be verified, not assumed")
 	}
 }

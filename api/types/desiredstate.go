@@ -923,6 +923,14 @@ const (
 	JobVMRemoveCheck  = "VMRemoveCheckpoint" // params: vm, name
 	JobVMExport       = "VMExport"           // params: vm, path
 	JobVMClone        = "VMClone"            // params: vm (source), name (new), folder (target) — copy an Off VM into an independent new one
+
+	// JobVMDiscardSavedState throws away a saved VM's memory image so it becomes
+	// Off. A clustered VM lands in Saved rather than Off whenever its role goes
+	// offline, because AutomaticStopAction defaults to Save — and a saved VM
+	// cannot be captured, cloned, or have its disk moved, because the disk holds
+	// writes that were still in memory. Discarding is the way out and, unlike
+	// starting the VM, it does not disturb a generalised image.
+	JobVMDiscardSavedState = "VMDiscardSavedState" // params: vm
 	JobClusterAddNode = "ClusterAddNode"     // params: node
 	JobClusterEvict   = "ClusterEvict"       // params: node
 	JobNodeDrain      = "NodeDrain"          // params: node — pause + move roles off (maintenance)

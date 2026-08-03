@@ -24,7 +24,7 @@ import (
 
 // captureTemplateScript builds the capture script. generalise selects whether
 // sysprep runs in the guest first.
-func captureTemplateScript(generalise bool) string {
+func captureTemplateScript(generalise, discardSaved bool) string {
 	var b strings.Builder
 	b.WriteString(`$ErrorActionPreference = 'Stop'
 $vm = $env:BALLAST_CAP_VM
@@ -70,6 +70,18 @@ while ($true) {
 # Re-register if the shutdown deregistered it, so its disks can be read.
 $v = Ensure-BallastVMRegistered $vm
 if (-not $v) { throw ('after sysprep, ' + $vm + ' is neither registered with Hyper-V nor an offline cluster role on this host') }
+`)
+	}
+	// Discarding a saved state is part of the same job when the operator asked for
+	// it, rather than a separate one they have to sequence: the capture is the
+	// thing they want, and "make it Off first" is a step of it. Only Saved is
+	// touched — an Off VM needs nothing and a Running one is a different refusal.
+	if discardSaved {
+		b.WriteString(`if ([string]$v.State -eq 'Saved') {
+  Remove-VMSavedState -VMName $vm -ErrorAction Stop
+  $v = Get-VM -Name $vm -ErrorAction SilentlyContinue
+  if (-not $v) { throw ('discarded the saved state of ' + $vm + ' but Hyper-V no longer reports the VM') }
+}
 `)
 	}
 	// Hyper-V has more than two power states, and they fail for different reasons.
@@ -128,14 +140,14 @@ Move-Item -LiteralPath $tmp -Destination $dest -Force
 // credential and leaves the source VM generalised — it is no longer a usable
 // machine, which is what generalising means). It returns the captured image's
 // size in bytes.
-func (p *PowerShell) CaptureTemplate(ctx context.Context, vmName, dest string, generalise bool, guestUser, guestPass string) (uint64, error) {
+func (p *PowerShell) CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string) (uint64, error) {
 	env := []string{
 		"BALLAST_CAP_VM=" + vmName,
 		"BALLAST_CAP_DEST=" + dest,
 		"BALLAST_CAP_USER=" + guestUser,
 		"BALLAST_CAP_PW=" + guestPass,
 	}
-	out, err := p.runWithEnvOut(ctx, captureTemplateScript(generalise), env)
+	out, err := p.runWithEnvOut(ctx, captureTemplateScript(generalise, discardSaved), env)
 	if err != nil {
 		return 0, fmt.Errorf("capture template from %q: %w", vmName, err)
 	}
@@ -269,4 +281,48 @@ func truncateOutput(out []byte) string {
 		return s[:300] + "…"
 	}
 	return s
+}
+
+// discardSavedStateScript builds the script that turns a Saved VM into an Off
+// one. It is shared with the capture, which can be asked to do this first.
+//
+// A clustered VM is Saved rather than Off whenever its role goes offline —
+// AutomaticStopAction defaults to Save — and while the role is offline the VM is
+// not registered at all, so the registration prelude runs first. That is what
+// makes this something the centre can do: without it, the only way out of a
+// saved clustered VM was PowerShell on a node.
+const discardSavedStateBody = `$state = [string]$__vm.State
+if ($state -eq 'Off') { 'RESULT=NOOP'; return }
+if ($state -ne 'Saved') {
+  throw ('VM ' + $vm + ' is ' + $state + ', not Saved — there is no saved state to discard.')
+}
+Remove-VMSavedState -VMName $vm -ErrorAction Stop
+$after = [string](Get-VM -Name $vm -ErrorAction SilentlyContinue).State
+if ($after -ne 'Off') {
+  throw ('discarded the saved state of ' + $vm + ' but it is ' + $after + ', not Off')
+}
+'RESULT=OK'
+`
+
+func discardSavedStateScript() string {
+	return "$ErrorActionPreference = 'Stop'\n$vm = $env:BALLAST_VM\n" +
+		clusteredVMRegisterPrelude("$vm") + discardSavedStateBody + clusteredVMRestoreSuffix
+}
+
+// DiscardVMSavedState throws away vmName's saved memory image so it becomes Off.
+// The memory state is lost, which is the point: for a VM about to be captured,
+// cloned or moved, the alternative is starting it — and starting a generalised
+// image specialises it, undoing the very thing being captured.
+//
+// Already-Off is a no-op rather than an error, so this is safe to run ahead of an
+// operation that merely needs the VM Off.
+func (p *PowerShell) DiscardVMSavedState(ctx context.Context, vmName string) error {
+	out, err := p.runWithEnvOut(ctx, discardSavedStateScript(), []string{"BALLAST_VM=" + vmName})
+	if err != nil {
+		return fmt.Errorf("discard saved state of %q: %w", vmName, err)
+	}
+	if !strings.Contains(string(out), "RESULT=") {
+		return fmt.Errorf("discard saved state of %q: script ended without a result marker (partial output: %q)", vmName, truncateOutput(out))
+	}
+	return nil
 }

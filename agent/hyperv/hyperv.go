@@ -344,7 +344,15 @@ type Interface interface {
 	// which needs a guest-local administrator credential and waits for the guest
 	// to shut itself down; the source VM is left generalised, i.e. no longer a
 	// usable machine. Otherwise the VM must already be Off. Imperative Job.
-	CaptureTemplate(ctx context.Context, vmName, dest string, generalise bool, guestUser, guestPass string) (uint64, error)
+	// discardSaved throws away a saved VM's memory image first, so it becomes Off
+	// and can be copied. Ignored unless the VM is Saved.
+	CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string) (uint64, error)
+
+	// DiscardVMSavedState turns a Saved VM into an Off one by throwing away its
+	// saved memory. A clustered VM is Saved rather than Off whenever its role
+	// goes offline (AutomaticStopAction defaults to Save), and a saved VM cannot
+	// be captured, cloned or have its storage moved. Already-Off is a no-op.
+	DiscardVMSavedState(ctx context.Context, vmName string) error
 
 	// DeployFromTemplate copies a template image from src to dest and, when
 	// unattend is non-empty, mounts the copy and writes it to
