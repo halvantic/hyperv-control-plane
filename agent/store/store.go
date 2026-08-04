@@ -54,13 +54,13 @@ const (
 	// but never shrinks the file, so pruning alone leaves an agent upgrading from
 	// the unbounded version sitting on its full 512 MB alone.
 	compactAboveBytes = 32 << 20
-	// pruneEvery is how often a delivery triggers a prune, rather than every one.
+	// pruneChunkSize is how many entries one prune transaction examines.
 	//
-	// Pruning walks the bucket, so doing it per delivery would reintroduce a
-	// per-report scan — a smaller one than the bug being fixed, but the same
-	// shape. Amortising it lets the journal drift this far past the tail between
-	// sweeps, which costs a few hundred KB and takes the scan off the hot path.
-	pruneEvery = 64
+	// The whole journal in one transaction was the crash: 186,000 entries meant
+	// 700 MB of allocations and over 30 seconds, which on the Windows service
+	// startup path is longer than the SCM allows. Chunking bounds both, and lets
+	// a long prune interleave with the agent's real work instead of blocking it.
+	pruneChunkSize = 2000
 )
 
 var (
@@ -69,6 +69,9 @@ var (
 
 	keyHost = []byte("host")
 	keyVMs  = []byte("vms")
+	// keyPruned records that a full journal prune has completed, so Open can
+	// decide in O(1) whether compaction will be cheap.
+	keyPruned = []byte("journalPruned")
 	// bucketResults holds terminal job results the centre has not accepted yet.
 	bucketResults = []byte("results")
 )
@@ -91,37 +94,37 @@ type JournalEntry struct {
 
 // Open opens or creates the store at path.
 //
-// It prunes the journal on the way in, and rebuilds the file when pruning has
-// left it mostly empty space. Both matter most on the first start after an
-// upgrade from the version that never deleted anything: that agent arrives with
-// a 512 MB file and a six-figure journal, and would otherwise carry both for
-// ever.
+// Open must be FAST. A Windows service has 30 seconds to report Running before
+// the SCM kills it, and this runs inside that budget. An earlier version pruned
+// and compacted here, which worked on agents whose journals were small enough
+// and crash-looped the one whose was not: HVNEW04 arrived with 186,000 entries
+// in a 1 GiB file, spent 20 seconds and 700 MB unmarshalling them, and was
+// killed and restarted every 30 seconds — leaving a host with no agent at all.
+// The maintenance was worth doing; doing it on the startup path was not.
+//
+// So the work moved to Maintain, which the agent calls once it is up. The one
+// thing kept here is compaction, and only when a previous run has already
+// pruned (the prunedKey marker): bolt.Compact copies LIVE data, so against a
+// pruned journal it copies a few MB rather than walking six figures of entries.
+// The marker makes that an O(1) decision instead of a scan.
 func Open(path string) (*Store, error) {
 	s, err := openAt(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.PruneJournal(); err != nil {
-		// Not fatal. A store that cannot prune still works; it just stays large,
-		// and the caller has no better option than carrying on.
-		_ = s.Close()
-		return nil, fmt.Errorf("prune journal: %w", err)
+	fi, statErr := os.Stat(path)
+	if statErr != nil || fi.Size() <= compactAboveBytes || !s.journalPruned() {
+		return s, nil
 	}
-	// Compaction has to happen with the database closed, so it is done here
-	// rather than left to a caller who would have to know that.
-	if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > compactAboveBytes {
-		if err := s.Close(); err != nil {
-			return nil, fmt.Errorf("close before compact: %w", err)
-		}
-		if err := compactFile(path); err != nil {
-			// A failed compaction must not stop the agent: the data is still
-			// intact in the original file, it is merely bigger than it needs to
-			// be. Reopen and carry on.
-			return openAt(path)
-		}
+	if err := s.Close(); err != nil {
+		return nil, fmt.Errorf("close before compact: %w", err)
+	}
+	if err := compactFile(path); err != nil {
+		// A failed compaction must not stop the agent: the data is intact, the
+		// file is merely bigger than it needs to be. Reopen and carry on.
 		return openAt(path)
 	}
-	return s, nil
+	return openAt(path)
 }
 
 func openAt(path string) (*Store, error) {
@@ -320,39 +323,27 @@ func (s *Store) MarkDelivered(seq uint64) error {
 		if err != nil {
 			return fmt.Errorf("marshal journal entry: %w", err)
 		}
-		if err := b.Put(itob(seq), updated); err != nil {
-			return err
-		}
-		// Prune in the same transaction that delivered it, so the journal is
-		// bounded by construction: it can only grow while the centre is
-		// unreachable, which is the case it exists for. Amortised over
-		// pruneEvery deliveries to keep the scan off the per-report path.
-		if seq%pruneEvery != 0 {
-			return nil
-		}
-		return pruneJournalTx(b)
+		// Deliberately does NOT prune. Pruning walks the journal, and this runs on
+		// the status-delivery path — the very path a six-figure journal had
+		// already made slow enough to time out. Maintenance belongs on its own
+		// schedule, off the hot path; see PruneJournal.
+		return b.Put(itob(seq), updated)
 	})
 }
 
-// PruneJournal drops journal entries that are no longer needed: delivered ones
+// PruneJournal drops journal entries the agent no longer needs: delivered ones
 // beyond the diagnostic tail, and the oldest undelivered ones once the offline
 // queue exceeds its bound.
 //
-// Exposed so Open can run it once on the way in — an agent upgrading from the
-// version that never pruned needs its backlog cleared before anything reads the
-// bucket, not after the next successful delivery.
-func (s *Store) PruneJournal() error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return pruneJournalTx(tx.Bucket(bucketJournal))
-	})
-}
-
-// pruneJournalTx does the work inside a caller's transaction.
+// Runs in BOUNDED CHUNKS, each its own transaction. The first version did the
+// whole journal in one pass inside one transaction, which on a 186,000-entry
+// backlog meant 700 MB of allocations and more than 30 seconds — and because it
+// ran inside Open, the Windows service never reported Running and the SCM killed
+// and restarted the agent every 30 seconds. Chunking bounds the memory and the
+// transaction, and lets a long prune interleave with real work.
 //
-// Keys are big-endian sequence numbers, so cursor order is oldest first and the
-// scan walks exactly the entries eligible for deletion.
-//
-// Two rules, in order of importance:
+// Walks NEWEST first, so the entries kept are the newest without needing to
+// count the whole journal first. Two rules, in order of importance:
 //
 //   - an UNDELIVERED entry is never dropped to make room for a delivered one.
 //     Queued status is the autonomy guarantee; a delivered copy is a
@@ -360,60 +351,112 @@ func (s *Store) PruneJournal() error {
 //   - once undelivered entries alone exceed journalMaxUndelivered, the oldest
 //     go. An unbounded queue is not autonomy, it is a second outage waiting for
 //     the disk to fill.
-func pruneJournalTx(b *bolt.Bucket) error {
-	if b == nil {
-		return nil
-	}
-	var delivered, undelivered int
-	c := b.Cursor()
-	for k, v := c.First(); k != nil; k, v = c.Next() {
-		var e JournalEntry
-		if err := json.Unmarshal(v, &e); err != nil {
-			// An entry we cannot read is not one we can reason about, and it
-			// would otherwise block the scan for ever. Count it as droppable.
-			delivered++
-			continue
+//
+// Safe to call repeatedly and concurrently with normal operation; a settled
+// journal makes it a cheap no-op.
+func (s *Store) PruneJournal() error {
+	var (
+		keptDelivered   int
+		keptUndelivered int
+		resumeBefore    []byte // walking newest-first, continue below this key
+		done            bool
+		err             error
+	)
+	for !done {
+		done, err = s.pruneChunk(&keptDelivered, &keptUndelivered, &resumeBefore)
+		if err != nil {
+			return err
 		}
-		if e.Delivered {
-			delivered++
+	}
+	return s.markJournalPruned()
+}
+
+// pruneChunk examines at most pruneChunkSize entries, oldest-ward from where the
+// last chunk stopped, and reports whether the walk is finished.
+func (s *Store) pruneChunk(keptDelivered, keptUndelivered *int, resumeBefore *[]byte) (bool, error) {
+	finished := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketJournal)
+		if b == nil {
+			finished = true
+			return nil
+		}
+		c := b.Cursor()
+		var k, v []byte
+		if *resumeBefore == nil {
+			k, v = c.Last()
 		} else {
-			undelivered++
+			// Seek lands on the key or the next one after it; step back to the
+			// entry before the one we stopped at.
+			c.Seek(*resumeBefore)
+			k, v = c.Prev()
 		}
-	}
-	dropDelivered := delivered - journalKeep
-	dropUndelivered := undelivered - journalMaxUndelivered
-	if dropDelivered <= 0 && dropUndelivered <= 0 {
+
+		var kill [][]byte
+		examined := 0
+		for ; k != nil && examined < pruneChunkSize; k, v = c.Prev() {
+			examined++
+			last := make([]byte, len(k))
+			copy(last, k)
+			*resumeBefore = last
+
+			var e JournalEntry
+			// An entry we cannot read is not one we can reason about, and
+			// keeping it would block the walk for ever. Treat it as droppable.
+			bad := json.Unmarshal(v, &e) != nil
+			drop := false
+			switch {
+			case bad:
+				drop = true
+			case e.Delivered:
+				if *keptDelivered < journalKeep {
+					*keptDelivered++
+				} else {
+					drop = true
+				}
+			default:
+				if *keptUndelivered < journalMaxUndelivered {
+					*keptUndelivered++
+				} else {
+					drop = true
+				}
+			}
+			if drop {
+				key := make([]byte, len(k))
+				copy(key, k)
+				kill = append(kill, key)
+			}
+		}
+		if k == nil {
+			finished = true
+		}
+		for _, key := range kill {
+			if err := b.Delete(key); err != nil {
+				return fmt.Errorf("prune journal entry: %w", err)
+			}
+		}
 		return nil
-	}
-	// Second pass deletes from the oldest end. Collect keys first: deleting
-	// through a cursor while iterating it is only safe via c.Delete(), and the
-	// two counters make the intent clearer than an in-place dance.
-	var kill [][]byte
-	c = b.Cursor()
-	for k, v := c.First(); k != nil; k, v = c.Next() {
-		if dropDelivered <= 0 && dropUndelivered <= 0 {
-			break
-		}
-		var e JournalEntry
-		bad := json.Unmarshal(v, &e) != nil
-		switch {
-		case (bad || e.Delivered) && dropDelivered > 0:
-			dropDelivered--
-		case !bad && !e.Delivered && dropUndelivered > 0:
-			dropUndelivered--
-		default:
-			continue
-		}
-		key := make([]byte, len(k))
-		copy(key, k)
-		kill = append(kill, key)
-	}
-	for _, k := range kill {
-		if err := b.Delete(k); err != nil {
-			return fmt.Errorf("prune journal entry: %w", err)
-		}
-	}
-	return nil
+	})
+	return finished, err
+}
+
+// markJournalPruned records that a full prune has completed, so the next Open
+// knows compaction will be cheap — bolt.Compact copies live data, and against a
+// pruned journal that is a few MB rather than a walk over six figures of
+// entries. An O(1) marker beats a scan to find out.
+func (s *Store) markJournalPruned() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketDesired).Put(keyPruned, []byte("1"))
+	})
+}
+
+func (s *Store) journalPruned() bool {
+	pruned := false
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		pruned = tx.Bucket(bucketDesired).Get(keyPruned) != nil
+		return nil
+	})
+	return pruned
 }
 
 // Recent returns up to limit most-recent journal entries, newest last. A limit

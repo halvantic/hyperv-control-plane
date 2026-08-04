@@ -60,6 +60,70 @@ func seedJournal(tb testing.TB, path string, n int) {
 	}
 }
 
+// A Windows service has 30 seconds to report Running before the SCM kills it,
+// and Open runs inside that budget.
+//
+// Pruning and compacting on the way in blew it. HVNEW04 arrived with 186,000
+// entries in a 1 GiB store, spent 20 seconds and 700 MB unmarshalling them, and
+// was killed and restarted every 30 seconds — the host had no agent at all until
+// someone noticed. The maintenance was worth doing; doing it during startup was
+// not.
+//
+// One second is far below the real budget on purpose: the margin is what stops
+// a slower disk or a bigger journal turning a passing test into a crash-looping
+// host.
+func TestOpenIsFastOnAHugeJournal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a six-figure journal")
+	}
+	path := filepath.Join(t.TempDir(), "agent.db")
+	seedJournal(t, path, 186_000) // what HVNEW04 actually had
+
+	start := time.Now()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	took := time.Since(start)
+	defer s.Close()
+
+	t.Logf("Open() over 186,000 entries took %v", took)
+	if took > time.Second {
+		t.Fatalf("Open must not do the journal's work: took %v, and a Windows service has 30s total", took)
+	}
+}
+
+// The prune itself must not hold one enormous transaction either — that is where
+// the 700 MB went. Chunking is what makes it survivable; this checks it still
+// completes and leaves the journal bounded.
+func TestPruningAHugeJournalCompletesInChunks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a six-figure journal")
+	}
+	path := filepath.Join(t.TempDir(), "agent.db")
+	seedJournal(t, path, 186_000)
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.PruneJournal(); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	all, err := s.Recent(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) > journalKeep {
+		t.Fatalf("a completed prune must leave the tail: %d entries, want <= %d", len(all), journalKeep)
+	}
+	if !s.journalPruned() {
+		t.Fatal("a completed prune must mark the store, or the next open never compacts")
+	}
+}
+
 // The cost of finding what to send should not grow with how long the agent has
 // been running. On the rig it did: sequence ~136,000, and every delivery attempt
 // unmarshalled all of them looking for the few that were undelivered.
@@ -87,12 +151,15 @@ func TestUndeliveredCostDoesNotGrowWithAgentAge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// After: Open prunes on the way in, which is what an upgrading agent gets.
+	// After: the agent opens, comes up, and prunes in the background.
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	if err := s.PruneJournal(); err != nil {
+		t.Fatal(err)
+	}
 	start = time.Now()
 	if _, err := s.Undelivered(); err != nil {
 		t.Fatal(err)

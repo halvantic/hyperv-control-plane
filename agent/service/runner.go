@@ -42,6 +42,12 @@ func jobTimeoutFor(kind string) time.Duration {
 // generation rather than trusting an "unchanged" answer indefinitely.
 const fullResyncEvery = 20
 
+// journalPruneEvery is how often the status journal is tidied. It is pure
+// housekeeping on a background goroutine — never on the startup path, where it
+// once cost a host its agent, and never on the status-delivery path, where the
+// scan it replaced was timing out reports.
+const journalPruneEvery = 15 * time.Minute
+
 // The reconcile cycle is bounded so a blocked PowerShell call (an unresponsive
 // cluster/CSV query, a wedged Hyper-V op) can never hang the agent forever:
 // execPowerShell uses exec.CommandContext, so the deadline terminates the
@@ -336,6 +342,16 @@ func (r *runner) run(ctx context.Context) error {
 	// dropped subscription or missed event costs latency, never correctness.
 	go r.watchVMState(ctx)
 
+	// Store maintenance runs here, in the background, and NOT inside store.Open.
+	//
+	// It used to run on the way in, and on the one agent whose journal was big
+	// enough that was fatal: HVNEW04 arrived with 186,000 entries in a 1 GiB
+	// store, spent 20 seconds and 700 MB pruning them, and the Windows SCM —
+	// which allows 30 seconds to report Running — killed and restarted it on a
+	// loop. The host had no agent at all. Startup must stay cheap; the tidying
+	// can take as long as it likes out here.
+	go r.maintainStore(ctx)
+
 	// One immediate cycle so state is fresh on startup, then on a ticker.
 	r.cycle(ctx, client)
 
@@ -351,6 +367,51 @@ func (r *runner) run(ctx context.Context) error {
 			// A job just finished — run an extra cycle now so the centre reflects
 			// the new state (migrated VM's owner, power change, etc.) promptly.
 			r.cycle(ctx, client)
+		}
+	}
+}
+
+// maintainStore prunes the status journal on its own schedule, off both the
+// startup path and the status-delivery path.
+//
+// Once soon after start, to clear whatever a previous version left behind, then
+// periodically to hold it bounded. PruneJournal works in chunks, so a large
+// backlog costs many short transactions rather than one enormous one, and the
+// agent keeps reconciling throughout.
+//
+// Errors are logged and dropped: a store that cannot prune still works, it is
+// just larger than it needs to be, and failing the agent over housekeeping would
+// trade a disk-space problem for an unmanaged host.
+func (r *runner) maintainStore(ctx context.Context) {
+	prune := func() {
+		start := time.Now()
+		if err := r.st.PruneJournal(); err != nil {
+			r.log.Warn("prune status journal failed", "err", err)
+			return
+		}
+		if d := time.Since(start); d > time.Second {
+			// Only worth a line when it actually did something substantial —
+			// the first run after an upgrade, or a long spell offline.
+			r.log.Info("status journal pruned", "took", roundMS(d))
+		}
+	}
+	// A short delay so the first prune does not compete with registration and
+	// the first reconcile for the host's disk.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second):
+	}
+	prune()
+
+	t := time.NewTicker(journalPruneEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
 		}
 	}
 }

@@ -49,14 +49,19 @@ func TestDeliveredEntriesArePrunedToATail(t *testing.T) {
 		}
 	}
 
+	// Delivery no longer prunes — that walk belongs off the status-delivery
+	// path, which a six-figure journal had already made slow enough to time out.
+	// Maintenance runs on its own schedule.
+	if err := s.PruneJournal(); err != nil {
+		t.Fatal(err)
+	}
+
 	delivered, undelivered := countJournal(t, s)
 	if undelivered != 0 {
 		t.Fatalf("everything was delivered; got %d queued", undelivered)
 	}
-	// Pruning is amortised over pruneEvery deliveries, so the journal is allowed
-	// to drift that far past the tail between sweeps — bounded, not exact.
-	if delivered > journalKeep+pruneEvery {
-		t.Fatalf("delivered entries must be pruned to the tail: kept %d, want <= %d", delivered, journalKeep+pruneEvery)
+	if delivered > journalKeep {
+		t.Fatalf("delivered entries must be pruned to the tail: kept %d, want <= %d", delivered, journalKeep)
 	}
 	// And the tail must be the NEWEST entries — old status is what is worthless.
 	all, err := s.Recent(0)
@@ -91,6 +96,10 @@ func TestPruningNeverDropsUndeliveredStatus(t *testing.T) {
 		}
 	}
 
+	if err := s.PruneJournal(); err != nil {
+		t.Fatal(err)
+	}
+
 	queued, err := s.Undelivered()
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +122,6 @@ func TestTheOfflineQueueIsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Nothing delivered, so nothing has pruned yet — the bound is applied when
-	// the store is next opened or a delivery lands.
 	if err := s.PruneJournal(); err != nil {
 		t.Fatal(err)
 	}
@@ -175,9 +182,31 @@ func TestOpenCompactsAFileLeftMostlyEmpty(t *testing.T) {
 		t.Skipf("fixture did not exceed the compaction threshold (%d bytes)", before.Size())
 	}
 
+	// First open must NOT compact: nothing has pruned yet, so bolt.Compact would
+	// copy every live entry — the walk that has to stay off the startup path.
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
+	}
+	mid, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.Size() != before.Size() {
+		t.Fatalf("an unpruned store must not be compacted on open: %d -> %d bytes", before.Size(), mid.Size())
+	}
+
+	// Pruning is what the agent does in the background once it is up. It marks
+	// the store, so the NEXT open knows compaction is now cheap.
+	if err := s.PruneJournal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
 	}
 	defer s.Close()
 
@@ -186,7 +215,7 @@ func TestOpenCompactsAFileLeftMostlyEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after.Size() >= before.Size() {
-		t.Fatalf("open must reclaim the space pruning freed: %d -> %d bytes", before.Size(), after.Size())
+		t.Fatalf("the open after a prune must reclaim the space: %d -> %d bytes", before.Size(), after.Size())
 	}
 	// And the store still works afterwards — a smaller file that lost the
 	// desired state would be a far worse bug than a large one.
