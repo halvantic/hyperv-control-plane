@@ -102,8 +102,14 @@ const (
 	// screenCaptureEvery — the VM console thumbnail. Per RUNNING VM per cycle, and
 	// the least urgent thing collected: a preview of a screen nobody may be
 	// looking at, on a path the live console does not use. On a host with many
-	// VMs it was a PowerShell invocation each, every pass. ~2min.
-	screenCaptureEvery = 8
+	// VMs it was a PowerShell invocation each, every pass.
+	//
+	// 4 rather than 8 because a cycle is not the 15s heartbeat in practice — the
+	// rig measures ~45s — so 8 would leave a thumbnail six minutes stale. This
+	// still skips three captures in four. The centre carries the last screen
+	// forward across the skipped passes; without that the console 404s on the
+	// cycles that do not capture, which is how this was first found.
+	screenCaptureEvery = 4
 )
 
 // runnerConfig is the agent's runtime configuration, independent of how the
