@@ -1699,18 +1699,24 @@ type ClusterUpdateRun struct {
 	// run got to and what it is waiting on.
 	Nodes []ClusterUpdateNode `json:"nodes,omitempty"`
 
-	// RebootPolicyOverride reboots a node whose RebootPolicy is Never.
-	//
-	// Off by default. That policy exists to stop the agent rebooting on its own,
-	// and while a run is operator-initiated rather than autonomous, quietly
-	// reinterpreting the setting is not the centre's call to make. Left off, such
-	// a node is skipped and reported as needing a manual reboot.
-	RebootPolicyOverride bool `json:"rebootPolicyOverride,omitempty"`
-
 	// ForceRebootAll reboots every member even where Windows reports no reboot
 	// pending — for firmware or driver work, where the reason to reboot is not
 	// something Windows knows about.
 	ForceRebootAll bool `json:"forceRebootAll,omitempty"`
+
+	// A run does NOT consult HostSpec.RebootPolicy, and that is deliberate.
+	//
+	// RebootPolicy governs whether the AGENT reboots on its own to honour desired
+	// state: RebootNever means "surface the requirement and wait for an operator"
+	// (see reconcileHostRole). A run is that operator. Treating Never as "skip
+	// this node" would make a run do nothing at all on the fleets most likely to
+	// be set that way, which is the opposite of what starting one asks for — and
+	// it is the same reason the RebootHost job does not consult the policy
+	// either.
+	//
+	// To leave a node out, leave it out of the run. Repurposing a field about
+	// agent autonomy to mean "exclude from maintenance" would conflate two
+	// different questions and confuse both.
 
 	CreatedBy string    `json:"createdBy,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitempty"`
