@@ -1660,3 +1660,152 @@ type GuestDomainJoinSpec struct {
 	// values for an account permitted to join computers to the domain.
 	CredentialSecret string `json:"credentialSecret,omitempty"`
 }
+
+// ---------------------------------------------------------------------------
+// Cluster-aware updating
+// ---------------------------------------------------------------------------
+
+// ClusterUpdateRun is one pass over a cluster, rebooting the nodes that need it
+// one at a time and keeping the cluster serving throughout.
+//
+// It is an ORCHESTRATOR, not an installer. Something else applies the patches —
+// WSUS, Intune, Group Policy, a person — and the agent already sees the result:
+// its role-state script reads both pending-reboot registry flags, including
+// WindowsUpdate\Auto Update\RebootRequired, every cycle. Installing is the easy
+// half. The half that can take a cluster down is the reboot: drain the roles,
+// wait for them to actually move, reboot, wait for the node AND ITS STORAGE to
+// come back, resume, verify, only then the next node.
+//
+// Like Site, Dvport and VMTemplate this is centre-only: no agent is ever given
+// one, nothing reconciles towards it, and it needs no proto. What it drives is
+// ordinary desired state — HostSpec.Maintenance — so the agent's behaviour is
+// the same as an operator draining a node by hand.
+//
+// A run is durable because it outlives a centre restart. The sequencing is
+// centre-side, so a centre outage PAUSES a run; it does not strand the cluster
+// (maintenance is desired state and the agent keeps honouring it), but the node
+// mid-run stays drained until the centre returns.
+type ClusterUpdateRun struct {
+	// ID is assigned by the centre. A cluster may have many runs over time and
+	// the history is worth keeping, so runs are not keyed by cluster name.
+	ID          string `json:"id"`
+	ClusterName string `json:"clusterName"`
+
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
+
+	// Nodes is the plan, in the order it will be walked, each carrying its own
+	// state. One node at a time: the list is the operator's view of where the
+	// run got to and what it is waiting on.
+	Nodes []ClusterUpdateNode `json:"nodes,omitempty"`
+
+	// RebootPolicyOverride reboots a node whose RebootPolicy is Never.
+	//
+	// Off by default. That policy exists to stop the agent rebooting on its own,
+	// and while a run is operator-initiated rather than autonomous, quietly
+	// reinterpreting the setting is not the centre's call to make. Left off, such
+	// a node is skipped and reported as needing a manual reboot.
+	RebootPolicyOverride bool `json:"rebootPolicyOverride,omitempty"`
+
+	// ForceRebootAll reboots every member even where Windows reports no reboot
+	// pending — for firmware or driver work, where the reason to reboot is not
+	// something Windows knows about.
+	ForceRebootAll bool `json:"forceRebootAll,omitempty"`
+
+	CreatedBy string    `json:"createdBy,omitempty"`
+	StartedAt time.Time `json:"startedAt,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+	EndedAt   time.Time `json:"endedAt,omitempty"`
+}
+
+// Run states.
+const (
+	// ClusterUpdatePending is authored but not yet picked up by the controller.
+	ClusterUpdatePending = "Pending"
+	ClusterUpdateRunning = "Running"
+	// ClusterUpdatePaused is a run that stopped because something was not safe
+	// to proceed through — a degraded pool, a member offline, a step that timed
+	// out. It holds rather than skipping ahead, and Message says why.
+	ClusterUpdatePaused    = "Paused"
+	ClusterUpdateSucceeded = "Succeeded"
+	ClusterUpdateFailed    = "Failed"
+	ClusterUpdateCancelled = "Cancelled"
+)
+
+// ClusterUpdateNode is one node's place in a run.
+type ClusterUpdateNode struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+
+	// Message says what this node is waiting on, or why it was skipped or
+	// failed — in the operator's terms, not the controller's.
+	Message string `json:"message,omitempty"`
+
+	// RebootJobID links to the reboot this node was given, so the console can
+	// show it where it happened.
+	RebootJobID string `json:"rebootJobId,omitempty"`
+
+	// RebootAt is when the reboot was asked for. It is how the controller knows
+	// the machine actually went down: once the host reports an uptime SHORTER
+	// than the time since this, it must have restarted.
+	//
+	// The alternative — watching for the host to go offline — depends on catching
+	// a window (StaleAfter is 90s) that a quick reboot could slip through, and a
+	// missed window would leave the run waiting for a restart that already
+	// happened. Uptime is a fact the host reports rather than an absence the
+	// centre has to notice.
+	RebootAt time.Time `json:"rebootAt,omitempty"`
+
+	StartedAt time.Time `json:"startedAt,omitempty"`
+	EndedAt   time.Time `json:"endedAt,omitempty"`
+}
+
+// Per-node states, in the order a node passes through them.
+const (
+	ClusterUpdateNodePending = "Pending"
+	// ClusterUpdateNodeSkipped is a node that needed nothing: no reboot pending,
+	// or a RebootNever policy the run was not told to override.
+	ClusterUpdateNodeSkipped = "Skipped"
+	// ClusterUpdateNodeDraining covers declaring maintenance and waiting for the
+	// roles to actually leave. Paused is not drained.
+	ClusterUpdateNodeDraining  = "Draining"
+	ClusterUpdateNodeRebooting = "Rebooting"
+	// ClusterUpdateNodeRejoining is the node coming back: online, Ready, and no
+	// longer reporting a pending reboot.
+	ClusterUpdateNodeRejoining = "Rejoining"
+	// ClusterUpdateNodeResuming returns it to service and waits for the cluster
+	// AND THE POOL to be healthy again. This is the gate that matters: a node can
+	// report Up while its disks are still out of the S2D pool, and draining the
+	// next node then takes two nodes' worth of storage out at once.
+	ClusterUpdateNodeResuming = "Resuming"
+	ClusterUpdateNodeDone     = "Done"
+	ClusterUpdateNodeFailed   = "Failed"
+)
+
+// Active reports whether the run is still the controller's business.
+func (r ClusterUpdateRun) Active() bool {
+	return r.State == ClusterUpdatePending || r.State == ClusterUpdateRunning
+}
+
+// Terminal reports whether the run has finished, one way or another.
+func (r ClusterUpdateRun) Terminal() bool {
+	switch r.State {
+	case ClusterUpdateSucceeded, ClusterUpdateFailed, ClusterUpdateCancelled:
+		return true
+	}
+	return false
+}
+
+// CurrentNode returns the node the run is working on, and whether there is one.
+// A run works strictly one node at a time, so this is the first node that has
+// neither finished nor been skipped.
+func (r ClusterUpdateRun) CurrentNode() (int, bool) {
+	for i, n := range r.Nodes {
+		switch n.State {
+		case ClusterUpdateNodeDone, ClusterUpdateNodeSkipped, ClusterUpdateNodeFailed:
+			continue
+		}
+		return i, true
+	}
+	return 0, false
+}
