@@ -144,6 +144,21 @@ type runner struct {
 	// between the slow idle sweeps (see clusterReconcileEvery).
 	lastClusterGen int64
 
+	// lastMaintenance is whether the node was OBSERVED out of service last cycle,
+	// so pausing or resuming edge-triggers an immediate cluster pass. A drain
+	// moves the node's roles and takes its disks out of the pool at once, which
+	// changes most of what cluster status reports — and waiting for the slow idle
+	// sweep left the console describing the cluster as it was up to ten minutes
+	// earlier, with alarms drawn on a snapshot that predated the drain.
+	//
+	// This is a scheduling hint ONLY, never intent: losing it across a restart
+	// costs one extra cluster pass and nothing else. Maintenance intent itself
+	// lives in desired state and is re-derived every cycle, which is what stops a
+	// remembered "wanted" from stranding a node paused for ever — the bug that
+	// removing the old in-memory lastWantedMaintenance fixed. Do not grow this
+	// into a decision input.
+	lastMaintenance bool
+
 	// registered is true once a registration round-trip has been confirmed.
 	// Until then each cycle retries registration; the retry never blocks the
 	// loop, so reconcile and status journalling proceed regardless.
@@ -671,9 +686,18 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// rarely, so it is edge-triggered: run at once when the cluster's Generation
 	// changes or a job asked for a rescan (force), and otherwise only on a slow idle
 	// sweep as a drift/retry/post-reboot safety net (see clusterReconcileEvery).
+	// Entering or leaving maintenance changes the cluster's roles, its pool and
+	// its volumes all at once, so it earns an immediate pass the same way an
+	// operator edit does.
+	// The OBSERVED state, not the declared one: it flips when the node actually
+	// pauses or resumes, which is when the pool and volumes actually change. The
+	// declared value flips a pass earlier, while the drain is still running, so a
+	// rescan fired on it would capture the state it was trying to replace.
+	maintChanged := inMaintenance != r.lastMaintenance
+	r.lastMaintenance = inMaintenance
 	if assignment != nil {
 		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
-		if force || genChanged || r.cycles%clusterReconcileEvery == 0 {
+		if force || genChanged || maintChanged || r.cycles%clusterReconcileEvery == 0 {
 			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
 			if cerr != nil {
 				r.log.Error("cluster reconcile incomplete", "err", cerr)
