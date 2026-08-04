@@ -201,6 +201,19 @@ func (s *Stub) EnsureMgmtVNIC(_ context.Context, spec types.ManagementVNICSpec) 
 	}
 }
 
+// EnsureMgmtVNICs mirrors the real batched path: the observation is shared, the
+// decisions are per vNIC. Deliberately delegates rather than reimplementing the
+// create/update rules, so the stub cannot drift from the single-vNIC semantics
+// the tests already pin.
+func (s *Stub) EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNICSpec) ([]Outcome, []error) {
+	outs := make([]Outcome, len(specs))
+	errs := make([]error, len(specs))
+	for i, spec := range specs {
+		outs[i], errs[i] = s.EnsureMgmtVNIC(ctx, spec)
+	}
+	return outs, errs
+}
+
 func (s *Stub) GetHostIdentity(_ context.Context) (HostIdentity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -698,6 +711,15 @@ func (s *Stub) HasMgmtVNIC(name string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.vnics[name]
 	return ok
+}
+
+// MgmtVNIC returns the spec the reconciler actually applied, so a test can check
+// what was written rather than only that something was.
+func (s *Stub) MgmtVNIC(name string) (types.ManagementVNICSpec, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.vnics[name]
+	return v, ok
 }
 
 // compile-time assertion that Stub satisfies the interface.

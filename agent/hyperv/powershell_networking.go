@@ -223,6 +223,64 @@ func (p *PowerShell) EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVN
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("query vNIC %q: %w", spec.Name, err)
 	}
+	return p.ensureMgmtVNICFrom(ctx, spec, obs, nil)
+}
+
+// EnsureMgmtVNICs reconciles every management vNIC from ONE observation pass.
+//
+// The per-vNIC path costs two PowerShell invocations before it decides it has
+// nothing to do — queryVNIC and queryVNICIP — and each pays a fresh module load
+// (the IP query alone touches Hyper-V, NetTCPIP, NetRoute, DnsClient and
+// FailoverClusters). Measured on the rig, that is ~7s per vNIC, and a three-vNIC
+// converged host spent ~21s of a 40s host reconcile deciding nothing had
+// changed.
+//
+// Observing all of them in one script pays that once. Applies are still made
+// per vNIC, because they are rare, individually meaningful, and must be able to
+// fail one at a time — a batched apply would turn one bad spec into three
+// failures and make the condition report unattributable.
+//
+// Returns one Outcome per spec, in order, plus the first error encountered. A
+// failure on one vNIC does not stop the others: they are independent, and
+// stopping early would leave later ones unreconciled with nothing said about
+// them.
+func (p *PowerShell) EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNICSpec) ([]Outcome, []error) {
+	outs := make([]Outcome, len(specs))
+	errs := make([]error, len(specs))
+	if len(specs) == 0 {
+		return outs, errs
+	}
+	names := make([]string, 0, len(specs))
+	for _, s := range specs {
+		names = append(names, s.Name)
+	}
+	adapters, ips, err := p.queryVNICsBatch(ctx, names)
+	if err != nil {
+		// The batch is an optimisation, not a semantic change. If it fails —
+		// an unexpected shape, a module missing on an odd host — fall back to
+		// the per-vNIC path rather than failing a reconcile that would have
+		// worked before.
+		for i, s := range specs {
+			outs[i], errs[i] = p.EnsureMgmtVNIC(ctx, s)
+		}
+		return outs, errs
+	}
+	for i, s := range specs {
+		obs := adapters[strings.ToLower(s.Name)]
+		ipObs, haveIP := ips[strings.ToLower(s.Name)]
+		var ipPtr *ipObservation
+		if haveIP {
+			ipPtr = &ipObs
+		}
+		outs[i], errs[i] = p.ensureMgmtVNICFrom(ctx, s, obs, ipPtr)
+	}
+	return outs, errs
+}
+
+// ensureMgmtVNICFrom is the shared body: decide and apply, given observations
+// someone else has already made. observedIP may be nil, in which case the IP is
+// queried on demand (the single-vNIC path).
+func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.ManagementVNICSpec, obs vnicObservation, observedIP *ipObservation) (Outcome, error) {
 
 	adapter := OutcomeUnchanged
 	switch planVNIC(spec, obs) {
@@ -240,7 +298,12 @@ func (p *PowerShell) EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVN
 
 	ipChanged := false
 	if spec.IPConfig != nil {
-		changed, err := p.reconcileVNICIP(ctx, spec.Name, spec.IPConfig)
+		// A vNIC just created has no IP yet, and the batched observation was
+		// taken before it existed — re-observe rather than trust it.
+		if adapter == OutcomeCreated {
+			observedIP = nil
+		}
+		changed, err := p.reconcileVNICIP(ctx, spec.Name, spec.IPConfig, observedIP)
 		if err != nil {
 			return adapter, fmt.Errorf("ensure vNIC %q IP: %w", spec.Name, err)
 		}
@@ -259,7 +322,9 @@ func (p *PowerShell) EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVN
 
 // reconcileVNICIP observes the vNIC's current IPv4 config and applies the
 // desired one only if it differs. Returns whether it changed anything.
-func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *types.IPConfig) (bool, error) {
+// observed, when non-nil, is an observation the caller has already made (the
+// batched path); nil means query it here.
+func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *types.IPConfig, observed *ipObservation) (bool, error) {
 	// Validate the desired address up front so we never run a destructive apply
 	// with a malformed spec.
 	ip, prefix, err := parseCIDR(desired.Address)
@@ -267,9 +332,14 @@ func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *
 		return false, err
 	}
 
-	obs, err := p.queryVNICIP(ctx, name)
-	if err != nil {
-		return false, fmt.Errorf("query IP: %w", err)
+	var obs ipObservation
+	if observed != nil {
+		obs = *observed
+	} else {
+		obs, err = p.queryVNICIP(ctx, name)
+		if err != nil {
+			return false, fmt.Errorf("query IP: %w", err)
+		}
 	}
 	if !ipDiffers(desired, obs) {
 		return false, nil
@@ -278,6 +348,78 @@ func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *
 		return false, err
 	}
 	return true, nil
+}
+
+// queryVNICsBatch observes the adapter and IPv4 state of every named management
+// vNIC in a single PowerShell invocation, keyed by lower-cased name.
+//
+// Everything expensive is hoisted out of the per-vNIC loop: the module loads
+// happen once for the process, and the cluster IP-resource enumeration — which
+// is per-CLUSTER, not per-vNIC, and was being repeated for each one — happens
+// once for the script. Adapters absent from the host are simply missing from the
+// map, which reads as vnicObservation{Exists:false} on lookup.
+func (p *PowerShell) queryVNICsBatch(ctx context.Context, names []string) (map[string]vnicObservation, map[string]ipObservation, error) {
+	out, err := p.run(ctx, vnicsBatchScript(names))
+	if err != nil {
+		return nil, nil, err
+	}
+	var got struct {
+		Adapters map[string]vnicObservation `json:"adapters"`
+		IPs      map[string]ipObservation   `json:"ips"`
+	}
+	if err := decodeJSON(out, &got); err != nil {
+		return nil, nil, err
+	}
+	if got.Adapters == nil {
+		got.Adapters = map[string]vnicObservation{}
+	}
+	if got.IPs == nil {
+		got.IPs = map[string]ipObservation{}
+	}
+	return got.Adapters, got.IPs, nil
+}
+
+// vnicsBatchScript is built by a pure function so its content is pinned by tests
+// without a host, like the maintenance and template scripts.
+func vnicsBatchScript(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, psQuote(n))
+	}
+	return fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$names = @(%[1]s)
+# Cluster IP resources are a property of the CLUSTER, so read them once rather
+# than once per vNIC. Excluded from the observation by ADDRESS: a cluster-owned
+# IP on a management interface must never be mistaken for the declared one and
+# reconciled away.
+$clusterIps = @()
+try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
+$adapters = @{}
+$ips = @{}
+foreach ($n in $names) {
+  $key = $n.ToLower()
+  $a = Get-VMNetworkAdapter -ManagementOS -Name $n -ErrorAction SilentlyContinue
+  if ($a) {
+    $vid = 0
+    $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $n -ErrorAction SilentlyContinue
+    if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
+    $adapters[$key] = [pscustomobject]@{ exists = $true; switchName = [string]$a.SwitchName; vlanID = $vid }
+  }
+  $alias = 'vEthernet (' + $n + ')'
+  $ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
+  $gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+  $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  $reg = [bool](Get-DnsClient -InterfaceAlias $alias -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
+  $ips[$key] = [pscustomobject]@{
+    address    = if ($ip) { "$($ip.IPAddress)/$($ip.PrefixLength)" } else { '' }
+    gateway    = if ($gw) { [string]$gw } else { '' }
+    dnsServers = @($dns)
+    registers  = $reg
+  }
+}
+[pscustomobject]@{ adapters = $adapters; ips = $ips } | ConvertTo-Json -Depth 6 -Compress
+`, strings.Join(quoted, ","))
 }
 
 func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservation, error) {

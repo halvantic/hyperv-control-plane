@@ -230,6 +230,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Resolve each vNIC's effective spec first, then reconcile the whole set in
+	// one call. The vNICs are observed together (one PowerShell invocation for
+	// all of them instead of two each) while applies stay per vNIC, so a bad spec
+	// on one still fails on its own and reports against its own condition.
+	vnics := make([]types.ManagementVNICSpec, 0, len(net.ManagementVNICs))
 	for _, v := range net.ManagementVNICs {
 		// DNS belongs on the management vNIC — the NIC that carries the routable
 		// static IP. If the vNIC declares no DNS of its own, apply the host-level
@@ -241,19 +246,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			cfg.DNSServers = append([]string(nil), net.DNSServers...)
 			v.IPConfig = &cfg
 		}
-		out, err := r.hv.EnsureMgmtVNIC(ctx, v)
-		conds = append(conds, r.condition("ManagementVNIC/"+v.Name, out, err))
-		if err != nil {
-			failures++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("ensure vNIC %q: %w", v.Name, err)
+		vnics = append(vnics, v)
+	}
+	if len(vnics) > 0 {
+		outs, errs := r.hv.EnsureMgmtVNICs(ctx, vnics)
+		for i, v := range vnics {
+			out, err := outs[i], errs[i]
+			conds = append(conds, r.condition("ManagementVNIC/"+v.Name, out, err))
+			if err != nil {
+				failures++
+				if firstErr == nil {
+					firstErr = fmt.Errorf("ensure vNIC %q: %w", v.Name, err)
+				}
+				r.log.Error("ensure management vNIC failed", "vnic", v.Name, "err", err)
+				continue
 			}
-			r.log.Error("ensure management vNIC failed", "vnic", v.Name, "err", err)
-			continue
-		}
-		if out != hyperv.OutcomeUnchanged {
-			changed = true
-			r.log.Info("management vNIC reconciled", "vnic", v.Name, "outcome", out)
+			if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("management vNIC reconciled", "vnic", v.Name, "outcome", out)
+			}
 		}
 	}
 

@@ -79,6 +79,16 @@ type Interface interface {
 	// switches before vNICs.
 	EnsureMgmtVNIC(ctx context.Context, spec types.ManagementVNICSpec) (Outcome, error)
 
+	// EnsureMgmtVNICs reconciles a whole set of management vNICs, observing them
+	// in one pass. Returns an Outcome and an error per spec, in order, so each
+	// vNIC still reports against its own condition.
+	//
+	// Exists because the per-vNIC path costs two PowerShell invocations before it
+	// can decide it has nothing to do, and each pays a fresh module load — ~7s per
+	// vNIC on the rig, so a three-vNIC converged host burned ~21s of a 40s host
+	// reconcile confirming that nothing had changed.
+	EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNICSpec) ([]Outcome, []error)
+
 	// GetHostIdentity observes the host's OS computer name and AD domain
 	// (or workgroup). A pure read.
 	GetHostIdentity(ctx context.Context) (HostIdentity, error)
