@@ -266,53 +266,112 @@ func TestMaintenanceScriptDoesNotMisuseWait(t *testing.T) {
 	}
 }
 
-// Draining an S2D node without also putting its storage into maintenance makes
-// S2D treat the paused node's disks as unavailable and repair data that was
-// never lost. Seen on the rig: draining one node of three began a 52 GB repair
-// and a burst of pool-rebuilding alarms.
-func TestMaintenanceHandlesS2DStorage(t *testing.T) {
-	enter := maintenanceScript("HVNEW03", MaintenanceEnter)
-	exit := maintenanceScript("HVNEW03", MaintenanceExit)
+// Maintenance mode must NEVER put a node's storage into maintenance mode.
+//
+// An earlier version did, and it wedged the rig. Enable-StorageMaintenanceMode
+// on a scale unit is not atomic: it releases the disks one at a time, the
+// spaces go Degraded part-way through, its own health validation then fails and
+// it aborts without rolling back — stranding the disks it already took. Those
+// hold every space degraded, and a degraded space makes Suspend-ClusterNode
+// refuse outright, so the drain can never finish. Observed on HVNEW03: two of
+// four disks stranded, all three virtual disks degraded, every later drain
+// refused with "a clustered space is in a degraded condition".
+//
+// This test is the guard against reintroducing it, in either order — there is
+// no ordering that makes it safe, which is what the two-way deadlock proved.
+func TestMaintenanceNeverEnablesStorageMaintenance(t *testing.T) {
+	for _, intent := range []MaintenanceIntent{MaintenanceObserve, MaintenanceEnter, MaintenanceExit} {
+		// Against the executable script only. The comments explain at length what
+		// must not be done and name the cmdlet and its flag to do it — matching
+		// prose rather than code is a trap this repo has fallen into before.
+		s := psCode(maintenanceScript("HVNEW03", intent))
+		if strings.Contains(s, "Enable-StorageMaintenanceMode") {
+			t.Fatalf("intent %q: enabling storage maintenance strands disks part-way and deadlocks the drain; the node stays up during maintenance and its disks keep serving", intentWord(intent))
+		}
+		if strings.Contains(s, "ValidateVirtualDisksHealthy") {
+			t.Fatalf("intent %q: forcing past the health validation makes the abort less likely, not safe — it exists because releasing storage that holds the only copy loses it", intentWord(intent))
+		}
+	}
+}
 
-	for _, s := range []string{enter, exit} {
-		if !strings.Contains(s, "Enable-StorageMaintenanceMode") || !strings.Contains(s, "Disable-StorageMaintenanceMode") {
-			t.Fatal("the node's storage must be taken out with it, or S2D repairs around disks that have not gone")
+// psCode strips whole-line PowerShell comments so an assertion is made against
+// what runs, not what the script says about itself.
+func psCode(script string) string {
+	var kept []string
+	for _, line := range strings.Split(script, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
 		}
-		// A cluster without S2D has no scale units; that is not a failure.
-		if !strings.Contains(s, "if ($su.Count -eq 0) { return '' }") {
-			t.Fatal("a cluster with no S2D scale units must be tolerated, not failed")
-		}
-		// The refusal must be RETURNED by the storage helper, not swallowed. S2D
-		// declines to release a node's disks while a virtual disk has lost
-		// redundancy, and a bare catch left the console on "Draining" with nothing
-		// to explain why. (Other bare catches in this script are legitimate: an
-		// absent Get-ClusterNode means "not a cluster node", not a failure.)
-		if !strings.Contains(s, "return ((($_.Exception.Message") {
-			t.Fatal("Set-BallastStorageMaintenance must return the refusal, not swallow it")
-		}
-		if !strings.Contains(s, "storageError=$storageErr") {
-			t.Fatal("the reason the storage half was refused must reach the centre")
-		}
-		// Both halves converge every pass: the pause can land while the storage is
-		// refused, and acting only on the transition never comes back to finish.
-		if !strings.Contains(s, "if (-not $storageOut) {") {
-			t.Fatal("the storage half must be retried while it is still not out")
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// psBranch returns the body of one `$intent -eq '<word>'` arm. Every branch is
+// present in every script — only $intent differs — so an ordering assertion has
+// to be made inside the arm it is about, or it silently reads the other one.
+func psBranch(t *testing.T, script, word string) string {
+	t.Helper()
+	head := "($intent -eq '" + word + "') {"
+	i := strings.Index(script, head)
+	if i < 0 {
+		t.Fatalf("no %q branch in the script", word)
+	}
+	rest := script[i+len(head):]
+	// Arms are separated by `} elseif (` / closed by a line-initial `}`.
+	if j := strings.Index(rest, "\n} else"); j >= 0 {
+		return rest[:j]
+	}
+	if j := strings.Index(rest, "\n}"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+// Clearing it is the other half: an agent upgrading from the version that
+// stranded disks has to heal them, or the node stays permanently unable to pause.
+func TestMaintenanceClearsStrandedStorageMaintenance(t *testing.T) {
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter))
+
+	// Disabling the scale unit is a no-op when the unit was never in maintenance
+	// and only individual disks were stranded — which is exactly what a part-way
+	// Enable leaves. Those have to be cleared by disk.
+	if !strings.Contains(s, "Disable-StorageMaintenanceMode -InputObject $d") {
+		t.Fatal("stranded disks must be cleared individually; the scale-unit disable is a no-op when the unit itself was never in maintenance")
+	}
+	if !strings.Contains(s, "'In Maintenance Mode'") {
+		t.Fatal("stranded disks are found by their own operational status, not the scale unit's")
+	}
+
+	// Both arms clear it, so a node stranded by an older agent heals whichever
+	// way it is being driven.
+	enter, exit := psBranch(t, s, "enter"), psBranch(t, s, "exit")
+	for word, arm := range map[string]string{"enter": enter, "exit": exit} {
+		if !strings.Contains(arm, "Clear-BallastStorageMaintenance") {
+			t.Fatalf("the %s arm must clear stranded storage, or the node can never be drained again", word)
 		}
 	}
-	// STORAGE FIRST on the way out. Pausing immediately degrades every virtual
-	// disk (a copy is on an unavailable node), and Enable-StorageMaintenanceMode
-	// refuses while any disk lacks redundancy — so draining first makes the
-	// storage half impossible by its own side effect. Proven on the rig.
-	if strings.Index(enter, "Set-BallastStorageMaintenance 'HVNEW03' $true") > strings.Index(enter, "Suspend-ClusterNode") {
-		t.Fatal("storage must go into maintenance BEFORE the node is paused, or pausing degrades the disks and the storage half is refused")
+	// Observe must not undo a flag somebody else set deliberately, so the clear
+	// lives only inside the two acting arms.
+	if strings.Contains(strings.Replace(strings.Replace(s, enter, "", 1), exit, "", 1), "Clear-BallastStorageMaintenance %[1]s") {
+		t.Fatal("clearing must be gated on an explicit intent; an observe pass changes nothing")
 	}
-	// And the mirror coming back: the node returns before the flag is released.
-	if strings.Index(exit, "Resume-ClusterNode") > strings.Index(exit, "Set-BallastStorageMaintenance 'HVNEW03' $false") {
-		t.Fatal("the node must be resumed before its storage maintenance flag is released")
+	// Coming back, the node returns to service before its storage is acted on.
+	if strings.Index(exit, "Resume-ClusterNode") > strings.Index(exit, "Clear-BallastStorageMaintenance") {
+		t.Fatal("the node must be resumed before its storage state is acted on")
 	}
-	// And the observation has to report it, or "in maintenance" would mean only
-	// that the roles left.
-	if !strings.Contains(enter, "storageOut=$storageOut") {
-		t.Fatal("storage maintenance state must be reported")
+	// Going out, the clear happens first: a stranded disk holds the spaces
+	// degraded, and a degraded space is precisely what makes the pause refuse.
+	if strings.Index(enter, "Clear-BallastStorageMaintenance") > strings.Index(enter, "Suspend-ClusterNode") {
+		t.Fatal("stranded storage must be cleared before the pause is attempted, because it is what makes the pause refuse")
+	}
+
+	// And a failure to clear has to reach the centre. Left unsaid, the operator
+	// sees only a node that will not pause, with nothing to explain why.
+	if !strings.Contains(s, "storageOut=$storageOut") || !strings.Contains(s, "storageError=$storageErr") {
+		t.Fatal("stranded storage, and a failure to clear it, must be reported")
+	}
+	if !strings.Contains(s, "$intent -ne 'observe' -and $storageOut") {
+		t.Fatal("the report must distinguish 'could not clear it' from 'did not try'")
 	}
 }

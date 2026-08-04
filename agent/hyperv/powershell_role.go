@@ -102,16 +102,21 @@ func (p *PowerShell) ShutdownHost(ctx context.Context, drain bool) error {
 }
 
 // drainNode gracefully takes a cluster node out of service before power-off:
-// Suspend-ClusterNode -Drain live-migrates its roles/VMs onto the other nodes,
-// then S2D storage maintenance suspends its disks so the pool does not start a
-// repair while the node is briefly away. Best-effort on the storage step (a
-// standalone host has no cluster and the command is a no-op). Blocks until the
-// drain completes so we never power off with roles still live on the node.
+// Suspend-ClusterNode -Drain live-migrates its roles/VMs onto the other nodes.
+// Blocks until the drain completes so we never power off with roles still live
+// on the node.
+//
+// It deliberately does not put the node's storage into maintenance mode, for
+// the reason set out at length in maintenanceScript: Enable-StorageMaintenanceMode
+// is not atomic, and after a pause has already degraded the spaces it aborts
+// part-way and strands disks "In Maintenance Mode", which holds the pool
+// degraded until someone clears them by hand. It used to be attempted here
+// inside a bare catch{}, so a stranding was invisible. S2D waits out a short
+// absence anyway before it repairs, which is the case a reboot is.
 func (p *PowerShell) drainNode(ctx context.Context) error {
 	script := `$ErrorActionPreference='Stop'; $n=$env:COMPUTERNAME; ` +
 		`if (Get-Command Suspend-ClusterNode -ErrorAction SilentlyContinue) { ` +
-		`try { Suspend-ClusterNode -Name $n -Drain -Wait } catch { try { Suspend-ClusterNode -Name $n -Drain } catch {} }; ` +
-		`try { Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction Stop | Where-Object FriendlyName -EQ $n | Enable-StorageMaintenanceMode -ErrorAction Stop } catch {} }`
+		`try { Suspend-ClusterNode -Name $n -Drain -Wait } catch { try { Suspend-ClusterNode -Name $n -Drain } catch {} } }`
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("drain node before power action: %w", err)
 	}

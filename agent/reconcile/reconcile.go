@@ -382,16 +382,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// would be pure noise.
 		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" {
 			c := r.condition("Maintenance", out, err)
-			// S2D can refuse to release the node's disks while a virtual disk has
-			// lost redundancy. The roles have still drained, so this is not a
-			// failure — but it is the difference between "out of service" and
-			// "paused with its disks still being repaired around", and the operator
-			// cannot act on it unless it is said. The retry happens every pass.
+			// The node's disks are marked out of the pool and Ballast could not put
+			// them back. This is not something Ballast does any more, so it means
+			// disks stranded by an older agent or by someone else's half-finished
+			// operation — and it matters, because stranded disks hold every space
+			// degraded, and a degraded space is what makes the cluster refuse to
+			// pause the node at all. Retried every pass, but the operator needs to
+			// know why the drain will not move.
 			if err == nil && ms.StorageError != "" {
 				c.Status = false
-				c.Reason = "StorageNotReleased"
-				c.Message = "roles have drained, but the node's storage is still in the pool: " + ms.StorageError +
-					" — retrying each pass; it usually clears once the pool finishes repairing"
+				c.Reason = "StorageStranded"
+				c.Message = ms.StorageError +
+					" — retrying each pass. Clearing it by hand is Disable-StorageMaintenanceMode on the affected physical disks."
 			}
 			conds = append(conds, c)
 		}
