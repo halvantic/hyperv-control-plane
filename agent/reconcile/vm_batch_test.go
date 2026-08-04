@@ -48,7 +48,7 @@ func TestClusterRolesAreReadOncePerPassNotOncePerVM(t *testing.T) {
 	stub := &countingStub{Stub: &hyperv.Stub{}}
 	r := testReconciler(stub)
 
-	res := r.ReconcileVMs(context.Background(), clusteredVMs(10))
+	res := r.ReconcileVMs(context.Background(), clusteredVMs(10), true)
 
 	if len(res) != 10 {
 		t.Fatalf("every VM must still be reconciled, got %d", len(res))
@@ -74,7 +74,7 @@ func TestFailedBatchFallsBackToPerVMRoleQueries(t *testing.T) {
 	stub := &countingStub{Stub: &hyperv.Stub{}, batchFails: true}
 	r := testReconciler(stub)
 
-	res := r.ReconcileVMs(context.Background(), clusteredVMs(3))
+	res := r.ReconcileVMs(context.Background(), clusteredVMs(3), true)
 
 	if stub.perVMRoleCalls != 3 {
 		t.Fatalf("a failed batch must fall back to one query per VM, got %d", stub.perVMRoleCalls)
@@ -96,7 +96,7 @@ func TestStandaloneVMsDoNotTriggerAClusterQuery(t *testing.T) {
 		Meta: types.ObjectMeta{Name: "solo", Generation: 1},
 		Spec: types.VMSpec{Placement: types.VMPlacementSpec{HostName: "host01"}},
 	}}
-	res := r.ReconcileVMs(context.Background(), vms)
+	res := r.ReconcileVMs(context.Background(), vms, true)
 
 	if stub.batchCalls != 0 {
 		t.Fatalf("a host with no clustered VMs must not query the cluster, got %d", stub.batchCalls)

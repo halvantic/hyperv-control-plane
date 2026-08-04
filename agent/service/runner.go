@@ -110,6 +110,18 @@ const (
 	// forward across the skipped passes; without that the console 404s on the
 	// cycles that do not capture, which is how this was first found.
 	screenCaptureEvery = 4
+	// vmFullReadEvery — the drift sweep for VM configuration. The full per-VM
+	// read (guest OS via KVP/XML, checkpoints, a Get-VHD per disk, a VLAN query
+	// per adapter) is ~1.4s per VM, and processor count, memory config,
+	// generation, disks and adapters settle on a power cycle or an explicit job
+	// rather than changing on their own. The reconciler already re-reads a VM
+	// whose power state moved, and a job or a desired-state change forces one.
+	//
+	// This is the safety net for the case none of those cover: an edit made
+	// outside Ballast — Hyper-V Manager on the host, a script — to a VM nobody
+	// ever reboots. Without it that drift is invisible for ever, which is the
+	// autonomy guarantee, not a nicety. At 1 pass in 8 it costs almost nothing.
+	vmFullReadEvery = 8
 )
 
 // runnerConfig is the agent's runtime configuration, independent of how the
@@ -896,7 +908,17 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 		r.vmObservedGen = make(map[string]int64)
 	}
 
-	results := r.reconciler.ReconcileVMs(ctx, cached)
+	// The expensive per-VM configuration read is owed when something could have
+	// changed it, and on a slow sweep regardless.
+	//
+	// force covers a finished job and a desired-state change (requestNudge and
+	// vmSetChanged both raise it). The sweep is the drift safety net: the agent
+	// exists for when the centre is NOT the only writer, and without a periodic
+	// full read an edit made in Hyper-V Manager on a VM nobody reboots would be
+	// invisible for ever. The reconciler adds its own trigger — a VM whose power
+	// state moved, which is when deferred config changes actually land.
+	fullSweep := force || r.cycles%vmFullReadEvery == 0
+	results := r.reconciler.ReconcileVMs(ctx, cached, fullSweep)
 	byName := make(map[string]types.VM, len(cached))
 	for _, vm := range cached {
 		byName[vm.Meta.Name] = vm

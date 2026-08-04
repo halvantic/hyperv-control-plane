@@ -95,6 +95,17 @@ type Interface interface {
 	// VMs ran the same cluster-wide query n times — 2437ms each on the rig.
 	ClusterVMRolesPresent(ctx context.Context, names []string) (map[string]bool, error)
 
+	// GetVMLiveStates observes what a running VM can change about itself —
+	// power, memory, CPU, uptime, IPs, replication — for every named VM in ONE
+	// invocation, keyed by lower-cased name.
+	//
+	// The counterpart to GetVMState, which reads everything about one VM at
+	// ~1.4s a time. Most of what that returns (processor count, memory config,
+	// generation, disks, adapters, VM ID) settles on a power cycle or an
+	// explicit job, so re-reading it every pass bought nothing and scaled with
+	// VM count.
+	GetVMLiveStates(ctx context.Context, names []string) (map[string]VMLive, error)
+
 	// GetHostIdentity observes the host's OS computer name and AD domain
 	// (or workgroup). A pure read.
 	GetHostIdentity(ctx context.Context) (HostIdentity, error)

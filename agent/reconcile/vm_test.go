@@ -174,7 +174,7 @@ func TestReconcileVMsMultiple(t *testing.T) {
 	b := vmDesired(types.VMPowerRunning)
 	b.Meta.Name = "web02"
 
-	results := testReconciler(stub).ReconcileVMs(context.Background(), []types.VM{a, b})
+	results := testReconciler(stub).ReconcileVMs(context.Background(), []types.VM{a, b}, true)
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}

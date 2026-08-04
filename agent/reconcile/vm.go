@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -62,13 +63,52 @@ type VMResult struct {
 // It runs against the cached VM spec, so the agent keeps enforcing the last
 // intent it was given even while the centre is offline, exactly as for the host.
 func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
-	return r.reconcileVM(ctx, vm, nil)
+	// The single-VM entry point reads everything for itself: nobody has taken a
+	// live reading on its behalf, and it has no batch to amortise against.
+	return r.reconcileVM(ctx, vm, nil, vmObservation{full: true})
+}
+
+// observeVM returns the VM's state, taking the expensive full read only when
+// this pass owes one. Otherwise the cheap live reading is merged over the last
+// full observation, so the report is complete either way.
+//
+// A full read is also forced when nothing is cached — merging over nothing would
+// report a VM with no configuration, which is how the console's config card went
+// blank in the first place.
+func (r *Reconciler) observeVM(ctx context.Context, name string, obs vmObservation) (hyperv.VMState, error) {
+	key := strings.ToLower(name)
+	cached, haveCached := r.vmFull[key]
+
+	if !obs.full && obs.haveLive && haveCached {
+		return cached.MergeLive(obs.live), nil
+	}
+
+	state, err := r.hv.GetVMState(ctx, name)
+	if err != nil {
+		return hyperv.VMState{}, err
+	}
+	if r.vmFull == nil {
+		r.vmFull = map[string]hyperv.VMState{}
+		r.vmFullPower = map[string]types.VMPowerState{}
+	}
+	r.vmFull[key] = state
+	r.vmFullPower[key] = state.PowerState
+	return state, nil
+}
+
+// forgetVM drops a VM's cached observation, so the next pass reads it fresh.
+// Used when the VM is gone or its identity changed under us.
+func (r *Reconciler) forgetVM(name string) {
+	key := strings.ToLower(name)
+	delete(r.vmFull, key)
+	delete(r.vmFullPower, key)
 }
 
 // reconcileVM does the work. knownRoles, when non-nil, is a cluster-role
 // membership map the caller has already fetched for the whole set; nil means
-// ask about this VM alone.
-func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles map[string]bool) VMResult {
+// ask about this VM alone. obs carries the batched live reading and whether the
+// expensive config read is owed this pass.
+func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles map[string]bool, obs vmObservation) VMResult {
 	res := VMResult{Name: vm.Meta.Name}
 
 	// Stand off a VM an imperative job currently holds. Hyper-V refuses to modify
@@ -100,6 +140,10 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	if ensured.Outcome != hyperv.OutcomeUnchanged {
 		res.Changed = true
 		r.log.Info("vm reconciled", "vm", vm.Meta.Name, "outcome", ensured.Outcome)
+		// We just changed the VM, so whatever configuration is cached describes
+		// the state before this pass. Read it properly rather than report the
+		// change we just made as if it had not happened.
+		obs.full = true
 	}
 	// A clustered VM must be registered as a highly-available role so Failover
 	// Clustering owns its placement and failover. Idempotent: a no-op once the
@@ -191,7 +235,7 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	// still surfaced as a condition: without one the VM reported Ready carrying no
 	// power state at all, and the console filled that silence with the DESIRED
 	// power state, so a VM nobody could read looked like a running, healthy one.
-	state, serr := r.hv.GetVMState(ctx, vm.Meta.Name)
+	state, serr := r.observeVM(ctx, vm.Meta.Name, obs)
 	if serr != nil {
 		r.log.Warn("get vm state failed; reporting without runtime metrics", "vm", vm.Meta.Name, "err", serr)
 		res.Conditions = append(res.Conditions, types.Condition{
@@ -231,7 +275,12 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 // caller; a single VM is not separately timed out, because one VM's reconcile is a
 // sequence of cmdlet calls (a fixed-VHD create alone can run for minutes) and a
 // per-VM deadline would abort legitimate long work mid-flight.
-func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM) []VMResult {
+// ReconcileVMs reconciles every VM the host holds.
+//
+// fullSweep asks for the expensive per-VM observation on every VM regardless of
+// what changed — the drift safety net, and what the caller sets after a job, a
+// desired-state change, or on the first pass after start.
+func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM, fullSweep bool) []VMResult {
 	// Cluster role membership is per-CLUSTER data, so read it once for the whole
 	// set. EnsureClusterVMRole answers it for a single VM by enumerating every
 	// cluster group — 2437ms on the rig — so asking per VM re-read the same list
@@ -255,9 +304,66 @@ func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM) []VMResul
 		}
 	}
 
+	// The cheap live reading for every VM at once: power, memory, CPU, uptime,
+	// IPs, replication. Three host-wide queries rather than three per VM.
+	//
+	// Best effort. If it fails, live stays nil and every VM falls back to its own
+	// full read — the behaviour before this existed.
+	var live map[string]hyperv.VMLive
+	if len(vms) > 0 {
+		names := make([]string, 0, len(vms))
+		for _, vm := range vms {
+			names = append(names, vm.Meta.Name)
+		}
+		if got, err := r.hv.GetVMLiveStates(ctx, names); err != nil {
+			r.log.Warn("batch vm live read failed; falling back to per-VM", "err", err)
+		} else {
+			live = got
+		}
+	}
+
 	out := make([]VMResult, 0, len(vms))
 	for _, vm := range vms {
-		out = append(out, r.reconcileVM(ctx, vm, roles))
+		key := strings.ToLower(vm.Meta.Name)
+		lv, haveLive := live[key]
+		out = append(out, r.reconcileVM(ctx, vm, roles, vmObservation{
+			live:     lv,
+			haveLive: haveLive && live != nil,
+			full:     fullSweep || r.shouldReadFullVMState(key, lv, haveLive && live != nil),
+		}))
 	}
 	return out
+}
+
+// vmObservation carries what ReconcileVMs already learned about a VM into the
+// per-VM pass, and whether that pass still owes the expensive full read.
+type vmObservation struct {
+	live     hyperv.VMLive
+	haveLive bool
+	full     bool
+}
+
+// shouldReadFullVMState decides whether this VM's configuration is worth
+// re-reading, given the cheap live reading already taken.
+//
+// Config settles on a power cycle or an explicit job; between those it cannot
+// change on its own, so re-deriving it every 45 seconds bought nothing and cost
+// ~1.4s per VM. Read it when:
+//
+//   - there is no live reading (the batch failed, so nothing is known), or
+//   - nothing is cached yet (first pass, or the agent restarted), or
+//   - the power state has moved since the last full read — a power cycle is
+//     exactly when deferred configuration changes land.
+//
+// The caller adds the other triggers it owns: a finished job, a desired-state
+// change, and the periodic drift sweep that catches an edit made outside
+// Ballast on a VM nobody ever reboots.
+func (r *Reconciler) shouldReadFullVMState(key string, live hyperv.VMLive, haveLive bool) bool {
+	if !haveLive {
+		return true
+	}
+	if _, cached := r.vmFull[key]; !cached {
+		return true
+	}
+	return r.vmFullPower[key] != live.PowerState
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -212,6 +213,35 @@ func (s *Stub) EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNIC
 		outs[i], errs[i] = s.EnsureMgmtVNIC(ctx, spec)
 	}
 	return outs, errs
+}
+
+// GetVMLiveStates delegates to the per-VM read, so the stub cannot drift from
+// single-VM semantics — the same approach EnsureMgmtVNICs takes. A VM the stub
+// does not know is simply absent from the map, as on a real host.
+func (s *Stub) GetVMLiveStates(ctx context.Context, names []string) (map[string]VMLive, error) {
+	out := make(map[string]VMLive, len(names))
+	for _, n := range names {
+		st, err := s.GetVMState(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Exists {
+			continue
+		}
+		out[strings.ToLower(n)] = VMLive{
+			Exists:              true,
+			ID:                  st.ID,
+			PowerState:          st.PowerState,
+			AssignedMemoryBytes: st.AssignedMemoryBytes,
+			MemoryDemandBytes:   st.MemoryDemandBytes,
+			MemoryStatus:        st.MemoryStatus,
+			CPUUsagePercent:     st.CPUUsagePercent,
+			UptimeSeconds:       st.UptimeSeconds,
+			IPAddress:           st.IPAddress,
+			Replication:         st.Replication,
+		}
+	}
+	return out, nil
 }
 
 // ClusterVMRolesPresent mirrors the stub's EnsureClusterVMRole, which treats

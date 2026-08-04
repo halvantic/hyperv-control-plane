@@ -52,6 +52,19 @@ type Reconciler struct {
 	// half-hour of legitimate work. The reconciler knowing what its own agent
 	// started beats teaching it to recognise how each conflict happens to fail.
 	vmBusy func(name string) (kind string, busy bool)
+
+	// vmFull caches the last complete observation per VM (keyed lower-cased), so
+	// a pass that only took the cheap live reading still reports full status.
+	//
+	// The full read — guest OS via KVP/XML, checkpoints, a Get-VHD per disk, a
+	// VLAN query per adapter — is ~1.4s per VM and almost all of what it returns
+	// cannot change while the VM runs. See shouldReadFullVMState for when it is
+	// worth spending.
+	vmFull map[string]hyperv.VMState
+	// vmFullPower is the power state observed at the last full read. A power
+	// cycle is when deferred configuration changes actually land, so a change
+	// here is the signal to look again.
+	vmFullPower map[string]types.VMPowerState
 }
 
 // SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
