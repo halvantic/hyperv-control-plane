@@ -46,6 +46,7 @@ type clusterPoolObs struct {
 	Health          string `json:"health"`
 	Operational     string `json:"operational"`
 	UnhealthyDisks  int    `json:"unhealthyDisks"`
+	DisksInMaint    int    `json:"disksInMaintenance"`
 	TotalDisks      int    `json:"totalDisks"`
 	Resyncing       bool   `json:"resyncing"`
 	ResyncPercent   int    `json:"resyncPercent"`
@@ -119,7 +120,16 @@ $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.Gro
 $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
 $pool = if ($sp) {
   $pd = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue)
-  $bad = @($pd | Where-Object { $_.HealthStatus -ne 'Healthy' }).Count
+  # Disks the cluster has taken into storage maintenance mode are counted
+  # SEPARATELY, not as failures. Suspend-ClusterNode -Drain puts a node's disks
+  # there and Resume takes them back out, and while they are out they report
+  # HealthStatus Warning — so counting on health alone turned every planned
+  # drain into "4 of 12 disks unhealthy · Repair pool" beside a pool Windows
+  # called Healthy. The two states have opposite remedies (replace a disk versus
+  # resume a node), so they must not share a number.
+  $maint = @($pd | Where-Object { @($_.OperationalStatus) -contains 'In Maintenance Mode' })
+  $maintIds = @($maint | ForEach-Object { [string]$_.UniqueId })
+  $bad = @($pd | Where-Object { $_.HealthStatus -ne 'Healthy' -and $maintIds -notcontains [string]$_.UniqueId }).Count
   # Observe whether S2D is actively rebuilding rather than inferring "broken"
   # from health alone. A repair/regeneration job makes the pool, its virtual
   # disks and some physical disks report non-Healthy while it runs — that is
@@ -173,7 +183,7 @@ $pool = if ($sp) {
     $rname = [string]$rjobs[0].Name
     if ($rname -match '-([A-Za-z]+)$') { $rname = $Matches[1] }
   }
-  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname; resyncRemaining = $rrem }
+  [pscustomobject]@{ name = [string]$sp.FriendlyName; rawBytes = [uint64]$sp.Size; allocatedBytes = [uint64]$sp.AllocatedSize; health = [string]$sp.HealthStatus; operational = ([string]($sp.OperationalStatus -join ',')); unhealthyDisks = [int]$bad; disksInMaintenance = [int]$maint.Count; totalDisks = [int]$pd.Count; resyncing = $resync; resyncPercent = $rpct; resyncJob = $rname; resyncRemaining = $rrem }
 } else { $null }
 $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   $bits = (($_.AddressMask -split '\.') | ForEach-Object { ([Convert]::ToString([int]$_,2)).ToCharArray() } | Where-Object { $_ -eq '1' }).Count
@@ -216,7 +226,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	var pool *ClusterPool
 	if obs.Pool != nil {
 		pool = &ClusterPool{Name: obs.Pool.Name, RawBytes: obs.Pool.RawBytes, AllocatedBytes: obs.Pool.AllocatedBytes,
-			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks, TotalDisks: obs.Pool.TotalDisks,
+			Health: obs.Pool.Health, Operational: obs.Pool.Operational, UnhealthyDisks: obs.Pool.UnhealthyDisks,
+			DisksInMaintenance: obs.Pool.DisksInMaint, TotalDisks: obs.Pool.TotalDisks,
 			Resyncing: obs.Pool.Resyncing, ResyncPercent: obs.Pool.ResyncPercent, ResyncJob: obs.Pool.ResyncJob,
 			ResyncRemainingBytes: obs.Pool.ResyncRemaining}
 	}

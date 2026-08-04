@@ -542,6 +542,12 @@ message ClusterPool {
   // overall progress; this can, and separates a converging rebuild from one that
   // keeps restarting.
   uint64 resync_remaining_bytes = 11;
+  // disks_in_maintenance counts disks the cluster took into storage maintenance
+  // mode, and is EXCLUDED from unhealthy_disks. Suspend-ClusterNode -Drain puts
+  // a node's disks there and Resume takes them out; while out they report
+  // HealthStatus Warning, so folding them into the failure count made every
+  // planned drain read as broken hardware and offered a pool repair for it.
+  int32 disks_in_maintenance = 12;
 }
 
 // ClusterGroup is one clustered role/group as observed by the cluster.

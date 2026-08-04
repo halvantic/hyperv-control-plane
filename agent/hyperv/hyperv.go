@@ -633,7 +633,12 @@ type ClusterPool struct {
 	Health         string
 	Operational    string
 	UnhealthyDisks int
-	TotalDisks     int
+	// DisksInMaintenance counts disks the cluster took into storage maintenance
+	// mode, kept out of UnhealthyDisks. A drained node's disks report Warning
+	// while they are out, and folding that into the failure count made a planned
+	// drain look like broken hardware.
+	DisksInMaintenance int
+	TotalDisks         int
 	// Resyncing and its detail report an observed repair/regeneration job, so a
 	// pool that is rebuilding itself is not mistaken for one that is broken.
 	Resyncing     bool

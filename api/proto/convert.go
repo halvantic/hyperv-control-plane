@@ -779,7 +779,8 @@ func clusterPoolToProto(p *types.ClusterPoolStatus) *ClusterPool {
 		return nil
 	}
 	return &ClusterPool{Name: p.Name, RawBytes: p.RawBytes, AllocatedBytes: p.AllocatedBytes,
-		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks), TotalDisks: int32(p.TotalDisks),
+		Health: p.Health, Operational: p.Operational, UnhealthyDisks: int32(p.UnhealthyDisks),
+		DisksInMaintenance: int32(p.DisksInMaintenance), TotalDisks: int32(p.TotalDisks),
 		Resyncing: p.Resyncing, ResyncPercent: int32(p.ResyncPercent), ResyncJob: p.ResyncJob,
 		ResyncRemainingBytes: p.ResyncRemainingBytes}
 }
@@ -789,7 +790,8 @@ func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
 		return nil
 	}
 	return &types.ClusterPoolStatus{Name: p.GetName(), RawBytes: p.GetRawBytes(), AllocatedBytes: p.GetAllocatedBytes(),
-		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()), TotalDisks: int(p.GetTotalDisks()),
+		Health: p.GetHealth(), Operational: p.GetOperational(), UnhealthyDisks: int(p.GetUnhealthyDisks()),
+		DisksInMaintenance: int(p.GetDisksInMaintenance()), TotalDisks: int(p.GetTotalDisks()),
 		Resyncing: p.GetResyncing(), ResyncPercent: int(p.GetResyncPercent()), ResyncJob: p.GetResyncJob(),
 		ResyncRemainingBytes: p.GetResyncRemainingBytes()}
 }

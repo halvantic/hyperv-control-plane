@@ -798,7 +798,22 @@ type ClusterPoolStatus struct {
 	// UnhealthyDisks is the number of physical disks in the pool that are not
 	// Healthy (lost communication, transient error, failed). These degrade the
 	// pool and block resilient-volume creation until retired/replaced.
+	//
+	// It EXCLUDES disks in storage maintenance mode, which are counted by
+	// DisksInMaintenance instead. A disk in maintenance reports HealthStatus
+	// Warning, so counting on health alone folded a planned drain into the
+	// failure count: the console showed "4 of 12 disks unhealthy · Repair pool"
+	// beside a pool Windows called Healthy, and offered a repair for a state the
+	// operator had asked for. The two have opposite remedies — one needs a disk
+	// replaced, the other needs the node resumed — so they cannot share a number.
 	UnhealthyDisks int `json:"unhealthyDisks,omitempty"`
+	// DisksInMaintenance is the number of physical disks the cluster has taken
+	// into storage maintenance mode. Failover Clustering does this itself as part
+	// of Suspend-ClusterNode -Drain and reverses it on resume, so a non-zero value
+	// during a drain is expected and needs no action; a non-zero value with no
+	// node drained is disks stranded by a half-finished operation, which holds
+	// every space degraded until cleared.
+	DisksInMaintenance int `json:"disksInMaintenance,omitempty"`
 	// TotalDisks is the pool's physical-disk count, for context.
 	TotalDisks int `json:"totalDisks,omitempty"`
 

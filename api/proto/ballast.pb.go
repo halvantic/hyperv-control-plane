@@ -3770,8 +3770,14 @@ type ClusterPool struct {
 	// overall progress; this can, and separates a converging rebuild from one that
 	// keeps restarting.
 	ResyncRemainingBytes uint64 `protobuf:"varint,11,opt,name=resync_remaining_bytes,json=resyncRemainingBytes,proto3" json:"resync_remaining_bytes,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// disks_in_maintenance counts disks the cluster took into storage maintenance
+	// mode, and is EXCLUDED from unhealthy_disks. Suspend-ClusterNode -Drain puts
+	// a node's disks there and Resume takes them out; while out they report
+	// HealthStatus Warning, so folding them into the failure count made every
+	// planned drain read as broken hardware and offered a pool repair for it.
+	DisksInMaintenance int32 `protobuf:"varint,12,opt,name=disks_in_maintenance,json=disksInMaintenance,proto3" json:"disks_in_maintenance,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ClusterPool) Reset() {
@@ -3877,6 +3883,13 @@ func (x *ClusterPool) GetResyncJob() string {
 func (x *ClusterPool) GetResyncRemainingBytes() uint64 {
 	if x != nil {
 		return x.ResyncRemainingBytes
+	}
+	return 0
+}
+
+func (x *ClusterPool) GetDisksInMaintenance() int32 {
+	if x != nil {
+		return x.DisksInMaintenance
 	}
 	return 0
 }
@@ -5311,7 +5324,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x06metric\x18\x05 \x01(\x05R\x06metric\"7\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\x85\x03\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\"\xb7\x03\n" +
 	"\vClusterPool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\traw_bytes\x18\x02 \x01(\x04R\brawBytes\x12'\n" +
@@ -5326,7 +5339,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"resync_job\x18\n" +
 	" \x01(\tR\tresyncJob\x124\n" +
-	"\x16resync_remaining_bytes\x18\v \x01(\x04R\x14resyncRemainingBytes\"v\n" +
+	"\x16resync_remaining_bytes\x18\v \x01(\x04R\x14resyncRemainingBytes\x120\n" +
+	"\x14disks_in_maintenance\x18\f \x01(\x05R\x12disksInMaintenance\"v\n" +
 	"\fClusterGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +

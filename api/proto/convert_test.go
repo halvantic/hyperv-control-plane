@@ -222,7 +222,7 @@ func sampleClusterStatus() types.ClusterStatus {
 		}},
 		Pool: &types.ClusterPoolStatus{
 			Name: "S2D on c1", RawBytes: 1 << 40, AllocatedBytes: 1 << 38,
-			Health: "Warning", Operational: "Degraded", UnhealthyDisks: 1, TotalDisks: 12,
+			Health: "Warning", Operational: "Degraded", UnhealthyDisks: 1, DisksInMaintenance: 4, TotalDisks: 12,
 			Resyncing: true, ResyncPercent: 41, ResyncJob: "Repair", ResyncRemainingBytes: 1 << 35,
 		},
 		Networks: []types.ClusterNetworkStatus{{
