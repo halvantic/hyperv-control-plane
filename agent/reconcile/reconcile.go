@@ -382,13 +382,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// would be pure noise.
 		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" {
 			c := r.condition("Maintenance", out, err)
-			// The node's disks are marked out of the pool and Ballast could not put
-			// them back. This is not something Ballast does any more, so it means
-			// disks stranded by an older agent or by someone else's half-finished
-			// operation — and it matters, because stranded disks hold every space
-			// degraded, and a degraded space is what makes the cluster refuse to
-			// pause the node at all. Retried every pass, but the operator needs to
-			// know why the drain will not move.
+			// The node is back in service but its disks are still marked out of the
+			// pool, and Ballast could not put them back. The cluster releases them
+			// on resume, so this is wreckage from the old manual enable — and it
+			// matters, because it holds every space degraded, and a degraded space
+			// is what makes the cluster refuse to pause the node at all. Retried
+			// every pass, but the operator needs to know why the next drain will
+			// not move. Never set for a node that is merely paused: disks out is
+			// the normal drained state.
 			if err == nil && ms.StorageError != "" {
 				c.Status = false
 				c.Reason = "StorageStranded"

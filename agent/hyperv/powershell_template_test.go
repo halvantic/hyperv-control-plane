@@ -328,50 +328,79 @@ func psBranch(t *testing.T, script, word string) string {
 	return rest
 }
 
-// Clearing it is the other half: an agent upgrading from the version that
-// stranded disks has to heal them, or the node stays permanently unable to pause.
-func TestMaintenanceClearsStrandedStorageMaintenance(t *testing.T) {
+// Entering maintenance must not touch storage at all.
+//
+// Suspend-ClusterNode -Drain puts the node's disks into maintenance mode by
+// itself and Resume-ClusterNode takes them back out. Proven on the rig: HVNEW03
+// paused with the pool completely clear, and one pass later exactly its four
+// disks were In Maintenance Mode — by an agent build containing no code that
+// enables it. So while the node is paused, disks-out is the cluster's own,
+// correct state. Clearing it there strips protection the cluster put in place
+// and makes the reconciler fight the cluster on every pass.
+func TestMaintenanceLeavesClusterOwnedStorageAlone(t *testing.T) {
 	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter))
+	enter := psBranch(t, s, "enter")
 
-	// Disabling the scale unit is a no-op when the unit was never in maintenance
-	// and only individual disks were stranded — which is exactly what a part-way
-	// Enable leaves. Those have to be cleared by disk.
+	if strings.Contains(enter, "Clear-BallastStorageMaintenance") {
+		t.Fatal("entering maintenance must not clear storage: the cluster takes the disks out as part of the drain, and undoing that fights the cluster every pass")
+	}
+	if strings.Contains(enter, "StorageMaintenanceMode") {
+		t.Fatal("the enter arm must not touch storage maintenance mode in either direction")
+	}
+	if !strings.Contains(enter, "Suspend-ClusterNode") {
+		t.Fatal("entering maintenance is the drain and nothing else")
+	}
+}
+
+// The one legitimate case: back in service, disks still marked out. The cluster
+// releases them on resume, so anything left is wreckage from the old manual
+// enable — and it must be healed, or the node can never be drained again.
+func TestMaintenanceHealsStrandedStorageOnlyOnceBackInService(t *testing.T) {
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceExit))
+	exit := psBranch(t, s, "exit")
+
+	if !strings.Contains(exit, "Clear-BallastStorageMaintenance") {
+		t.Fatal("a node back in service with disks still out is stuck and must be healed")
+	}
+	// Gated on the node no longer being paused — checked against the state
+	// RE-READ after the resume, not the stale value from the top of the pass.
+	if !strings.Contains(exit, "(-not $paused) -and $storageOut") {
+		t.Fatal("the clear must be gated on the node actually being back Up; while it is paused the flag belongs to the cluster")
+	}
+	if strings.Index(exit, "Resume-ClusterNode") > strings.Index(exit, "Clear-BallastStorageMaintenance") {
+		t.Fatal("the node must be resumed before its storage state is acted on")
+	}
+	if !strings.Contains(exit, "$paused = ([string]$n2.State -eq 'Paused')") {
+		t.Fatal("the pause state must be re-read after the resume, or the clear decides on a stale value")
+	}
+	// Stranded disks are found by their own status; the scale unit reads OK even
+	// when all of its disks are out, which is what made the old check blind.
 	if !strings.Contains(s, "Disable-StorageMaintenanceMode -InputObject $d") {
 		t.Fatal("stranded disks must be cleared individually; the scale-unit disable is a no-op when the unit itself was never in maintenance")
 	}
 	if !strings.Contains(s, "'In Maintenance Mode'") {
 		t.Fatal("stranded disks are found by their own operational status, not the scale unit's")
 	}
-
-	// Both arms clear it, so a node stranded by an older agent heals whichever
-	// way it is being driven.
-	enter, exit := psBranch(t, s, "enter"), psBranch(t, s, "exit")
-	for word, arm := range map[string]string{"enter": enter, "exit": exit} {
-		if !strings.Contains(arm, "Clear-BallastStorageMaintenance") {
-			t.Fatalf("the %s arm must clear stranded storage, or the node can never be drained again", word)
-		}
-	}
-	// Observe must not undo a flag somebody else set deliberately, so the clear
-	// lives only inside the two acting arms.
-	if strings.Contains(strings.Replace(strings.Replace(s, enter, "", 1), exit, "", 1), "Clear-BallastStorageMaintenance %[1]s") {
+	// Observe never acts.
+	observe := psCode(maintenanceScript("HVNEW03", MaintenanceObserve))
+	rest := strings.Replace(strings.Replace(observe, psBranch(t, observe, "enter"), "", 1), psBranch(t, observe, "exit"), "", 1)
+	if strings.Contains(rest, "Clear-BallastStorageMaintenance 'HVNEW03'") {
 		t.Fatal("clearing must be gated on an explicit intent; an observe pass changes nothing")
 	}
-	// Coming back, the node returns to service before its storage is acted on.
-	if strings.Index(exit, "Resume-ClusterNode") > strings.Index(exit, "Clear-BallastStorageMaintenance") {
-		t.Fatal("the node must be resumed before its storage state is acted on")
-	}
-	// Going out, the clear happens first: a stranded disk holds the spaces
-	// degraded, and a degraded space is precisely what makes the pause refuse.
-	if strings.Index(enter, "Clear-BallastStorageMaintenance") > strings.Index(enter, "Suspend-ClusterNode") {
-		t.Fatal("stranded storage must be cleared before the pause is attempted, because it is what makes the pause refuse")
-	}
+}
 
-	// And a failure to clear has to reach the centre. Left unsaid, the operator
-	// sees only a node that will not pause, with nothing to explain why.
-	if !strings.Contains(s, "storageOut=$storageOut") || !strings.Contains(s, "storageError=$storageErr") {
-		t.Fatal("stranded storage, and a failure to clear it, must be reported")
+// A paused node with its disks out is the normal drained state. Reporting that
+// as a fault would raise a false alarm on every single drain.
+func TestMaintenanceDoesNotReportDrainedStorageAsAFault(t *testing.T) {
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter))
+
+	if !strings.Contains(s, "$intent -eq 'exit' -and (-not $paused) -and $storageOut") {
+		t.Fatal("storage may only be reported as a problem for a node that is back in service; a paused node's disks being out is normal")
 	}
-	if !strings.Contains(s, "$intent -ne 'observe' -and $storageOut") {
-		t.Fatal("the report must distinguish 'could not clear it' from 'did not try'")
+	if strings.Contains(s, "$intent -ne 'observe' -and $storageOut") {
+		t.Fatal("reporting on any acting intent fires on every drain, because draining is what puts the disks out")
+	}
+	if !strings.Contains(s, "storageOut=$storageOut") || !strings.Contains(s, "storageError=$storageErr") {
+		t.Fatal("the storage state, and a failure to clear it, must still reach the centre")
 	}
 }

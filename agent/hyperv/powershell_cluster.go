@@ -507,14 +507,16 @@ type NodeMaintenanceState struct {
 	// is safe to reboot a node still running their workloads.
 	Draining bool
 	// StorageOut means some of the node's disks are marked "In Maintenance Mode"
-	// in the S2D pool. Ballast never puts them there — see maintenanceScript for
-	// why — so this is wreckage: disks stranded by an older agent's part-way
-	// Enable, or by someone else's half-finished operation. It is not benign.
-	// Stranded disks hold every virtual disk degraded, and a degraded space makes
-	// Suspend-ClusterNode refuse, so a node in this state cannot be drained at all.
+	// in the S2D pool. On a PAUSED node this is normal and expected — the cluster
+	// takes the disks out as part of the drain and puts them back on resume, and
+	// Ballast neither sets nor clears it. On a node that is Up it is wreckage from
+	// the old manual enable, and it is not benign: it holds every virtual disk
+	// degraded, and a degraded space makes Suspend-ClusterNode refuse, so the node
+	// cannot be drained at all until it is cleared.
 	StorageOut bool
-	// StorageError is set when a pass tried to clear that and could not. Left
-	// unsaid, the operator sees only a node that will not pause.
+	// StorageError is set only for that second case — back in service, disks still
+	// out, and the clear did not take. A paused node's disks being out is never an
+	// error, or every drain would raise one.
 	StorageError string
 }
 
@@ -568,35 +570,37 @@ $state = [string]$n.State
 $drain = [string]$n.DrainStatus
 $paused = ($state -eq 'Paused')
 $changed = $false
-# Ballast does NOT put a node's storage into maintenance mode. That is a
-# deliberate reversal — a previous version did, and it wedged the rig.
+# Storage maintenance mode is the CLUSTER'S to manage, not Ballast's.
 #
-# Enable-StorageMaintenanceMode on a scale unit is not atomic. It releases the
-# node's disks one at a time, and once enough are out the virtual disks go
-# Degraded; the cmdlet's own health validation then fails part-way through and
-# it aborts WITHOUT rolling back, stranding the disks it already took. Stranded
-# disks hold every space Degraded, and a degraded space makes
-# Suspend-ClusterNode refuse outright — so the drain can never finish, and
-# clearing it takes per-disk intervention. Observed on HVNEW03: two of its four
-# disks stranded, all three virtual disks degraded, every later drain refused
-# with "a clustered space is in a degraded condition".
+# Suspend-ClusterNode -Drain puts the node's physical disks into maintenance
+# mode by itself, and Resume-ClusterNode takes them back out. Proven on the rig:
+# HVNEW03 paused with the pool completely clear, and one pass later its four
+# disks — and only its four — were In Maintenance Mode, by an agent build
+# containing no code that enables it. So there was never anything for Ballast to
+# do here.
+#
+# Doing it by hand was actively harmful. Enable-StorageMaintenanceMode on a
+# scale unit is not atomic: it releases the disks one at a time, the spaces go
+# Degraded part-way through, its own health validation then fails and it aborts
+# WITHOUT rolling back, stranding the disks it already took. Stranded disks hold
+# every space Degraded, and a degraded space makes Suspend-ClusterNode refuse —
+# so calling it BEFORE the pause makes the pause impossible by its own side
+# effect. That is the deadlock that cost HVNEW03 an afternoon: two of four disks
+# stranded, all three virtual disks degraded, every drain refused with "a
+# clustered space is in a degraded condition".
 #
 # Forcing past the check (-ValidateVirtualDisksHealthy $false) would make the
 # abort less likely, not safe. The validation exists because releasing storage
 # that still holds the only copy of data is how the data is lost.
 #
-# The reason it was added does not survive contact either. Pausing a node does
-# queue S2D repair jobs, but they sit Suspended and move nothing while the node
-# is merely paused; the alarm noise that prompted this belongs to the alarm
-# filter, which now ignores Suspended jobs. Storage maintenance mode is for
-# taking a node DOWN — reboot, physical work — which is not what this does.
-# Ballast's maintenance mode moves the roles off; the node stays up and its
-# disks stay in the pool, serving.
+# So: never enable, and never clear a flag the cluster is holding. While the
+# node is paused, disks in maintenance is the CORRECT state and clearing it
+# strips protection the cluster put there — Ballast would be fighting the
+# cluster on every pass. Cluster-owned state is untouchable.
 #
-# What is kept is the ability to CLEAR the flag, so an agent upgrading from the
-# version that stranded disks heals them instead of staying wedged. Only while
-# Ballast is actively driving this node (enter/exit): under Observe a
-# maintenance flag is someone else's decision, to be reported and not undone.
+# The one thing left is healing wreckage: after a resume, with the node back Up,
+# a lingering maintenance flag is nobody's intent — it is what the old manual
+# enable left behind. That is cleared, and only then.
 function Get-BallastMaintDisks($nodeName) {
   $out = @()
   foreach ($d in @(Get-PhysicalDisk -ErrorAction SilentlyContinue |
@@ -613,22 +617,22 @@ function Get-BallastScaleUnit($nodeName) {
 # try/catch throughout: a cluster without S2D has no scale units and no storage
 # nodes, which is not an error.
 function Clear-BallastStorageMaintenance($nodeName) {
-  $cleared = $false
   try {
     $su = Get-BallastScaleUnit $nodeName
     if ($su.Count -gt 0 -and ((@($su[0].OperationalStatus) -join ',') -match 'Maintenance')) {
       $su[0] | Disable-StorageMaintenanceMode -ErrorAction SilentlyContinue
-      $cleared = $true
     }
     # Disabling the scale unit is a no-op when the unit was never in maintenance
     # and only individual disks were stranded — which is exactly the wreckage a
     # part-way Enable leaves behind. Those have to be cleared by disk.
     foreach ($d in (Get-BallastMaintDisks $nodeName)) {
       Disable-StorageMaintenanceMode -InputObject $d -ErrorAction SilentlyContinue
-      $cleared = $true
     }
   } catch {}
-  return $cleared
+  # Report what actually happened, not that an attempt was made. Reporting the
+  # attempt made a failing clear look like progress every pass, which is how a
+  # node that never changed kept reading as Updated.
+  return (-not (Get-BallastStorageOut $nodeName))
 }
 function Get-BallastStorageOut($nodeName) {
   try {
@@ -639,16 +643,9 @@ function Get-BallastStorageOut($nodeName) {
 }
 $storageOut = Get-BallastStorageOut %[1]s
 $storageErr = ''
-# The clear converges on EVERY pass, not just on the transition: a node can be
-# left stranded by an older agent, by a half-finished Enable, or by a reboot
-# mid-operation, and a reconciler that only acted on a change would never come
-# back to finish.
-#
-# Order on the way out is roles then storage-check, and on the way back the
-# mirror — resume first, so the node is contributing again before its disks are
-# reasoned about.
+# Entering is the drain and nothing else. The cluster takes the node's disks
+# out as part of it, so there is no storage half to run, in either order.
 if ($intent -eq 'enter') {
-  if ($storageOut) { if (Clear-BallastStorageMaintenance %[1]s) { $changed = $true } }
   if (-not $paused) {
     Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
     $changed = $true
@@ -657,19 +654,29 @@ if ($intent -eq 'enter') {
   if ($paused) {
     Resume-ClusterNode -Name %[1]s -ErrorAction Stop | Out-Null
     $changed = $true
+    # Re-read before deciding anything about storage: while the node is still
+    # paused its disks are the cluster's business.
+    $n2 = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0]
+    if ($n2) { $paused = ([string]$n2.State -eq 'Paused') }
   }
-  if ($storageOut) { if (Clear-BallastStorageMaintenance %[1]s) { $changed = $true } }
+  # Back Up and still marked out of the pool. The cluster releases the disks on
+  # resume, so anything left here is wreckage from the old manual enable, and
+  # clearing it is safe precisely because the node is no longer paused.
+  if ((-not $paused) -and $storageOut) {
+    if (Clear-BallastStorageMaintenance %[1]s) { $changed = $true }
+  }
 }
 if ($changed) {
   $n = @(Get-ClusterNode -Name %[1]s -ErrorAction SilentlyContinue)[0]
   if ($n) { $state = [string]$n.State; $drain = [string]$n.DrainStatus; $paused = ($state -eq 'Paused') }
   $storageOut = Get-BallastStorageOut %[1]s
 }
-# Still marked out after a pass that tried to clear it. Worth saying plainly:
-# stranded disks keep every space degraded, which is what makes a drain refuse,
-# and the operator would otherwise only see a node that will not pause.
-if ($intent -ne 'observe' -and $storageOut) {
-  $storageErr = "This node's disks are still marked In Maintenance Mode in the storage pool, which holds every virtual disk degraded and makes the cluster refuse to pause the node. Ballast tried to clear it and could not."
+# Only worth reporting for a node that is back IN service with its disks still
+# marked out — that combination is stuck and needs a human. A paused node with
+# disks in maintenance is the normal drained state and must never be reported as
+# a fault, or every drain raises a false alarm.
+if ($intent -eq 'exit' -and (-not $paused) -and $storageOut) {
+  $storageErr = "This node is back in service but its disks are still marked In Maintenance Mode in the storage pool, which holds every virtual disk degraded. Ballast tried to clear it and could not."
 }
 [pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; storageError=$storageErr; changed=$changed } | ConvertTo-Json -Compress`,
 		psQuote(node), psQuote(intentWord(intent)))
