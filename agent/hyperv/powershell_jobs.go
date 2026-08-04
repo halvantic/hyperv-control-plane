@@ -416,6 +416,44 @@ func (p *PowerShell) EnsureClusterVMRole(ctx context.Context, vmName string) (Ou
 	return OutcomeUnchanged, nil
 }
 
+// ClusterVMRolesPresent reports which of the named VMs already exist as
+// highly-available cluster roles, in ONE query.
+//
+// EnsureClusterVMRole enumerates every cluster group to answer that for a single
+// VM, so reconciling n VMs ran the same cluster-wide query n times. On the rig
+// Get-ClusterGroup costs 2437ms cold, which is 2.4s per VM spent re-reading a
+// list that is identical every time — 73s on a thirty-VM host.
+//
+// Only the read is batched. Creating a missing role stays per VM: it is rare,
+// it is the part that can fail, and its outcome belongs to one VM's condition.
+func (p *PowerShell) ClusterVMRolesPresent(ctx context.Context, names []string) (map[string]bool, error) {
+	if len(names) == 0 {
+		return map[string]bool{}, nil
+	}
+	// One name per line rather than JSON: ConvertTo-Json on Windows PowerShell
+	// collapses a single-element array to a bare string, so a cluster with
+	// exactly one VM role would decode differently from one with two. Lines have
+	// no such edge, and a role name cannot contain a newline.
+	script := "$ErrorActionPreference='Stop'; Import-Module FailoverClusters; " +
+		"Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | " +
+		"ForEach-Object { [string]$_.Name }"
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster vm roles: %w", err)
+	}
+	present := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			present[strings.ToLower(name)] = true
+		}
+	}
+	out2 := make(map[string]bool, len(names))
+	for _, n := range names {
+		out2[n] = present[strings.ToLower(n)]
+	}
+	return out2, nil
+}
+
 func (p *PowerShell) MoveClusterGroup(ctx context.Context, group, node string) error {
 	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; Move-ClusterGroup -Name %s -Node %s | Out-Null", psQuote(group), psQuote(node))
 	if err := p.run2(ctx, script); err != nil {

@@ -99,6 +99,11 @@ const (
 	// the UI; the one thing it can lag is an *unplanned* failover's owner node (a
 	// planned move goes through a job, which forces an immediate pass).
 	clusterReconcileEvery = 8
+	// screenCaptureEvery — the VM console thumbnail. Per RUNNING VM per cycle, and
+	// the least urgent thing collected: a preview of a screen nobody may be
+	// looking at, on a path the live console does not use. On a host with many
+	// VMs it was a PowerShell invocation each, every pass. ~2min.
+	screenCaptureEvery = 8
 )
 
 // runnerConfig is the agent's runtime configuration, independent of how the
@@ -749,7 +754,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// was reachable — the agent enforces the VMs it was last given, same as the
 	// host spec. Reporting is best-effort and skipped when autonomous.
 	doneVMs := t.mark("vmReconcile")
-	r.reconcileVMs(ctx, client, autonomous)
+	r.reconcileVMs(ctx, client, autonomous, force)
 	doneVMs()
 
 	// Imperative jobs are NOT run here. They are handled by the dedicated pollJobs
@@ -871,7 +876,7 @@ func (r *runner) replayJobResults(ctx context.Context, client ballastpb.AgentSer
 // reconcile was fully honoured, so the centre can see exactly which VMs are
 // settled. When autonomous (centre unreachable) it still reconciles — that is
 // the point — but does not attempt to report.
-func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentServiceClient, autonomous bool) {
+func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentServiceClient, autonomous, force bool) {
 	cached, ok, err := r.st.LoadDesiredVMs()
 	if err != nil {
 		r.log.Error("read cached desired vms failed", "err", err)
@@ -901,7 +906,14 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 		st := r.buildVMStatus(res)
 		// Capture a console thumbnail for running VMs (best-effort, read-only).
 		// Bounded so a wedged capture can't stall the whole status report.
-		if res.PowerState == types.VMPowerRunning {
+		//
+		// Throttled, because it is per running VM per cycle and it is the least
+		// urgent thing the agent collects: a thumbnail is a preview of a screen
+		// nobody may be looking at, and the live console is a separate path that
+		// does not use it. On a host with many VMs this was a PowerShell
+		// invocation each, every pass, for a picture that can be a minute stale
+		// without anyone noticing.
+		if res.PowerState == types.VMPowerRunning && (force || r.cycles%screenCaptureEvery == 0) {
 			sctx, scancel := context.WithTimeout(ctx, collectTimeout)
 			png, serr := r.hv.GetVMScreen(sctx, res.Name)
 			scancel()

@@ -62,6 +62,13 @@ type VMResult struct {
 // It runs against the cached VM spec, so the agent keeps enforcing the last
 // intent it was given even while the centre is offline, exactly as for the host.
 func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
+	return r.reconcileVM(ctx, vm, nil)
+}
+
+// reconcileVM does the work. knownRoles, when non-nil, is a cluster-role
+// membership map the caller has already fetched for the whole set; nil means
+// ask about this VM alone.
+func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles map[string]bool) VMResult {
 	res := VMResult{Name: vm.Meta.Name}
 
 	// Stand off a VM an imperative job currently holds. Hyper-V refuses to modify
@@ -98,16 +105,24 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 	// Clustering owns its placement and failover. Idempotent: a no-op once the
 	// role exists.
 	if vm.Spec.Placement.ClusterName != "" {
-		hout, herr := r.hv.EnsureClusterVMRole(ctx, vm.Meta.Name)
-		res.Conditions = append(res.Conditions, r.condition("VMClusterRole/"+vm.Meta.Name, hout, herr))
-		if herr != nil {
-			r.log.Error("ensure cluster vm role failed", "vm", vm.Meta.Name, "err", herr)
-			res.Phase = types.PhaseDegraded
-			return res
-		}
-		if hout != hyperv.OutcomeUnchanged {
-			res.Changed = true
-			r.log.Info("vm registered as cluster role", "vm", vm.Meta.Name)
+		// The batched read already told us the role exists, so there is nothing
+		// to ensure and no reason to spend a cluster-wide query saying so. The
+		// condition is still reported: an operator reading status should not have
+		// to know which internal path produced it.
+		if present, known := knownRoles[vm.Meta.Name]; known && present {
+			res.Conditions = append(res.Conditions, r.condition("VMClusterRole/"+vm.Meta.Name, hyperv.OutcomeUnchanged, nil))
+		} else {
+			hout, herr := r.hv.EnsureClusterVMRole(ctx, vm.Meta.Name)
+			res.Conditions = append(res.Conditions, r.condition("VMClusterRole/"+vm.Meta.Name, hout, herr))
+			if herr != nil {
+				r.log.Error("ensure cluster vm role failed", "vm", vm.Meta.Name, "err", herr)
+				res.Phase = types.PhaseDegraded
+				return res
+			}
+			if hout != hyperv.OutcomeUnchanged {
+				res.Changed = true
+				r.log.Info("vm registered as cluster role", "vm", vm.Meta.Name)
+			}
 		}
 	}
 	// Hyper-V Replica: drive the VM's replication relationship to spec. A
@@ -217,9 +232,32 @@ func (r *Reconciler) ReconcileVM(ctx context.Context, vm types.VM) VMResult {
 // sequence of cmdlet calls (a fixed-VHD create alone can run for minutes) and a
 // per-VM deadline would abort legitimate long work mid-flight.
 func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM) []VMResult {
+	// Cluster role membership is per-CLUSTER data, so read it once for the whole
+	// set. EnsureClusterVMRole answers it for a single VM by enumerating every
+	// cluster group — 2437ms on the rig — so asking per VM re-read the same list
+	// once per VM: 73s on a thirty-VM host, all of it confirming what the
+	// previous VM had just confirmed.
+	//
+	// Best effort. A failure here leaves roles nil and every VM falls back to
+	// asking for itself, which is exactly the old behaviour.
+	var roles map[string]bool
+	var names []string
+	for _, vm := range vms {
+		if vm.Spec.Placement.ClusterName != "" {
+			names = append(names, vm.Meta.Name)
+		}
+	}
+	if len(names) > 0 {
+		if got, err := r.hv.ClusterVMRolesPresent(ctx, names); err != nil {
+			r.log.Warn("batch cluster role query failed; falling back to per-VM", "err", err)
+		} else {
+			roles = got
+		}
+	}
+
 	out := make([]VMResult, 0, len(vms))
 	for _, vm := range vms {
-		out = append(out, r.ReconcileVM(ctx, vm))
+		out = append(out, r.reconcileVM(ctx, vm, roles))
 	}
 	return out
 }

@@ -89,6 +89,12 @@ type Interface interface {
 	// reconcile confirming that nothing had changed.
 	EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNICSpec) ([]Outcome, []error)
 
+	// ClusterVMRolesPresent reports which of the named VMs already exist as
+	// highly-available cluster roles, in one query. EnsureClusterVMRole answers
+	// that for a single VM by enumerating every cluster group, so reconciling n
+	// VMs ran the same cluster-wide query n times — 2437ms each on the rig.
+	ClusterVMRolesPresent(ctx context.Context, names []string) (map[string]bool, error)
+
 	// GetHostIdentity observes the host's OS computer name and AD domain
 	// (or workgroup). A pure read.
 	GetHostIdentity(ctx context.Context) (HostIdentity, error)

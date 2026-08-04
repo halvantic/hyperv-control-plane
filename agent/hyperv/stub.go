@@ -214,6 +214,18 @@ func (s *Stub) EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNIC
 	return outs, errs
 }
 
+// ClusterVMRolesPresent mirrors the stub's EnsureClusterVMRole, which treats
+// every role as already existing. Reporting the same thing here keeps the
+// batched and per-VM paths indistinguishable to existing tests, which is the
+// point: the batch is an optimisation, not a behaviour change.
+func (s *Stub) ClusterVMRolesPresent(_ context.Context, names []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
+}
+
 func (s *Stub) GetHostIdentity(_ context.Context) (HostIdentity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
