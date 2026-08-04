@@ -487,11 +487,30 @@ func (r *runner) watchVMState(ctx context.Context) {
 // locally for later replay, but the cycle still completes.
 func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClient) {
 	r.cycles++
+	// Time the cycle and its phases, and say so at the end.
+	//
+	// There was no way to measure this. The centre logs a status report per
+	// cycle, but the keepalive sends one too, so the intervals in its log are a
+	// mixture and the average reads far lower than reality. The only handle was
+	// subtracting condition timestamps out of a stored status by hand, which
+	// gives the host reconcile alone and nothing else.
+	//
+	// It matters more the more the agent does: cluster-aware updating walks a
+	// cluster a node at a time, so per-cycle latency multiplies by the number of
+	// nodes, and "the console feels slow" needs to resolve to a phase.
+	cycleStart := time.Now()
+	var t phaseTimer
 	// Bound the whole cycle: if any operation hangs, the deadline cancels it (and
 	// kills the underlying powershell.exe) so the loop always regains control and
 	// the next cycle retries — the cycle can never wedge the agent.
 	ctx, cancel := context.WithTimeout(parent, cycleTimeout)
 	defer cancel()
+	defer func() {
+		// INFO, not DEBUG: this is the number anyone diagnosing a slow console
+		// asks for first, and an agent log nobody can read at its default level
+		// would not have answered the question that prompted it.
+		r.log.Info("cycle complete", append([]any{"total", roundMS(time.Since(cycleStart))}, t.fields()...)...)
+	}()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
 	// whole cycle. observeForce is the lighter VM-only variant the state watcher
@@ -500,7 +519,9 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	observeForce := r.forceObserveVMs.Swap(false)
 
 	// Metrics (CPU/memory/uptime) are live and cheap — collect every cycle.
+	doneMetrics := t.mark("metrics")
 	metrics, merr := r.hv.CollectMetrics(ctx)
+	doneMetrics()
 	if merr != nil {
 		r.log.Error("collect metrics failed", "err", merr)
 	}
@@ -509,7 +530,10 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// registration reports it.
 	inv := r.lastInventory
 	if !r.haveInventory || force || !r.registered || r.cycles%inventoryRefreshEvery == 0 {
-		if got, ierr := r.hv.CollectInventory(ctx); ierr != nil {
+		doneInv := t.mark("inventory")
+		got, ierr := r.hv.CollectInventory(ctx)
+		doneInv()
+		if ierr != nil {
 			r.log.Error("collect inventory failed", "err", ierr)
 		} else {
 			inv = got
@@ -521,7 +545,10 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// observation and change rarely — refresh on the slow cadence, reuse between.
 	resources := r.lastResources
 	if force || !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
-		if res, resErr := r.hv.CollectResources(ctx); resErr != nil {
+		doneRes := t.mark("resources")
+		res, resErr := r.hv.CollectResources(ctx)
+		doneRes()
+		if resErr != nil {
 			r.log.Error("collect resources failed", "err", resErr)
 		} else {
 			resources = res
@@ -533,7 +560,10 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// refresh it only occasionally.
 	identity := r.lastIdentity
 	if !r.haveIdentity || r.cycles%identityRefreshEvery == 0 {
-		if id, iderr := r.hv.GetHostIdentity(ctx); iderr != nil {
+		doneID := t.mark("identity")
+		id, iderr := r.hv.GetHostIdentity(ctx)
+		doneID()
+		if iderr != nil {
 			r.log.Error("get host identity failed", "err", iderr)
 		} else {
 			identity = id
@@ -641,7 +671,9 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
+		doneHost := t.mark("hostReconcile")
 		res, rerr := r.reconciler.Reconcile(ctx, cached, secrets)
+		doneHost()
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		inMaintenance = res.InMaintenance
@@ -674,7 +706,9 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	cp := st
 	r.lastStatus = &cp
 	r.statusMu.Unlock()
+	doneReport := t.mark("reportStatus")
 	r.reportStatus(ctx, client, st)
+	doneReport()
 
 	// Cluster reconcile, only when the centre gave us a current assignment. Every
 	// member reconciles (so the clustering feature is ensured on all of them), but
@@ -698,7 +732,9 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	if assignment != nil {
 		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
 		if force || genChanged || maintChanged || r.cycles%clusterReconcileEvery == 0 {
+			doneCluster := t.mark("clusterReconcile")
 			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+			doneCluster()
 			if cerr != nil {
 				r.log.Error("cluster reconcile incomplete", "err", cerr)
 			}
@@ -712,7 +748,9 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// VM reconcile, against the cached set. This runs whether or not the centre
 	// was reachable — the agent enforces the VMs it was last given, same as the
 	// host spec. Reporting is best-effort and skipped when autonomous.
+	doneVMs := t.mark("vmReconcile")
 	r.reconcileVMs(ctx, client, autonomous)
+	doneVMs()
 
 	// Imperative jobs are NOT run here. They are handled by the dedicated pollJobs
 	// goroutine (under the long-lived root context, every few seconds), so a slow
