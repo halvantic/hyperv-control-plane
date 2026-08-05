@@ -1718,6 +1718,15 @@ type ClusterUpdateRun struct {
 	// agent autonomy to mean "exclude from maintenance" would conflate two
 	// different questions and confuse both.
 
+	// LastObserveNudge is when the run last asked the cluster's former member to
+	// re-observe, so it can do so periodically without doing it every tick.
+	//
+	// The health gate reads cluster status, which is refreshed on the former's
+	// slow sweep — minutes. Waiting for that means a node sits Resuming long
+	// after its storage has actually come back, and it compounds once per node.
+	// Asking makes the run wait on the cluster rather than on a cadence.
+	LastObserveNudge time.Time `json:"lastObserveNudge,omitempty"`
+
 	CreatedBy string    `json:"createdBy,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt,omitempty"`
