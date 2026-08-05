@@ -249,11 +249,25 @@ func TestClusterStatusRoundTrip(t *testing.T) {
 // trip is made to prove the proto carries it.
 func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	st := sampleClusterStatus()
+
+	// Fields the proto deliberately does not carry, and why. Keep this list
+	// short and justified: every entry is a field the round trip cannot vouch
+	// for, which is the exact hazard this test exists to catch.
+	centreOnly := map[string]string{
+		// Stamped by the centre on receipt so one clock decides freshness. If the
+		// agent set it, a host with a skewed or wrong clock could make a stale
+		// snapshot look current and defeat the gate that reads it.
+		"ClusterStatus.ObservedAt": "stamped by the centre on receipt; see ClusterStatus.ObservedAt",
+	}
+
 	check := func(name string, v reflect.Value) {
 		t.Helper()
 		for i := 0; i < v.NumField(); i++ {
 			f := v.Type().Field(i)
 			if !f.IsExported() {
+				continue
+			}
+			if _, skip := centreOnly[name+"."+f.Name]; skip {
 				continue
 			}
 			if v.Field(i).IsZero() {

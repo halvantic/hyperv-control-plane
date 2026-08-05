@@ -762,6 +762,23 @@ type ClusterStatus struct {
 	Nodes              []ClusterNodeStatus    `json:"nodes,omitempty"`
 	Pool               *ClusterPoolStatus     `json:"pool,omitempty"`
 	Networks           []ClusterNetworkStatus `json:"networks,omitempty"`
+
+	// ObservedAt is when this snapshot was taken, stamped by the CENTRE when the
+	// report arrives. It is not carried on the wire and an agent cannot set it:
+	// one clock decides, so the value is comparable with the centre's own
+	// timestamps and immune to host clock skew.
+	//
+	// Receipt time is the observation time here because the former only sends a
+	// cluster report on a cycle where it has just run the cluster sweep (see
+	// clusterReconcileEvery); it does not resend a cached one each heartbeat.
+	//
+	// This exists because "healthy" is a claim about a moment. A cluster status
+	// from before a node was drained says nothing about the cluster after it, and
+	// a rolling update that reads one as current will happily take a second node
+	// out while the first one's disks are still rebuilding. Anything gating an
+	// action on cluster health must check this is newer than whatever it did
+	// last, not merely that the numbers look good.
+	ObservedAt time.Time `json:"observedAt,omitempty"`
 }
 
 // ClusterNetworkStatus is one cluster network: subnet (CIDR), role
@@ -1726,6 +1743,18 @@ type ClusterUpdateRun struct {
 	// after its storage has actually come back, and it compounds once per node.
 	// Asking makes the run wait on the cluster rather than on a cadence.
 	LastObserveNudge time.Time `json:"lastObserveNudge,omitempty"`
+
+	// LastDisturbance is when this run last did something that changes what the
+	// cluster looks like — drained a node, rebooted one, or returned one to
+	// service. Cluster status observed before it describes a cluster that no
+	// longer exists, so every health gate requires a snapshot newer than this.
+	//
+	// Without it the run reasons about health from whatever report happened to be
+	// in the store. On the rig a second run began 13 minutes after the first
+	// finished and passed preflight on a snapshot predating the reboots, so it
+	// started draining into a pool that was still rebuilding. The numbers it read
+	// were true; they were just true of an earlier cluster.
+	LastDisturbance time.Time `json:"lastDisturbance,omitempty"`
 
 	CreatedBy string    `json:"createdBy,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitempty"`
