@@ -490,13 +490,57 @@ func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	b.WriteString("$clusterIps = @(); try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}\n")
 	b.WriteString("Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { ($_.PrefixOrigin -eq 'Manual' -or $_.PrefixOrigin -eq 'Dhcp') -and ($clusterIps -notcontains $_.IPAddress) } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue\n")
 	b.WriteString("Remove-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue\n")
+	// A GHOST adapter still owns the address. The removal above only reaches
+	// addresses on adapters that still exist; a non-present device keeps its
+	// static address in the registry alone, where Get-NetIPAddress cannot see
+	// it — and New-NetIPAddress still refuses with "object already exists".
+	//
+	// This is what a NIC swap leaves behind. Changing a VM's adapter type (or
+	// replacing a physical card) gives Windows new devices and ghosts the old
+	// ones, which is also why the new adapters arrive named "Ethernet0 2".
+	// Observed on the rig 2026-08-05: the fabric vNICs came back with no
+	// address at all, the cluster's storage network partitioned, and the agent
+	// reported "exit status 1:" with nothing after the colon.
+	//
+	// Only NON-PRESENT interfaces are touched, and only the address value that
+	// actually collides — a live adapter's configuration is never altered here.
+	b.WriteString(`
+function Clear-BallastGhostAddress([string]$want) {
+  $present = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.InterfaceGuid })
+  $base = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+  $freed = @()
+  foreach ($k in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+    if ($present -contains [string]$k.PSChildName) { continue }
+    $props = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+    if ($props -and $props.IPAddress -and (@($props.IPAddress) -contains $want)) {
+      Remove-ItemProperty -Path $k.PSPath -Name IPAddress -Force -ErrorAction SilentlyContinue
+      Remove-ItemProperty -Path $k.PSPath -Name SubnetMask -Force -ErrorAction SilentlyContinue
+      $freed += [string]$k.PSChildName
+    }
+  }
+  return $freed
+}
+`)
+	newIP := fmt.Sprintf("New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d", psQuote(ip), prefix)
 	if cfg.Gateway != "" {
-		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d -DefaultGateway %s | Out-Null\n",
-			psQuote(ip), prefix, psQuote(cfg.Gateway))
-	} else {
-		fmt.Fprintf(&b, "New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d | Out-Null\n",
-			psQuote(ip), prefix)
+		newIP += " -DefaultGateway " + psQuote(cfg.Gateway)
 	}
+	// Try, then free a ghost's claim and try once more. The catch also supplies
+	// the error TEXT: relying on stderr produced a bare "exit status 1:" with
+	// nothing after it, which told an operator only that something failed.
+	fmt.Fprintf(&b, `
+try { %[1]s | Out-Null }
+catch {
+  $first = [string]$_.Exception.Message
+  $freed = Clear-BallastGhostAddress %[2]s
+  if ($freed.Count -gt 0) {
+    try { %[1]s | Out-Null }
+    catch { throw ('could not apply ' + %[2]s + ' to ' + $alias + ' even after releasing it from removed adapter(s) ' + ($freed -join ', ') + ': ' + [string]$_.Exception.Message) }
+  } else {
+    throw ('could not apply ' + %[2]s + ' to ' + $alias + ': ' + $first)
+  }
+}
+`, newIP, psQuote(ip))
 	if len(cfg.DNSServers) > 0 {
 		fmt.Fprintf(&b, "Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses %s | Out-Null\n",
 			psStringList(cfg.DNSServers))
