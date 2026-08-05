@@ -74,6 +74,18 @@ type Condition struct {
 	LastTransitionTime time.Time `json:"lastTransitionTime"`
 }
 
+// Condition reasons that carry a specific remedy. Most reasons describe what
+// happened; these tell the console what to OFFER, so they are part of the
+// contract with the UI and must not be reworded casually.
+const (
+	// ReasonSavedStateIncompatible: the VM cannot start because its saved memory
+	// image was captured on a host with a different CPU feature set. Retrying
+	// never helps. The single remedy — discard the image and cold boot — is
+	// destructive, so the console offers it explicitly and nothing performs it
+	// automatically. See docs/console-completeness-2026-08-05.md.
+	ReasonSavedStateIncompatible = "SavedStateIncompatible"
+)
+
 // ---------------------------------------------------------------------------
 // Host
 // ---------------------------------------------------------------------------
@@ -1044,10 +1056,15 @@ const (
 	// writes that were still in memory. Discarding is the way out and, unlike
 	// starting the VM, it does not disturb a generalised image.
 	JobVMDiscardSavedState = "VMDiscardSavedState" // params: vm
-	JobClusterAddNode      = "ClusterAddNode"      // params: node
-	JobClusterEvict        = "ClusterEvict"        // params: node
-	JobNodeDrain           = "NodeDrain"           // params: node — pause + move roles off (maintenance)
-	JobNodeResume          = "NodeResume"          // params: node — resume into the cluster
+	// JobVMDiscardSavedStateAndStart discards the memory image and then starts
+	// the VM, because "get it running again" is one intention and splitting it
+	// into two operator steps invites stopping half way — leaving a VM Off that
+	// somebody wanted Running.
+	JobVMDiscardSavedStateAndStart = "VMDiscardSavedStateAndStart" // params: vm
+	JobClusterAddNode              = "ClusterAddNode"              // params: node
+	JobClusterEvict                = "ClusterEvict"                // params: node
+	JobNodeDrain                   = "NodeDrain"                   // params: node — pause + move roles off (maintenance)
+	JobNodeResume                  = "NodeResume"                  // params: node — resume into the cluster
 
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node

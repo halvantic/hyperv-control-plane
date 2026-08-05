@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -804,13 +805,39 @@ $ErrorActionPreference = 'Stop'
 $grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
 if ($grp) {
   if ([string]$grp.State -eq '%[4]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
-  %[5]s -Name %[1]s -ErrorAction Stop | Out-Null
-  [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress; return
+} else {
+  $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+  if (-not $vm) { throw 'VM does not exist' }
+  if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 }
-$vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
-if (-not $vm) { throw 'VM does not exist' }
-if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
-%[3]s | Out-Null
+try {
+  if ($grp) { %[5]s -Name %[1]s -ErrorAction Stop | Out-Null }
+  else { %[3]s | Out-Null }
+} catch {
+  # A start that fails against a SAVED state is worth diagnosing rather than
+  # handing the raw cmdlet text to an operator. Hyper-V logs event 24000 when
+  # the memory image was captured on a machine with a different CPU feature
+  # set: it cannot be restored here, and no amount of retrying changes that.
+  # The only way out is to discard the image and cold boot, which is
+  # destructive — so the agent identifies the cause and NEVER acts on it.
+  $why = [string]$_.Exception.Message
+  $now = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+  if ('%[2]s' -eq 'Running' -and $now -and [string]$now.State -eq 'Saved') {
+    $incompat = $false
+    # The event log is the authoritative statement; the message text is only a
+    # fallback for when the log is unreadable, because its wording is not a
+    # contract.
+    foreach ($e in @(Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-Worker-Admin'; Id=24000; StartTime=(Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue)) {
+      if ([string]$e.Message -like ('*' + %[1]s + '*')) { $incompat = $true }
+    }
+    if (-not $incompat -and $why -match 'failed to restore') { $incompat = $true }
+    if ($incompat) {
+      [pscustomobject]@{ changed = $false; savedStateIncompatible = $true } | ConvertTo-Json -Compress
+      return
+    }
+  }
+  throw
+}
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(name), target, verb, clusterGroupState(desired), clusterVerb)
 
@@ -819,16 +846,33 @@ if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | Con
 		return OutcomeUnchanged, fmt.Errorf("set vm power %q: %w", name, err)
 	}
 	var res struct {
-		Changed bool `json:"changed"`
+		Changed                bool `json:"changed"`
+		SavedStateIncompatible bool `json:"savedStateIncompatible"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
 		return OutcomeUnchanged, fmt.Errorf("set vm power %q: %w", name, err)
+	}
+	if res.SavedStateIncompatible {
+		// Prose, because this reaches the operator as a job message. The sentinel
+		// is what the reconciler matches on to set a machine-readable reason.
+		return OutcomeUnchanged, fmt.Errorf("%w: %q has a saved state captured on a different host, so it cannot be resumed here. Discarding the saved state will cold-boot it — the disks are unaffected, but anything in memory is lost", ErrSavedStateIncompatible, name)
 	}
 	if res.Changed {
 		return OutcomeUpdated, nil
 	}
 	return OutcomeUnchanged, nil
 }
+
+// ErrSavedStateIncompatible reports a VM that cannot start because its saved
+// memory image was captured on a host with a different CPU feature set.
+//
+// It is deliberately its own error rather than one more opaque failure string.
+// It is not transient — retrying will never fix it — and it has exactly one
+// remedy, which is destructive, so it must be recognisable enough for the
+// console to name the cause and offer the action instead of showing a cmdlet
+// error and leaving the operator to research it. See
+// docs/console-completeness-2026-08-05.md.
+var ErrSavedStateIncompatible = errors.New("saved state is not compatible with this host")
 
 // clusterGroupState maps a requested VM power state to the cluster group state
 // used to skip a no-op.

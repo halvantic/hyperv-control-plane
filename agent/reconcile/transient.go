@@ -45,6 +45,19 @@ func transientSignature(err error) string {
 	// it. Settles when the migration completes.
 	case strings.Contains(m, "another process") || strings.Contains(m, "being used"):
 		return "the disk is held open by a migration or a running VM"
+
+	// A Cluster Shared Volume that is not Online cannot be written to. It goes
+	// OnlinePending or Detached while the storage pool rebuilds, and comes back
+	// by itself — so a pass or two of this is normal recovery, not a fault.
+	//
+	// It is here rather than reported as an error because the raw symptom is
+	// "Access to the path ... is denied", which sends the operator to check
+	// permissions on something whose permissions are fine. Note the window still
+	// applies: a volume that has not come back after transientWindow escalates,
+	// because a CSV stuck offline is a real problem and the point of that window
+	// is that nothing waits for ever in silence.
+	case strings.Contains(m, "to come back online"):
+		return "a cluster volume it needs is not online yet"
 	}
 	return ""
 }

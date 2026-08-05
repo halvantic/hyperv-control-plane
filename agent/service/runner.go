@@ -1204,7 +1204,7 @@ func jobHoldsVM(kind string) bool {
 	switch kind {
 	case types.JobVMMoveStorage, types.JobMigrateVM, types.JobClusterMoveVM,
 		types.JobVMClone, types.JobVMCaptureTemplate, types.JobVMExport,
-		types.JobVMDiscardSavedState,
+		types.JobVMDiscardSavedState, types.JobVMDiscardSavedStateAndStart,
 		types.JobVMApplyCheck, types.JobVMRemoveCheck:
 		return true
 	}

@@ -14,6 +14,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -620,6 +621,17 @@ func (r *Reconciler) condition(condType string, out hyperv.Outcome, err error) t
 		LastTransitionTime: r.now(),
 	}
 	if err != nil {
+		// A failure with a known cause and a known remedy is reported with a
+		// machine-readable Reason, so the console can name the cause and offer
+		// the action instead of showing a cmdlet error. This must come BEFORE the
+		// transient check: an incompatible saved state never settles, and calling
+		// it "Settling" would promise a recovery that cannot happen.
+		if errors.Is(err, hyperv.ErrSavedStateIncompatible) {
+			c.Status = false
+			c.Reason = types.ReasonSavedStateIncompatible
+			c.Message = err.Error()
+			return c
+		}
 		// A failure with a known in-flight signature is reported as SETTLING
 		// rather than failed — the operation is expected to succeed on a later
 		// pass with no operator action, and a red condition for a few seconds of

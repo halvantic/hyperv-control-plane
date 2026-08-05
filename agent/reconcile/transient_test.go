@@ -104,3 +104,50 @@ func TestConditionLeavesRealFailuresAlone(t *testing.T) {
 		t.Errorf("a real failure must not be dressed as settling, got %q", c.Message)
 	}
 }
+
+/* A CSV that is not Online cannot be written to, and Windows reports that as
+   "Access to the path ... is denied" — a permissions error for something that
+   is not about permissions. On the rig this repeated every reconcile pass for
+   hours while the storage pool rebuilt, telling the operator to inspect ACLs
+   that were fine. */
+
+func TestAVolumeComingBackOnlineSettlesBriefly(t *testing.T) {
+	err := errors.New("ensure replica server: powershell: exit status 1: waiting for volume 'Cluster Virtual Disk (Datastore 1)' to come back online before configuring the replica server (the cluster reports it OnlinePending)")
+	what := transientSignature(err)
+	if what == "" {
+		t.Fatal("a volume that is not online yet is normal recovery for a pass or two, not an immediate fault")
+	}
+	if !strings.Contains(what, "not online") {
+		t.Fatalf("the explanation must name the actual cause, got %q", what)
+	}
+}
+
+// The half that keeps it honest. transientWindow exists so nothing waits for
+// ever in silence: a CSV still offline after two minutes is a real problem and
+// must escalate rather than read calm indefinitely.
+func TestAVolumeThatNeverComesBackEscalates(t *testing.T) {
+	tr := newTransientTracker()
+	base := time.Now()
+	err := errors.New("waiting for volume 'Vol2' to come back online")
+
+	if _, within := tr.observe("ReplicaServer", base); !within {
+		t.Fatal("the first observation is inside the window")
+	}
+	if _, within := tr.observe("ReplicaServer", base.Add(transientWindow+time.Second)); within {
+		t.Fatalf("past %s this must stop being treated as settling — a volume stuck offline is a fault", transientWindow)
+	}
+	// The signature itself keeps matching; it is the WINDOW that escalates, so
+	// the message stays accurate while the severity changes.
+	if transientSignature(err) == "" {
+		t.Fatal("the signature should still recognise the cause after escalation")
+	}
+}
+
+// A genuine permissions failure on an Online volume must NOT be softened — that
+// is the fault this whole change could accidentally hide.
+func TestARealPermissionFailureIsNotSoftened(t *testing.T) {
+	err := errors.New("ensure replica server: powershell: exit status 1: New-Item : Access to the path 'Datastore 1' is denied.")
+	if what := transientSignature(err); what != "" {
+		t.Fatalf("an access-denied on an online volume is a real fault, got softened as %q", what)
+	}
+}

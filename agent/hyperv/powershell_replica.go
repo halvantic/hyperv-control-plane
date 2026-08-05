@@ -84,6 +84,26 @@ $changed = $false
 if (-not $enabled) {
   if ($rs.ReplicationEnabled) { Set-VMReplicationServer -ReplicationEnabled $false -Confirm:$false; $changed = $true }
 } else {
+  # A CSV that is not Online cannot be written to, and Windows reports that as
+  # "Access to the path ... is denied" — a permissions error for something that
+  # is not a permissions problem. During an S2D rebuild the volume can be
+  # Detached or OnlinePending for a long time, so this fired every pass and told
+  # the operator to go and look at ACLs.
+  #
+  # Check the volume's state and say what is actually happening. Note the check
+  # is on AVAILABILITY, not health: a Degraded volume mid-repair is still Online
+  # and still writable, so keying off health would both cry wolf during ordinary
+  # rebuilds and miss a healthy-but-paused volume. And if the CSV IS Online and
+  # the write still fails, that is a real permissions fault and must stay one.
+  if ($storage -like 'C:\ClusterStorage\*') {
+    $csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object {
+      $fv = [string]$_.SharedVolumeInfo.FriendlyVolumeName
+      $fv -and ($storage -eq $fv -or $storage -like ($fv + '\*'))
+    })[0]
+    if ($csv -and [string]$csv.State -ne 'Online') {
+      throw ("waiting for volume '" + [string]$csv.Name + "' to come back online before configuring the replica server (the cluster reports it " + [string]$csv.State + ")")
+    }
+  }
   if (-not (Test-Path $storage)) { New-Item -ItemType Directory -Path $storage -Force | Out-Null; $changed = $true }
   $wrongPort = $true
   try { $wrongPort = ([int]$rs.KerberosAuthenticationPort -ne $port -and [int]$rs.CertificateAuthenticationPort -ne $port) } catch {}

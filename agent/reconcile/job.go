@@ -38,6 +38,18 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.MoveVMStorage(ctx, p["vm"], p["dest"], onProgress)
 	case types.JobVMDiscardSavedState:
 		return done(r.hv.DiscardVMSavedState(ctx, p["vm"]), "discarded the saved state of "+p["vm"]+" (it is now Off)")
+	case types.JobVMDiscardSavedStateAndStart:
+		// Two steps, one intention. Reported as one job so a failure to start is
+		// not mistaken for a failure to discard — by then the memory image is
+		// already gone and repeating the discard would be a no-op, while the
+		// operator still needs to know the VM did not come up.
+		if err := r.hv.DiscardVMSavedState(ctx, p["vm"]); err != nil {
+			return "", fmt.Errorf("discard saved state of %s: %w", p["vm"], err)
+		}
+		if _, err := r.hv.SetVMPowerState(ctx, p["vm"], types.VMPowerRunning); err != nil {
+			return "", fmt.Errorf("saved state of %s was discarded, but it did not start: %w", p["vm"], err)
+		}
+		return "discarded the saved state of " + p["vm"] + " and started it", nil
 	case types.JobVMCaptureTemplate:
 		n, err := r.hv.CaptureTemplate(ctx, p["vm"], p["dest"], p["generalise"] == "true", p["discardSaved"] == "true", p["guestUser"], p["guestPass"])
 		// The size travels back inside the message; types owns that format, and
