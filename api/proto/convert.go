@@ -755,6 +755,34 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		Nodes:              clusterNodesToProto(s.Nodes),
 		Pool:               clusterPoolToProto(s.Pool),
 		Networks:           clusterNetworksToProto(s.Networks),
+		Witness:            clusterWitnessToProto(s.Witness),
+	}
+}
+
+// Nil is preserved in both directions. "The former has not reported quorum yet"
+// and "this cluster has no witness" are different facts, and flattening them
+// would let an unreported cluster render as one that is genuinely unprotected.
+func clusterWitnessToProto(w *types.ClusterWitnessStatus) *ClusterWitness {
+	if w == nil {
+		return nil
+	}
+	return &ClusterWitness{
+		Type:       witnessTypeToProto(w.Type),
+		Path:       w.Path,
+		State:      w.State,
+		QuorumType: w.QuorumType,
+	}
+}
+
+func clusterWitnessFromProto(w *ClusterWitness) *types.ClusterWitnessStatus {
+	if w == nil {
+		return nil
+	}
+	return &types.ClusterWitnessStatus{
+		Type:       witnessTypeFromProto(w.GetType()),
+		Path:       w.GetPath(),
+		State:      w.GetState(),
+		QuorumType: w.GetQuorumType(),
 	}
 }
 
@@ -863,6 +891,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		Nodes:              clusterNodesFromProto(s.GetNodes()),
 		Pool:               clusterPoolFromProto(s.GetPool()),
 		Networks:           clusterNetworksFromProto(s.GetNetworks()),
+		Witness:            clusterWitnessFromProto(s.GetWitness()),
 	}
 }
 

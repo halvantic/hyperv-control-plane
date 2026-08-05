@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/joshua-fourie/ballast/api/types"
 )
 
 type clusterOwnedObs struct {
@@ -37,6 +39,14 @@ type clusterObservation struct {
 	ClusterVMs []clusterOwnedObs   `json:"clustervms"`
 	Pool       *clusterPoolObs     `json:"pool"`
 	Networks   []clusterNetworkObs `json:"networks"`
+	Witness    *clusterWitnessObs  `json:"witness"`
+}
+
+type clusterWitnessObs struct {
+	Type       string `json:"type"`
+	Path       string `json:"path"`
+	State      string `json:"state"`
+	QuorumType string `json:"quorumType"`
 }
 
 type clusterPoolObs struct {
@@ -193,8 +203,125 @@ $nets = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object {
   # assigns it automatically (preferring networks with no gateway), so the role
   # alone never answers "which network is storage on".
   [pscustomobject]@{ name = [string]$_.Name; cidr = ([string]$_.Address + '/' + $bits); role = $role; state = [string]$_.State; metric = [int]$_.Metric } })
-[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets) } | ConvertTo-Json -Compress -Depth 4
+# Quorum. A cluster with no witness reports type None — an answer, not an
+# absence — because "three nodes and no witness" is precisely the configuration
+# worth telling someone about, and it is indistinguishable from a healthy
+# cluster if quorum is never actually read.
+#
+# The witness resource's State is captured separately from its existence: a
+# witness configured against a share that has gone away sits Offline and does
+# not vote, and that only becomes apparent when a node is already lost.
+$witness = $null
+$q = Get-ClusterQuorum -ErrorAction SilentlyContinue
+if ($q) {
+  $wtype = 'None'; $wpath = ''; $wstate = ''
+  $wr = $q.QuorumResource
+  if ($wr) {
+    $wstate = [string]$wr.State
+    $rt = [string]$wr.ResourceType
+    if ($rt -like '*File Share Witness*')  { $wtype = 'FileShare' }
+    elseif ($rt -like '*Cloud Witness*')   { $wtype = 'Cloud' }
+    elseif ($rt -like '*Physical Disk*')   { $wtype = 'Disk' }
+    else { $wtype = $rt }
+    # SharePath for a file share witness, AccountName for a cloud one. Both are
+    # cluster parameters on the resource rather than properties of it.
+    $sp2 = ($wr | Get-ClusterParameter -Name SharePath -ErrorAction SilentlyContinue).Value
+    if ($sp2) { $wpath = [string]$sp2 }
+    if (-not $wpath) {
+      $an = ($wr | Get-ClusterParameter -Name AccountName -ErrorAction SilentlyContinue).Value
+      if ($an) { $wpath = [string]$an }
+    }
+  }
+  $witness = [pscustomobject]@{ type = $wtype; path = $wpath; state = $wstate; quorumType = [string]$q.QuorumType }
+}
+[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness } | ConvertTo-Json -Compress -Depth 4
 `
+
+// witnessScript applies a file-share witness, and only when it differs from
+// what is already configured.
+//
+// Idempotency matters more than usual here: Set-ClusterQuorum is not a no-op
+// when it re-applies the same value — it tears the witness resource down and
+// recreates it, which momentarily drops a vote. Doing that on every reconcile
+// pass would put a recurring quorum wobble into a cluster that was fine.
+//
+// Paths are compared case-insensitively with trailing slashes ignored, because
+// Windows stores the path as given and an operator writing the same share two
+// ways must not cause a rebuild every pass.
+const witnessScript = `
+$ErrorActionPreference = 'Stop'
+$desired = %s
+$changed = $false
+$q = Get-ClusterQuorum -ErrorAction Stop
+$curPath = ''
+$curType = 'None'
+if ($q.QuorumResource) {
+  $rt = [string]$q.QuorumResource.ResourceType
+  if ($rt -like '*File Share Witness*') { $curType = 'FileShare' }
+  elseif ($rt -like '*Cloud Witness*')  { $curType = 'Cloud' }
+  elseif ($rt -like '*Physical Disk*')  { $curType = 'Disk' }
+  else { $curType = $rt }
+  $v = ($q.QuorumResource | Get-ClusterParameter -Name SharePath -ErrorAction SilentlyContinue).Value
+  if ($v) { $curPath = [string]$v }
+}
+function Norm([string]$p) { return ($p.TrimEnd('\','/')).ToLowerInvariant() }
+
+if ($desired -eq '') {
+  # Declared None: fall back to node majority, but only if a witness is set.
+  if ($curType -ne 'None') {
+    Set-ClusterQuorum -NodeMajority -ErrorAction Stop | Out-Null
+    $changed = $true
+  }
+} elseif ($curType -ne 'FileShare' -or (Norm $curPath) -ne (Norm $desired)) {
+  Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+  $changed = $true
+}
+[pscustomobject]@{ changed = $changed } | ConvertTo-Json -Compress
+`
+
+// EnsureClusterWitness makes the cluster's quorum witness match w. Only
+// FileShare and None are applied; anything else is refused with a reason rather
+// than half-attempted.
+//
+// Run by the former only. Every member can see the cluster, so without that
+// gate all of them would race to set the same witness and each would see the
+// others' write as drift.
+func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec) (Outcome, error) {
+	var path string
+	switch w.Type {
+	case types.WitnessFileShare:
+		if strings.TrimSpace(w.FileSharePath) == "" {
+			return OutcomeUnchanged, fmt.Errorf("file share witness needs a share path")
+		}
+		path = strings.TrimSpace(w.FileSharePath)
+	case types.WitnessNone:
+		path = ""
+	case types.WitnessDisk:
+		// Not a limitation of Ballast's: a disk witness needs shared block
+		// storage every node can attach, and S2D has none. Attempting it fails
+		// obscurely inside Set-ClusterQuorum, so say why here instead.
+		return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage and cannot be used with Storage Spaces Direct; use a file share or cloud witness")
+	case types.WitnessCloud:
+		return OutcomeUnchanged, fmt.Errorf("cloud witness is observed but not yet applied by Ballast; set it with Set-ClusterQuorum -CloudWitness")
+	default:
+		return OutcomeUnchanged, fmt.Errorf("unknown witness type %q", w.Type)
+	}
+
+	out, err := p.run(ctx, fmt.Sprintf(witnessScript, psQuote(path)))
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure cluster witness: %w", err)
+	}
+	var res struct {
+		Changed bool `json:"changed"`
+	}
+	if err := decodeJSON(out, &res); err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure cluster witness: %w", err)
+	}
+	if res.Changed {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
 	out, err := p.run(ctx, clusterStateScript)
@@ -235,7 +362,12 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, n := range obs.Networks {
 		netw = append(netw, ClusterNetworkInfo{Name: n.Name, CIDR: n.CIDR, Role: n.Role, State: n.State, Metric: n.Metric})
 	}
-	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw}, nil
+	var witness *ClusterWitness
+	if obs.Witness != nil {
+		witness = &ClusterWitness{Type: obs.Witness.Type, Path: obs.Witness.Path,
+			State: obs.Witness.State, QuorumType: obs.Witness.QuorumType}
+	}
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness}, nil
 }
 
 const installClusteringScript = `

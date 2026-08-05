@@ -498,6 +498,13 @@ type Interface interface {
 	// (client access point + broker resource). Run on the former. Idempotent.
 	EnsureReplicaBroker(ctx context.Context, spec types.ReplicaBrokerSpec) (Outcome, error)
 
+	// EnsureClusterWitness makes the cluster's quorum witness match the spec.
+	// Former-only. Idempotent, and deliberately so: Set-ClusterQuorum recreates
+	// the witness resource even when re-applying the same value, which drops a
+	// vote for a moment, so re-applying every pass would be a recurring wobble
+	// rather than a no-op.
+	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec) (Outcome, error)
+
 	// RemoveReplicaBroker deletes the Hyper-V Replica Broker cluster role and the
 	// client access point it lives in. Run on the former. Idempotent: a cluster
 	// with no broker is a no-op. The caller must clear the declared broker from
@@ -649,6 +656,10 @@ type ClusterState struct {
 	// role and state — used to select a live-migration network and to surface a
 	// partitioned/down network.
 	Networks []ClusterNetworkInfo
+	// Witness is the cluster's observed quorum configuration. Nil when it could
+	// not be read this pass; a cluster with no witness reports Type "None", which
+	// is a different and far more interesting answer than "unknown".
+	Witness *ClusterWitness
 }
 
 // ClusterPool is the S2D storage pool's name and capacity (raw total and the
@@ -687,6 +698,22 @@ type ClusterNetworkInfo struct {
 	// Metric decides which network carries cluster and CSV/SMB traffic — lowest
 	// wins among those enabled for cluster use.
 	Metric int
+}
+
+// ClusterWitness is the cluster's quorum configuration as Failover Clustering
+// reports it: which witness (if any) holds the extra vote, where it lives, and
+// whether its resource is actually online.
+type ClusterWitness struct {
+	// Type is "None", "FileShare", "Cloud" or "Disk".
+	Type string
+	// Path is the UNC share for a file-share witness, or the storage account
+	// name for a cloud witness.
+	Path string
+	// State is the witness resource's state — Online, Offline, Failed. A
+	// configured witness that is not Online is not voting.
+	State string
+	// QuorumType is the cluster's quorum model as Windows names it.
+	QuorumType string
 }
 
 // ClusterVM is one highly-available VM role and its current owner.

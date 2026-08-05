@@ -727,9 +727,29 @@ type ReplicaBrokerSpec struct {
 	StoragePath string `json:"storagePath,omitempty"`
 }
 
+// WitnessSpec declares the cluster's quorum witness.
+//
+// A witness is a vote, not storage. With an even number of votes a cluster can
+// split evenly and stop; with three nodes and no witness, losing one leaves the
+// remaining two holding quorum by a single vote and the next loss stops the
+// cluster. The witness supplies the extra vote.
+//
+// Setting this is coordinating with Failover Clustering, not replacing it:
+// Set-ClusterQuorum is the supported cmdlet and the cluster continues to own
+// every quorum decision. Ballast declares which witness should be configured
+// and reconciles to it, exactly as it does with New-Cluster.
+//
+// Only FileShare is enforced today. Cloud is observed and reported but not
+// applied — it needs an Azure account key, which is a credential path that has
+// to reach the agent without landing in its on-disk cache in the clear.
+// Disk is not usable with Storage Spaces Direct at all (it requires shared
+// block storage, which S2D has none of) and is refused rather than attempted.
 type WitnessSpec struct {
 	Type WitnessType `json:"type"`
-	// FileSharePath for FileShare witnesses.
+	// FileSharePath is the UNC path for a FileShare witness, e.g.
+	// \\fileserver\bcluster2-witness. The share is reached as the cluster
+	// computer object (the CNO), which must have change permission on it, so no
+	// credential belongs in this spec.
 	FileSharePath string `json:"fileSharePath,omitempty"`
 	// CloudAccount / endpoint for cloud witnesses (secret handled out of band).
 	CloudAccount string `json:"cloudAccount,omitempty"`
@@ -738,10 +758,35 @@ type WitnessSpec struct {
 type WitnessType string
 
 const (
+	// WitnessNone is node majority with no witness. Declaring it explicitly
+	// removes a configured witness; leaving Type empty means "not declared" and
+	// changes nothing, so an unmanaged cluster is never quietly reconfigured.
+	WitnessNone      WitnessType = "None"
 	WitnessFileShare WitnessType = "FileShare"
 	WitnessCloud     WitnessType = "Cloud"
 	WitnessDisk      WitnessType = "Disk"
 )
+
+// ClusterWitnessStatus is the quorum configuration as observed on the cluster,
+// which is a different question from what was asked for. Reported by the former.
+//
+// The console previously stated the witness was "Owned by Failover Clustering"
+// and synthesised a quorum state from the member count. That was not an
+// observation — a cluster with no witness at all read the same as a healthy one.
+type ClusterWitnessStatus struct {
+	// Type is what is actually configured: None, FileShare, Cloud or Disk.
+	Type WitnessType `json:"type,omitempty"`
+	// Path identifies the witness — the UNC share for FileShare, the storage
+	// account for Cloud. Empty for None.
+	Path string `json:"path,omitempty"`
+	// State is the witness cluster resource's state (typically Online). A
+	// witness that is configured but Offline is not voting, and the difference
+	// only shows up when a node is lost, so it is worth reporting on its own.
+	State string `json:"state,omitempty"`
+	// QuorumType is the cluster's quorum model as Failover Clustering names it
+	// (e.g. "NodeMajority", "NodeAndFileShareMajority").
+	QuorumType string `json:"quorumType,omitempty"`
+}
 
 type CSVSpec struct {
 	Name           string `json:"name"`
@@ -762,6 +807,11 @@ type ClusterStatus struct {
 	Nodes              []ClusterNodeStatus    `json:"nodes,omitempty"`
 	Pool               *ClusterPoolStatus     `json:"pool,omitempty"`
 	Networks           []ClusterNetworkStatus `json:"networks,omitempty"`
+
+	// Witness is the observed quorum configuration. Nil means the former has not
+	// reported it yet — which is not the same as "no witness", and the console
+	// must not render it as such.
+	Witness *ClusterWitnessStatus `json:"witness,omitempty"`
 
 	// ObservedAt is when this snapshot was taken, stamped by the CENTRE when the
 	// report arrives. It is not carried on the wire and an agent cannot set it:

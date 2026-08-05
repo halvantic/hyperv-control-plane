@@ -62,6 +62,12 @@ type Stub struct {
 	ClusterMembers      []string
 	FormCalled          bool
 
+	// Witness models the cluster's observed quorum configuration; WitnessCalls
+	// and WitnessErr drive and record EnsureClusterWitness.
+	Witness      *ClusterWitness
+	WitnessCalls []types.WitnessSpec
+	WitnessErr   error
+
 	// Storage: S2DEnabled seeds the S2D state; CSVs models existing volumes.
 	// EnableS2DCalled records that the reconciler enabled it.
 	S2DEnabled      bool
@@ -369,7 +375,8 @@ func (s *Stub) EnableRDP(_ context.Context) error { return nil }
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName, Members: s.ClusterMembers}, nil
+	return ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
+		Members: s.ClusterMembers, Witness: s.Witness}, nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {
@@ -673,6 +680,24 @@ func (s *Stub) EnsureReplicaServer(_ context.Context, _ types.ReplicaServerSpec)
 
 func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec) (Outcome, error) {
 	return OutcomeUnchanged, nil
+}
+
+// WitnessCalls records every EnsureClusterWitness call, so tests can assert not
+// only what was asked for but that a non-former asked for nothing at all.
+// WitnessErr, when set, models a witness that cannot be applied (an unreachable
+// share, or permissions missing on the cluster computer object).
+func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec) (Outcome, error) {
+	s.WitnessCalls = append(s.WitnessCalls, w)
+	if s.WitnessErr != nil {
+		return OutcomeUnchanged, s.WitnessErr
+	}
+	// Model the real thing: applying a witness that already matches is a no-op.
+	if s.Witness != nil && s.Witness.Type == string(w.Type) && s.Witness.Path == w.FileSharePath {
+		return OutcomeUnchanged, nil
+	}
+	s.Witness = &ClusterWitness{Type: string(w.Type), Path: w.FileSharePath,
+		State: "Online", QuorumType: "NodeAndFileShareMajority"}
+	return OutcomeUpdated, nil
 }
 
 func (s *Stub) RemoveReplicaBroker(_ context.Context, _ string) (string, error) {

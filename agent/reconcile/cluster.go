@@ -31,6 +31,7 @@ type ClusterResult struct {
 	Nodes         []types.ClusterNodeStatus
 	Pool          *types.ClusterPoolStatus
 	Networks      []types.ClusterNetworkStatus
+	Witness       *types.ClusterWitnessStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -172,6 +173,36 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		}
 	}
 
+	// 5b. Quorum witness. Former-only, like the other cluster-wide settings:
+	// every member can see the cluster, so without that gate all of them would
+	// race to set the same witness and each would read the others' write as
+	// drift.
+	//
+	// An empty Type means "not declared" and is left alone — a cluster whose
+	// quorum an operator manages by hand must not be reconfigured just because
+	// Ballast now knows how to. Declaring None is how you ask for no witness.
+	//
+	// Best-effort: a witness the agent cannot reach (share offline, permissions
+	// wrong on the cluster computer object) is worth reporting loudly, but it
+	// does not make the cluster degraded — quorum is unchanged from before the
+	// attempt, and the existing configuration keeps working.
+	if a.IsFormer && a.Cluster.Spec.Witness.Type != "" {
+		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness)
+		conds = append(conds, r.condition("ClusterWitness", wOut, wErr))
+		if wErr != nil {
+			r.log.Warn("ensure cluster witness failed (retries next pass)", "err", wErr)
+		} else if wOut != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("cluster witness reconciled", "type", a.Cluster.Spec.Witness.Type,
+				"path", a.Cluster.Spec.Witness.FileSharePath, "outcome", wOut)
+			// Re-observe: the witness we just set is what should be reported, not
+			// the state read before the change.
+			if st2, serr := r.hv.GetClusterState(ctx); serr == nil && st2.Known {
+				state.Witness = st2.Witness
+			}
+		}
+	}
+
 	// 6. Hyper-V Replica Broker — required for the cluster to send or receive
 	// replica traffic; replication addresses the broker's client access point.
 	// Former-only, like other cluster-wide roles. Best-effort: a transient
@@ -198,7 +229,24 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		Groups: clusterGroupsToStatus(state.Groups), CSVs: clusterCSVsToStatus(state.CSVs),
 		VMs: clusterVMsToStatus(state.VMs), Nodes: clusterNodesToStatus(state.Nodes),
 		Pool: clusterPoolToStatus(state.Pool), Networks: clusterNetworksToStatus(state.Networks),
+		Witness: clusterWitnessToStatus(state.Witness),
 	}, storageErr
+}
+
+// clusterWitnessToStatus carries the observed quorum configuration through.
+// Nil stays nil: "the former has not reported quorum yet" and "this cluster has
+// no witness" are different facts, and collapsing them would let a cluster with
+// no witness at all look like one that simply has not been read.
+func clusterWitnessToStatus(w *hyperv.ClusterWitness) *types.ClusterWitnessStatus {
+	if w == nil {
+		return nil
+	}
+	return &types.ClusterWitnessStatus{
+		Type:       types.WitnessType(w.Type),
+		Path:       w.Path,
+		State:      w.State,
+		QuorumType: w.QuorumType,
+	}
 }
 
 func clusterNetworksToStatus(ns []hyperv.ClusterNetworkInfo) []types.ClusterNetworkStatus {

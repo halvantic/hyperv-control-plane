@@ -228,6 +228,10 @@ func sampleClusterStatus() types.ClusterStatus {
 		Networks: []types.ClusterNetworkStatus{{
 			Name: "Cluster Network 2", CIDR: "10.0.50.0/24", Role: "Cluster", State: "Up", Metric: 30000,
 		}},
+		Witness: &types.ClusterWitnessStatus{
+			Type: types.WitnessFileShare, Path: `\fileserver\c1-witness`,
+			State: "Online", QuorumType: "NodeAndFileShareMajority",
+		},
 		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
 	}
 }
@@ -281,6 +285,7 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	check("ClusterNetworkStatus", reflect.ValueOf(st.Networks[0]))
 	check("ClusterNodeStatus", reflect.ValueOf(st.Nodes[0]))
 	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
+	check("ClusterWitnessStatus", reflect.ValueOf(*st.Witness))
 	check("ClusterVMStatus", reflect.ValueOf(st.VMs[0]))
 }
 

@@ -501,6 +501,23 @@ message ClusterStatus {
   ClusterPool pool = 10;
   // networks are the cluster's networks (subnet, role, state).
   repeated ClusterNetwork networks = 11;
+  // witness is the observed quorum configuration. Unset means the former has
+  // not reported quorum yet, which is not the same as having no witness.
+  ClusterWitness witness = 12;
+}
+
+// ClusterWitness is quorum as observed on the cluster, not as requested.
+message ClusterWitness {
+  // type is what is actually configured: None, FileShare, Cloud or Disk.
+  WitnessType type = 1;
+  // path is the UNC share for a file-share witness, or the storage account
+  // name for a cloud one.
+  string path = 2;
+  // state is the witness resource's state. A configured witness that is not
+  // Online is not voting, which only becomes visible once a node is lost.
+  string state = 3;
+  // quorum_type is the cluster's quorum model as Failover Clustering names it.
+  string quorum_type = 4;
 }
 
 message ClusterNetwork {

@@ -1067,6 +1067,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		Nodes:              res.Nodes,
 		Pool:               res.Pool,
 		Networks:           res.Networks,
+		Witness:            res.Witness,
 	}
 	if !res.Honoured {
 		cs.ObservedGeneration = 0
