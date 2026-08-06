@@ -1581,6 +1581,22 @@ const (
 	VMPowerOff     VMPowerState = "Off"
 	VMPowerPaused  VMPowerState = "Paused"
 	VMPowerSaved   VMPowerState = "Saved"
+
+	// VMPowerRoleOffline is a CLUSTERED VM whose role is offline. It is not a
+	// Hyper-V power state and no agent reports it — the centre derives it from
+	// the cluster, which is the only thing that knows.
+	//
+	// A clustered VM's registration IS a cluster resource: with the role offline
+	// the VM is deregistered from Hyper-V on every node, so no agent can see it
+	// and none can report its power. That absence used to leave the last observed
+	// value standing, and a VM stopped hours ago went on reading "Running" while
+	// its role sat Offline in the same database.
+	//
+	// It is deliberately not "Off". The VM is usually SAVED behind an offline
+	// role (AutomaticStopAction defaults to Save), so the true power state is
+	// genuinely unknown; what IS known is that the role is down and the VM is not
+	// running. Saying "Off" would assert the part nobody can see.
+	VMPowerRoleOffline VMPowerState = "Offline"
 )
 
 type VMStartAction string
