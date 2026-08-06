@@ -1182,15 +1182,23 @@ type ClusterStatus struct {
 	// must not render it as such.
 	Witness *ClusterWitnessStatus `json:"witness,omitempty"`
 
-	// ISCSI is the observed iSCSI connection state, reported by the node that
-	// sent this snapshot. Nil under S2D, and nil under iSCSI until a member has
-	// reported — which is not the same as "not connected".
+	// ISCSI is the observed iSCSI connection state, ONE ENTRY PER MEMBER.
+	//
+	// A list rather than a single value because every member reports its own
+	// cluster status: a single field would be overwritten by whichever node
+	// reported last, leaving the console showing one arbitrary member's view and
+	// calling it the cluster's. That is precisely the failure iSCSI produces — one
+	// node loses a path while the others are fine — so the shape that hides it is
+	// the wrong shape.
+	//
+	// The centre MERGES on receipt, replacing the reporting node's entry and
+	// keeping the rest; an agent only ever sends its own.
 	//
 	// It exists rather than being folded into Pool because an iSCSI cluster has
 	// no pool: capacity, resiliency, disk health and repair all belong to the
 	// array, and reporting empty pool fields would say Ballast looked and found
 	// nothing when in fact there was never anything of that shape to look at.
-	ISCSI *ISCSIStatus `json:"iscsi,omitempty"`
+	ISCSI []ISCSIStatus `json:"iscsi,omitempty"`
 
 	// ReplicaBroker is the observed Hyper-V Replica Broker. Nil means none was
 	// found (or none reported yet); a non-nil value while ClusterSpec.ReplicaBroker
@@ -1605,6 +1613,17 @@ type Secret struct {
 const (
 	// SecretDomainCredential carries "username" + "password" for domain join.
 	SecretDomainCredential = "DomainCredential"
+
+	// SecretCHAPCredential carries an iSCSI CHAP username and secret, in the same
+	// "username" + "password" keys.
+	//
+	// It is its own type rather than a domain credential because the two are
+	// offered in different places and confusing them is a real hazard: a domain
+	// credential reaches hosts over WinRM, and putting one forward as a CHAP
+	// secret would send an account password to a storage array. The dialogs that
+	// pick a credential filter by type, so the separation is what keeps that from
+	// being one wrong selection away.
+	SecretCHAPCredential = "CHAPCredential"
 )
 
 // User is an operator account that can sign in to the centre's UI/REST surface.

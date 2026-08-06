@@ -238,7 +238,7 @@ func sampleClusterStatus() types.ClusterStatus {
 		},
 		FunctionalLevel: 12,
 		NodeOSBuild:     26100,
-		ISCSI: &types.ISCSIStatus{
+		ISCSI: []types.ISCSIStatus{{
 			Node: "n1", InitiatorIQN: "iqn.1991-05.com.microsoft:n1.lab.local",
 			ServiceRunning: true, Portals: []string{"10.0.70.10:3260"},
 			MPIOInstalled: true, Message: "connected",
@@ -249,7 +249,7 @@ func sampleClusterStatus() types.ClusterStatus {
 				SerialNumber: "6001405abcdef", Number: 4, SizeBytes: 1 << 40,
 				TargetIQN: "iqn.2000-01.com.synology:nas.target-1", LUN: 1, Clustered: true, Offline: true,
 			}},
-		},
+		}},
 		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
 	}
 }
@@ -305,9 +305,9 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
 	check("ClusterWitnessStatus", reflect.ValueOf(*st.Witness))
 	check("ClusterReplicaBrokerStatus", reflect.ValueOf(*st.ReplicaBroker))
-	check("ISCSIStatus", reflect.ValueOf(*st.ISCSI))
-	check("ISCSISession", reflect.ValueOf(st.ISCSI.Sessions[0]))
-	check("ISCSIDisk", reflect.ValueOf(st.ISCSI.Disks[0]))
+	check("ISCSIStatus", reflect.ValueOf(st.ISCSI[0]))
+	check("ISCSISession", reflect.ValueOf(st.ISCSI[0].Sessions[0]))
+	check("ISCSIDisk", reflect.ValueOf(st.ISCSI[0].Disks[0]))
 	check("ClusterVMStatus", reflect.ValueOf(st.VMs[0]))
 }
 

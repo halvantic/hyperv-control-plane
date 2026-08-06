@@ -1087,13 +1087,16 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 // match the name the centre keys this host by. Reporting a name the centre does
 // not recognise would make a per-node fault impossible to attribute — which is
 // the entire reason the status is per-node.
-func (r *runner) stampISCSINode(st *types.ISCSIStatus) *types.ISCSIStatus {
+// An agent reports ONLY ITS OWN entry — a single-element list. It has no view of
+// any other member's iSCSI state and must not appear to speak for one; the
+// centre merges the entries into the cluster's list on receipt.
+func (r *runner) stampISCSINode(st *types.ISCSIStatus) []types.ISCSIStatus {
 	if st == nil {
 		return nil
 	}
 	out := *st
 	out.Node = r.cfg.hostName
-	return &out
+	return []types.ISCSIStatus{out}
 }
 
 // observeISOLibrary probes the host's effective boot-media share, throttled.

@@ -641,9 +641,11 @@ message ClusterStatus {
   // node_os_build is the reporting node's Windows build, which bounds the level
   // the cluster could run at.
   int32 node_os_build = 15;
-  // iscsi is the reporting node's observed iSCSI state. Unset under S2D, and
-  // unset under iSCSI until a member reports — which is not "not connected".
-  ISCSIStatus iscsi = 16;
+  // iscsi is the observed iSCSI state, ONE ENTRY PER MEMBER. An agent sends only
+  // its own; the centre merges on receipt. A single value would be overwritten
+  // by whichever node reported last, hiding the one-member-at-a-time failure
+  // that is how iSCSI actually breaks.
+  repeated ISCSIStatus iscsi = 16;
 }
 
 // ClusterReplicaBroker is the Hyper-V Replica Broker as observed on the cluster.

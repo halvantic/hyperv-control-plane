@@ -908,8 +908,26 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		ReplicaBroker:      clusterBrokerToProto(s.ReplicaBroker),
 		FunctionalLevel:    int32(s.FunctionalLevel),
 		NodeOsBuild:        int32(s.NodeOSBuild),
-		Iscsi:              iscsiStatusToProto(s.ISCSI),
+		Iscsi:              iscsiStatusesToProto(s.ISCSI),
 	}
+}
+
+func iscsiStatusesToProto(in []types.ISCSIStatus) []*ISCSIStatus {
+	var out []*ISCSIStatus
+	for i := range in {
+		out = append(out, iscsiStatusToProto(&in[i]))
+	}
+	return out
+}
+
+func iscsiStatusesFromProto(in []*ISCSIStatus) []types.ISCSIStatus {
+	var out []types.ISCSIStatus
+	for _, s := range in {
+		if v := iscsiStatusFromProto(s); v != nil {
+			out = append(out, *v)
+		}
+	}
+	return out
 }
 
 // Nil preserved both ways: under S2D there is no iSCSI state, and under iSCSI
@@ -1114,7 +1132,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		ReplicaBroker:      clusterBrokerFromProto(s.GetReplicaBroker()),
 		FunctionalLevel:    int(s.GetFunctionalLevel()),
 		NodeOSBuild:        int(s.GetNodeOsBuild()),
-		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
+		ISCSI:              iscsiStatusesFromProto(s.GetIscsi()),
 	}
 }
 

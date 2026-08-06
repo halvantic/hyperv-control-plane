@@ -4245,9 +4245,11 @@ type ClusterStatus struct {
 	// node_os_build is the reporting node's Windows build, which bounds the level
 	// the cluster could run at.
 	NodeOsBuild int32 `protobuf:"varint,15,opt,name=node_os_build,json=nodeOsBuild,proto3" json:"node_os_build,omitempty"`
-	// iscsi is the reporting node's observed iSCSI state. Unset under S2D, and
-	// unset under iSCSI until a member reports — which is not "not connected".
-	Iscsi         *ISCSIStatus `protobuf:"bytes,16,opt,name=iscsi,proto3" json:"iscsi,omitempty"`
+	// iscsi is the observed iSCSI state, ONE ENTRY PER MEMBER. An agent sends only
+	// its own; the centre merges on receipt. A single value would be overwritten
+	// by whichever node reported last, hiding the one-member-at-a-time failure
+	// that is how iSCSI actually breaks.
+	Iscsi         []*ISCSIStatus `protobuf:"bytes,16,rep,name=iscsi,proto3" json:"iscsi,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4387,7 +4389,7 @@ func (x *ClusterStatus) GetNodeOsBuild() int32 {
 	return 0
 }
 
-func (x *ClusterStatus) GetIscsi() *ISCSIStatus {
+func (x *ClusterStatus) GetIscsi() []*ISCSIStatus {
 	if x != nil {
 		return x.Iscsi
 	}
@@ -6306,7 +6308,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x0ereplica_broker\x18\r \x01(\v2 .ballast.v1.ClusterReplicaBrokerR\rreplicaBroker\x12)\n" +
 	"\x10functional_level\x18\x0e \x01(\x05R\x0ffunctionalLevel\x12\"\n" +
 	"\rnode_os_build\x18\x0f \x01(\x05R\vnodeOsBuild\x12-\n" +
-	"\x05iscsi\x18\x10 \x01(\v2\x17.ballast.v1.ISCSIStatusR\x05iscsi\"k\n" +
+	"\x05iscsi\x18\x10 \x03(\v2\x17.ballast.v1.ISCSIStatusR\x05iscsi\"k\n" +
 	"\x14ClusterReplicaBroker\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12)\n" +
