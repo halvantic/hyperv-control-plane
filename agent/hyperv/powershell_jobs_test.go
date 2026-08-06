@@ -106,6 +106,51 @@ func TestInventoryScriptRequiresGatewayForManagement(t *testing.T) {
 	}
 }
 
+// The VM an operator most needs to delete is the one deletion refused to
+// attempt. A VM whose configuration storage has gone sits in SavedCritical, and
+// Stop-VM cannot work because Hyper-V has nothing to read — so under
+// $ErrorActionPreference='Stop' its failure aborted the script before Remove-VM
+// ever ran.
+//
+// Observed 2026-08-06: 'Windows Temp Test' on HVNEW03, SavedCritical with
+// "Cannot connect to virtual machine configuration storage" after its CSV was
+// deleted, and every removal failing on Stop-VM. Remove-VM does not need the
+// storage — it removes the REGISTRATION — so stopping must be a courtesy, not a
+// precondition.
+func TestRemoveVMDoesNotLetAFailedStopAbortTheRemoval(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("")}}
+	if err := newTestPS(f).RemoveVM(context.Background(), "Windows Temp Test"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	// The stop must be inside a catch, or a VM that cannot be stopped can never
+	// be removed.
+	stop := strings.Index(s, "Stop-VM")
+	remove := strings.Index(s, "Remove-VM")
+	if stop == -1 || remove == -1 {
+		t.Fatal("both the stop and the remove must be present")
+	}
+	if remove < stop {
+		t.Fatal("the removal must follow the stop attempt")
+	}
+	if !strings.Contains(s, "try { Stop-VM") || !strings.Contains(s, "-ErrorAction Stop } catch {}") {
+		t.Error("Stop-VM must be attempted and its failure tolerated, not allowed to abort the script")
+	}
+
+	// Judged by outcome, not by whether a cmdlet complained: Remove-VM can emit a
+	// trailing error for files it could not tidy while having deregistered the VM,
+	// and calling that a failure leaves the operator deleting something already gone.
+	if !strings.Contains(s, "$still = Get-VM") {
+		t.Error("the removal must be verified by re-reading, not trusted")
+	}
+	// And when it genuinely did not go, the message must name the cause rather
+	// than passing the cmdlet's sentence through.
+	if !strings.Contains(s, "configuration storage") {
+		t.Error("a VM whose storage is unreachable must have that named as the cause")
+	}
+}
+
 // RepairHostDNS is offered as "fix DNS on all nodes", and it used to mean that
 // literally: every NIC got the DC as its DNS server. An isolated fabric vNIC
 // (storage, live migration) must have none — DNS there publishes an unreachable

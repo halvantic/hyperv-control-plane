@@ -281,7 +281,36 @@ if ($g) {
   Remove-ClusterGroup -Name %[1]s -RemoveResources -Force -ErrorAction SilentlyContinue
 }
 $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
-if ($vm) { if ($vm.State -ne 'Off') { Stop-VM -Name %[1]s -TurnOff -Force }; Remove-VM -Name %[1]s -Force }`, q)
+if ($vm) {
+  # Stopping is a courtesy, not a precondition. A VM whose configuration storage
+  # has gone sits in SavedCritical and Stop-VM cannot work — Hyper-V has nothing
+  # to read — so under $ErrorActionPreference='Stop' its failure aborted the
+  # script before Remove-VM ever ran. The VM the operator most needs to delete
+  # was the one deletion refused to attempt.
+  #
+  # Observed 2026-08-06: 'Windows Temp Test' on HVNEW03, SavedCritical with
+  # "Cannot connect to virtual machine configuration storage" after its CSV was
+  # deleted, and every removal failing on Stop-VM.
+  #
+  # Remove-VM does not need the storage: it removes the REGISTRATION. So try to
+  # stop, tolerate failure, and always go on to remove.
+  if ($vm.State -ne 'Off') {
+    try { Stop-VM -Name %[1]s -TurnOff -Force -ErrorAction Stop } catch {}
+  }
+  try { Remove-VM -Name %[1]s -Force -ErrorAction Stop } catch {}
+  # Judge by the outcome, not by whether a cmdlet complained. Remove-VM can emit
+  # a trailing error for a VM whose files it could not tidy while still having
+  # deregistered it, and reporting that as a failure would leave the operator
+  # deleting something that is already gone.
+  $still = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+  if ($still) {
+    $state = [string]$still.State
+    if ($state -eq 'SavedCritical' -or $state -eq 'Critical' -or [string]$still.Status -like '*configuration storage*') {
+      throw ('cannot remove ' + %[1]s + ': it is ' + $state + ' because Hyper-V cannot reach its configuration storage (' + [string]$still.Status + '), and the registration survived the attempt. Its files are on storage that is gone - restore or reattach that storage and retry, or remove the registration on the host.')
+    }
+    throw ('cannot remove ' + %[1]s + ': it is still registered on this host after the removal (state ' + $state + ').')
+  }
+}`, q)
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("remove vm %q: %w", name, err)
 	}
