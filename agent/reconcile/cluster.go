@@ -203,7 +203,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	// does not make the cluster degraded — quorum is unchanged from before the
 	// attempt, and the existing configuration keeps working.
 	if a.IsFormer && a.Cluster.Spec.Witness.Type != "" {
-		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness)
+		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind())
 		conds = append(conds, r.condition("ClusterWitness", wOut, wErr))
 		if wErr != nil {
 			r.log.Warn("ensure cluster witness failed (retries next pass)", "err", wErr)

@@ -157,12 +157,18 @@ func TestAnUnreachableWitnessDoesNotDegradeTheCluster(t *testing.T) {
 	}
 }
 
-// A disk witness cannot work with S2D at all — it needs shared block storage,
-// which S2D has none of. Refusing it with a reason beats letting
-// Set-ClusterQuorum fail obscurely three layers down.
-func TestADiskWitnessIsRefusedWithAReason(t *testing.T) {
+// Whether a disk witness is possible depends on the cluster's storage kind, and
+// that is the point of the discriminator: it turns a flat invariant into a
+// per-kind rule.
+//
+// S2D has no shared block storage, so a disk witness cannot work there and the
+// refusal must say so — letting Set-ClusterQuorum fail three layers down tells
+// the operator nothing. On an array-backed cluster the same request is
+// legitimate (it is the classic choice), so the same refusal would be wrong.
+func TestADiskWitnessIsRefusedOnS2DWithAReason(t *testing.T) {
 	ps := &hyperv.PowerShell{}
-	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk})
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindS2D)
 	if err == nil {
 		t.Fatal("a disk witness must be refused on an S2D cluster")
 	}
@@ -171,11 +177,46 @@ func TestADiskWitnessIsRefusedWithAReason(t *testing.T) {
 	}
 }
 
+// On iSCSI it is possible, so the refusal must NOT blame S2D — it must name the
+// real precondition, which is that the witness disk has to be a clustered disk
+// before quorum can be pointed at it. Setting quorum to a disk that is not there
+// takes the cluster's quorum with it.
+func TestADiskWitnessOnISCSINamesTheRealPrecondition(t *testing.T) {
+	ps := &hyperv.PowerShell{}
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindISCSI)
+	if err == nil {
+		t.Fatal("the witness disk must exist as a clustered disk first")
+	}
+	if strings.Contains(err.Error(), "Storage Spaces Direct") {
+		t.Fatalf("an array-backed cluster must not be told S2D is the problem, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "clustered disk") {
+		t.Fatalf("the refusal must name the precondition, got %q", err)
+	}
+}
+
+// A cluster that declares no storage kind at all cannot have a disk witness
+// either, and must not be told it is an S2D limitation.
+func TestADiskWitnessWithNoStorageKindSaysSo(t *testing.T) {
+	ps := &hyperv.PowerShell{}
+	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk}, "")
+	if err == nil {
+		t.Fatal("no storage means no disk witness")
+	}
+	if !strings.Contains(err.Error(), "does not declare any") {
+		t.Fatalf("the refusal must say the cluster declares no storage, got %q", err)
+	}
+}
+
 // A file share witness with no path is a mistake worth catching before it
 // reaches PowerShell, where it becomes a parameter-binding error.
 func TestAFileShareWitnessNeedsAPath(t *testing.T) {
 	ps := &hyperv.PowerShell{}
-	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessFileShare})
+	// A file share witness is valid on any storage kind, so the kind is irrelevant
+	// here — the missing path is the fault.
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessFileShare}, types.StorageKindS2D)
 	if err == nil {
 		t.Fatal("a file share witness with no path must be refused")
 	}

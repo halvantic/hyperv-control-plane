@@ -359,14 +359,20 @@ if ($desired -eq '') {
 [pscustomobject]@{ changed = $changed } | ConvertTo-Json -Compress
 `
 
-// EnsureClusterWitness makes the cluster's quorum witness match w. Only
-// FileShare and None are applied; anything else is refused with a reason rather
-// than half-attempted.
+// EnsureClusterWitness makes the cluster's quorum witness match w. FileShare and
+// None are applied; a disk witness is applied only where the cluster actually has
+// shared block storage. Anything else is refused with a reason rather than
+// half-attempted.
+//
+// kind is the cluster's storage model, because whether a disk witness is even
+// possible depends on it. This used to be a flat refusal, which was correct while
+// S2D was the only kind and became wrong the moment iSCSI existed — a disk
+// witness is the classic choice on array-backed storage.
 //
 // Run by the former only. Every member can see the cluster, so without that
 // gate all of them would race to set the same witness and each would see the
 // others' write as drift.
-func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec) (Outcome, error) {
+func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, error) {
 	var path string
 	switch w.Type {
 	case types.WitnessFileShare:
@@ -377,10 +383,21 @@ func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSp
 	case types.WitnessNone:
 		path = ""
 	case types.WitnessDisk:
-		// Not a limitation of Ballast's: a disk witness needs shared block
-		// storage every node can attach, and S2D has none. Attempting it fails
-		// obscurely inside Set-ClusterQuorum, so say why here instead.
-		return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage and cannot be used with Storage Spaces Direct; use a file share or cloud witness")
+		// A disk witness needs shared block storage every node can attach. S2D has
+		// none — the refusal is not a limitation of Ballast's, and attempting it
+		// fails obscurely inside Set-ClusterQuorum, so say why here instead.
+		if kind == types.StorageKindS2D {
+			return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage and cannot be used with Storage Spaces Direct; use a file share or cloud witness")
+		}
+		if kind != types.StorageKindISCSI {
+			return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage, and this cluster does not declare any; set the cluster's storage kind first, or use a file share witness")
+		}
+		// Applying it is a separate step from choosing it: the witness disk has to
+		// exist as a clustered disk before Set-ClusterQuorum can name it, and that
+		// is the LUN-adoption path, not this one. Refusing here with the reason
+		// beats setting quorum to a disk that is not there yet — which takes the
+		// cluster's quorum with it.
+		return OutcomeUnchanged, fmt.Errorf("a disk witness is supported on this cluster's storage, but the witness disk must be adopted as a clustered disk first; add the witness LUN as a volume, then set the witness")
 	case types.WitnessCloud:
 		return OutcomeUnchanged, fmt.Errorf("cloud witness is observed but not yet applied by Ballast; set it with Set-ClusterQuorum -CloudWitness")
 	default:

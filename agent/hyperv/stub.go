@@ -726,7 +726,7 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 // only what was asked for but that a non-former asked for nothing at all.
 // WitnessErr, when set, models a witness that cannot be applied (an unreachable
 // share, or permissions missing on the cluster computer object).
-func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec) (Outcome, error) {
+func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind) (Outcome, error) {
 	s.WitnessCalls = append(s.WitnessCalls, w)
 	if s.WitnessErr != nil {
 		return OutcomeUnchanged, s.WitnessErr
