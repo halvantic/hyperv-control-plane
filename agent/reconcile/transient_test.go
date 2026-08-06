@@ -22,6 +22,13 @@ func TestTransientSignatureRecognisesOnlyKnownCauses(t *testing.T) {
 		{`Attachment 'C:\ClusterStorage\Datastore 1\Linux\Linux_5187.avhdx' not found. Error: 'The system cannot find the file specified.'`, true},
 		// Observed live: the VHDX is held open by a running VM mid-migration.
 		{"the process cannot access the file because it is being used by another process", true},
+		// Observed live 2026-08-06: enabling replication to a cluster's Replica
+		// Broker failed with this while the target was still settling, and the same
+		// VM was Replicating with health Normal after a later pass, with nothing
+		// changed in between. The sentence names no cause, so treating it as a fault
+		// on the first pass produces a confident wrong diagnosis — the failure mode
+		// this whole file exists to avoid in the other direction.
+		{`ensure vm replication "Linux": Enable-VMReplication : Hyper-V failed to enable replication.`, true},
 		// Not transient — these are real and must stay red.
 		{"Access to the path 'Datastore 1' is denied", false},
 		{"Hyper-V Replica Broker is Failed - not online in this group", false},

@@ -58,6 +58,25 @@ func transientSignature(err error) string {
 	// is that nothing waits for ever in silence.
 	case strings.Contains(m, "to come back online"):
 		return "a cluster volume it needs is not online yet"
+
+	// Enabling replication to a cluster involves a target that is itself still
+	// settling: the Replica Broker's client access point has to be online, its
+	// name resolvable, and the owning node ready to place the replica. Ask a pass
+	// too early and Hyper-V answers "failed to enable replication" — a sentence
+	// that describes no cause and applies to every one of those.
+	//
+	// Observed 2026-08-06: 'Linux' failed exactly this way against bcluster2-Brk
+	// and was Replicating with health Normal after a later pass, with nothing
+	// changed in between. So the first passes are settling, not a fault.
+	//
+	// This deliberately sits ahead of the storage diagnosis EnsureVMReplication
+	// attaches to the same error. That diagnosis is right when the relationship
+	// never establishes, and wrong — confidently, which is worse — when the
+	// target was merely not ready. The window still applies: past it, the real
+	// message escalates with the storage detail intact, because replication that
+	// never starts is a genuine fault and nothing may wait for ever in silence.
+	case strings.Contains(m, "failed to enable replication"):
+		return "the replica target is not ready to accept the relationship yet"
 	}
 	return ""
 }
