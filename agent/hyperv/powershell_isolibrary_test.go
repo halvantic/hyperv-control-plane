@@ -42,6 +42,43 @@ func TestISOLibraryProbeTestsTheComputerAccountNotJustTheAgent(t *testing.T) {
 	}
 }
 
+// The computer account is the identity that attaches the media, so it is also
+// the right identity to list what is attachable.
+//
+// Listing only as the agent broke the configuration this feature itself asks
+// for: a share granted to Domain Computers and not to the agent's service
+// account showed no images and reported unreachable, while Hyper-V could boot
+// from it perfectly. Found on live hardware within minutes of shipping.
+func TestISOLibraryProbeListsAsTheComputerAccountToo(t *testing.T) {
+	s := isoLibraryScript(`\\nas.lab.local\iso`)
+
+	// The SYSTEM probe must return the file NAMES, not merely a count.
+	if !strings.Contains(s, "-Filter *.iso -File -Force") {
+		t.Error("the computer-account probe must enumerate the ISOs, not just prove the path resolves")
+	}
+	if !strings.Contains(s, "isos = $f") {
+		t.Error("the computer-account probe must return the file names it found")
+	}
+	// And those names must be used when the agent could not read the share,
+	// or the listing is empty for exactly the grant this feature recommends.
+	if !strings.Contains(s, "if ((-not $out.readable) -or ($out.isos.Count -eq 0)) { $out.isos = $mi }") {
+		t.Error("the machine's listing must be used when the agent's read failed")
+	}
+}
+
+// Granted to the machines and not to the agent is the NORMAL outcome of
+// following the advice this feature gives. It must read as working, with one
+// line of explanation — not as a fault.
+func TestISOLibraryProbeDoesNotTreatTheRecommendedGrantAsAFailure(t *testing.T) {
+	s := isoLibraryScript(`\\nas\iso`)
+	if !strings.Contains(s, "(-not $out.readable) -and $out.machineReadable -eq $true") {
+		t.Fatal("the machine-yes/agent-no case must be recognised explicitly")
+	}
+	if !strings.Contains(s, "VMs boot from it normally") {
+		t.Error("that case must say it works, since it does")
+	}
+}
+
 // Unknown is a third state. A probe that could not run says nothing about the
 // share, and reporting false would condemn a working library — the same
 // absence-of-observation-is-not-observation-of-absence rule as everywhere else.
@@ -59,6 +96,11 @@ func TestISOLibraryProbeLeavesUnknownUnknown(t *testing.T) {
 	}
 	if okAt < testPathAt || noAt < testPathAt {
 		t.Error("a verdict is reachable without the probe having reported")
+	}
+	// A result file that cannot be parsed is not a verdict either: $res stays
+	// null and neither branch runs.
+	if !strings.Contains(s, "} elseif ($res) {") {
+		t.Error("an unparseable result must leave the verdict unknown, not false")
 	}
 }
 

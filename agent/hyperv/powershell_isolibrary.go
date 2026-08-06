@@ -54,7 +54,13 @@ $task = 'BallastISOLibraryProbe-' + [guid]::NewGuid().ToString('N')
 try {
   # Test-Path alone can succeed on a cached handle, so enumerate: that is what an
   # attach actually does.
-  $probe = '$ErrorActionPreference=''Stop''; try { $n = @(Get-ChildItem -LiteralPath ''' + $share + ''' -Force -ErrorAction Stop).Count; Set-Content -LiteralPath ''' + $tmp + ''' -Value ("OK " + $n) } catch { Set-Content -LiteralPath ''' + $tmp + ''' -Value ("ERR " + $_.Exception.Message) }'
+  #
+  # And return the FILE NAMES, not just a count. The computer account is the
+  # identity that will attach the media, so it is also the right identity to list
+  # what is attachable. Listing only as the agent meant a share granted to the
+  # computer accounts — the grant this feature asks for — showed no images at all
+  # and reported itself unreachable, while Hyper-V could boot from it perfectly.
+  $probe = '$ErrorActionPreference=''Stop''; try { $f = @(Get-ChildItem -LiteralPath ''' + $share + ''' -Filter *.iso -File -Force -ErrorAction Stop | Sort-Object LastWriteTime -Descending | ForEach-Object { [string]$_.Name }); [pscustomobject]@{ ok = $true; isos = $f } | ConvertTo-Json -Compress | Set-Content -LiteralPath ''' + $tmp + ''' } catch { [pscustomobject]@{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress | Set-Content -LiteralPath ''' + $tmp + ''' }'
   $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
   $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NonInteractive -NoProfile -EncodedCommand ' + $enc)
   $pri = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -67,13 +73,19 @@ try {
     if ($ti -and $ti.LastTaskResult -ne 267009) { break }   # 267009 = still running
   }
   if (Test-Path -LiteralPath $tmp) {
-    $res = (Get-Content -LiteralPath $tmp -Raw).Trim()
-    if ($res -like 'OK*') {
+    $res = $null
+    try { $res = (Get-Content -LiteralPath $tmp -Raw) | ConvertFrom-Json } catch {}
+    if ($res -and $res.ok) {
       $out.machineReadable = $true
-    } else {
+      # The computer account's listing WINS when the agent could not read the
+      # share: it is the identity that attaches the media, so what it can see is
+      # what a VM can actually boot. Only fall back to the agent's list when the
+      # machine probe returned nothing to say.
+      $mi = @($res.isos)
+      if ((-not $out.readable) -or ($out.isos.Count -eq 0)) { $out.isos = $mi }
+    } elseif ($res) {
       $out.machineReadable = $false
-      $why = $res -replace '^ERR\s*', ''
-      $out.message = 'Hyper-V attaches boot media as this node''s computer account, and that account cannot read ' + $share + ': ' + $why + '. Grant the node computer accounts (or a group containing them) read access on the share - a grant to a user account does not apply here, and a NAS that is not domain-joined cannot authenticate them at all.'
+      $out.message = 'Hyper-V attaches boot media as this node''s computer account, and that account cannot read ' + $share + ': ' + [string]$res.error + '. Grant the node computer accounts (or a group containing them) read access on the share - a grant to a user account does not apply here, and a NAS that is not domain-joined cannot authenticate them at all.'
     }
   }
   # else: leave machineReadable null. The probe did not report, so nothing is known.
@@ -90,6 +102,14 @@ try {
 # from it fails.
 if ($out.readable -and $out.machineReadable -eq $false -and -not $out.message) {
   $out.message = 'the agent can read this share but the node computer account cannot, so VMs will not boot from it'
+}
+# The opposite, which is the NORMAL result of following this feature's own
+# advice: the share is granted to the computer accounts and not to the agent's
+# service account. VMs boot from it perfectly and the images are listed by the
+# machine probe, so this is not a fault - it is worth one line rather than an
+# alarm, and it must not read as unreachable.
+if ((-not $out.readable) -and $out.machineReadable -eq $true) {
+  $out.message = 'this share is granted to the node computer accounts but not to the agent''s service account, which is the expected result of granting Domain Computers. VMs boot from it normally; Ballast lists it through the computer account instead. Grant the agent''s account read as well only if you want Ballast to read it directly.'
 }
 [pscustomobject]$out | ConvertTo-Json -Compress`, psQuote(path))
 }
