@@ -130,7 +130,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		draining        bool
 	)
 
-	// Identity comes first: the host should have its final name, management IP
+	// DNS comes before EVERYTHING, because the domain join in the identity step
+	// cannot work without it and cannot fix it either.
+	//
+	// A host joins a domain by resolving its SRV records, so DNS has to point at
+	// the DC first. This step used to sit below the identity step, where it was
+	// unreachable in exactly the case that needed it: identity attempts the join,
+	// the join fails because DHCP handed the host the firewall as its resolver,
+	// identity returns early with a condition — and DNS is never applied. The next
+	// pass does the same, and the one after that. A freshly onboarded host on DHCP
+	// could never join, and the only way out was an operator running Fix DNS by
+	// hand, which is the intervention Ballast exists to remove.
+	//
+	// The old comment on this block already said "applied before a join". The
+	// intent was right; the placement made it false.
+	//
+	// Best-effort: a failure surfaces as a condition without degrading the host.
+	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
+		out, err := r.hv.EnsureHostDNS(ctx, dns)
+		conds = append(conds, r.advisoryCondition("HostDNS", out, err))
+		if err != nil {
+			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("host dns reconciled", "dns", dns, "outcome", out)
+		}
+	}
+
+	// Identity comes next: the host should have its final name, management IP
 	// and domain before the role and networking are configured. Rename/domain
 	// changes need a reboot governed by RebootPolicy, so like the role step this
 	// may stop the pass early and resume after the host comes back.
@@ -208,20 +235,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		} else if out != hyperv.OutcomeUnchanged {
 			changed = true
 			r.log.Info("replica server reconciled", "outcome", out)
-		}
-	}
-
-	// Host DNS servers (typically the DCs), fanned from the centre's Domain & DNS
-	// setting. Best-effort and applied before a join so the host can resolve the
-	// domain's SRV records; a failure surfaces as a condition without degrading.
-	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
-		out, err := r.hv.EnsureHostDNS(ctx, dns)
-		conds = append(conds, r.advisoryCondition("HostDNS", out, err))
-		if err != nil {
-			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
-		} else if out != hyperv.OutcomeUnchanged {
-			changed = true
-			r.log.Info("host dns reconciled", "dns", dns, "outcome", out)
 		}
 	}
 

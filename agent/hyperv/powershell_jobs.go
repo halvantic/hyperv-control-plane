@@ -691,7 +691,17 @@ if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-  $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
+  # ANY real IPv4 address, however it was obtained — not just a static one.
+  #
+  # Requiring PrefixOrigin 'Manual' skipped every DHCP-addressed NIC, which is
+  # exactly what a freshly onboarded host has. So a host that declared DNS
+  # servers had them silently not applied: DHCP kept handing it the firewall as
+  # its resolver, the domain join could not find the domain's SRV records, and
+  # nothing reported that the declared DNS had been ignored. Setting DNS on a
+  # DHCP interface is ordinary and does not disturb its address.
+  #
+  # APIPA is still excluded: 169.254 means the NIC has no usable address at all.
+  $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' }).Count -gt 0
   if (-not $hasIp) { continue }
   $routed = @(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -gt 0
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
