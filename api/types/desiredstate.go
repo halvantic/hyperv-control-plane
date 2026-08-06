@@ -1613,6 +1613,19 @@ type VMStatus struct {
 	// ObservedGeneration is the Meta.Generation the agent has fully honoured.
 	ObservedGeneration int64 `json:"observedGeneration"`
 
+	// PowerObservedAt is when an agent last actually OBSERVED this VM's power,
+	// stamped by the centre when a report arrives carrying a non-empty
+	// PowerState. A report that carries an empty one did not observe it — the VM
+	// was unreadable, or deregistered behind an offline cluster role — and does
+	// not move this stamp, even though it does move LastReportedAt.
+	//
+	// The two are different questions. LastReportedAt answers "is an agent still
+	// enforcing this VM"; this answers "how old is the power state being shown".
+	// Deriving power from the cluster needs the second one: a cluster snapshot
+	// older than a real observation must not overwrite it, or a running VM
+	// flickers to "role offline" every time a stale sweep lands.
+	PowerObservedAt time.Time `json:"powerObservedAt,omitempty"`
+
 	// ReportedBy is the host whose agent last reported this VM, stamped by the
 	// CENTRE from the report's own identity. Not on the wire and not settable by
 	// an agent, for the same reason as ClusterStatus.ObservedAt: one authority.
