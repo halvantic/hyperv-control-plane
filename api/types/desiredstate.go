@@ -1597,6 +1597,23 @@ type VMStatus struct {
 	// ObservedGeneration is the Meta.Generation the agent has fully honoured.
 	ObservedGeneration int64 `json:"observedGeneration"`
 
+	// ReportedBy is the host whose agent last reported this VM, stamped by the
+	// CENTRE from the report's own identity. Not on the wire and not settable by
+	// an agent, for the same reason as ClusterStatus.ObservedAt: one authority.
+	//
+	// It is the fastest correct answer to "which node is this VM actually on".
+	// A clustered VM is REGISTERED IN HYPER-V ONLY ON ITS OWNER — the role owns
+	// the registration, and a non-owner cannot Get-VM it at all — so the agent
+	// that can report it is the owner, by construction. The alternatives lag: a
+	// clustered VM's Placement names the cluster rather than a node, the
+	// cluster's own role list refreshes on the slow sweep, and a host's observed
+	// VM inventory is throttled to every few cycles. All three are behind a
+	// report that already carries the VMID the console needs.
+	//
+	// It is OBSERVED, not desired. After a live migration the new owner reports
+	// next and this follows it; placement may still say something older.
+	ReportedBy string `json:"reportedBy,omitempty"`
+
 	// PowerState is the actual observed power state of the VM.
 	PowerState VMPowerState `json:"powerState,omitempty"`
 
