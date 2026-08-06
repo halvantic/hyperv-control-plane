@@ -942,6 +942,15 @@ type ISCSIStatus struct {
 	// Node is the member this snapshot came from.
 	Node string `json:"node,omitempty"`
 
+	// InitiatorIQN is this node's iSCSI initiator name.
+	//
+	// Reported because no array can be configured without it, and it is the first
+	// thing anyone setting up iSCSI needs: the LUN is granted TO these names. It
+	// is knowable only on the host, so an operator who cannot see it here has to
+	// open a session on every node to collect them — which CLAUDE.md counts as a
+	// defect in Ballast rather than a step in a runbook.
+	InitiatorIQN string `json:"initiatorIQN,omitempty"`
+
 	// ServiceRunning is whether the Microsoft iSCSI Initiator service is up. It
 	// is set to start on demand by default on Windows Server, so a node that has
 	// never had a target configured reports false — which is a state to fix, not

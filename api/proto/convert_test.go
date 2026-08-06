@@ -239,7 +239,8 @@ func sampleClusterStatus() types.ClusterStatus {
 		FunctionalLevel: 12,
 		NodeOSBuild:     26100,
 		ISCSI: &types.ISCSIStatus{
-			Node: "n1", ServiceRunning: true, Portals: []string{"10.0.70.10:3260"},
+			Node: "n1", InitiatorIQN: "iqn.1991-05.com.microsoft:n1.lab.local",
+			ServiceRunning: true, Portals: []string{"10.0.70.10:3260"},
 			MPIOInstalled: true, Message: "connected",
 			Sessions: []types.ISCSISession{{
 				TargetIQN: "iqn.2000-01.com.synology:nas.target-1", Connected: true, Persistent: true, Paths: 2,

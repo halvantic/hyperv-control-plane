@@ -3884,14 +3884,18 @@ func (x *ISCSIStorageSpec) GetEnableMpio() bool {
 // iSCSI fails: one member loses a path while the others are fine, and a single
 // cluster-wide "connected" would hide the one condition worth reporting.
 type ISCSIStatus struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Node           string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	ServiceRunning bool                   `protobuf:"varint,2,opt,name=service_running,json=serviceRunning,proto3" json:"service_running,omitempty"`
-	Portals        []string               `protobuf:"bytes,3,rep,name=portals,proto3" json:"portals,omitempty"`
-	Sessions       []*ISCSISession        `protobuf:"bytes,4,rep,name=sessions,proto3" json:"sessions,omitempty"`
-	MpioInstalled  bool                   `protobuf:"varint,5,opt,name=mpio_installed,json=mpioInstalled,proto3" json:"mpio_installed,omitempty"`
-	Disks          []*ISCSIDisk           `protobuf:"bytes,6,rep,name=disks,proto3" json:"disks,omitempty"`
-	Message        string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Node  string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	// initiator_iqn is what the array grants the LUN to. Knowable only on the
+	// host, so without it an operator opens a session on every node to collect
+	// them before they can configure anything.
+	InitiatorIqn   string          `protobuf:"bytes,8,opt,name=initiator_iqn,json=initiatorIqn,proto3" json:"initiator_iqn,omitempty"`
+	ServiceRunning bool            `protobuf:"varint,2,opt,name=service_running,json=serviceRunning,proto3" json:"service_running,omitempty"`
+	Portals        []string        `protobuf:"bytes,3,rep,name=portals,proto3" json:"portals,omitempty"`
+	Sessions       []*ISCSISession `protobuf:"bytes,4,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	MpioInstalled  bool            `protobuf:"varint,5,opt,name=mpio_installed,json=mpioInstalled,proto3" json:"mpio_installed,omitempty"`
+	Disks          []*ISCSIDisk    `protobuf:"bytes,6,rep,name=disks,proto3" json:"disks,omitempty"`
+	Message        string          `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3929,6 +3933,13 @@ func (*ISCSIStatus) Descriptor() ([]byte, []int) {
 func (x *ISCSIStatus) GetNode() string {
 	if x != nil {
 		return x.Node
+	}
+	return ""
+}
+
+func (x *ISCSIStatus) GetInitiatorIqn() string {
+	if x != nil {
+		return x.InitiatorIqn
 	}
 	return ""
 }
@@ -6242,9 +6253,10 @@ const file_ballast_proto_rawDesc = "" +
 	"mutualChap\x12$\n" +
 	"\venable_mpio\x18\x05 \x01(\bH\x00R\n" +
 	"enableMpio\x88\x01\x01B\x0e\n" +
-	"\f_enable_mpio\"\x88\x02\n" +
+	"\f_enable_mpio\"\xad\x02\n" +
 	"\vISCSIStatus\x12\x12\n" +
-	"\x04node\x18\x01 \x01(\tR\x04node\x12'\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12#\n" +
+	"\rinitiator_iqn\x18\b \x01(\tR\finitiatorIqn\x12'\n" +
 	"\x0fservice_running\x18\x02 \x01(\bR\x0eserviceRunning\x12\x18\n" +
 	"\aportals\x18\x03 \x03(\tR\aportals\x124\n" +
 	"\bsessions\x18\x04 \x03(\v2\x18.ballast.v1.ISCSISessionR\bsessions\x12%\n" +

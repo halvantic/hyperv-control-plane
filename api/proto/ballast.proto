@@ -560,6 +560,10 @@ message ISCSIStorageSpec {
 // cluster-wide "connected" would hide the one condition worth reporting.
 message ISCSIStatus {
   string node = 1;
+  // initiator_iqn is what the array grants the LUN to. Knowable only on the
+  // host, so without it an operator opens a session on every node to collect
+  // them before they can configure anything.
+  string initiator_iqn = 8;
   bool service_running = 2;
   repeated string portals = 3;
   repeated ISCSISession sessions = 4;
