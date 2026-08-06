@@ -756,7 +756,24 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		Pool:               clusterPoolToProto(s.Pool),
 		Networks:           clusterNetworksToProto(s.Networks),
 		Witness:            clusterWitnessToProto(s.Witness),
+		ReplicaBroker:      clusterBrokerToProto(s.ReplicaBroker),
 	}
+}
+
+// Nil preserved in both directions, as with the witness: "no broker" and "not
+// reported yet" are different facts, and the centre adopts on the first.
+func clusterBrokerToProto(b *types.ClusterReplicaBrokerStatus) *ClusterReplicaBroker {
+	if b == nil {
+		return nil
+	}
+	return &ClusterReplicaBroker{Name: b.Name, State: b.State, StorageLocation: b.StorageLocation}
+}
+
+func clusterBrokerFromProto(b *ClusterReplicaBroker) *types.ClusterReplicaBrokerStatus {
+	if b == nil {
+		return nil
+	}
+	return &types.ClusterReplicaBrokerStatus{Name: b.GetName(), State: b.GetState(), StorageLocation: b.GetStorageLocation()}
 }
 
 // Nil is preserved in both directions. "The former has not reported quorum yet"
@@ -892,6 +909,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		Pool:               clusterPoolFromProto(s.GetPool()),
 		Networks:           clusterNetworksFromProto(s.GetNetworks()),
 		Witness:            clusterWitnessFromProto(s.GetWitness()),
+		ReplicaBroker:      clusterBrokerFromProto(s.GetReplicaBroker()),
 	}
 }
 

@@ -32,6 +32,7 @@ type ClusterResult struct {
 	Pool          *types.ClusterPoolStatus
 	Networks      []types.ClusterNetworkStatus
 	Witness       *types.ClusterWitnessStatus
+	ReplicaBroker *types.ClusterReplicaBrokerStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -229,8 +230,18 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		Groups: clusterGroupsToStatus(state.Groups), CSVs: clusterCSVsToStatus(state.CSVs),
 		VMs: clusterVMsToStatus(state.VMs), Nodes: clusterNodesToStatus(state.Nodes),
 		Pool: clusterPoolToStatus(state.Pool), Networks: clusterNetworksToStatus(state.Networks),
-		Witness: clusterWitnessToStatus(state.Witness),
+		Witness: clusterWitnessToStatus(state.Witness), ReplicaBroker: clusterBrokerToStatus(state.ReplicaBroker),
 	}, storageErr
+}
+
+// clusterBrokerToStatus carries the observed Replica Broker through, nil for
+// nil — same reason as the witness: "no broker" and "not read yet" are different
+// facts and the console must be able to tell them apart.
+func clusterBrokerToStatus(b *hyperv.ClusterReplicaBroker) *types.ClusterReplicaBrokerStatus {
+	if b == nil {
+		return nil
+	}
+	return &types.ClusterReplicaBrokerStatus{Name: b.Name, State: b.State, StorageLocation: b.StorageLocation}
 }
 
 // clusterWitnessToStatus carries the observed quorum configuration through.

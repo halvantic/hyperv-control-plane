@@ -232,6 +232,10 @@ func sampleClusterStatus() types.ClusterStatus {
 			Type: types.WitnessFileShare, Path: `\fileserver\c1-witness`,
 			State: "Online", QuorumType: "NodeAndFileShareMajority",
 		},
+		ReplicaBroker: &types.ClusterReplicaBrokerStatus{
+			Name: "c1-Brk.lab.local", State: "Online",
+			StorageLocation: `C:\ClusterStorage\Vol01\Replica`,
+		},
 		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
 	}
 }
@@ -286,6 +290,7 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	check("ClusterNodeStatus", reflect.ValueOf(st.Nodes[0]))
 	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
 	check("ClusterWitnessStatus", reflect.ValueOf(*st.Witness))
+	check("ClusterReplicaBrokerStatus", reflect.ValueOf(*st.ReplicaBroker))
 	check("ClusterVMStatus", reflect.ValueOf(st.VMs[0]))
 }
 

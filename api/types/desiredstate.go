@@ -814,6 +814,25 @@ type ClusterWitnessStatus struct {
 	QuorumType string `json:"quorumType,omitempty"`
 }
 
+// ClusterReplicaBrokerStatus is the observed Hyper-V Replica Broker: the role a
+// cluster needs before it can send or receive Hyper-V Replica traffic.
+type ClusterReplicaBrokerStatus struct {
+	// Name is the broker's client access point — the address a primary actually
+	// replicates to, not the cluster resource's own name.
+	Name string `json:"name,omitempty"`
+	// State is the broker resource's cluster state (Online when it can serve).
+	State string `json:"state,omitempty"`
+	// StorageLocation is where an incoming replica's VHDs land, read from the
+	// replication authorization entry rather than the broker resource — the entry
+	// is what actually decides it.
+	//
+	// This is reported because it is the setting that silently breaks: on a
+	// cluster it is a CSV path, so deleting the volume leaves every relationship
+	// pointing at a directory that is not there, and nothing says so until a
+	// relationship is enabled and Hyper-V answers "failed to enable replication".
+	StorageLocation string `json:"storageLocation,omitempty"`
+}
+
 type CSVSpec struct {
 	Name           string `json:"name"`
 	SizeBytes      uint64 `json:"sizeBytes"`
@@ -838,6 +857,12 @@ type ClusterStatus struct {
 	// reported it yet — which is not the same as "no witness", and the console
 	// must not render it as such.
 	Witness *ClusterWitnessStatus `json:"witness,omitempty"`
+
+	// ReplicaBroker is the observed Hyper-V Replica Broker. Nil means none was
+	// found (or none reported yet); a non-nil value while ClusterSpec.ReplicaBroker
+	// is nil means the cluster is running a replication endpoint Ballast does not
+	// manage, which is the state the centre adopts rather than ignores.
+	ReplicaBroker *ClusterReplicaBrokerStatus `json:"replicaBroker,omitempty"`
 
 	// ObservedAt is when this snapshot was taken, stamped by the CENTRE when the
 	// report arrives. It is not carried on the wire and an agent cannot set it:

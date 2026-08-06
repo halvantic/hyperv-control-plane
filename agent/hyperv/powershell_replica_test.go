@@ -8,6 +8,61 @@ import (
 	"github.com/joshua-fourie/ballast/api/types"
 )
 
+// "Hyper-V failed to enable replication" is a sentence, not a diagnosis. It
+// names neither the cause nor the remedy, and the operator's only route from it
+// is a PowerShell session on another host — which CLAUDE.md counts as a defect
+// in Ballast rather than a runbook step.
+//
+// The cause is nearly always that the target has nowhere to put the replica.
+// Seen live 2026-08-06: bcluster2's authorization entry stored replicas at
+// C:\ClusterStorage\DS1\Replica while the cluster had no Cluster Shared Volumes
+// at all. The storage location is a fact the target will simply tell us, so the
+// script asks instead of passing the sentence through.
+func TestEnsureVMReplicationNamesWhereTheReplicaWouldLand(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("RESULT=NOOP")}}
+	if _, err := newTestPS(f).EnsureVMReplication(context.Background(), "Linux", types.VMReplicationSpec{
+		Enabled: true, ReplicaServer: "bcluster2-Brk.ballast.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	if !strings.Contains(s, "*failed to enable replication*") {
+		t.Fatal("the generic refusal must be caught and diagnosed, not rethrown raw")
+	}
+	// Both sources of the target's storage location. The per-primary
+	// authorization entry overrides the server default, so it is the one that
+	// actually applies and must be preferred.
+	for _, want := range []string{
+		"Get-VMReplicationServer -ComputerName $server",
+		"Get-VMReplicationAuthorizationEntry -ComputerName $server",
+		"ReplicaStorageLocation",
+		"DefaultStorageLocation",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the diagnosis must read the target's replica storage location; missing %q", want)
+		}
+	}
+	// A CSV path gets the cluster-specific remedy, because "create the directory"
+	// is wrong advice for a Cluster Shared Volume that is not mounted.
+	if !strings.Contains(s, `C:\ClusterStorage\*`) {
+		t.Error("a CSV storage location needs its own remedy, not 'create the path'")
+	}
+	if !strings.Contains(s, "Cluster Shared Volume is not mounted") {
+		t.Error("the message must name the missing CSV as the cause")
+	}
+	// Verify rather than assert: when the remote path cannot be checked the
+	// message must not claim it is missing. Getting this wrong sends the operator
+	// to recreate a volume that is already there.
+	if !strings.Contains(s, "$missing -eq $true") {
+		t.Error("the definite 'does not exist' wording must be gated on having actually checked")
+	}
+	// The other cause with the same generic message: the target permits nobody.
+	if !strings.Contains(s, "does not allow any server") {
+		t.Error("a missing authorization entry produces the same error and needs naming too")
+	}
+}
+
 // TestEnsureVMReplicationScriptHandlesStuckStates guards the fix for the
 // green-but-absent replica bug: the script must repair wedged relationship
 // states (start initial replication, resume, resynchronise) and fail the

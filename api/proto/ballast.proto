@@ -504,6 +504,23 @@ message ClusterStatus {
   // witness is the observed quorum configuration. Unset means the former has
   // not reported quorum yet, which is not the same as having no witness.
   ClusterWitness witness = 12;
+  // replica_broker is the observed Hyper-V Replica Broker. Set while the spec
+  // declares none means the cluster runs a replication endpoint Ballast does
+  // not manage.
+  ClusterReplicaBroker replica_broker = 13;
+}
+
+// ClusterReplicaBroker is the Hyper-V Replica Broker as observed on the cluster.
+message ClusterReplicaBroker {
+  // name is the client access point a primary replicates to, not the cluster
+  // resource's own name.
+  string name = 1;
+  // state is the broker resource's cluster state; Online when it can serve.
+  string state = 2;
+  // storage_location is where an incoming replica's VHDs land, read from the
+  // replication authorization entry. On a cluster it is a CSV path, so deleting
+  // the volume leaves relationships pointing at a directory that is not there.
+  string storage_location = 3;
 }
 
 // ClusterWitness is quorum as observed on the cluster, not as requested.

@@ -426,6 +426,61 @@ if (-not $enabled) {
         }
         throw ('cannot enable replication for ' + $vm + ': ' + $server + ' is not accepting replication, and does not already hold a replica of this VM. Check it has the Replica server role enabled, an authorization entry permitting this primary, and its replica storage path present. Hyper-V reported: ' + $_.Exception.Message)
       }
+      # "Hyper-V failed to enable replication" is the generic refusal, and by far
+      # the most common cause is that the target has nowhere to put the replica:
+      # its storage location names a path that is not there. On a cluster target
+      # that is a CSV path, so deleting the volume — or never recreating it after
+      # a rebuild — silently breaks every relationship pointing at the broker.
+      #
+      # Seen live 2026-08-06: bcluster2's authorization entry stored replicas at
+      # C:\ClusterStorage\DS1\Replica while the cluster had no Cluster Shared
+      # Volumes at all, and the only symptom was this sentence.
+      #
+      # The storage location is a fact the target will simply tell us, so ask
+      # rather than leaving the operator to find it.
+      if ($_.Exception.Message -like '*failed to enable replication*') {
+        $loc = ''; $anyServer = $null; $entry = $null
+        try {
+          $rs = Get-VMReplicationServer -ComputerName $server -ErrorAction Stop
+          $anyServer = [bool]$rs.AllowAnyServer
+          $loc = [string]$rs.DefaultStorageLocation
+        } catch {}
+        # A per-primary authorization entry overrides the default location, so it
+        # is the one that actually applies to us. Match this host's FQDN, then the
+        # wildcard entry.
+        try {
+          $me = ([string]$env:COMPUTERNAME).ToLower()
+          $entries = @(Get-VMReplicationAuthorizationEntry -ComputerName $server -ErrorAction Stop)
+          $mine = @($entries | Where-Object { ([string]$_.AllowedPrimaryServer).ToLower().StartsWith($me) })[0]
+          if (-not $mine) { $mine = @($entries | Where-Object { [string]$_.AllowedPrimaryServer -eq '*' })[0] }
+          if ($mine) { $entry = [string]$mine.AllowedPrimaryServer; $loc = [string]$mine.ReplicaStorageLocation }
+        } catch {}
+        if ($loc) {
+          # Verify rather than assert. The admin share is the one way to check a
+          # remote path without a second hop; when it cannot be reached, say the
+          # path could not be checked instead of claiming it is missing.
+          $missing = $null
+          try {
+            $host0 = ($server -split '\.')[0]
+            $unc = '\\' + $host0 + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
+            $missing = -not (Test-Path -LiteralPath $unc -ErrorAction Stop)
+          } catch { $missing = $null }
+          $csv = ($loc -like 'C:\ClusterStorage\*')
+          $what = "the replica server '" + $server + "' stores incoming replicas at '" + $loc + "'"
+          if ($entry) { $what += " (authorization entry for '" + $entry + "')" }
+          if ($missing -eq $true) {
+            $fix = if ($csv) { "That Cluster Shared Volume is not mounted on the target cluster. Create the volume, or repoint the Replica Broker's storage path, then retry." }
+                   else { "That path does not exist on the target. Create it, or repoint the replica storage location, then retry." }
+            throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist. ' + $fix)
+          }
+          $fix2 = if ($csv) { " If the target cluster no longer has that Cluster Shared Volume, create it or repoint the Replica Broker's storage path." } else { " Verify that path exists on the target." }
+          throw ('cannot enable replication for ' + $vm + ': ' + $what + '.' + $fix2 + ' Hyper-V reported: ' + $_.Exception.Message)
+        }
+        if ($anyServer -eq $false) {
+          throw ('cannot enable replication for ' + $vm + ": '" + $server + "' does not permit this host to replicate to it - it has no authorization entry for " + $env:COMPUTERNAME + ' and does not allow any server. Add an authorization entry on the target, then retry.')
+        }
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it and its replica storage location could not be read, so the cause is on the target. Check its Replica server role is enabled and its replica storage path exists. Hyper-V reported: ' + $_.Exception.Message)
+      }
       throw
     }
     Start-VMInitialReplication -VMName $vm -ErrorAction Stop

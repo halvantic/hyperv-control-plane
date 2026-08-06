@@ -660,6 +660,21 @@ type ClusterState struct {
 	// not be read this pass; a cluster with no witness reports Type "None", which
 	// is a different and far more interesting answer than "unknown".
 	Witness *ClusterWitness
+	// ReplicaBroker is the observed Hyper-V Replica Broker, nil when the cluster
+	// has none. A broker present here while the cluster spec declares none means
+	// Ballast is not managing a live replication endpoint.
+	ReplicaBroker *ClusterReplicaBroker
+}
+
+// ClusterReplicaBroker is the observed Hyper-V Replica Broker role: the client
+// access point a primary replicates to, its resource state, and where incoming
+// replicas are stored.
+type ClusterReplicaBroker struct {
+	Name  string
+	State string
+	// StorageLocation comes from the replication authorization entry, which is
+	// what actually decides where a replica lands — not the broker resource.
+	StorageLocation string
 }
 
 // ClusterPool is the S2D storage pool's name and capacity (raw total and the

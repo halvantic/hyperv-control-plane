@@ -40,6 +40,13 @@ type clusterObservation struct {
 	Pool       *clusterPoolObs     `json:"pool"`
 	Networks   []clusterNetworkObs `json:"networks"`
 	Witness    *clusterWitnessObs  `json:"witness"`
+	Broker     *clusterBrokerObs   `json:"replicaBroker"`
+}
+
+type clusterBrokerObs struct {
+	Name            string `json:"name"`
+	State           string `json:"state"`
+	StorageLocation string `json:"storageLocation"`
 }
 
 type clusterWitnessObs struct {
@@ -257,7 +264,40 @@ if ($q) {
   }
   $witness = [pscustomobject]@{ type = $wtype; path = $wpath; state = $wstate; quorumType = [string]$q.QuorumType }
 }
-[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness } | ConvertTo-Json -Compress -Depth 4
+# The Hyper-V Replica Broker is how a cluster sends or receives replication, and
+# it is observed for the same reason the witness is: it can exist on the cluster
+# while nothing in Ballast declares it, and then Ballast neither enforces nor
+# reports a live replication endpoint. Seen on the rig 2026-08-06 — the broker
+# was Online with its client access point and IP, while ClusterSpec.ReplicaBroker
+# was null.
+#
+# The storage location is not a property of the broker resource: it lives in the
+# per-node replication authorization entries, and it is the setting that actually
+# decides where an incoming replica lands. Reporting it is what makes "the
+# replica has nowhere to go" visible before a relationship fails — the rig's
+# entry pointed at C:\ClusterStorage\DS1\Replica long after that volume existed.
+$broker = $null
+$br = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
+if ($br) {
+  # The operator-facing name is the client access point (the Network Name in the
+  # broker's group), not the resource's own name, because that is what a primary
+  # addresses replication to.
+  $bname = ''
+  try {
+    $bg = [string]$br.OwnerGroup
+    $nn = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Network Name' -and [string]$_.OwnerGroup -eq $bg })[0]
+    if ($nn) { $bname = [string]($nn | Get-ClusterParameter -Name DnsName -ErrorAction SilentlyContinue).Value }
+    if (-not $bname) { $bname = $bg }
+  } catch {}
+  $bloc = ''
+  try {
+    $ae = @(Get-VMReplicationAuthorizationEntry -ErrorAction SilentlyContinue)[0]
+    if ($ae) { $bloc = [string]$ae.ReplicaStorageLocation }
+    if (-not $bloc) { $bloc = [string](Get-VMReplicationServer -ErrorAction SilentlyContinue).DefaultStorageLocation }
+  } catch {}
+  $broker = [pscustomobject]@{ name = $bname; state = [string]$br.State; storageLocation = $bloc }
+}
+[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker } | ConvertTo-Json -Compress -Depth 4
 `
 
 // witnessScript applies a file-share witness, and only when it differs from
@@ -390,7 +430,12 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 		witness = &ClusterWitness{Type: obs.Witness.Type, Path: obs.Witness.Path,
 			State: obs.Witness.State, QuorumType: obs.Witness.QuorumType}
 	}
-	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness}, nil
+	var broker *ClusterReplicaBroker
+	if obs.Broker != nil {
+		broker = &ClusterReplicaBroker{Name: obs.Broker.Name, State: obs.Broker.State,
+			StorageLocation: obs.Broker.StorageLocation}
+	}
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker}, nil
 }
 
 const installClusteringScript = `
