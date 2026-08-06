@@ -35,6 +35,9 @@ type ClusterResult struct {
 	ReplicaBroker   *types.ClusterReplicaBrokerStatus
 	FunctionalLevel int
 	NodeOSBuild     int
+	// ISCSI is this node's iSCSI state, nil for a cluster that is not iSCSI-backed
+	// so "not applicable" never renders as "connected to nothing".
+	ISCSI *types.ISCSIStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -46,7 +49,7 @@ type ClusterResult struct {
 // the agent does not re-form or second-guess it, and cluster survival does not
 // depend on the centre. So this runs only when the centre delivered a current
 // assignment; it never tries to form a cluster autonomously.
-func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) (ClusterResult, error) {
+func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, secrets map[string]types.Secret) (ClusterResult, error) {
 	if !a.IsMember {
 		return ClusterResult{Phase: types.PhaseReady, Honoured: true}, nil
 	}
@@ -158,6 +161,16 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	conds = append(conds, storageConds...)
 	changed = changed || storageChanged
 
+	// 4b. iSCSI shared storage. Unlike everything else cluster-wide here, this
+	// runs on EVERY MEMBER rather than the former only: a login is per-node, and
+	// a node that has not logged in simply does not see the disks. There is no
+	// race to guard against — each node is configuring its own initiator, not a
+	// shared object — and gating it on the former would leave the other members
+	// with no storage at all.
+	iscsiStatus, iscsiConds, iscsiChanged := r.reconcileISCSI(ctx, a, secrets)
+	conds = append(conds, iscsiConds...)
+	changed = changed || iscsiChanged
+
 	// 5. Kerberos live migration needs constrained delegation between the nodes'
 	// computer accounts. The former (a domain admin) configures it once when the
 	// cluster's live-migration auth is Kerberos — so provisioning a cluster with
@@ -234,6 +247,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		Pool: clusterPoolToStatus(state.Pool), Networks: clusterNetworksToStatus(state.Networks),
 		Witness: clusterWitnessToStatus(state.Witness), ReplicaBroker: clusterBrokerToStatus(state.ReplicaBroker),
 		FunctionalLevel: state.FunctionalLevel, NodeOSBuild: state.NodeOSBuild,
+		ISCSI: iscsiStatus,
 	}, storageErr
 }
 

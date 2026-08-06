@@ -22,7 +22,7 @@ func clusterAssignment(isFormer bool) ClusterAssignment {
 // A non-member node does nothing and is trivially honoured.
 func TestReconcileClusterNonMember(t *testing.T) {
 	stub := &hyperv.Stub{}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), ClusterAssignment{IsMember: false})
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), ClusterAssignment{IsMember: false}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestReconcileClusterNonMember(t *testing.T) {
 // The designated former installs the feature and forms the cluster.
 func TestReconcileClusterFormerForms(t *testing.T) {
 	stub := &hyperv.Stub{}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(true))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestReconcileClusterFormerForms(t *testing.T) {
 // run New-Cluster itself (that would race two formers).
 func TestReconcileClusterNonFormerWaits(t *testing.T) {
 	stub := &hyperv.Stub{}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(false))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(false), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestReconcileClusterEnablesS2DAndCSVs(t *testing.T) {
 		ClusteringInstalled: true, ClusterExists: true,
 		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
 	}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestReconcileClusterStorageIdempotent(t *testing.T) {
 		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
 		S2DEnabled: true, CSVs: []string{"Vol01", "Vol02"},
 	}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestReconcileClusterNonFormerSkipsStorage(t *testing.T) {
 		ClusteringInstalled: true, ClusterExists: true,
 		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
 	}
-	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(false)); err != nil {
+	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(false), nil); err != nil {
 		t.Fatal(err)
 	}
 	if stub.EnableS2DCalled || len(stub.CSVs) != 0 {
@@ -150,7 +150,7 @@ func TestReconcileClusterAlreadyFormed(t *testing.T) {
 		ClusterName:         "bcluster",
 		ClusterMembers:      []string{"HV01", "HV02", "HV03"},
 	}
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(true))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignment(true), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

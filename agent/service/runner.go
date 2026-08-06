@@ -844,7 +844,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
 		if force || genChanged || maintChanged || r.cycles%clusterReconcileEvery == 0 {
 			doneCluster := t.mark("clusterReconcile")
-			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment, secrets)
 			doneCluster()
 			if cerr != nil {
 				r.log.Error("cluster reconcile incomplete", "err", cerr)
@@ -1081,6 +1081,21 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 	}
 }
 
+// stampISCSINode names the member an iSCSI snapshot came from.
+//
+// The reconciler cannot: it would have to use the OS hostname, which need not
+// match the name the centre keys this host by. Reporting a name the centre does
+// not recognise would make a per-node fault impossible to attribute — which is
+// the entire reason the status is per-node.
+func (r *runner) stampISCSINode(st *types.ISCSIStatus) *types.ISCSIStatus {
+	if st == nil {
+		return nil
+	}
+	out := *st
+	out.Node = r.cfg.hostName
+	return &out
+}
+
 // observeISOLibrary probes the host's effective boot-media share, throttled.
 //
 // The probe reaches a file server and its computer-account half runs a scheduled
@@ -1139,6 +1154,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		ReplicaBroker:      res.ReplicaBroker,
 		FunctionalLevel:    res.FunctionalLevel,
 		NodeOSBuild:        res.NodeOSBuild,
+		ISCSI:              r.stampISCSINode(res.ISCSI),
 	}
 	if !res.Honoured {
 		cs.ObservedGeneration = 0

@@ -29,7 +29,7 @@ func TestFormerAppliesADeclaredFileShareWitness(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\fs01\bcluster-witness`}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestOnlyTheFormerTouchesQuorum(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\fs01\bcluster-witness`}
 
-	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(false, spec)); err != nil {
+	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(false, spec), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(stub.WitnessCalls) != 0 {
@@ -79,7 +79,7 @@ func TestAnUndeclaredWitnessIsLeftAlone(t *testing.T) {
 		Witness: &hyperv.ClusterWitness{Type: "FileShare", Path: `\\manual\share`, State: "Online"},
 	}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, types.WitnessSpec{}))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, types.WitnessSpec{}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +107,14 @@ func TestApplyingTheSameWitnessTwiceChangesNothing(t *testing.T) {
 	})
 	r := testReconciler(stub)
 
-	first, err := r.ReconcileCluster(context.Background(), a)
+	first, err := r.ReconcileCluster(context.Background(), a, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !first.Changed {
 		t.Fatal("the first pass sets the witness, so it changed something")
 	}
-	second, err := r.ReconcileCluster(context.Background(), a)
+	second, err := r.ReconcileCluster(context.Background(), a, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestAnUnreachableWitnessDoesNotDegradeTheCluster(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\gone\share`}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec), nil)
 	if err != nil {
 		t.Fatalf("a failed witness must not fail the pass: %v", err)
 	}

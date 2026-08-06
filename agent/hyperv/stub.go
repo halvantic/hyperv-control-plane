@@ -28,6 +28,11 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// ISCSIUnconnected names targets EnsureISCSI should report as discovered but
+	// not logged in — the state an array in reach but not granting this initiator
+	// produces, which has a different remedy from an unreachable array.
+	ISCSIUnconnected []string
+
 	// HyperVInstalled / RebootPending seed GetHostRoleState. Default false (a
 	// host where the role is not yet installed); set HyperVInstalled true to
 	// model a ready host.
@@ -461,6 +466,29 @@ func (s *Stub) RepairStoragePool(_ context.Context) (string, error) {
 
 func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
 	return "cluster functional level is already 12 (no change) (stub)", nil
+}
+
+// EnsureISCSI reports a connected, single-path array so a stub-backed reconcile
+// exercises the success path without a network.
+func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string) (ISCSIState, Outcome, error) {
+	st := ISCSIState{
+		InitiatorIQN:   "iqn.1991-05.com.microsoft:stub.lab.local",
+		ServiceRunning: true,
+		Portals:        spec.Portals,
+		MPIOInstalled:  true,
+	}
+	for _, t := range spec.Targets {
+		connected := true
+		for _, u := range s.ISCSIUnconnected {
+			if u == t {
+				connected = false
+			}
+		}
+		st.Sessions = append(st.Sessions, ISCSISessionState{
+			TargetIQN: t, Connected: connected, Persistent: connected, Paths: map[bool]int{true: 1, false: 0}[connected],
+		})
+	}
+	return st, OutcomeUnchanged, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

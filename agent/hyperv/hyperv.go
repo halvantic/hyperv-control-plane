@@ -303,6 +303,11 @@ type Interface interface {
 	// IRREVERSIBLE, so it is only ever an explicit operator action.
 	UpdateClusterFunctionalLevel(ctx context.Context) (string, error)
 
+	// EnsureISCSI connects this node to an iSCSI array — service, portals,
+	// persistent logins, MPIO — and reports what it can see. Additive only: it
+	// never disconnects a session or removes a portal.
+	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string) (ISCSIState, Outcome, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.
