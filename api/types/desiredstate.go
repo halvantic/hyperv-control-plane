@@ -84,6 +84,20 @@ const (
 	// destructive, so the console offers it explicitly and nothing performs it
 	// automatically. See docs/console-completeness-2026-08-05.md.
 	ReasonSavedStateIncompatible = "SavedStateIncompatible"
+
+	// ReasonNotAttempted: the reconcile pass ran out of time (or was cancelled)
+	// before this operation ran. Nothing was read and nothing was changed, so the
+	// object's real state is unknown rather than bad. The console must not show
+	// it as a failure of the object — the fault is whatever earlier step consumed
+	// the pass, and that is where the operator should be sent.
+	ReasonNotAttempted = "NotAttempted"
+
+	// ReasonHyperVUnavailable: Hyper-V's Virtual Machine Management service is
+	// stopped, crashed or restarting, so switches and vNICs could not be observed.
+	// Ballast deliberately changes nothing in this state — an unreadable
+	// observation must never be mistaken for an absent object — so the remedy is
+	// to get VMMS running, after which the next pass reconciles normally.
+	ReasonHyperVUnavailable = "HyperVUnavailable"
 )
 
 // ---------------------------------------------------------------------------

@@ -650,6 +650,31 @@ func (r *Reconciler) condition(condType string, out hyperv.Outcome, err error) t
 			c.Message = err.Error()
 			return c
 		}
+		// The cycle ran out of time (or was cancelled by a service stop) before
+		// this operation ran. Reporting it as ApplyFailed says Ballast tried and
+		// the host refused, which is false and actively misdirecting: one stall
+		// early in a pass makes every later operation inherit the dead context and
+		// return instantly, so a single hung call was being reported as eight
+		// separate failures against healthy objects. An operator reading that goes
+		// to investigate a switch that is fine.
+		//
+		// Checked before the transient window, because this is not a signature in
+		// the error text — it is the pass itself being over, and it says nothing at
+		// all about the object.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			c.Status = false
+			c.Reason = types.ReasonNotAttempted
+			c.Message = "not attempted — the reconcile pass ran out of time before reaching this. Something earlier in the pass is slow or hung; this object was not read or changed."
+			return c
+		}
+		// Hyper-V did not answer, so this was not attempted either — and crucially
+		// nothing was created on the strength of an unreadable observation.
+		if errors.Is(err, hyperv.ErrHyperVUnavailable) {
+			c.Status = false
+			c.Reason = types.ReasonHyperVUnavailable
+			c.Message = err.Error()
+			return c
+		}
 		// A failure with a known in-flight signature is reported as SETTLING
 		// rather than failed — the operation is expected to succeed on a later
 		// pass with no operator action, and a red condition for a few seconds of

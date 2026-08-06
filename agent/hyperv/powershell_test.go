@@ -141,7 +141,7 @@ func TestPlanSwitch(t *testing.T) {
 }
 
 func TestEnsureSwitchCreate(t *testing.T) {
-	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":false}`)}}
+	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":false,"known":true}`)}}
 	out, err := newTestPS(f).EnsureSwitch(context.Background(), sampleSwitchSpec())
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestEnsureSwitchCreate(t *testing.T) {
 }
 
 func TestEnsureSwitchUnchangedDoesNotAct(t *testing.T) {
-	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":true,"teamMembers":["NIC1","NIC2"],"loadBalancing":"Dynamic","allowManagementOS":true}`)}}
+	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":true,"known":true,"teamMembers":["NIC1","NIC2"],"loadBalancing":"Dynamic","allowManagementOS":true}`)}}
 	out, err := newTestPS(f).EnsureSwitch(context.Background(), sampleSwitchSpec())
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestEnsureSwitchUnchangedDoesNotAct(t *testing.T) {
 }
 
 func TestEnsureSwitchUpdate(t *testing.T) {
-	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":true,"teamMembers":["NIC1"],"loadBalancing":"Dynamic","allowManagementOS":true}`)}}
+	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":true,"known":true,"teamMembers":["NIC1"],"loadBalancing":"Dynamic","allowManagementOS":true}`)}}
 	out, err := newTestPS(f).EnsureSwitch(context.Background(), sampleSwitchSpec())
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestPlanVNIC(t *testing.T) {
 }
 
 func TestEnsureMgmtVNICCreate(t *testing.T) {
-	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":false}`)}}
+	f := &fakeRunner{responses: [][]byte{[]byte(`{"exists":false,"known":true}`)}}
 	spec := types.ManagementVNICSpec{Name: "Management", SwitchName: "ConvergedSwitch", VLANID: 10, MinBandwidthWeight: 10}
 	out, err := newTestPS(f).EnsureMgmtVNIC(context.Background(), spec)
 	if err != nil {
@@ -285,7 +285,7 @@ func TestApplyIPScriptFreesAddressOnOtherInterface(t *testing.T) {
 // desired static, reports Updated and runs the IP apply exactly once.
 func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{
-		[]byte(`{"exists":true,"switchName":"ConvergedSwitch","vlanID":0}`), // queryVNIC: adapter matches
+		[]byte(`{"exists":true,"known":true,"switchName":"ConvergedSwitch","vlanID":0}`), // queryVNIC: adapter matches
 		[]byte(`{"address":"","gateway":"","dnsServers":[]}`),               // queryVNICIP: no static yet
 	}}
 	spec := types.ManagementVNICSpec{
@@ -315,7 +315,7 @@ func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
 // A fully converged vNIC (adapter and IP both match) makes no changes.
 func TestEnsureMgmtVNICConvergedNoChange(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{
-		[]byte(`{"exists":true,"switchName":"ConvergedSwitch","vlanID":0}`),
+		[]byte(`{"exists":true,"known":true,"switchName":"ConvergedSwitch","vlanID":0}`),
 		[]byte(`{"address":"10.0.0.21/24","gateway":"","dnsServers":["10.0.0.1"],"registers":true}`),
 	}}
 	spec := types.ManagementVNICSpec{

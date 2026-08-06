@@ -26,8 +26,20 @@ func TestVNICBatchObservesEveryNameInOneScript(t *testing.T) {
 	}
 	// One loop over the names, not three pasted blocks — the point is a single
 	// invocation, and a per-name unrolled script would grow without bound.
-	if strings.Count(s, "Get-VMNetworkAdapter -ManagementOS -Name") != 1 {
-		t.Fatal("the adapter query must appear once, inside the loop over names")
+	//
+	// The adapters are now enumerated ONCE ABOVE the loop and matched by name
+	// inside it, rather than queried per name. That is both cheaper (one call for
+	// the whole set instead of one each) and the only way to tell "this vNIC is
+	// absent" from "Hyper-V did not answer": an enumeration returns an empty list
+	// for the former and throws for the latter, whereas -Name errors for both.
+	if n := strings.Count(s, "Get-VMNetworkAdapter -ManagementOS"); n != 1 {
+		t.Fatalf("the adapter query must appear exactly once, found %d", n)
+	}
+	if strings.Index(s, "Get-VMNetworkAdapter -ManagementOS") > strings.Index(s, "foreach ($n in $names)") {
+		t.Fatal("the adapter enumeration must be hoisted above the per-vNIC loop")
+	}
+	if !strings.Contains(s, "known = $false") {
+		t.Fatal("a Hyper-V that does not answer must be reported as unknown, never as an absent vNIC")
 	}
 	if strings.Count(s, "Get-NetIPAddress") != 1 {
 		t.Fatal("the IP query must appear once, inside the loop over names")

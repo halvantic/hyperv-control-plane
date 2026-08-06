@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -15,11 +16,33 @@ import (
 // ---------------------------------------------------------------------------
 
 // switchObservation is the actual state of a SET switch, as read from the host.
+// ErrHyperVUnavailable reports that Hyper-V itself did not answer — the Virtual
+// Machine Management service is stopped, crashed or restarting — so nothing
+// could be observed about switches or vNICs this pass.
+//
+// It exists because "Hyper-V did not answer" and "the object is not there" are
+// the same empty result to a caller, and they have opposite remedies: defer, or
+// create. Reading the first as the second is how a reconciler comes to run
+// New-VMSwitch against a live SET team that is carrying the host's management
+// IP. Observed on the rig 2026-08-06, when VMMS terminated unexpectedly on two
+// nodes and the agent tried to create the converged switch and all three
+// management vNICs on both. The creates failed only because VMMS was fully
+// down; a partial recovery would have let them through.
+//
+// The asymmetry decides it, exactly as with the cluster-membership guard: being
+// wrong about "present" costs one deferred pass, being wrong about "absent"
+// rebuilds the host's networking underneath a running cluster.
+var ErrHyperVUnavailable = errors.New("Hyper-V is not answering (its Virtual Machine Management service is stopped or restarting), so nothing was observed or changed this pass")
+
 type switchObservation struct {
 	Exists            bool     `json:"exists"`
 	TeamMembers       []string `json:"teamMembers"`
 	LoadBalancing     string   `json:"loadBalancing"`
 	AllowManagementOS bool     `json:"allowManagementOS"`
+	// Known is false when Hyper-V could not be read at all. Exists is then
+	// meaningless and must never be acted on. Absent from the JSON reads as
+	// false, so a script that forgets to set it fails safe (defer, not create).
+	Known bool `json:"known"`
 }
 
 type switchPlan int
@@ -60,8 +83,14 @@ func planSwitch(spec types.VirtualSwitchSpec, obs switchObservation) switchPlan 
 func (p *PowerShell) querySwitch(ctx context.Context, name string) (switchObservation, error) {
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$sw = Get-VMSwitch -Name %[1]s -ErrorAction SilentlyContinue
-if (-not $sw) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress; return }
+# Enumerate WITHOUT -Name so the two failures separate. A switch that genuinely
+# does not exist comes back as an empty list; the only thing left that can throw
+# here is Hyper-V itself being unavailable. Asking for a name would conflate
+# them, because Get-VMSwitch -Name errors for a missing switch too.
+try { $all = @(Get-VMSwitch -ErrorAction Stop) }
+catch { [pscustomobject]@{ exists = $false; known = $false } | ConvertTo-Json -Compress; return }
+$sw = $all | Where-Object { $_.Name -eq %[1]s } | Select-Object -First 1
+if (-not $sw) { [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return }
 $members = @()
 $team = Get-VMSwitchTeam -Name %[1]s -ErrorAction SilentlyContinue
 if ($team) {
@@ -74,6 +103,7 @@ $lb = if ($team) { [string]$team.LoadBalancingAlgorithm } else { '' }
 $mgmt = @(Get-VMNetworkAdapter -ManagementOS -SwitchName %[1]s -ErrorAction SilentlyContinue)
 [pscustomobject]@{
   exists            = $true
+  known             = $true
   teamMembers       = @($members)
   loadBalancing     = $lb
   allowManagementOS = ($mgmt.Count -gt 0)
@@ -96,6 +126,11 @@ func (p *PowerShell) EnsureSwitch(ctx context.Context, spec types.VirtualSwitchS
 	obs, err := p.querySwitch(ctx, spec.Name)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("query switch %q: %w", spec.Name, err)
+	}
+	// Nothing was observed, so nothing may be concluded — least of all that the
+	// switch is missing and should be built.
+	if !obs.Known {
+		return OutcomeUnchanged, fmt.Errorf("switch %q: %w", spec.Name, ErrHyperVUnavailable)
 	}
 
 	switch planSwitch(spec, obs) {
@@ -156,6 +191,9 @@ type vnicObservation struct {
 	Exists     bool   `json:"exists"`
 	SwitchName string `json:"switchName"`
 	VlanID     int    `json:"vlanID"`
+	// Known is false when Hyper-V could not be read at all; see
+	// ErrHyperVUnavailable. Exists is then meaningless.
+	Known bool `json:"known"`
 }
 
 // ipObservation is the actual IPv4 configuration on a management vNIC's
@@ -192,12 +230,16 @@ func planVNIC(spec types.ManagementVNICSpec, obs vnicObservation) vnicPlan {
 func (p *PowerShell) queryVNIC(ctx context.Context, name string) (vnicObservation, error) {
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$a = Get-VMNetworkAdapter -ManagementOS -Name %[1]s -ErrorAction SilentlyContinue
-if (-not $a) { [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress; return }
+# Enumerate without -Name so "no such vNIC" (empty list) separates from "Hyper-V
+# did not answer" (throws). See ErrHyperVUnavailable.
+try { $all = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction Stop) }
+catch { [pscustomobject]@{ exists = $false; known = $false } | ConvertTo-Json -Compress; return }
+$a = $all | Where-Object { $_.Name -eq %[1]s } | Select-Object -First 1
+if (-not $a) { [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return }
 $vid = 0
 $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName %[1]s -ErrorAction SilentlyContinue
 if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
-[pscustomobject]@{ exists = $true; switchName = [string]$a.SwitchName; vlanID = $vid } | ConvertTo-Json -Compress
+[pscustomobject]@{ exists = $true; known = $true; switchName = [string]$a.SwitchName; vlanID = $vid } | ConvertTo-Json -Compress
 `, psQuote(name))
 
 	out, err := p.run(ctx, script)
@@ -255,6 +297,16 @@ func (p *PowerShell) EnsureMgmtVNICs(ctx context.Context, specs []types.Manageme
 		names = append(names, s.Name)
 	}
 	adapters, ips, err := p.queryVNICsBatch(ctx, names)
+	if errors.Is(err, ErrHyperVUnavailable) {
+		// Hyper-V is down, not merely unhelpful. The per-vNIC fallback would ask
+		// the same dead service the same question three more times and reach the
+		// same place slower, so report it once and defer the pass.
+		for i, s := range specs {
+			outs[i] = OutcomeUnchanged
+			errs[i] = fmt.Errorf("vNIC %q: %w", s.Name, ErrHyperVUnavailable)
+		}
+		return outs, errs
+	}
 	if err != nil {
 		// The batch is an optimisation, not a semantic change. If it fails —
 		// an unexpected shape, a module missing on an odd host — fall back to
@@ -281,6 +333,11 @@ func (p *PowerShell) EnsureMgmtVNICs(ctx context.Context, specs []types.Manageme
 // someone else has already made. observedIP may be nil, in which case the IP is
 // queried on demand (the single-vNIC path).
 func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.ManagementVNICSpec, obs vnicObservation, observedIP *ipObservation) (Outcome, error) {
+	// Nothing observed, so nothing concluded — and above all no create. See
+	// ErrHyperVUnavailable.
+	if !obs.Known {
+		return OutcomeUnchanged, fmt.Errorf("vNIC %q: %w", spec.Name, ErrHyperVUnavailable)
+	}
 
 	adapter := OutcomeUnchanged
 	switch planVNIC(spec, obs) {
@@ -364,17 +421,32 @@ func (p *PowerShell) queryVNICsBatch(ctx context.Context, names []string) (map[s
 		return nil, nil, err
 	}
 	var got struct {
+		Known    bool                       `json:"known"`
 		Adapters map[string]vnicObservation `json:"adapters"`
 		IPs      map[string]ipObservation   `json:"ips"`
 	}
 	if err := decodeJSON(out, &got); err != nil {
 		return nil, nil, err
 	}
+	if !got.Known {
+		return nil, nil, ErrHyperVUnavailable
+	}
 	if got.Adapters == nil {
 		got.Adapters = map[string]vnicObservation{}
 	}
 	if got.IPs == nil {
 		got.IPs = map[string]ipObservation{}
+	}
+	// A vNIC that does not exist is simply missing from the map, and a map miss
+	// yields the zero observation — whose Known is false, which now means "not
+	// observed". Fill the absences in explicitly: Hyper-V answered, so absence
+	// here is a fact and creating is the right response. Leaving this to the zero
+	// value would turn every legitimate create into a permanent deferral.
+	for _, n := range names {
+		k := strings.ToLower(n)
+		if _, ok := got.Adapters[k]; !ok {
+			got.Adapters[k] = vnicObservation{Exists: false, Known: true}
+		}
 	}
 	return got.Adapters, got.IPs, nil
 }
@@ -389,6 +461,12 @@ func vnicsBatchScript(names []string) string {
 	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $names = @(%[1]s)
+# One enumeration for every name, and the single place Hyper-V's availability is
+# established. An empty list means the vNICs are absent; a throw means Hyper-V
+# did not answer, and the caller must defer rather than create. See
+# ErrHyperVUnavailable.
+try { $allAdapters = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction Stop) }
+catch { [pscustomobject]@{ known = $false; adapters = @{}; ips = @{} } | ConvertTo-Json -Depth 6 -Compress; return }
 # Cluster IP resources are a property of the CLUSTER, so read them once rather
 # than once per vNIC. Excluded from the observation by ADDRESS: a cluster-owned
 # IP on a management interface must never be mistaken for the declared one and
@@ -399,12 +477,12 @@ $adapters = @{}
 $ips = @{}
 foreach ($n in $names) {
   $key = $n.ToLower()
-  $a = Get-VMNetworkAdapter -ManagementOS -Name $n -ErrorAction SilentlyContinue
+  $a = $allAdapters | Where-Object { $_.Name -eq $n } | Select-Object -First 1
   if ($a) {
     $vid = 0
     $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $n -ErrorAction SilentlyContinue
     if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
-    $adapters[$key] = [pscustomobject]@{ exists = $true; switchName = [string]$a.SwitchName; vlanID = $vid }
+    $adapters[$key] = [pscustomobject]@{ exists = $true; known = $true; switchName = [string]$a.SwitchName; vlanID = $vid }
   }
   $alias = 'vEthernet (' + $n + ')'
   $ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
@@ -418,7 +496,7 @@ foreach ($n in $names) {
     registers  = $reg
   }
 }
-[pscustomobject]@{ adapters = $adapters; ips = $ips } | ConvertTo-Json -Depth 6 -Compress
+[pscustomobject]@{ known = $true; adapters = $adapters; ips = $ips } | ConvertTo-Json -Depth 6 -Compress
 `, strings.Join(quoted, ","))
 }
 
