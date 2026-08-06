@@ -864,6 +864,24 @@ type ClusterStatus struct {
 	// manage, which is the state the centre adopts rather than ignores.
 	ReplicaBroker *ClusterReplicaBrokerStatus `json:"replicaBroker,omitempty"`
 
+	// FunctionalLevel is the cluster's operating mode as Failover Clustering
+	// reports it (9 = Server 2016, 10 = 2019, 11 = 2022, 12 = 2025). Zero means
+	// it has not been reported.
+	//
+	// It matters because a rolling OS upgrade does NOT raise it. Take a cluster to
+	// a newer Windows node by node — which is what cluster-aware updating does —
+	// and when the last node returns the cluster still runs at the old level: the
+	// new OS's features stay unavailable and the upgrade is not finished until
+	// Update-ClusterFunctionalLevel is run. That step is deliberately manual
+	// because it cannot be undone, which is exactly why something has to say it is
+	// outstanding.
+	FunctionalLevel int `json:"functionalLevel,omitempty"`
+
+	// NodeOSBuild is the Windows build of the node that reported, which bounds the
+	// level the cluster could run at. Together with FunctionalLevel it says
+	// whether an upgrade was completed or merely performed.
+	NodeOSBuild int `json:"nodeOSBuild,omitempty"`
+
 	// ObservedAt is when this snapshot was taken, stamped by the CENTRE when the
 	// report arrives. It is not carried on the wire and an agent cannot set it:
 	// one clock decides, so the value is comparable with the centre's own
@@ -1104,6 +1122,14 @@ const (
 	JobClusterEvict                = "ClusterEvict"                // params: node
 	JobNodeDrain                   = "NodeDrain"                   // params: node — pause + move roles off (maintenance)
 	JobNodeResume                  = "NodeResume"                  // params: node — resume into the cluster
+
+	// JobClusterUpdateFunctionalLevel raises the cluster's operating mode to what
+	// its nodes now support, after a rolling OS upgrade has taken every node to a
+	// newer Windows. Run on the former. IRREVERSIBLE — a cluster cannot be taken
+	// back down a functional level, and a node running the older OS can no longer
+	// join afterwards — which is why it is an explicit action and never something
+	// the reconcile loop does on its own.
+	JobClusterUpdateFunctionalLevel = "ClusterUpdateFunctionalLevel" // no params
 
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node

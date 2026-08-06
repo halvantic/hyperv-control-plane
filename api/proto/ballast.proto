@@ -508,6 +508,14 @@ message ClusterStatus {
   // declares none means the cluster runs a replication endpoint Ballast does
   // not manage.
   ClusterReplicaBroker replica_broker = 13;
+  // functional_level is the cluster's operating mode (9=2016, 10=2019, 11=2022,
+  // 12=2025). A rolling OS upgrade does not raise it, so a cluster can run every
+  // node on a newer Windows and still operate at the old level until
+  // Update-ClusterFunctionalLevel is run.
+  int32 functional_level = 14;
+  // node_os_build is the reporting node's Windows build, which bounds the level
+  // the cluster could run at.
+  int32 node_os_build = 15;
 }
 
 // ClusterReplicaBroker is the Hyper-V Replica Broker as observed on the cluster.

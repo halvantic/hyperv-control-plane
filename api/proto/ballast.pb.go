@@ -3511,6 +3511,14 @@ type ClusterStatus struct {
 	// declares none means the cluster runs a replication endpoint Ballast does
 	// not manage.
 	ReplicaBroker *ClusterReplicaBroker `protobuf:"bytes,13,opt,name=replica_broker,json=replicaBroker,proto3" json:"replica_broker,omitempty"`
+	// functional_level is the cluster's operating mode (9=2016, 10=2019, 11=2022,
+	// 12=2025). A rolling OS upgrade does not raise it, so a cluster can run every
+	// node on a newer Windows and still operate at the old level until
+	// Update-ClusterFunctionalLevel is run.
+	FunctionalLevel int32 `protobuf:"varint,14,opt,name=functional_level,json=functionalLevel,proto3" json:"functional_level,omitempty"`
+	// node_os_build is the reporting node's Windows build, which bounds the level
+	// the cluster could run at.
+	NodeOsBuild   int32 `protobuf:"varint,15,opt,name=node_os_build,json=nodeOsBuild,proto3" json:"node_os_build,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3634,6 +3642,20 @@ func (x *ClusterStatus) GetReplicaBroker() *ClusterReplicaBroker {
 		return x.ReplicaBroker
 	}
 	return nil
+}
+
+func (x *ClusterStatus) GetFunctionalLevel() int32 {
+	if x != nil {
+		return x.FunctionalLevel
+	}
+	return 0
+}
+
+func (x *ClusterStatus) GetNodeOsBuild() int32 {
+	if x != nil {
+		return x.NodeOsBuild
+	}
+	return 0
 }
 
 // ClusterReplicaBroker is the Hyper-V Replica Broker as observed on the cluster.
@@ -5461,7 +5483,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\vWitnessSpec\x12+\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
 	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +
-	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\"\x91\x05\n" +
+	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\"\xe0\x05\n" +
 	"\rClusterStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12%\n" +
@@ -5480,7 +5502,9 @@ const file_ballast_proto_rawDesc = "" +
 	" \x01(\v2\x17.ballast.v1.ClusterPoolR\x04pool\x126\n" +
 	"\bnetworks\x18\v \x03(\v2\x1a.ballast.v1.ClusterNetworkR\bnetworks\x124\n" +
 	"\awitness\x18\f \x01(\v2\x1a.ballast.v1.ClusterWitnessR\awitness\x12G\n" +
-	"\x0ereplica_broker\x18\r \x01(\v2 .ballast.v1.ClusterReplicaBrokerR\rreplicaBroker\"k\n" +
+	"\x0ereplica_broker\x18\r \x01(\v2 .ballast.v1.ClusterReplicaBrokerR\rreplicaBroker\x12)\n" +
+	"\x10functional_level\x18\x0e \x01(\x05R\x0ffunctionalLevel\x12\"\n" +
+	"\rnode_os_build\x18\x0f \x01(\x05R\vnodeOsBuild\"k\n" +
 	"\x14ClusterReplicaBroker\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12)\n" +

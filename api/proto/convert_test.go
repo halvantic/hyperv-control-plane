@@ -236,7 +236,9 @@ func sampleClusterStatus() types.ClusterStatus {
 			Name: "c1-Brk.lab.local", State: "Online",
 			StorageLocation: `C:\ClusterStorage\Vol01\Replica`,
 		},
-		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
+		FunctionalLevel: 12,
+		NodeOSBuild:     26100,
+		Conditions:      []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
 	}
 }
 

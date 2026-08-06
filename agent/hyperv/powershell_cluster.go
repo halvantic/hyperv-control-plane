@@ -41,6 +41,8 @@ type clusterObservation struct {
 	Networks   []clusterNetworkObs `json:"networks"`
 	Witness    *clusterWitnessObs  `json:"witness"`
 	Broker     *clusterBrokerObs   `json:"replicaBroker"`
+	FuncLevel  int                 `json:"functionalLevel"`
+	NodeBuild  int                 `json:"nodeBuild"`
 }
 
 type clusterBrokerObs struct {
@@ -297,7 +299,22 @@ if ($br) {
   } catch {}
   $broker = [pscustomobject]@{ name = $bname; state = [string]$br.State; storageLocation = $bloc }
 }
-[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker } | ConvertTo-Json -Compress -Depth 4
+# ClusterFunctionalLevel is the cluster's operating mode, and it is the one thing
+# a rolling OS upgrade does NOT raise by itself. Take a cluster to a newer
+# Windows node by node — which is exactly what cluster-aware updating does — and
+# when the last node returns the cluster still runs at the old level: the new
+# OS's features stay unavailable and the upgrade is not actually finished until
+# Update-ClusterFunctionalLevel is run. That is deliberately manual because it
+# cannot be undone.
+#
+# Reported so the console can state it instead of showing a placeholder. The
+# highest level any node could support comes from the node build, so the two
+# together say whether an upgrade was completed or merely performed.
+$flevel = 0
+try { $flevel = [int]$c.ClusterFunctionalLevel } catch {}
+$nodeBuild = 0
+try { $nodeBuild = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).BuildNumber } catch {}
+[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker; functionalLevel = $flevel; nodeBuild = $nodeBuild } | ConvertTo-Json -Compress -Depth 4
 `
 
 // witnessScript applies a file-share witness, and only when it differs from
@@ -435,7 +452,8 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 		broker = &ClusterReplicaBroker{Name: obs.Broker.Name, State: obs.Broker.State,
 			StorageLocation: obs.Broker.StorageLocation}
 	}
-	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker}, nil
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker,
+		FunctionalLevel: obs.FuncLevel, NodeOSBuild: obs.NodeBuild}, nil
 }
 
 const installClusteringScript = `
@@ -468,6 +486,40 @@ foreach ($g in $groups) {
 }
 [pscustomobject]@{ changed = ($changed -gt 0) } | ConvertTo-Json -Compress
 `
+
+// UpdateClusterFunctionalLevel raises the cluster's operating mode to what its
+// nodes now support. Run on the former, after a rolling OS upgrade.
+//
+// Irreversible, and it is a job rather than anything the reconcile loop does:
+// once raised, the cluster cannot go back, and a node still running the older
+// Windows can no longer join. So the decision is the operator's, and the only
+// thing Ballast does automatically is notice that it is outstanding.
+func (p *PowerShell) UpdateClusterFunctionalLevel(ctx context.Context) (string, error) {
+	script := `$ErrorActionPreference = 'Stop'
+$c = Get-Cluster -ErrorAction Stop
+$before = [int]$c.ClusterFunctionalLevel
+# Already at the highest its nodes support: report it rather than running a
+# one-way operation for nothing. Update-ClusterFunctionalLevel is a no-op in that
+# case, but saying "already at level N" is the answer the operator wants.
+$down = @(Get-ClusterNode -ErrorAction SilentlyContinue | Where-Object { [string]$_.State -ne 'Up' })
+if ($down.Count -gt 0) {
+  throw ('refusing to raise the functional level while ' + (($down | ForEach-Object { [string]$_.Name }) -join ', ') + ' is not Up. Every node must be running the newer Windows and joined, or it can never rejoin afterwards - this cannot be undone.')
+}
+Update-ClusterFunctionalLevel -Force -ErrorAction Stop | Out-Null
+$after = [int](Get-Cluster -ErrorAction Stop).ClusterFunctionalLevel
+if ($after -eq $before) { 'RESULT=cluster functional level is already ' + $before + ' (no change)' }
+else { 'RESULT=cluster functional level raised from ' + $before + ' to ' + $after }
+`
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("update cluster functional level: %w", err)
+	}
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	return msg, nil
+}
 
 func (p *PowerShell) EnsureClusterFirewall(ctx context.Context) (Outcome, error) {
 	out, err := p.run(ctx, clusterFirewallScript)

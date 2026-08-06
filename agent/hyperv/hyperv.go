@@ -298,6 +298,11 @@ type Interface interface {
 	// disks are Healthy.
 	RepairStoragePool(ctx context.Context) (string, error)
 
+	// UpdateClusterFunctionalLevel raises the cluster's operating mode to what its
+	// nodes now support, after a rolling OS upgrade. Run on the former.
+	// IRREVERSIBLE, so it is only ever an explicit operator action.
+	UpdateClusterFunctionalLevel(ctx context.Context) (string, error)
+
 	// RebuildStoragePool DESTROYS the S2D pool and its volumes and re-enables S2D
 	// to create a fresh pool from the cluster's current disks. For a stale/degraded
 	// pool left over from a torn-down cluster that Repair cannot salvage. All data
@@ -664,6 +669,12 @@ type ClusterState struct {
 	// has none. A broker present here while the cluster spec declares none means
 	// Ballast is not managing a live replication endpoint.
 	ReplicaBroker *ClusterReplicaBroker
+	// FunctionalLevel is the cluster's operating mode (ClusterFunctionalLevel).
+	// Zero means it could not be read.
+	FunctionalLevel int
+	// NodeOSBuild is the reporting node's Windows build number, which bounds the
+	// functional level the cluster could run at.
+	NodeOSBuild int
 }
 
 // ClusterReplicaBroker is the observed Hyper-V Replica Broker role: the client

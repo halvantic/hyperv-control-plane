@@ -1068,6 +1068,9 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		Pool:               res.Pool,
 		Networks:           res.Networks,
 		Witness:            res.Witness,
+		ReplicaBroker:      res.ReplicaBroker,
+		FunctionalLevel:    res.FunctionalLevel,
+		NodeOSBuild:        res.NodeOSBuild,
 	}
 	if !res.Honoured {
 		cs.ObservedGeneration = 0

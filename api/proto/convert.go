@@ -757,6 +757,8 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		Networks:           clusterNetworksToProto(s.Networks),
 		Witness:            clusterWitnessToProto(s.Witness),
 		ReplicaBroker:      clusterBrokerToProto(s.ReplicaBroker),
+		FunctionalLevel:    int32(s.FunctionalLevel),
+		NodeOsBuild:        int32(s.NodeOSBuild),
 	}
 }
 
@@ -910,6 +912,8 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		Networks:           clusterNetworksFromProto(s.GetNetworks()),
 		Witness:            clusterWitnessFromProto(s.GetWitness()),
 		ReplicaBroker:      clusterBrokerFromProto(s.GetReplicaBroker()),
+		FunctionalLevel:    int(s.GetFunctionalLevel()),
+		NodeOSBuild:        int(s.GetNodeOsBuild()),
 	}
 }
 

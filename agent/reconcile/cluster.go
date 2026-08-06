@@ -19,20 +19,22 @@ type ClusterAssignment struct {
 
 // ClusterResult is the outcome of one cluster reconcile pass.
 type ClusterResult struct {
-	Phase         types.Phase
-	Honoured      bool
-	Changed       bool
-	FormedMembers []string
-	S2DEnabled    bool
-	Conditions    []types.Condition
-	Groups        []types.ClusterGroupStatus
-	CSVs          []types.CSVStatus
-	VMs           []types.ClusterVMStatus
-	Nodes         []types.ClusterNodeStatus
-	Pool          *types.ClusterPoolStatus
-	Networks      []types.ClusterNetworkStatus
-	Witness       *types.ClusterWitnessStatus
-	ReplicaBroker *types.ClusterReplicaBrokerStatus
+	Phase           types.Phase
+	Honoured        bool
+	Changed         bool
+	FormedMembers   []string
+	S2DEnabled      bool
+	Conditions      []types.Condition
+	Groups          []types.ClusterGroupStatus
+	CSVs            []types.CSVStatus
+	VMs             []types.ClusterVMStatus
+	Nodes           []types.ClusterNodeStatus
+	Pool            *types.ClusterPoolStatus
+	Networks        []types.ClusterNetworkStatus
+	Witness         *types.ClusterWitnessStatus
+	ReplicaBroker   *types.ClusterReplicaBrokerStatus
+	FunctionalLevel int
+	NodeOSBuild     int
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -231,6 +233,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		VMs: clusterVMsToStatus(state.VMs), Nodes: clusterNodesToStatus(state.Nodes),
 		Pool: clusterPoolToStatus(state.Pool), Networks: clusterNetworksToStatus(state.Networks),
 		Witness: clusterWitnessToStatus(state.Witness), ReplicaBroker: clusterBrokerToStatus(state.ReplicaBroker),
+		FunctionalLevel: state.FunctionalLevel, NodeOSBuild: state.NodeOSBuild,
 	}, storageErr
 }
 

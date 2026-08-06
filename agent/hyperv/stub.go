@@ -459,6 +459,10 @@ func (s *Stub) RepairStoragePool(_ context.Context) (string, error) {
 	return "NOOP pool is Healthy (stub)", nil
 }
 
+func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
+	return "cluster functional level is already 12 (no change) (stub)", nil
+}
+
 func (s *Stub) GetNetworkProfile(_ context.Context) (string, error) {
 	return "DomainAuthenticated", nil
 }
