@@ -176,6 +176,93 @@ type HostSpec struct {
 	// offline, and the centre can act on it — placement skips the host and its
 	// alarms stop shouting about a machine somebody is deliberately working on.
 	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
+
+	// ISOLibrary is an SMB share this STANDALONE host mounts boot media from.
+	//
+	// It is declared per host and is never inherited: a cluster member takes its
+	// library from ClusterSpec.ISOLibrary instead, read straight from the cluster
+	// assignment the agent already receives. Nothing is fanned into member specs,
+	// because a fanned copy is a second source of truth that outlives its origin —
+	// which is precisely how a deleted CSV left dangling paths on three hosts.
+	// With no copy, eviction removes the library by construction.
+	ISOLibrary *ISOLibrarySpec `json:"isoLibrary,omitempty"`
+}
+
+// ISOLibrarySpec is an SMB share holding boot media, referenced in place rather
+// than copied.
+//
+// Today a cluster's ISOs are FETCHED onto its CSV — every cluster keeping its own
+// copy of every image on the most expensive storage it has, and a new node
+// waiting on a multi-gigabyte transfer before it can boot anything. A share is
+// referenced directly by the VM's ISOPath, so there is nothing to copy and
+// nothing to keep in step.
+//
+// THE ACCESS MODEL IS THE WHOLE DIFFICULTY, and it is the same one the file-share
+// witness taught: Hyper-V attaches an ISO from the VMMS process, which runs as
+// LocalSystem, so it reaches the share as the node's COMPUTER ACCOUNT — not as
+// the operator, and not as the agent's service account. A share that the agent
+// can read may still be unreadable to Hyper-V, and the reverse. Granting
+// "everyone" on a standalone NAS does not help, because the computer account
+// cannot authenticate to it at all.
+//
+// So the share must grant read to each node's computer account (or a group
+// holding them), and the NAS must be domain-joined. That is outside what Ballast
+// administers, so the console names the step rather than failing obscurely.
+type ISOLibrarySpec struct {
+	// Path is the UNC share, e.g. \\nas.lab.local\isos.
+	//
+	// Use the FQDN, not an IP: Kerberos needs an SPN to find, and an IP forces a
+	// fallback to NTLM which the computer account often cannot complete.
+	Path string `json:"path"`
+
+	// CredentialSecret optionally names a stored credential to reach the share
+	// with, for a share that cannot grant the computer accounts directly.
+	//
+	// It is a fallback, not the default. A credential only helps the agent's own
+	// reads (listing the library); it does NOT change how Hyper-V attaches an
+	// ISO, which is always as the computer account. So a library configured this
+	// way can list correctly and still fail to boot a VM — the status says so
+	// rather than letting the list imply it works.
+	CredentialSecret string `json:"credentialSecret,omitempty"`
+}
+
+// ISOLibraryStatus is one host's view of its declared ISO library.
+//
+// The two reachability figures are separate on purpose, because they answer
+// different questions and can disagree. The agent reads the share as its own
+// service account; Hyper-V attaches an ISO as the node's COMPUTER ACCOUNT. A
+// library that lists perfectly and cannot boot a VM is the failure this
+// distinction exists to make visible — and it is the normal outcome of a share
+// granted to a user rather than to the machines.
+type ISOLibraryStatus struct {
+	// Path echoes the declared share, so a status is readable without the spec.
+	Path string `json:"path,omitempty"`
+
+	// Readable is whether the AGENT could list the share. This is what populates
+	// ISOs, and on its own it proves nothing about booting.
+	Readable bool `json:"readable"`
+
+	// MachineReadable is whether the share is reachable AS THE COMPUTER ACCOUNT —
+	// the way Hyper-V will actually attach the media. This is the one that
+	// decides whether a VM can boot from the library.
+	//
+	// Verified the way the witness had to be: from a LocalSystem context, because
+	// a probe run as the agent's own account answers a different question and
+	// answers it confidently. Nil means it has not been established, which is not
+	// the same as false and must not be shown as a failure.
+	MachineReadable *bool `json:"machineReadable,omitempty"`
+
+	// Message explains a failure in the operator's terms, naming the remedy where
+	// it is outside Ballast's boundary — a share on a NAS is not something Ballast
+	// administers, so it says which grant is missing rather than failing obscurely.
+	Message string `json:"message,omitempty"`
+
+	// ISOs are the .iso files found, newest first. Names only; the full path is
+	// Path + name.
+	ISOs []string `json:"isos,omitempty"`
+
+	// CheckedAt is when the host last probed the share.
+	CheckedAt time.Time `json:"checkedAt,omitempty"`
 }
 
 // ReplicaServerSpec makes a host a Hyper-V Replica target.
@@ -267,6 +354,10 @@ type HostStatus struct {
 	// Autonomous is true when the agent is currently running on its
 	// last-honoured cached state because the control plane is unreachable.
 	Autonomous bool `json:"autonomous"`
+
+	// ISOLibrary is what this host actually found at its declared library share,
+	// whether the cluster's or its own. Nil when none is declared.
+	ISOLibrary *ISOLibraryStatus `json:"isoLibrary,omitempty"`
 
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
@@ -678,6 +769,12 @@ type ClusterSpec struct {
 	// fans a ReplicaServerSpec into every member host so each node accepts
 	// replica traffic.
 	ReplicaBroker *ReplicaBrokerSpec `json:"replicaBroker,omitempty"`
+
+	// ISOLibrary is an SMB share every member mounts boot media from. Declared
+	// once here and read by each member from its cluster assignment — never fanned
+	// into member HostSpecs, so a host that leaves the cluster loses the library
+	// with it and there is no copy to go stale. See ISOLibrarySpec.
+	ISOLibrary *ISOLibrarySpec `json:"isoLibrary,omitempty"`
 }
 
 // ClusterSwitchSpec is a virtual switch defined once at the cluster and created

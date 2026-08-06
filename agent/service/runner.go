@@ -105,6 +105,13 @@ const (
 	// the UI; the one thing it can lag is an *unplanned* failover's owner node (a
 	// planned move goes through a job, which forces an immediate pass).
 	clusterReconcileEvery = 8
+	// isoLibraryEvery — the boot-media share probe. It reaches off the host to a
+	// file server and its computer-account half runs a one-shot scheduled task
+	// that can wait up to 45s, so it is the least appropriate thing to do on
+	// every pass. A share's contents and its permissions change on human
+	// timescales; the centre carries the last result forward between probes, so a
+	// skipped pass shows the previous answer rather than blanking the library.
+	isoLibraryEvery = 20
 	// screenCaptureEvery — the VM console thumbnail. Per RUNNING VM per cycle, and
 	// the least urgent thing collected: a preview of a screen nobody may be
 	// looking at, on a path the live console does not use. On a host with many
@@ -197,6 +204,15 @@ type runner struct {
 	// persists across cycles and across autonomy windows, and is what the agent
 	// reports as Status.ObservedGeneration.
 	observedGen int64
+
+	// isoLib is the ISO library that currently applies to this host — the
+	// cluster's for a member, its own for a standalone host, resolved by
+	// reconcile.EffectiveISOLibrary and refreshed only on a successful pull.
+	isoLib *types.ISOLibrarySpec
+	// isoLibState is the last probe result, carried forward across the cycles
+	// that skip the probe so a skipped pass shows the previous answer rather than
+	// blanking the library in the console.
+	isoLibState *types.ISOLibraryStatus
 
 	// vmObservedGen tracks, per VM name, the last desired Generation fully
 	// honoured for that VM. Like observedGen it persists across cycles and
@@ -735,6 +751,16 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		if serr := r.st.SaveDesiredVMs(vms); serr != nil {
 			r.log.Error("persist desired vms failed", "err", serr)
 		}
+		// Which ISO library applies is resolved ONLY on a successful pull, because
+		// a nil assignment is ambiguous: it means "not a member" after a good pull
+		// and "we do not know" after a failed one. Recomputing on a failed pull
+		// would read the second as the first, and a cluster member would silently
+		// fall back to a host-level library the moment the centre went away —
+		// which is the opposite of what autonomy promises. Held instead, so the
+		// agent keeps enforcing the library it was last given.
+		if cached, ok, _ := r.st.LoadDesiredHost(); ok {
+			r.isoLib = reconcile.EffectiveISOLibrary(cached, assignment)
+		}
 		// Secrets are delivered fresh each pull and used in this cycle's
 		// reconcile; they are never written to the local store.
 		if ss := resp.GetSecrets(); len(ss) > 0 {
@@ -772,6 +798,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
+	st.ISOLibrary = r.observeISOLibrary(ctx, force)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it
@@ -1052,6 +1079,45 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 		Replication:         res.Replication,
 		Conditions:          res.Conditions,
 	}
+}
+
+// observeISOLibrary probes the host's effective boot-media share, throttled.
+//
+// The probe reaches a file server and its computer-account half runs a scheduled
+// task that can wait up to 45s, so it is the least appropriate thing to do every
+// pass. Between probes the previous result is carried forward: a share's contents
+// and permissions change on human timescales, and reporting nil on the skipped
+// cycles would make the console's library flicker in and out of existence.
+//
+// A library that is no longer declared clears immediately, though — that is a
+// decision, not a stale reading, and it must not linger.
+func (r *runner) observeISOLibrary(ctx context.Context, force bool) *types.ISOLibraryStatus {
+	if r.isoLib == nil || r.isoLib.Path == "" {
+		r.isoLibState = nil
+		return nil
+	}
+	// A changed share is a new question, so re-probe at once rather than showing
+	// the old share's verdict against the new path.
+	changed := r.isoLibState != nil && r.isoLibState.Path != r.isoLib.Path
+	if !force && !changed && r.isoLibState != nil && r.cycles%isoLibraryEvery != 0 {
+		return r.isoLibState
+	}
+	st, err := r.hv.CheckISOLibrary(ctx, r.isoLib.Path)
+	if err != nil {
+		// The probe itself failed, which says nothing about the share. Keep the
+		// last real answer rather than replacing it with a verdict we do not have.
+		r.log.Warn("iso library check failed", "path", r.isoLib.Path, "err", err)
+		return r.isoLibState
+	}
+	r.isoLibState = &types.ISOLibraryStatus{
+		Path:            st.Path,
+		Readable:        st.Readable,
+		MachineReadable: st.MachineReadable,
+		Message:         st.Message,
+		ISOs:            st.ISOs,
+		CheckedAt:       time.Now().UTC(),
+	}
+	return r.isoLibState
 }
 
 // reportClusterStatus sends a cluster-only status report (no host status, so it

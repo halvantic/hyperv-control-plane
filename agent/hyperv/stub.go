@@ -463,6 +463,14 @@ func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
 	return "cluster functional level is already 12 (no change) (stub)", nil
 }
 
+func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {
+	if path == "" {
+		return ISOLibraryState{}, nil
+	}
+	ok := true
+	return ISOLibraryState{Path: path, Readable: true, MachineReadable: &ok, ISOs: []string{"stub.iso"}}, nil
+}
+
 func (s *Stub) GetNetworkProfile(_ context.Context) (string, error) {
 	return "DomainAuthenticated", nil
 }

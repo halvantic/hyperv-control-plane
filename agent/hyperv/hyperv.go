@@ -303,6 +303,11 @@ type Interface interface {
 	// IRREVERSIBLE, so it is only ever an explicit operator action.
 	UpdateClusterFunctionalLevel(ctx context.Context) (string, error)
 
+	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
+	// node's computer account — the way Hyper-V will actually attach media. Read
+	// only; it mounts nothing.
+	CheckISOLibrary(ctx context.Context, path string) (ISOLibraryState, error)
+
 	// RebuildStoragePool DESTROYS the S2D pool and its volumes and re-enables S2D
 	// to create a fresh pool from the cluster's current disks. For a stale/degraded
 	// pool left over from a torn-down cluster that Repair cannot salvage. All data

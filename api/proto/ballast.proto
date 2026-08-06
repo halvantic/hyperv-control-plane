@@ -209,6 +209,35 @@ message HostSpec {
   // happens — the console shows "draining" for ever over a node still running
   // their VMs.
   MaintenanceSpec maintenance = 12;
+  // iso_library is the SMB share a STANDALONE host mounts boot media from. A
+  // cluster member's library comes from ClusterSpec instead and is never fanned
+  // here, so there is no copy to outlive an eviction.
+  ISOLibrarySpec iso_library = 13;
+}
+
+// ISOLibrarySpec is an SMB share holding boot media, referenced rather than
+// copied. Hyper-V attaches an ISO as the node's COMPUTER ACCOUNT (VMMS runs as
+// LocalSystem), so the share must grant those, not the operator.
+message ISOLibrarySpec {
+  // path is the UNC share. Use the FQDN so Kerberos can find an SPN.
+  string path = 1;
+  // credential_secret optionally names a stored credential for the agent's own
+  // reads. It does NOT change how Hyper-V attaches media.
+  string credential_secret = 2;
+}
+
+// ISOLibraryStatus is one host's view of its declared library. readable and
+// machine_readable answer different questions and can disagree: the agent reads
+// as its service account, Hyper-V as the computer account.
+message ISOLibraryStatus {
+  string path = 1;
+  bool readable = 2;
+  // machine_readable is optional on purpose: unset means "not established",
+  // which is not the same as false and must not render as a failure.
+  optional bool machine_readable = 3;
+  string message = 4;
+  repeated string isos = 5;
+  google.protobuf.Timestamp checked_at = 6;
 }
 
 // MaintenanceSpec declares a host is deliberately out of service.
@@ -274,6 +303,9 @@ message HostStatus {
   // and (on S2D) its storage out of the pool. Without it the centre could never
   // tell "asked to drain" from "drained".
   bool in_maintenance = 16;
+  // iso_library is what this host actually found at its declared library share,
+  // whether the cluster's or its own.
+  ISOLibraryStatus iso_library = 17;
 }
 
 message HostMetrics {
@@ -451,6 +483,9 @@ message ClusterSpec {
   LiveMigrationSpec live_migration = 6;
   // replica_broker provisions the Hyper-V Replica Broker role (former only).
   ReplicaBrokerSpec replica_broker = 7;
+  // iso_library is the SMB share every member mounts boot media from, read by
+  // each member from its cluster assignment rather than fanned into host specs.
+  ISOLibrarySpec iso_library = 8;
 }
 
 // ReplicaBrokerSpec is the Hyper-V Replica Broker cluster role: a client

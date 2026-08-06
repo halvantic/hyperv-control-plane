@@ -434,7 +434,57 @@ func specToProto(s types.HostSpec) *HostSpec {
 	if m := s.Maintenance; m != nil {
 		out.Maintenance = &MaintenanceSpec{Enabled: m.Enabled, Reason: m.Reason}
 	}
+	out.IsoLibrary = isoLibrarySpecToProto(s.ISOLibrary)
 	return out
+}
+
+// The library spec crosses the wire for both a standalone host and a cluster, so
+// one pair of converters serves both. Nil stays nil: "no library declared" is a
+// real answer and must not arrive as an empty one.
+func isoLibrarySpecToProto(l *types.ISOLibrarySpec) *ISOLibrarySpec {
+	if l == nil {
+		return nil
+	}
+	return &ISOLibrarySpec{Path: l.Path, CredentialSecret: l.CredentialSecret}
+}
+
+func isoLibrarySpecFromProto(l *ISOLibrarySpec) *types.ISOLibrarySpec {
+	if l == nil {
+		return nil
+	}
+	return &types.ISOLibrarySpec{Path: l.GetPath(), CredentialSecret: l.GetCredentialSecret()}
+}
+
+func isoLibraryStatusToProto(l *types.ISOLibraryStatus) *ISOLibraryStatus {
+	if l == nil {
+		return nil
+	}
+	return &ISOLibraryStatus{
+		Path:     l.Path,
+		Readable: l.Readable,
+		// MachineReadable is a POINTER both sides: unset means "not established",
+		// which is a third state and must survive as one. Flattening it to false
+		// would report a share as unbootable on every pass where the check could
+		// not run.
+		MachineReadable: l.MachineReadable,
+		Message:         l.Message,
+		Isos:            l.ISOs,
+		CheckedAt:       tsToProto(l.CheckedAt),
+	}
+}
+
+func isoLibraryStatusFromProto(l *ISOLibraryStatus) *types.ISOLibraryStatus {
+	if l == nil {
+		return nil
+	}
+	return &types.ISOLibraryStatus{
+		Path:            l.GetPath(),
+		Readable:        l.GetReadable(),
+		MachineReadable: l.MachineReadable,
+		Message:         l.GetMessage(),
+		ISOs:            l.GetIsos(),
+		CheckedAt:       tsFromProto(l.GetCheckedAt()),
+	}
 }
 
 func specFromProto(s *HostSpec) types.HostSpec {
@@ -483,6 +533,7 @@ func specFromProto(s *HostSpec) types.HostSpec {
 	if m := s.GetMaintenance(); m != nil {
 		out.Maintenance = &types.MaintenanceSpec{Enabled: m.GetEnabled(), Reason: m.GetReason()}
 	}
+	out.ISOLibrary = isoLibrarySpecFromProto(s.GetIsoLibrary())
 	return out
 }
 
@@ -497,6 +548,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		AgentVersion:       s.AgentVersion,
 		NetworkProfile:     s.NetworkProfile,
 		InMaintenance:      s.InMaintenance,
+		IsoLibrary:         isoLibraryStatusToProto(s.ISOLibrary),
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -596,6 +648,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		AgentVersion:       s.GetAgentVersion(),
 		NetworkProfile:     s.GetNetworkProfile(),
 		InMaintenance:      s.GetInMaintenance(),
+		ISOLibrary:         isoLibraryStatusFromProto(s.GetIsoLibrary()),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),
@@ -700,6 +753,7 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 	if b := s.ReplicaBroker; b != nil {
 		out.ReplicaBroker = &ReplicaBrokerSpec{Name: b.Name, StaticIp: b.StaticIP, StoragePath: b.StoragePath}
 	}
+	out.IsoLibrary = isoLibrarySpecToProto(s.ISOLibrary)
 	return out
 }
 
@@ -738,6 +792,7 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 	if b := s.GetReplicaBroker(); b != nil {
 		out.ReplicaBroker = &types.ReplicaBrokerSpec{Name: b.GetName(), StaticIP: b.GetStaticIp(), StoragePath: b.GetStoragePath()}
 	}
+	out.ISOLibrary = isoLibrarySpecFromProto(s.GetIsoLibrary())
 	return out
 }
 
