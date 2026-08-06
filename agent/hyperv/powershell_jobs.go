@@ -856,13 +856,35 @@ try {
 $mgmtIdx = -1
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
-  if ($ips) { $mgmtIdx = [int]$n.ifIndex; break }
+  if (-not $ips) { continue }
+  # It must also be ROUTED. A converged host has several statically addressed
+  # interfaces and Get-NetAdapter returns them in no meaningful order, so "first
+  # one with a static IP" can select the storage vNIC and hand DNS registration
+  # to a network that must never publish an A record. The default route is what
+  # distinguishes management from fabric.
+  if (@(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -eq 0) { continue }
+  $mgmtIdx = [int]$n.ifIndex; break
 }
 $fixed = @()
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceIndex $n.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   $wantReg = ([int]$n.ifIndex -eq $mgmtIdx)
+  # An interface with no IPv4 default route is an ISOLATED cluster network
+  # (storage, live migration). It must have no DNS at all and must not register:
+  # a published A record for a non-routed address breaks name resolution to the
+  # host, and DNS on the interface makes clustering classify the network as
+  # client-facing. Repairing DNS "on all NICs" without this test stamps the DC
+  # onto the fabric vNICs, which the reconcile loop then spends every pass
+  # undoing — see the inherit rule in agent/reconcile ReconcileHost.
+  $routed = @(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -gt 0
+  if (-not $routed) {
+    if (($cur.Count -eq 0) -and (-not $reg)) { continue }
+    if ($cur.Count -gt 0) { try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ResetServerAddresses -ErrorAction Stop } catch {} }
+    if ($reg) { try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue } catch {} }
+    $fixed += ($n.Name + ' (isolated: dns was ' + ($cur -join ',') + ' -> none, reg ' + $reg + '->False)')
+    continue
+  }
   $needDns = (($cur -join ',') -ne $dc)
   if ((-not $needDns) -and ($reg -eq $wantReg)) { continue }
   if ($needDns) { try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $dc -ErrorAction Stop } catch {} }

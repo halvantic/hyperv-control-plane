@@ -106,6 +106,42 @@ func TestInventoryScriptRequiresGatewayForManagement(t *testing.T) {
 	}
 }
 
+// RepairHostDNS is offered as "fix DNS on all nodes", and it used to mean that
+// literally: every NIC got the DC as its DNS server. An isolated fabric vNIC
+// (storage, live migration) must have none — DNS there publishes an unreachable
+// A record and makes clustering classify the network as client-facing — and the
+// reconcile loop clears it on the very next pass, so the job's own work is undone
+// while the operator is told it succeeded.
+func TestRepairHostDNSLeavesIsolatedNetworksAlone(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("no change")}}
+	if _, err := newTestPS(f).RepairHostDNS(context.Background(), "192.168.1.168"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	if !strings.Contains(s, `$routed = @(Get-NetRoute`) {
+		t.Fatal("each NIC's routability must be established before its DNS is touched")
+	}
+	if !strings.Contains(s, "if (-not $routed) {") {
+		t.Fatal("a non-routed NIC needs its own branch, not the DC-DNS treatment")
+	}
+	if !strings.Contains(s, "-ResetServerAddresses") {
+		t.Error("an isolated network's DNS must be cleared, not set")
+	}
+
+	// The management NIC is the routed one. "First NIC with a static IP" picks
+	// whatever Get-NetAdapter happens to return first, which on a converged host
+	// can be the storage vNIC — handing DNS registration to a network that must
+	// never publish an A record.
+	mgmt := strings.Index(s, "$mgmtIdx = [int]$n.ifIndex")
+	if mgmt == -1 {
+		t.Fatal("management NIC selection not found")
+	}
+	if !strings.Contains(s[:mgmt], `DestinationPrefix '0.0.0.0/0'`) {
+		t.Error("management NIC selection must require a default route, not a static IP alone")
+	}
+}
+
 // A local or UNC source is copied, never fetched over HTTP.
 func TestFetchISOLocalSourceUsesCopy(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{[]byte("")}}

@@ -255,7 +255,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// DNS servers so the reconcile SETS DNS on it instead of clearing it (which
 		// would strand DNS on stray no-IP vNICs). Copy the config so the shared
 		// cached desired is not mutated.
-		if v.IPConfig != nil && len(v.IPConfig.DNSServers) == 0 && len(net.DNSServers) > 0 {
+		//
+		// A DECLARED GATEWAY is what makes a vNIC routable, and inheriting must be
+		// limited to those. An isolated fabric vNIC (storage, live migration)
+		// declares an address and nothing else, which is indistinguishable here
+		// from "management vNIC that just did not spell its DNS out" unless the
+		// gateway is tested — and EnsureHostDNS independently CLEARS DNS on any
+		// interface with no default route, because DNS there publishes an
+		// unreachable A record and makes clustering treat the network as
+		// client-facing.
+		//
+		// Without this test the two reconcilers contradict each other on the same
+		// interface every pass: this one sets DNS (and to do so runs applyIPScript,
+		// which removes and re-adds the address), EnsureHostDNS clears it, and both
+		// truthfully report Updated for ever. Observed on the rig 2026-08-06: the
+		// storage vNIC had NO address for ~30s of every ~45s cycle on all three
+		// nodes, which partitioned the cluster network, paused the CSVs and failed
+		// the pool resources. Idempotency is the non-negotiable that was breached;
+		// the cluster damage was the symptom.
+		if v.IPConfig != nil && v.IPConfig.Gateway != "" && len(v.IPConfig.DNSServers) == 0 && len(net.DNSServers) > 0 {
 			cfg := *v.IPConfig
 			cfg.DNSServers = append([]string(nil), net.DNSServers...)
 			v.IPConfig = &cfg

@@ -80,12 +80,35 @@ $ErrorActionPreference = 'Stop'
 $c = Get-Cluster -ErrorAction SilentlyContinue
 if (-not $c) {
   # Get-Cluster returned nothing — but is the node truly un-clustered, or was the
-  # cluster service just momentarily unavailable (starting, mid-operation)? A joined
-  # node has the cluster database hive at HKLM:\Cluster. If it exists we ARE
-  # clustered and must NOT report "no cluster", which would trigger a spurious
-  # New-Cluster that fails ("already joined to a cluster"). Report exists+unknown so
-  # the reconciler neither forms nor clobbers status this pass.
-  if (Test-Path 'HKLM:\Cluster') { [pscustomobject]@{ exists = $true; known = $false } | ConvertTo-Json -Compress; return }
+  # cluster service just momentarily unavailable (starting, mid-operation)? Report
+  # exists+unknown for the latter so the reconciler neither forms nor clobbers
+  # status this pass.
+  #
+  # Membership evidence must SURVIVE THE CLUSTER SERVICE BEING DOWN. HKLM:\Cluster
+  # is the cluster database hive MOUNTED BY ClusSvc at startup, so it is absent on
+  # a node that is joined but whose service is stopped, crashed or still starting —
+  # and this branch then declares, with certainty, that the machine has never been
+  # in a cluster. Observed on the rig 2026-08-06: ClusSvc sat in StartPending on
+  # two of three nodes, and the designated former ran New-Cluster against the live
+  # cluster it was already a member of.
+  #
+  # That attempt failed only because New-Cluster does its own check. Had the
+  # service been down on every member, nothing would have refused, and a second
+  # cluster forming over a live S2D pool loses data. So the asymmetry decides the
+  # design: being wrong about "clustered" costs one deferred pass, being wrong
+  # about "not clustered" costs the pool.
+  #
+  # These two persist on disk and in the registry regardless of service state:
+  #   C:\Windows\Cluster\CLUSDB                      the cluster database itself
+  #   ...\Services\ClusSvc\Parameters\ClusterName    written when the node joins
+  $joined = $false
+  if (Test-Path 'HKLM:\Cluster') { $joined = $true }
+  if ((-not $joined) -and (Test-Path (Join-Path $env:SystemRoot 'Cluster\CLUSDB'))) { $joined = $true }
+  if (-not $joined) {
+    $pn = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\ClusSvc\Parameters' -ErrorAction SilentlyContinue).ClusterName
+    if ($pn) { $joined = $true }
+  }
+  if ($joined) { [pscustomobject]@{ exists = $true; known = $false } | ConvertTo-Json -Compress; return }
   [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return
 }
 $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
