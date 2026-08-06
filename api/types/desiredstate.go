@@ -1368,6 +1368,20 @@ type Secret struct {
 const (
 	// SecretDomainCredential carries "username" + "password" for domain join.
 	SecretDomainCredential = "DomainCredential"
+
+	// SecretLocalCredential is a LOCAL administrator on a host, in the same
+	// "username" + "password" keys.
+	//
+	// It exists because a host is reachable by a domain account only once it is
+	// domain-joined, and Ballast's job includes onboarding hosts that are not yet.
+	// With only a domain type on offer, a workgroup host could not be given any
+	// valid credential at all — so the operator had to join it to the domain by
+	// hand before Ballast would touch it, which is the step Ballast performs.
+	//
+	// It is a separate type rather than a flag on the domain one because the
+	// pickers filter by type, and that filtering is what stops a guest account
+	// being offered as a WinRM target.
+	SecretLocalCredential = "LocalCredential"
 )
 
 // User is an operator account that can sign in to the centre's UI/REST surface.
