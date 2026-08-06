@@ -317,9 +317,18 @@ func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
 }
 
 // reconcileStorage enables S2D (if requested and not already on) and provisions
-// the desired CSVs. It is a no-op for non-formers or when EnableS2D is false.
+// the desired CSVs. It is a no-op for non-formers or for any storage kind other
+// than S2D.
+//
+// Gated on StorageKind() rather than EnableS2D so the two eras of spec are
+// indistinguishable here: a cluster authored before ClusterStorageSpec existed
+// carries only the flag, one authored after carries only the kind, and this must
+// behave identically for both. Reading the flag directly would silently stop
+// provisioning storage for every cluster converted to the new field — the
+// reconciler would simply return, with every condition it would have raised
+// absent rather than failing.
 func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) (s2dEnabled bool, conds []types.Condition, changed bool, firstErr error) {
-	if !a.IsFormer || !a.Cluster.Spec.EnableS2D {
+	if !a.IsFormer || a.Cluster.Spec.StorageKind() != types.StorageKindS2D {
 		return false, nil, false, nil
 	}
 

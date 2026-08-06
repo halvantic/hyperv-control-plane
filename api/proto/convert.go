@@ -740,6 +740,7 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 			SizeBytes:      v.SizeBytes,
 			ResiliencyType: v.ResiliencyType,
 			NumberOfCopies: int32(v.NumberOfCopies),
+			Source:         csvSourceToProto(v.Source),
 		})
 	}
 	if m := s.LiveMigration; m != nil {
@@ -754,7 +755,98 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 		out.ReplicaBroker = &ReplicaBrokerSpec{Name: b.Name, StaticIp: b.StaticIP, StoragePath: b.StoragePath}
 	}
 	out.IsoLibrary = isoLibrarySpecToProto(s.ISOLibrary)
+	out.Storage = clusterStorageToProto(s.Storage)
 	return out
+}
+
+// The storage discriminator. Nil stays nil so a cluster authored before it
+// existed keeps falling back to enable_s2d, rather than arriving as an explicit
+// "unspecified kind" that nothing knows how to serve.
+func clusterStorageToProto(s *types.ClusterStorageSpec) *ClusterStorageSpec {
+	if s == nil {
+		return nil
+	}
+	return &ClusterStorageSpec{Kind: storageKindToProto(s.Kind), Iscsi: iscsiSpecToProto(s.ISCSI)}
+}
+
+func clusterStorageFromProto(s *ClusterStorageSpec) *types.ClusterStorageSpec {
+	if s == nil {
+		return nil
+	}
+	return &types.ClusterStorageSpec{Kind: storageKindFromProto(s.GetKind()), ISCSI: iscsiSpecFromProto(s.GetIscsi())}
+}
+
+func storageKindToProto(k types.ClusterStorageKind) ClusterStorageKind {
+	switch k {
+	case types.StorageKindS2D:
+		return ClusterStorageKind_CLUSTER_STORAGE_KIND_S2D
+	case types.StorageKindISCSI:
+		return ClusterStorageKind_CLUSTER_STORAGE_KIND_ISCSI
+	default:
+		return ClusterStorageKind_CLUSTER_STORAGE_KIND_UNSPECIFIED
+	}
+}
+
+func storageKindFromProto(k ClusterStorageKind) types.ClusterStorageKind {
+	switch k {
+	case ClusterStorageKind_CLUSTER_STORAGE_KIND_S2D:
+		return types.StorageKindS2D
+	case ClusterStorageKind_CLUSTER_STORAGE_KIND_ISCSI:
+		return types.StorageKindISCSI
+	default:
+		return ""
+	}
+}
+
+// The LUN is a pointer because 0 is a REAL lun number — very often the only one
+// on a small array — so "unset" and "LUN 0" have to stay distinguishable.
+func csvSourceToProto(s *types.CSVSourceSpec) *CSVSourceSpec {
+	if s == nil {
+		return nil
+	}
+	out := &CSVSourceSpec{SerialNumber: s.SerialNumber, TargetIqn: s.TargetIQN}
+	if s.LUN != nil {
+		v := int32(*s.LUN)
+		out.Lun = &v
+	}
+	return out
+}
+
+func csvSourceFromProto(s *CSVSourceSpec) *types.CSVSourceSpec {
+	if s == nil {
+		return nil
+	}
+	out := &types.CSVSourceSpec{SerialNumber: s.GetSerialNumber(), TargetIQN: s.GetTargetIqn()}
+	if s.Lun != nil {
+		v := int(*s.Lun)
+		out.LUN = &v
+	}
+	return out
+}
+
+func iscsiSpecToProto(s *types.ISCSIStorageSpec) *ISCSIStorageSpec {
+	if s == nil {
+		return nil
+	}
+	return &ISCSIStorageSpec{
+		Portals: s.Portals, Targets: s.Targets,
+		CredentialSecret: s.CredentialSecret, MutualChap: s.MutualCHAP,
+		// A pointer on both sides: unset means "default from the portal count",
+		// which is a third state. Flattened to false, a two-portal cluster would
+		// arrive asking for MPIO off — the configuration that corrupts data.
+		EnableMpio: s.EnableMPIO,
+	}
+}
+
+func iscsiSpecFromProto(s *ISCSIStorageSpec) *types.ISCSIStorageSpec {
+	if s == nil {
+		return nil
+	}
+	return &types.ISCSIStorageSpec{
+		Portals: s.GetPortals(), Targets: s.GetTargets(),
+		CredentialSecret: s.GetCredentialSecret(), MutualCHAP: s.GetMutualChap(),
+		EnableMPIO: s.EnableMpio,
+	}
 }
 
 func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
@@ -779,6 +871,7 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 			SizeBytes:      v.GetSizeBytes(),
 			ResiliencyType: v.GetResiliencyType(),
 			NumberOfCopies: int(v.GetNumberOfCopies()),
+			Source:         csvSourceFromProto(v.GetSource()),
 		})
 	}
 	if m := s.GetLiveMigration(); m != nil {
@@ -793,6 +886,7 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 		out.ReplicaBroker = &types.ReplicaBrokerSpec{Name: b.GetName(), StaticIP: b.GetStaticIp(), StoragePath: b.GetStoragePath()}
 	}
 	out.ISOLibrary = isoLibrarySpecFromProto(s.GetIsoLibrary())
+	out.Storage = clusterStorageFromProto(s.GetStorage())
 	return out
 }
 
@@ -814,7 +908,56 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 		ReplicaBroker:      clusterBrokerToProto(s.ReplicaBroker),
 		FunctionalLevel:    int32(s.FunctionalLevel),
 		NodeOsBuild:        int32(s.NodeOSBuild),
+		Iscsi:              iscsiStatusToProto(s.ISCSI),
 	}
+}
+
+// Nil preserved both ways: under S2D there is no iSCSI state, and under iSCSI
+// "no member has reported yet" is not the same as "not connected".
+func iscsiStatusToProto(s *types.ISCSIStatus) *ISCSIStatus {
+	if s == nil {
+		return nil
+	}
+	out := &ISCSIStatus{
+		Node: s.Node, ServiceRunning: s.ServiceRunning, Portals: s.Portals,
+		MpioInstalled: s.MPIOInstalled, Message: s.Message,
+	}
+	for _, x := range s.Sessions {
+		out.Sessions = append(out.Sessions, &ISCSISession{
+			TargetIqn: x.TargetIQN, Connected: x.Connected,
+			Persistent: x.Persistent, Paths: int32(x.Paths),
+		})
+	}
+	for _, d := range s.Disks {
+		out.Disks = append(out.Disks, &ISCSIDisk{
+			SerialNumber: d.SerialNumber, Number: int32(d.Number), SizeBytes: d.SizeBytes,
+			TargetIqn: d.TargetIQN, Lun: int32(d.LUN), Clustered: d.Clustered, Offline: d.Offline,
+		})
+	}
+	return out
+}
+
+func iscsiStatusFromProto(s *ISCSIStatus) *types.ISCSIStatus {
+	if s == nil {
+		return nil
+	}
+	out := &types.ISCSIStatus{
+		Node: s.GetNode(), ServiceRunning: s.GetServiceRunning(), Portals: s.GetPortals(),
+		MPIOInstalled: s.GetMpioInstalled(), Message: s.GetMessage(),
+	}
+	for _, x := range s.GetSessions() {
+		out.Sessions = append(out.Sessions, types.ISCSISession{
+			TargetIQN: x.GetTargetIqn(), Connected: x.GetConnected(),
+			Persistent: x.GetPersistent(), Paths: int(x.GetPaths()),
+		})
+	}
+	for _, d := range s.GetDisks() {
+		out.Disks = append(out.Disks, types.ISCSIDisk{
+			SerialNumber: d.GetSerialNumber(), Number: int(d.GetNumber()), SizeBytes: d.GetSizeBytes(),
+			TargetIQN: d.GetTargetIqn(), LUN: int(d.GetLun()), Clustered: d.GetClustered(), Offline: d.GetOffline(),
+		})
+	}
+	return out
 }
 
 // Nil preserved in both directions, as with the witness: "no broker" and "not
@@ -969,6 +1112,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 		ReplicaBroker:      clusterBrokerFromProto(s.GetReplicaBroker()),
 		FunctionalLevel:    int(s.GetFunctionalLevel()),
 		NodeOSBuild:        int(s.GetNodeOsBuild()),
+		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
 	}
 }
 
