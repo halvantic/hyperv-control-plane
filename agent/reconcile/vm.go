@@ -50,8 +50,20 @@ type VMResult struct {
 	// AssignedMemoryBytes / CPUUsagePercent / UptimeSeconds are best-effort
 	// observed runtime metrics.
 	AssignedMemoryBytes uint64
-	CPUUsagePercent     int
-	UptimeSeconds       int64
+	// MemoryDemandBytes is what the guest is actually asking for, and it is the
+	// only one of the two that measures anything. On a static-memory VM assigned
+	// always equals startup, so "assigned vs configured" is 100% by definition —
+	// which is exactly what the console was showing for every VM.
+	//
+	// It was observed by the agent, carried by the proto and stored by the centre,
+	// and never once travelled: VMResult had no field for it, so it was dropped
+	// between the observation and the report. Second instance of that gap in one
+	// session, after ClusterStatus.ReplicaBroker.
+	MemoryDemandBytes uint64
+	// MemoryStatus is Hyper-V's own verdict on memory pressure: OK, Low, Warning.
+	MemoryStatus    string
+	CPUUsagePercent int
+	UptimeSeconds   int64
 
 	Conditions []types.Condition
 }
@@ -252,6 +264,8 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 		res.Checkpoints = state.Checkpoints
 		res.Observed = state.Observed
 		res.AssignedMemoryBytes = state.AssignedMemoryBytes
+		res.MemoryDemandBytes = state.MemoryDemandBytes
+		res.MemoryStatus = state.MemoryStatus
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds
 		res.Replication = state.Replication

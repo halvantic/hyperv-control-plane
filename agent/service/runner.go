@@ -1045,6 +1045,8 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 		Checkpoints:         res.Checkpoints,
 		Observed:            res.Observed,
 		AssignedMemoryBytes: res.AssignedMemoryBytes,
+		MemoryDemandBytes:   res.MemoryDemandBytes,
+		MemoryStatus:        res.MemoryStatus,
 		CPUUsagePercent:     res.CPUUsagePercent,
 		UptimeSeconds:       res.UptimeSeconds,
 		Replication:         res.Replication,
