@@ -896,6 +896,20 @@ type WitnessSpec struct {
 	FileSharePath string `json:"fileSharePath,omitempty"`
 	// CloudAccount / endpoint for cloud witnesses (secret handled out of band).
 	CloudAccount string `json:"cloudAccount,omitempty"`
+
+	// Disk identifies the LUN to use for a Disk witness, by the same means a CSV
+	// identifies its LUN — a serial number is what every node sees for the same
+	// disk, whereas a disk number is per-node and a LUN number is per-target.
+	//
+	// The witness disk is adopted as a CLUSTERED DISK and never as a CSV. A CSV is
+	// mounted on every node at once so all of them can write to it, which is the
+	// opposite of what a witness is for: the witness is owned by one node and its
+	// ownership is part of how quorum is arbitrated. Adopting it as a CSV would
+	// produce a cluster that looked configured and had no working witness.
+	//
+	// Small is correct. A witness holds a few kilobytes of cluster state, so the
+	// 512MB minimum is the real floor and anything above it is unused capacity.
+	Disk *CSVSourceSpec `json:"disk,omitempty"`
 }
 
 type WitnessType string

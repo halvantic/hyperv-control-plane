@@ -606,6 +606,9 @@ message WitnessSpec {
   WitnessType type = 1;
   string file_share_path = 2;
   string cloud_account = 3;
+  // disk identifies the LUN behind a Disk witness, the same way a volume
+  // identifies its own. Adopted as a clustered disk, never as a CSV.
+  CSVSourceSpec disk = 4;
 }
 
 message ClusterStatus {

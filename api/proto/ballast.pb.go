@@ -4156,6 +4156,9 @@ type WitnessSpec struct {
 	Type          WitnessType            `protobuf:"varint,1,opt,name=type,proto3,enum=ballast.v1.WitnessType" json:"type,omitempty"`
 	FileSharePath string                 `protobuf:"bytes,2,opt,name=file_share_path,json=fileSharePath,proto3" json:"file_share_path,omitempty"`
 	CloudAccount  string                 `protobuf:"bytes,3,opt,name=cloud_account,json=cloudAccount,proto3" json:"cloud_account,omitempty"`
+	// disk identifies the LUN behind a Disk witness, the same way a volume
+	// identifies its own. Adopted as a clustered disk, never as a CSV.
+	Disk          *CSVSourceSpec `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4209,6 +4212,13 @@ func (x *WitnessSpec) GetCloudAccount() string {
 		return x.CloudAccount
 	}
 	return ""
+}
+
+func (x *WitnessSpec) GetDisk() *CSVSourceSpec {
+	if x != nil {
+		return x.Disk
+	}
+	return nil
 }
 
 type ClusterStatus struct {
@@ -6282,11 +6292,12 @@ const file_ballast_proto_rawDesc = "" +
 	"target_iqn\x18\x04 \x01(\tR\ttargetIqn\x12\x10\n" +
 	"\x03lun\x18\x05 \x01(\x05R\x03lun\x12\x1c\n" +
 	"\tclustered\x18\x06 \x01(\bR\tclustered\x12\x18\n" +
-	"\aoffline\x18\a \x01(\bR\aoffline\"\x87\x01\n" +
+	"\aoffline\x18\a \x01(\bR\aoffline\"\xb6\x01\n" +
 	"\vWitnessSpec\x12+\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
 	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +
-	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\"\x8f\x06\n" +
+	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\x12-\n" +
+	"\x04disk\x18\x04 \x01(\v2\x19.ballast.v1.CSVSourceSpecR\x04disk\"\x8f\x06\n" +
 	"\rClusterStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12%\n" +
@@ -6671,46 +6682,47 @@ var file_ballast_proto_depIdxs = []int32{
 	55, // 64: ballast.v1.ISCSIStatus.sessions:type_name -> ballast.v1.ISCSISession
 	56, // 65: ballast.v1.ISCSIStatus.disks:type_name -> ballast.v1.ISCSIDisk
 	5,  // 66: ballast.v1.WitnessSpec.type:type_name -> ballast.v1.WitnessType
-	0,  // 67: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
-	20, // 68: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
-	64, // 69: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
-	65, // 70: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
-	66, // 71: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
-	62, // 72: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
-	63, // 73: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
-	61, // 74: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
-	60, // 75: ballast.v1.ClusterStatus.witness:type_name -> ballast.v1.ClusterWitness
-	59, // 76: ballast.v1.ClusterStatus.replica_broker:type_name -> ballast.v1.ClusterReplicaBroker
-	54, // 77: ballast.v1.ClusterStatus.iscsi:type_name -> ballast.v1.ISCSIStatus
-	5,  // 78: ballast.v1.ClusterWitness.type:type_name -> ballast.v1.WitnessType
-	19, // 79: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
-	68, // 80: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
-	74, // 81: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
-	70, // 82: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
-	71, // 83: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
-	72, // 84: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
-	73, // 85: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
-	6,  // 86: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
-	7,  // 87: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
-	69, // 88: ballast.v1.VMSpec.replication:type_name -> ballast.v1.VMReplicationSpec
-	0,  // 89: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
-	6,  // 90: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
-	20, // 91: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
-	76, // 92: ballast.v1.VMStatus.checkpoints:type_name -> ballast.v1.VMCheckpoint
-	75, // 93: ballast.v1.VMStatus.replication:type_name -> ballast.v1.VMReplicationStatus
-	8,  // 94: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
-	10, // 95: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
-	16, // 96: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
-	13, // 97: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
-	9,  // 98: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
-	11, // 99: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
-	18, // 100: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
-	14, // 101: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
-	98, // [98:102] is the sub-list for method output_type
-	94, // [94:98] is the sub-list for method input_type
-	94, // [94:94] is the sub-list for extension type_name
-	94, // [94:94] is the sub-list for extension extendee
-	0,  // [0:94] is the sub-list for field type_name
+	51, // 67: ballast.v1.WitnessSpec.disk:type_name -> ballast.v1.CSVSourceSpec
+	0,  // 68: ballast.v1.ClusterStatus.phase:type_name -> ballast.v1.Phase
+	20, // 69: ballast.v1.ClusterStatus.conditions:type_name -> ballast.v1.Condition
+	64, // 70: ballast.v1.ClusterStatus.groups:type_name -> ballast.v1.ClusterGroup
+	65, // 71: ballast.v1.ClusterStatus.csvs:type_name -> ballast.v1.ClusterCSV
+	66, // 72: ballast.v1.ClusterStatus.cluster_vms:type_name -> ballast.v1.ClusterVM
+	62, // 73: ballast.v1.ClusterStatus.nodes:type_name -> ballast.v1.ClusterNode
+	63, // 74: ballast.v1.ClusterStatus.pool:type_name -> ballast.v1.ClusterPool
+	61, // 75: ballast.v1.ClusterStatus.networks:type_name -> ballast.v1.ClusterNetwork
+	60, // 76: ballast.v1.ClusterStatus.witness:type_name -> ballast.v1.ClusterWitness
+	59, // 77: ballast.v1.ClusterStatus.replica_broker:type_name -> ballast.v1.ClusterReplicaBroker
+	54, // 78: ballast.v1.ClusterStatus.iscsi:type_name -> ballast.v1.ISCSIStatus
+	5,  // 79: ballast.v1.ClusterWitness.type:type_name -> ballast.v1.WitnessType
+	19, // 80: ballast.v1.VM.meta:type_name -> ballast.v1.ObjectMeta
+	68, // 81: ballast.v1.VM.spec:type_name -> ballast.v1.VMSpec
+	74, // 82: ballast.v1.VM.status:type_name -> ballast.v1.VMStatus
+	70, // 83: ballast.v1.VMSpec.placement:type_name -> ballast.v1.VMPlacementSpec
+	71, // 84: ballast.v1.VMSpec.dynamic_memory:type_name -> ballast.v1.DynamicMemorySpec
+	72, // 85: ballast.v1.VMSpec.disks:type_name -> ballast.v1.VMDiskSpec
+	73, // 86: ballast.v1.VMSpec.network_adapters:type_name -> ballast.v1.VMNetworkAdapterSpec
+	6,  // 87: ballast.v1.VMSpec.desired_power_state:type_name -> ballast.v1.VMPowerState
+	7,  // 88: ballast.v1.VMSpec.automatic_start_action:type_name -> ballast.v1.VMStartAction
+	69, // 89: ballast.v1.VMSpec.replication:type_name -> ballast.v1.VMReplicationSpec
+	0,  // 90: ballast.v1.VMStatus.phase:type_name -> ballast.v1.Phase
+	6,  // 91: ballast.v1.VMStatus.power_state:type_name -> ballast.v1.VMPowerState
+	20, // 92: ballast.v1.VMStatus.conditions:type_name -> ballast.v1.Condition
+	76, // 93: ballast.v1.VMStatus.checkpoints:type_name -> ballast.v1.VMCheckpoint
+	75, // 94: ballast.v1.VMStatus.replication:type_name -> ballast.v1.VMReplicationStatus
+	8,  // 95: ballast.v1.AgentService.RegisterHost:input_type -> ballast.v1.RegisterHostRequest
+	10, // 96: ballast.v1.AgentService.PullDesiredState:input_type -> ballast.v1.PullDesiredStateRequest
+	16, // 97: ballast.v1.AgentService.ReportStatus:input_type -> ballast.v1.ReportStatusRequest
+	13, // 98: ballast.v1.AgentService.ReportJobResult:input_type -> ballast.v1.ReportJobResultRequest
+	9,  // 99: ballast.v1.AgentService.RegisterHost:output_type -> ballast.v1.RegisterHostResponse
+	11, // 100: ballast.v1.AgentService.PullDesiredState:output_type -> ballast.v1.PullDesiredStateResponse
+	18, // 101: ballast.v1.AgentService.ReportStatus:output_type -> ballast.v1.ReportStatusResponse
+	14, // 102: ballast.v1.AgentService.ReportJobResult:output_type -> ballast.v1.ReportJobResultResponse
+	99, // [99:103] is the sub-list for method output_type
+	95, // [95:99] is the sub-list for method input_type
+	95, // [95:95] is the sub-list for extension type_name
+	95, // [95:95] is the sub-list for extension extendee
+	0,  // [0:95] is the sub-list for field type_name
 }
 
 func init() { file_ballast_proto_init() }

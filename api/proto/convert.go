@@ -732,6 +732,7 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 			Type:          witnessTypeToProto(s.Witness.Type),
 			FileSharePath: s.Witness.FileSharePath,
 			CloudAccount:  s.Witness.CloudAccount,
+			Disk:          csvSourceToProto(s.Witness.Disk),
 		},
 	}
 	for _, v := range s.Volumes {
@@ -863,6 +864,7 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 			Type:          witnessTypeFromProto(w.GetType()),
 			FileSharePath: w.GetFileSharePath(),
 			CloudAccount:  w.GetCloudAccount(),
+			Disk:          csvSourceFromProto(w.GetDisk()),
 		}
 	}
 	for _, v := range s.GetVolumes() {

@@ -432,12 +432,10 @@ func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSp
 		if kind != types.StorageKindISCSI {
 			return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage, and this cluster does not declare any; set the cluster's storage kind first, or use a file share witness")
 		}
-		// Applying it is a separate step from choosing it: the witness disk has to
-		// exist as a clustered disk before Set-ClusterQuorum can name it, and that
-		// is the LUN-adoption path, not this one. Refusing here with the reason
-		// beats setting quorum to a disk that is not there yet — which takes the
-		// cluster's quorum with it.
-		return OutcomeUnchanged, fmt.Errorf("a disk witness is supported on this cluster's storage, but the witness disk must be adopted as a clustered disk first; add the witness LUN as a volume, then set the witness")
+		if w.Disk == nil || (strings.TrimSpace(w.Disk.SerialNumber) == "" && strings.TrimSpace(w.Disk.TargetIQN) == "") {
+			return OutcomeUnchanged, fmt.Errorf("a disk witness needs the witness LUN identified: give the disk's serial number (or the target it is presented on) on the witness")
+		}
+		return p.ensureDiskWitness(ctx, *w.Disk)
 	case types.WitnessCloud:
 		return OutcomeUnchanged, fmt.Errorf("cloud witness is observed but not yet applied by Ballast; set it with Set-ClusterQuorum -CloudWitness")
 	default:

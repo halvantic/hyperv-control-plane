@@ -171,6 +171,17 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	conds = append(conds, iscsiConds...)
 	changed = changed || iscsiChanged
 
+	// 4c. Adopting the array's LUNs is former-only and comes after the login,
+	// because a node that is not logged in cannot see a LUN and would report the
+	// array as not presenting it — sending the operator to the array to fix
+	// something that is right.
+	volConds, volChanged, volErr := r.reconcileISCSIVolumes(ctx, a, iscsiStatus)
+	conds = append(conds, volConds...)
+	changed = changed || volChanged
+	if volErr != nil {
+		r.log.Warn("adopt iSCSI volumes failed (retries next pass)", "err", volErr)
+	}
+
 	// 5. Kerberos live migration needs constrained delegation between the nodes'
 	// computer accounts. The former (a domain admin) configures it once when the
 	// cluster's live-migration auth is Kerberos — so provisioning a cluster with

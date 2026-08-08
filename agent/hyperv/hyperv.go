@@ -308,6 +308,17 @@ type Interface interface {
 	// never disconnects a session or removes a portal.
 	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string) (ISCSIState, Outcome, error)
 
+	// AdoptISCSIDisk takes an array-presented LUN into the cluster, as a Cluster
+	// Shared Volume or as the witness disk, and reports the disk's serial so a
+	// volume authored by target can be pinned to a cluster-wide identifier.
+	//
+	// It REFUSES a LUN that already carries a partition or filesystem unless the
+	// adoption asks to wipe it. Adoption formats the disk, and an array presents
+	// LUNs to whoever it is told to: a serial typed one character out, or a LUN
+	// re-presented from another cluster, is indistinguishable from a new one right
+	// up to the moment its contents are gone.
+	AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial string, out Outcome, err error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.

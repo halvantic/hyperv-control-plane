@@ -1,0 +1,120 @@
+package reconcile
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/joshua-fourie/ballast/api/types"
+)
+
+// reconcileISCSIVolumes adopts the array's LUNs into the cluster: each declared
+// volume becomes a CSV, and the witness LUN (when one is declared) becomes a
+// clustered disk holding the quorum vote.
+//
+// FORMER ONLY, unlike the login step next to it. Logging in is per-node and every
+// member must do its own; adopting a disk is a cluster-wide act on a shared
+// object, and several members racing to adopt the same LUN is how a disk ends up
+// half-added — partitioned by one node while another is formatting it.
+//
+// It also runs AFTER the login step, and depends on it having worked: a node that
+// is not logged in cannot see the LUN, and "cannot see it" is reported as the
+// array not presenting it, which sends the operator to the wrong place. So a
+// former whose own iSCSI session is not up defers rather than diagnosing.
+func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignment, iscsi *types.ISCSIStatus) (conds []types.Condition, changed bool, firstErr error) {
+	spec := a.Cluster.Spec
+	if !a.IsFormer || spec.StorageKind() != types.StorageKindISCSI {
+		return nil, false, nil
+	}
+	// No sessions means this node cannot see any LUN, and every adoption would
+	// fail with a message about the array. Say the true thing instead.
+	if iscsi == nil || !anyConnected(iscsi) {
+		if len(spec.Volumes) == 0 && spec.Witness.Disk == nil {
+			return nil, false, nil
+		}
+		return []types.Condition{{
+			Type: "ISCSIVolumes", Status: false, Reason: "NotAttempted",
+			Message: "this node is not logged in to the array yet, so the LUNs are not visible to adopt; adoption is deferred until the iSCSI session is up",
+		}}, false, nil
+	}
+
+	for _, vol := range spec.Volumes {
+		if vol.Source == nil {
+			// Under iSCSI a volume without a source is not something Ballast can
+			// create — the array owns the LUN — so name that rather than failing
+			// inside a provisioning path that does not apply here.
+			conds = append(conds, types.Condition{
+				Type: "CSV/" + vol.Name, Status: false, Reason: "Invalid",
+				Message: "this cluster's storage is an iSCSI array, so the LUN behind this volume already exists and Ballast adopts it rather than creating it. Give the volume the disk's serial number.",
+			})
+			if firstErr == nil {
+				firstErr = fmt.Errorf("volume %q has no source LUN", vol.Name)
+			}
+			continue
+		}
+		serial, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
+			Name:   vol.Name,
+			Source: *vol.Source,
+			// Wipe is never set from desired state. Formatting a LUN that has
+			// contents is a decision an operator makes once, about one disk, with
+			// the contents named to them — not a field that sits in a spec and
+			// re-applies itself on every pass.
+			Wipe: false,
+		})
+		conds = append(conds, r.condition("CSV/"+vol.Name, out, err))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("adopt volume %q: %w", vol.Name, err)
+			}
+			continue
+		}
+		if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("iSCSI volume adopted", "name", vol.Name, "serial", serial, "outcome", out)
+		}
+	}
+
+	// The witness disk is adopted here too, because it is the same act on the same
+	// kind of object — but as a clustered disk, never a CSV. Pointing quorum at it
+	// is a separate step and belongs with the other witness handling.
+	if w := spec.Witness; w.Type == types.WitnessDisk && w.Disk != nil {
+		name := a.Cluster.Meta.Name + " Witness"
+		_, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
+			Name: name, Source: *w.Disk, AsWitness: true,
+		})
+		conds = append(conds, r.condition("WitnessDisk", out, err))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("adopt witness disk: %w", err)
+			}
+		} else if out != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("witness disk adopted", "name", name, "outcome", out)
+		}
+	}
+	return conds, changed, firstErr
+}
+
+// anyConnected reports whether this node holds at least one live iSCSI session.
+// Portals registered without a session is the common half-configured state — the
+// array is reachable but has not granted this initiator anything — and it looks
+// like success to anything that only checks the service is running.
+func anyConnected(st *types.ISCSIStatus) bool {
+	for _, s := range st.Sessions {
+		if s.Connected {
+			return true
+		}
+	}
+	return false
+}
+
+// iscsiVolumeSummary describes what was adopted, for the log line and the
+// cluster's message. Kept separate so the reconcile path stays readable.
+func iscsiVolumeSummary(vols []types.CSVSpec) string {
+	names := make([]string, 0, len(vols))
+	for _, v := range vols {
+		names = append(names, v.Name)
+	}
+	return strings.Join(names, ", ")
+}

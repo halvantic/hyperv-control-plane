@@ -177,22 +177,22 @@ func TestADiskWitnessIsRefusedOnS2DWithAReason(t *testing.T) {
 	}
 }
 
-// On iSCSI it is possible, so the refusal must NOT blame S2D — it must name the
-// real precondition, which is that the witness disk has to be a clustered disk
-// before quorum can be pointed at it. Setting quorum to a disk that is not there
-// takes the cluster's quorum with it.
-func TestADiskWitnessOnISCSINamesTheRealPrecondition(t *testing.T) {
+// On iSCSI a disk witness is possible, so the refusal must NOT blame S2D. What
+// remains missing is which LUN to use: quorum pointed at the wrong disk is the
+// one failure in this area the console cannot undo, so the disk is named
+// explicitly or not attempted.
+func TestADiskWitnessOnISCSIAsksWhichLUN(t *testing.T) {
 	ps := &hyperv.PowerShell{}
 	_, err := ps.EnsureClusterWitness(context.Background(),
 		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindISCSI)
 	if err == nil {
-		t.Fatal("the witness disk must exist as a clustered disk first")
+		t.Fatal("a disk witness that does not say which disk cannot be applied")
 	}
 	if strings.Contains(err.Error(), "Storage Spaces Direct") {
 		t.Fatalf("an array-backed cluster must not be told S2D is the problem, got %q", err)
 	}
-	if !strings.Contains(err.Error(), "clustered disk") {
-		t.Fatalf("the refusal must name the precondition, got %q", err)
+	if !strings.Contains(err.Error(), "serial number") {
+		t.Fatalf("the refusal must name what is missing and how to supply it, got %q", err)
 	}
 }
 

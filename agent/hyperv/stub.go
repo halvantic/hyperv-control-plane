@@ -28,6 +28,12 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// ISCSIOccupiedSerials names LUNs the stub should treat as already carrying a
+	// filesystem, so the refusal-to-destroy path can be tested.
+	ISCSIOccupiedSerials []string
+	// ISCSIAdopted records which volumes have been adopted, so a second pass is
+	// the no-op idempotency requires.
+	ISCSIAdopted map[string]bool
 	// ISCSIUnconnected names targets EnsureISCSI should report as discovered but
 	// not logged in — the state an array in reach but not granting this initiator
 	// produces, which has a different remedy from an unreachable array.
@@ -489,6 +495,31 @@ func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ 
 		})
 	}
 	return st, OutcomeUnchanged, nil
+}
+
+// AdoptISCSIDisk succeeds for any identified LUN, and refuses one the test has
+// declared as carrying data — the refusal is the behaviour worth exercising.
+func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, Outcome, error) {
+	if a.Source.SerialNumber == "" && a.Source.TargetIQN == "" {
+		return "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is (stub)", a.Name)
+	}
+	for _, occupied := range s.ISCSIOccupiedSerials {
+		if occupied == a.Source.SerialNumber && !a.Wipe {
+			return "", OutcomeUnchanged, fmt.Errorf("the LUN (serial %s) already contains an NTFS volume. Adopting it formats it, so Ballast will not do that to a disk with contents (stub)", occupied)
+		}
+	}
+	serial := a.Source.SerialNumber
+	if serial == "" {
+		serial = "STUBSERIAL0001"
+	}
+	if s.ISCSIAdopted == nil {
+		s.ISCSIAdopted = map[string]bool{}
+	}
+	if s.ISCSIAdopted[a.Name] {
+		return serial, OutcomeUnchanged, nil
+	}
+	s.ISCSIAdopted[a.Name] = true
+	return serial, OutcomeUpdated, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {
