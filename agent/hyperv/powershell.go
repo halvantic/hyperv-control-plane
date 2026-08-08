@@ -58,6 +58,41 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 	return &PowerShell{run: execPowerShell, runStream: execPowerShellStream, log: log}
 }
 
+// psFailureDetail explains a powershell.exe failure that left no diagnostic of
+// its own.
+//
+// An empty stderr is not a rare edge. Killing the process — a context deadline,
+// a cancelled job, the agent stopping — is reported by Windows as exit status 1
+// with nothing written, because the process never got to write anything. The
+// operator was then shown the whole of "remove vm \"Windows Standalone\":
+// powershell: exit status 1:" and no more: no cause, no remedy, and nothing to
+// tell a cancellation apart from a genuine failure. Seen on the rig 2026-08-08
+// on repeated RemoveVM attempts.
+//
+// This does not decide why the command failed. It makes the difference between
+// "cancelled" and "failed silently" legible, which is what the empty message
+// took away.
+func psFailureDetail(ctx context.Context, stdout, stderr string) string {
+	if s := strings.TrimSpace(stderr); s != "" {
+		return s
+	}
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		return "the operation ran past its time limit and was cancelled before it reported anything"
+	case context.Canceled:
+		return "the operation was cancelled before it reported anything (the agent stopped, lost the centre, or the job was superseded)"
+	}
+	// Whatever it managed to print is more use than nothing — a script that dies
+	// part-way at least says how far it got.
+	if s := strings.TrimSpace(stdout); s != "" {
+		if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+			s = strings.TrimSpace(s[i+1:])
+		}
+		return "the command failed without writing any error output; its last output was: " + s
+	}
+	return "the command failed without writing any error output and was not cancelled, so PowerShell exited non-zero on its own — check the Hyper-V and System event logs on this host for the same timestamp"
+}
+
 // execPowerShell runs a script under Windows PowerShell. It uses powershell.exe
 // (5.1) rather than pwsh because the Hyper-V and NetAdapter modules target it.
 func execPowerShell(ctx context.Context, script string) ([]byte, error) {
@@ -67,7 +102,7 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, stdout.String(), stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
@@ -96,7 +131,7 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
 	}
 	return nil
 }
@@ -113,7 +148,7 @@ func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []s
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
 	}
 	return nil
 }
