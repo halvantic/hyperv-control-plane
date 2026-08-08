@@ -151,6 +151,54 @@ func TestRemoveVMDoesNotLetAFailedStopAbortTheRemoval(t *testing.T) {
 	}
 }
 
+// The repair used to refuse outright on a workgroup host, which made it useless
+// on the only host that cannot recover without it: a freshly onboarded host whose
+// DHCP resolver is the firewall fails its domain join with "the specified domain
+// could not be contacted", and the join is the very thing that would have made it
+// domain-joined. Ballast's own escape hatch was unavailable exactly where the
+// alternative was an operator opening a PowerShell session — the shape CLAUDE.md
+// calls a defect. Refuse only the GUESS, never the whole job.
+func TestRepairHostDNSRunsOnAWorkgroupHostWhenTheDCIsGiven(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("no change")}}
+	if _, err := newTestPS(f).RepairHostDNS(context.Background(), "192.168.1.168"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	guard := strings.Index(s, "'WORKGROUP'")
+	if guard == -1 {
+		t.Fatal("the workgroup test should still exist — discovery genuinely cannot work without a domain")
+	}
+	// It must sit inside the discovery branch. Anywhere above it and an explicitly
+	// supplied address is rejected along with the guess.
+	elseAt := strings.Index(s, "else {")
+	if elseAt == -1 || guard < elseAt {
+		t.Fatal("the workgroup test must be inside the discovery branch; above it, an explicitly given DC DNS is refused too and the host stays stuck")
+	}
+	if forced := strings.Index(s, "if ($forced) { $dc = $forced }"); forced == -1 || forced > guard {
+		t.Fatal("an explicitly supplied DC DNS must be taken before any domain membership is considered")
+	}
+}
+
+// A host still on DHCP matches no static NIC, so management selection finds
+// nothing. Falling through then turns registration OFF on its only routed NIC —
+// the host stops publishing its own A record, and a repair has broken name
+// resolution.
+func TestRepairHostDNSStillPicksAManagementNICOnADHCPHost(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("no change")}}
+	if _, err := newTestPS(f).RepairHostDNS(context.Background(), "192.168.1.168"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	if !strings.Contains(s, "if ($mgmtIdx -lt 0) {") {
+		t.Fatal("a host with no statically addressed NIC needs a fallback, or it is left with no management NIC and stops registering")
+	}
+	if strings.Index(s, "if ($mgmtIdx -lt 0) {") > strings.Index(s, "$fixed = @()") {
+		t.Fatal("the fallback must run before the per-NIC loop reads $mgmtIdx")
+	}
+}
+
 // RepairHostDNS is offered as "fix DNS on all nodes", and it used to mean that
 // literally: every NIC got the DC as its DNS server. An isolated fabric vNIC
 // (storage, live migration) must have none — DNS there publishes an unreachable

@@ -868,12 +868,17 @@ if ($stuck -gt 0) {
 
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$domain = (Get-CimInstance Win32_ComputerSystem).Domain
-if (-not $domain -or $domain -eq 'WORKGROUP') { throw 'host is not domain-joined' }
 $forced = %[1]s
 $dc = $null
 if ($forced) { $dc = $forced }
 else {
+  # Discovery works by asking each configured resolver for the domain's SOA, so
+  # it needs a domain to ask about. A workgroup host has none — but that is
+  # exactly the host whose DNS is wrong, cannot join because of it, and cannot
+  # fix it by joining. So the workgroup test belongs HERE, on the guess, not on
+  # the whole job: an explicitly supplied DC DNS is always applied.
+  $domain = (Get-CimInstance Win32_ComputerSystem).Domain
+  if (-not $domain -or $domain -eq 'WORKGROUP') { throw 'host is not domain-joined, so its DC cannot be discovered from its domain; supply the DC DNS address explicitly' }
   $cands = @()
   foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
     $cands += @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
@@ -903,6 +908,19 @@ foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   # distinguishes management from fabric.
   if (@(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -eq 0) { continue }
   $mgmtIdx = [int]$n.ifIndex; break
+}
+# A host not yet given a static address — a freshly onboarded one, still on DHCP
+# — matches nothing above. Falling through with mgmtIdx unset would then DISABLE
+# registration on its only routed NIC, so the host stops publishing its own A
+# record: a repair that breaks name resolution. Treat the routed DHCP NIC as
+# management instead.
+if ($mgmtIdx -lt 0) {
+  foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
+    $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
+    if (-not $ips) { continue }
+    if (@(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -eq 0) { continue }
+    $mgmtIdx = [int]$n.ifIndex; break
+  }
 }
 $fixed = @()
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
