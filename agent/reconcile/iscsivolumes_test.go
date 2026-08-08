@@ -27,7 +27,70 @@ func iscsiCluster(vols ...types.CSVSpec) types.Cluster {
 }
 
 func connectedISCSI() *types.ISCSIStatus {
-	return &types.ISCSIStatus{Sessions: []types.ISCSISession{{TargetIQN: "t", Connected: true}}}
+	return &types.ISCSIStatus{
+		Sessions:      []types.ISCSISession{{TargetIQN: "t", Connected: true}},
+		MPIOInstalled: true, MPIOEffective: true,
+	}
+}
+
+// Multipath declared but not in effect is the one state where adopting is
+// actively unsafe rather than merely premature: Windows is presenting each LUN
+// once per path as unrelated disks, so adoption takes ONE of the duplicates into
+// the cluster. A cluster writing to one path's disk while a node uses another
+// path to the same blocks is a corruption, not a performance problem.
+//
+// A warning condition cannot carry this. The reconcile loop does not read
+// conditions, so a warning alone leaves the adoption happening anyway with the
+// console displaying the warning beside it.
+func TestAdoptionIsBlockedUntilMultipathIsInEffect(t *testing.T) {
+	stub := &hyperv.Stub{}
+	r := testReconciler(stub)
+	c := iscsiCluster(lunVolume("DS1", "CLEAN0001"))
+	c.Spec.Storage.ISCSI.Portals = []string{"10.0.60.52", "10.0.60.53"}
+	a := ClusterAssignment{Cluster: c, IsFormer: true}
+
+	half := &types.ISCSIStatus{
+		Sessions:      []types.ISCSISession{{TargetIQN: "t", Connected: true}},
+		MPIOInstalled: true, MPIOEffective: false,
+	}
+
+	conds, changed, err := r.reconcileISCSIVolumes(context.Background(), a, half)
+
+	if changed {
+		t.Fatal("nothing may be adopted while each LUN is still presented once per path")
+	}
+	if err != nil {
+		t.Fatalf("waiting for a restart is a deferral, not a failure: %v", err)
+	}
+	if len(conds) != 1 || conds[0].Reason != "NotAttempted" {
+		t.Fatalf("the block must be visible and named as not attempted, got %+v", conds)
+	}
+	if !strings.Contains(conds[0].Message, "Restart") {
+		t.Errorf("the message must name the one step that clears it: %q", conds[0].Message)
+	}
+	if stub.ISCSIAdopted["DS1"] {
+		t.Fatal("the adoption reached the host despite the block")
+	}
+}
+
+// A single-portal cluster has one path, so there is nothing for MPIO to protect
+// and no reason to hold adoption up waiting for it.
+func TestSinglePathAdoptionIsNotHeldUpByMPIO(t *testing.T) {
+	stub := &hyperv.Stub{}
+	r := testReconciler(stub)
+	c := iscsiCluster(lunVolume("DS1", "CLEAN0001"))
+	c.Spec.Storage.ISCSI.Portals = []string{"10.0.60.52"}
+	a := ClusterAssignment{Cluster: c, IsFormer: true}
+
+	single := &types.ISCSIStatus{
+		Sessions:      []types.ISCSISession{{TargetIQN: "t", Connected: true}},
+		MPIOInstalled: false, MPIOEffective: false,
+	}
+
+	_, changed, err := r.reconcileISCSIVolumes(context.Background(), a, single)
+	if err != nil || !changed {
+		t.Fatalf("one portal is one path; adoption must proceed: changed=%v err=%v", changed, err)
+	}
 }
 
 func lunVolume(name, serial string) types.CSVSpec {

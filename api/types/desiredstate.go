@@ -983,6 +983,16 @@ type ISCSIStatus struct {
 	// when everything else looks healthy.
 	MPIOInstalled bool `json:"mpioInstalled,omitempty"`
 
+	// MPIOEffective reports that multipath is actually protecting this node —
+	// installed, claiming iSCSI devices, and restarted into.
+	//
+	// It is separate from MPIOInstalled because installed is not protection. The
+	// feature asks for a restart, and between installing it and restarting, a LUN
+	// reached by several paths is still presented as several disks. Anything that
+	// decides whether multipath storage is safe to use must read THIS, not the
+	// presence of the feature.
+	MPIOEffective bool `json:"mpioEffective,omitempty"`
+
 	// Disks are the block devices this node sees over iSCSI, keyed by the serial
 	// a CSVSourceSpec binds to.
 	Disks []ISCSIDisk `json:"disks,omitempty"`

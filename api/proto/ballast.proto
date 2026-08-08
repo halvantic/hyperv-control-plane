@@ -570,6 +570,9 @@ message ISCSIStatus {
   bool mpio_installed = 5;
   repeated ISCSIDisk disks = 6;
   string message = 7;
+  // mpio_effective is multipath actually protecting the node: installed,
+  // claiming iSCSI devices, and restarted into. Installed alone protects nothing.
+  bool mpio_effective = 9;
 }
 
 message ISCSISession {

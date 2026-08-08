@@ -17,8 +17,12 @@ type ISCSIState struct {
 	ServiceRunning bool
 	Portals        []string
 	Sessions       []ISCSISessionState
-	MPIOInstalled  bool
-	Disks          []ISCSIDiskState
+	MPIOInstalled bool
+	// MPIOClaimed reports that MPIO is actually claiming iSCSI devices. Installed
+	// is not the same thing: the feature can be present with no bus type claimed,
+	// which protects nothing while looking configured.
+	MPIOClaimed bool
+	Disks       []ISCSIDiskState
 	// RebootRequired is set when installing MPIO asked for one. Multipath claim
 	// does not take effect until then, so a cluster is NOT safe to put multipath
 	// storage under until the node has restarted.
@@ -61,7 +65,7 @@ type ISCSIDiskState struct {
 func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO bool) string {
 	var b strings.Builder
 	b.WriteString(`$ErrorActionPreference = 'Stop'
-$out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; disks=@(); rebootRequired=$false; message='' }
+$out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; disks=@(); rebootRequired=$false; message='' }
 $changed = $false
 
 # The initiator service is set to start ON DEMAND by default on Windows Server,
@@ -111,6 +115,7 @@ if ($out.mpioInstalled -and -not $out.rebootRequired) {
     if (-not $claimed) { Enable-MSDSMAutomaticClaim -BusType iSCSI -ErrorAction Stop; $changed = $true }
   } catch {}
 }
+try { $out.mpioClaimed = [bool](Get-MSDSMSupportedHW -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'iSCSI' }) } catch {}
 `)
 	} else {
 		b.WriteString("$out.mpioInstalled = [bool](Get-WindowsFeature -Name Multipath-IO -ErrorAction SilentlyContinue).Installed\n")
@@ -131,6 +136,35 @@ if ($out.mpioInstalled -and -not $out.rebootRequired) {
 try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
 $out.portals = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress + ':' + [string]$_.TargetPortalPortNumber })
 `)
+
+	// Registering the portals is safe; logging in through more than one of them is
+	// not, until MPIO is actually in effect.
+	//
+	// "Before" in script order is not "before" in reality. Installing the feature
+	// asks for a restart, and until that restart it protects nothing — so a first
+	// pass on a fresh node would install MPIO, skip the claim, then log in through
+	// every portal and leave Windows holding the same LUN as several devices it
+	// believes are unrelated. That is the exact state the comment above says must
+	// never happen, and reporting it afterwards does not undo it.
+	//
+	// So while multipath is required but not yet effective, log in through ONE
+	// portal only. A single path cannot produce duplicates, the node gets working
+	// storage meanwhile, and once the restart lands the next pass adds the
+	// remaining paths — which MPIO then coalesces into the one disk.
+	if wantMPIO {
+		b.WriteString(`
+$mpioEffective = ($out.mpioInstalled -and $out.mpioClaimed -and -not $out.rebootRequired)
+$restrictPortal = ''
+if (-not $mpioEffective -and $portals.Count -gt 1) {
+  $first = $portals[0]
+  if ($first -match '^(.+):(\d+)$') { $first = $Matches[1] }
+  $restrictPortal = $first
+  $out.message = 'multipath is not in effect yet, so this node is logged in through ' + $restrictPortal + ' only; the remaining paths are added once the node has restarted'
+}
+`)
+	} else {
+		b.WriteString("$restrictPortal = ''\n")
+	}
 
 	// Targets: explicit list, or everything advertised.
 	b.WriteString("\n$wanted = @(" + psStringList(spec.Targets) + ")\n")
@@ -156,7 +190,11 @@ foreach ($t in $wanted) {
 `)
 	// The connect call, with CHAP only when a credential was supplied. The secret
 	// arrives via the environment so it is never in the script text or a log.
-	connect := "  Connect-IscsiTarget -NodeAddress $t -IsPersistent $true"
+	// Splatted rather than concatenated so the single-path restriction is one
+	// optional key instead of a second copy of the whole call with its CHAP
+	// arguments — two spellings of the same login is how they drift apart.
+	connect := "  $c = @{ NodeAddress = $t; IsPersistent = $true }\n" +
+		"  if ($restrictPortal) { $c['TargetPortalAddress'] = $restrictPortal }\n"
 	if spec.CredentialSecret != "" {
 		auth := "ONEWAYCHAP"
 		if spec.MutualCHAP {
@@ -165,10 +203,11 @@ foreach ($t in $wanted) {
 		// One -ChapSecret, whichever direction. Mutual CHAP additionally needs the
 		// initiator's own secret set once on the host (Set-IscsiChapSecret); it is
 		// NOT a second -ChapSecret here, which the cmdlet rejects outright.
-		connect += " -AuthenticationType " + auth +
-			" -ChapUsername $env:BALLAST_CHAP_USER -ChapSecret $env:BALLAST_CHAP_SECRET"
+		connect += "  $c['AuthenticationType'] = '" + auth + "'\n" +
+			"  $c['ChapUsername'] = $env:BALLAST_CHAP_USER\n" +
+			"  $c['ChapSecret'] = $env:BALLAST_CHAP_SECRET\n"
 	}
-	b.WriteString(connect + " -ErrorAction Stop | Out-Null\n  $changed = $true\n}\n")
+	b.WriteString(connect + "  Connect-IscsiTarget @c -ErrorAction Stop | Out-Null\n  $changed = $true\n}\n")
 
 	b.WriteString(`
 $out.sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue | Group-Object TargetNodeAddress | ForEach-Object {
@@ -236,6 +275,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		ServiceRunning bool     `json:"serviceRunning"`
 		Portals        []string `json:"portals"`
 		MPIOInstalled  bool     `json:"mpioInstalled"`
+		MPIOClaimed    bool     `json:"mpioClaimed"`
 		RebootRequired bool     `json:"rebootRequired"`
 		Message        string   `json:"message"`
 		Changed        bool     `json:"changed"`
@@ -260,7 +300,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 	}
 	st.InitiatorIQN = res.InitiatorIQN
 	st.ServiceRunning, st.Portals = res.ServiceRunning, res.Portals
-	st.MPIOInstalled, st.RebootRequired, st.Message = res.MPIOInstalled, res.RebootRequired, res.Message
+	st.MPIOInstalled, st.MPIOClaimed, st.RebootRequired, st.Message = res.MPIOInstalled, res.MPIOClaimed, res.RebootRequired, res.Message
 	for _, s := range res.Sessions {
 		st.Sessions = append(st.Sessions, ISCSISessionState{
 			TargetIQN: s.TargetIQN, Connected: s.Connected, Persistent: s.Persistent, Paths: s.Paths,

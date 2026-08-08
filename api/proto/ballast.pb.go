@@ -3896,8 +3896,11 @@ type ISCSIStatus struct {
 	MpioInstalled  bool            `protobuf:"varint,5,opt,name=mpio_installed,json=mpioInstalled,proto3" json:"mpio_installed,omitempty"`
 	Disks          []*ISCSIDisk    `protobuf:"bytes,6,rep,name=disks,proto3" json:"disks,omitempty"`
 	Message        string          `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// mpio_effective is multipath actually protecting the node: installed,
+	// claiming iSCSI devices, and restarted into. Installed alone protects nothing.
+	MpioEffective bool `protobuf:"varint,9,opt,name=mpio_effective,json=mpioEffective,proto3" json:"mpio_effective,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ISCSIStatus) Reset() {
@@ -3984,6 +3987,13 @@ func (x *ISCSIStatus) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *ISCSIStatus) GetMpioEffective() bool {
+	if x != nil {
+		return x.MpioEffective
+	}
+	return false
 }
 
 type ISCSISession struct {
@@ -6265,7 +6275,7 @@ const file_ballast_proto_rawDesc = "" +
 	"mutualChap\x12$\n" +
 	"\venable_mpio\x18\x05 \x01(\bH\x00R\n" +
 	"enableMpio\x88\x01\x01B\x0e\n" +
-	"\f_enable_mpio\"\xad\x02\n" +
+	"\f_enable_mpio\"\xd4\x02\n" +
 	"\vISCSIStatus\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12#\n" +
 	"\rinitiator_iqn\x18\b \x01(\tR\finitiatorIqn\x12'\n" +
@@ -6274,7 +6284,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\bsessions\x18\x04 \x03(\v2\x18.ballast.v1.ISCSISessionR\bsessions\x12%\n" +
 	"\x0empio_installed\x18\x05 \x01(\bR\rmpioInstalled\x12+\n" +
 	"\x05disks\x18\x06 \x03(\v2\x15.ballast.v1.ISCSIDiskR\x05disks\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\"\x81\x01\n" +
+	"\amessage\x18\a \x01(\tR\amessage\x12%\n" +
+	"\x0empio_effective\x18\t \x01(\bR\rmpioEffective\"\x81\x01\n" +
 	"\fISCSISession\x12\x1d\n" +
 	"\n" +
 	"target_iqn\x18\x01 \x01(\tR\ttargetIqn\x12\x1c\n" +

@@ -27,15 +27,34 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 	if !a.IsFormer || spec.StorageKind() != types.StorageKindISCSI {
 		return nil, false, nil
 	}
+	nothingDeclared := len(spec.Volumes) == 0 && spec.Witness.Disk == nil
+
 	// No sessions means this node cannot see any LUN, and every adoption would
 	// fail with a message about the array. Say the true thing instead.
 	if iscsi == nil || !anyConnected(iscsi) {
-		if len(spec.Volumes) == 0 && spec.Witness.Disk == nil {
+		if nothingDeclared {
 			return nil, false, nil
 		}
 		return []types.Condition{{
 			Type: "ISCSIVolumes", Status: false, Reason: "NotAttempted",
 			Message: "this node is not logged in to the array yet, so the LUNs are not visible to adopt; adoption is deferred until the iSCSI session is up",
+		}}, false, nil
+	}
+
+	// Multipath declared but not yet in effect is the one state where adopting is
+	// actively unsafe rather than merely premature. Windows is presenting each LUN
+	// once per path as unrelated disks, so adoption would take ONE of the
+	// duplicates into the cluster — and a cluster writing to one path's disk while
+	// a node uses another path to the same blocks is a data corruption, not a
+	// performance problem.
+	//
+	// A condition warning the operator is not enough here. The reconcile loop does
+	// not read conditions, so without this the adoption simply proceeds while the
+	// console displays the warning next to it.
+	if required, _ := iscsiMPIORequired(spec); required && !iscsi.MPIOEffective && !nothingDeclared {
+		return []types.Condition{{
+			Type: "ISCSIVolumes", Status: false, Reason: "NotAttempted",
+			Message: "multipath is not in effect on this node yet, so each LUN is still presented once per path as separate disks; adopting one now would put a single path's disk under the cluster. Restart this node to bring MPIO into effect — adoption resumes by itself afterwards.",
 		}}, false, nil
 	}
 
@@ -94,6 +113,15 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 		}
 	}
 	return conds, changed, firstErr
+}
+
+// iscsiMPIORequired answers whether this cluster's storage needs multipath,
+// tolerating a spec that declares iSCSI without a config block.
+func iscsiMPIORequired(spec types.ClusterSpec) (required bool, overridden bool) {
+	if spec.Storage == nil || spec.Storage.ISCSI == nil {
+		return false, false
+	}
+	return spec.Storage.ISCSI.MPIORequired()
 }
 
 // anyConnected reports whether this node holds at least one live iSCSI session.

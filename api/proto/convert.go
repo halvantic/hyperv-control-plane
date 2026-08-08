@@ -941,7 +941,7 @@ func iscsiStatusToProto(s *types.ISCSIStatus) *ISCSIStatus {
 	out := &ISCSIStatus{
 		Node: s.Node, InitiatorIqn: s.InitiatorIQN,
 		ServiceRunning: s.ServiceRunning, Portals: s.Portals,
-		MpioInstalled: s.MPIOInstalled, Message: s.Message,
+		MpioInstalled: s.MPIOInstalled, MpioEffective: s.MPIOEffective, Message: s.Message,
 	}
 	for _, x := range s.Sessions {
 		out.Sessions = append(out.Sessions, &ISCSISession{
@@ -965,7 +965,7 @@ func iscsiStatusFromProto(s *ISCSIStatus) *types.ISCSIStatus {
 	out := &types.ISCSIStatus{
 		Node: s.GetNode(), InitiatorIQN: s.GetInitiatorIqn(),
 		ServiceRunning: s.GetServiceRunning(), Portals: s.GetPortals(),
-		MPIOInstalled: s.GetMpioInstalled(), Message: s.GetMessage(),
+		MPIOInstalled: s.GetMpioInstalled(), MPIOEffective: s.GetMpioEffective(), Message: s.GetMessage(),
 	}
 	for _, x := range s.GetSessions() {
 		out.Sessions = append(out.Sessions, types.ISCSISession{

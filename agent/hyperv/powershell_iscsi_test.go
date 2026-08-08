@@ -21,8 +21,13 @@ func iscsiSpec() types.ISCSIStorageSpec {
 // left as a working-until-restarted state.
 func TestISCSILoginsArePersistent(t *testing.T) {
 	s := iscsiScript(iscsiSpec(), false)
-	if !strings.Contains(s, "Connect-IscsiTarget -NodeAddress $t -IsPersistent $true") {
+	// Splatted, so the single-path restriction can be one optional key rather than
+	// a second copy of the whole call. The property asserted is unchanged.
+	if !strings.Contains(s, "$c = @{ NodeAddress = $t; IsPersistent = $true }") {
 		t.Error("a new login must be persistent")
+	}
+	if !strings.Contains(s, "Connect-IscsiTarget @c") {
+		t.Error("the login must actually be made from the assembled arguments")
 	}
 	if !strings.Contains(s, "Register-IscsiSession") {
 		t.Error("an existing non-persistent session must be made persistent, not left alone")
@@ -119,12 +124,12 @@ func TestCHAPSecretsAreNotWrittenIntoTheScript(t *testing.T) {
 	if !strings.Contains(s, "$env:BALLAST_CHAP_SECRET") {
 		t.Fatal("the secret must come from the environment")
 	}
-	if !strings.Contains(s, "-AuthenticationType ONEWAYCHAP") {
+	if !strings.Contains(s, "$c['AuthenticationType'] = 'ONEWAYCHAP'") {
 		t.Error("a credential means CHAP")
 	}
-	// The cmdlet rejects a duplicated -ChapSecret, which would fail every login.
-	if strings.Count(s, "-ChapSecret") != 1 {
-		t.Errorf("exactly one -ChapSecret, got %d", strings.Count(s, "-ChapSecret"))
+	// The cmdlet rejects a duplicated ChapSecret, which would fail every login.
+	if strings.Count(s, "ChapSecret") != 1 {
+		t.Errorf("exactly one ChapSecret argument, got %d", strings.Count(s, "ChapSecret"))
 	}
 }
 
@@ -132,11 +137,11 @@ func TestMutualCHAPSelectsTheRightAuthType(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret, spec.MutualCHAP = "nas-chap", true
 	s := iscsiScript(spec, false)
-	if !strings.Contains(s, "-AuthenticationType MUTUALCHAP") {
+	if !strings.Contains(s, "$c['AuthenticationType'] = 'MUTUALCHAP'") {
 		t.Error("mutual CHAP must be requested as such")
 	}
-	if strings.Count(s, "-ChapSecret") != 1 {
-		t.Errorf("mutual CHAP still takes one -ChapSecret here, got %d", strings.Count(s, "-ChapSecret"))
+	if strings.Count(s, "ChapSecret") != 1 {
+		t.Errorf("mutual CHAP still takes one ChapSecret here, got %d", strings.Count(s, "ChapSecret"))
 	}
 }
 
