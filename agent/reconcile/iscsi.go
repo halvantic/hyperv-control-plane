@@ -35,8 +35,13 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 	if cfg.CredentialSecret != "" {
 		s, ok := secrets[cfg.CredentialSecret]
 		if !ok {
+			// Say only what is actually known here. The agent is HOLDING the cluster
+			// spec that names this credential, so "check the cluster references it"
+			// is asking the operator to verify something the agent can already see is
+			// true — and when the fault was the centre not sending it, that sent
+			// people to check two things that were both already correct.
 			return nil, []types.Condition{r.condition("ISCSIConnected", hyperv.OutcomeUnchanged,
-				fmt.Errorf("CHAP credential %q was not delivered to this host, so it cannot log in to the array — check the credential exists and the cluster references it by that name", cfg.CredentialSecret))}, false
+				fmt.Errorf("this cluster references CHAP credential %q, but the centre did not send it to this host, so the node cannot log in to the array. If the credential exists in Settings, this is a delivery fault at the centre rather than anything to fix on this host", cfg.CredentialSecret))}, false
 		}
 		// Same shape as a domain credential: username + password. CHAP calls the
 		// second one a secret, but the vault stores it under the same key.
