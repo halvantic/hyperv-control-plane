@@ -691,7 +691,17 @@ if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-  $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' }).Count -gt 0
+  # ANY real IPv4 address, however it was obtained — not just a static one.
+  #
+  # Requiring PrefixOrigin 'Manual' skipped every DHCP-addressed NIC, which is
+  # exactly what a freshly onboarded host has. So a host that declared DNS
+  # servers had them silently not applied: DHCP kept handing it the firewall as
+  # its resolver, the domain join could not find the domain's SRV records, and
+  # nothing reported that the declared DNS had been ignored. Setting DNS on a
+  # DHCP interface is ordinary and does not disturb its address.
+  #
+  # APIPA is still excluded: 169.254 means the NIC has no usable address at all.
+  $hasIp = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' }).Count -gt 0
   if (-not $hasIp) { continue }
   $routed = @(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -gt 0
   $cur = @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
@@ -858,12 +868,17 @@ if ($stuck -gt 0) {
 
 func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$domain = (Get-CimInstance Win32_ComputerSystem).Domain
-if (-not $domain -or $domain -eq 'WORKGROUP') { throw 'host is not domain-joined' }
 $forced = %[1]s
 $dc = $null
 if ($forced) { $dc = $forced }
 else {
+  # Discovery works by asking each configured resolver for the domain's SOA, so
+  # it needs a domain to ask about. A workgroup host has none — but that is
+  # exactly the host whose DNS is wrong, cannot join because of it, and cannot
+  # fix it by joining. So the workgroup test belongs HERE, on the guess, not on
+  # the whole job: an explicitly supplied DC DNS is always applied.
+  $domain = (Get-CimInstance Win32_ComputerSystem).Domain
+  if (-not $domain -or $domain -eq 'WORKGROUP') { throw 'host is not domain-joined, so its DC cannot be discovered from its domain; supply the DC DNS address explicitly' }
   $cands = @()
   foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
     $cands += @((Get-DnsClientServerAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
@@ -893,6 +908,19 @@ foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   # distinguishes management from fabric.
   if (@(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -eq 0) { continue }
   $mgmtIdx = [int]$n.ifIndex; break
+}
+# A host not yet given a static address — a freshly onboarded one, still on DHCP
+# — matches nothing above. Falling through with mgmtIdx unset would then DISABLE
+# registration on its only routed NIC, so the host stops publishing its own A
+# record: a repair that breaks name resolution. Treat the routed DHCP NIC as
+# management instead.
+if ($mgmtIdx -lt 0) {
+  foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
+    $ips = @(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })
+    if (-not $ips) { continue }
+    if (@(Get-NetRoute -InterfaceIndex $n.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count -eq 0) { continue }
+    $mgmtIdx = [int]$n.ifIndex; break
+  }
 }
 $fixed = @()
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {

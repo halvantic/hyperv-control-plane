@@ -353,7 +353,47 @@ if ($desired -eq '') {
     $changed = $true
   }
 } elseif ($curType -ne 'FileShare' -or (Norm $curPath) -ne (Norm $desired)) {
-  Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+  $server = ''; $share = ''
+  if ($desired -match '^\\\\([^\\]+)\\([^\\]+)') { $server = $matches[1]; $share = $matches[2] }
+  if (-not $server) { throw ("the witness path " + $desired + " is not a \\server\share path") }
+  $cno = ''
+  try { $cno = [string](Get-Cluster -ErrorAction Stop).Name } catch {}
+
+  try {
+    Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+  } catch {
+    # Set-ClusterQuorum reports the same code for a server that is not there, a
+    # share this node cannot read, and a server that will not accept the
+    # cluster's permission grant. Those have three different remedies, so
+    # establish which one it is instead of passing the code on.
+    $raw = [string]$_.Exception.Message
+    $up = $false
+    try { $up = Test-NetConnection -ComputerName $server -Port 445 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+    if (-not $up) { throw ('the file server ' + $server + ' is not reachable on SMB (tcp/445) from this node, so the witness cannot be configured. ' + $raw) }
+    $readable = $false
+    try { $readable = [bool](Test-Path -LiteralPath $desired -ErrorAction SilentlyContinue) } catch {}
+    # The file server is somebody else's to administer — Ballast has no agent on
+    # it — so name the one step rather than failing obscurely. A NAS appliance is
+    # the usual case: it serves SMB but does not accept remote share-permission
+    # changes, so the cluster's own grant cannot succeed and the access has to be
+    # given on the appliance.
+    if (-not $readable) {
+      throw ('the share ' + $desired + ' answers on SMB but this node cannot read it. Grant the cluster computer account ' + $cno + '$ read/write access to the share on the file server itself, then retry. ' + $raw)
+    }
+    if ($raw -match '\b67\b') {
+      # Configuring a witness makes the cluster add its own computer account to
+      # the share's permissions. A non-Windows file server (a NAS appliance) does
+      # not accept remote share-permission changes, so that grant cannot succeed
+      # and the share has to be permissioned on the appliance instead. The code
+      # is reported as "unexpected error code 67", which reads like the share is
+      # missing when it is sitting right there — and the share being readable is
+      # exactly what proves it is not missing.
+      $hint = ''
+      if ($server -as [ipaddress]) { $hint = ' Addressing the file server by name rather than by IP also matters, because the grant authenticates with Kerberos.' }
+      throw ('the share ' + $desired + ' exists and is readable from this node, so the path is right — but ' + $server + ' refused the cluster''s attempt to grant itself access to it. Grant the cluster computer account ' + $cno + '$ read/write permission on that share on ' + $server + ' itself (Ballast has no agent there and cannot do it), then retry. If another cluster already has a working witness on this server, copy that share''s permissions.' + $hint + ' ' + $raw)
+    }
+    throw $raw
+  }
   $changed = $true
 }
 [pscustomobject]@{ changed = $changed } | ConvertTo-Json -Compress
