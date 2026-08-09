@@ -106,16 +106,49 @@ if ($mp -and -not $mp.Installed) {
   if ($r.RestartNeeded -ne 'No') { $out.rebootRequired = $true }
 }
 $out.mpioInstalled = [bool](Get-WindowsFeature -Name Multipath-IO -ErrorAction SilentlyContinue).Installed
-if ($out.mpioInstalled -and -not $out.rebootRequired) {
-  # Claim iSCSI devices for MPIO. Idempotent: already-claimed is not an error
-  # worth failing the pass for, and the reboot flag above is what actually gates
-  # safety.
+
+# Whether MPIO is claiming iSCSI comes from the automatic-claim SETTINGS.
+#
+# Get-MSDSMSupportedHW lists vendor/product pairs and carries no BusType at all,
+# so filtering it on one matched nothing on every host, for ever: the claim read
+# back as absent however many times it had been enabled, mpioEffective could
+# never become true, and no number of restarts cleared "restart required".
+# Observed on the rig 2026-08-09 on HVNEW05, restarted and still asking.
+function Read-ISCSIClaim {
   try {
-    $claimed = (Get-MSDSMSupportedHW -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'iSCSI' })
-    if (-not $claimed) { Enable-MSDSMAutomaticClaim -BusType iSCSI -ErrorAction Stop; $changed = $true }
-  } catch {}
+    $s = Get-MSDSMAutomaticClaimSettings -ErrorAction Stop
+    if ($null -eq $s) { return $false }
+    # The cmdlet returns a hashtable keyed by bus type on current builds; tolerate
+    # a plain object with a property, because being wrong about this silently is
+    # exactly what happened last time.
+    if ($s -is [System.Collections.IDictionary]) {
+      foreach ($k in $s.Keys) { if ([string]$k -eq 'iSCSI') { return [bool]$s[$k] } }
+      return $false
+    }
+    return [bool]$s.iSCSI
+  } catch { return $false }
 }
-try { $out.mpioClaimed = [bool](Get-MSDSMSupportedHW -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'iSCSI' }) } catch {}
+
+if ($out.mpioInstalled) {
+  $out.mpioClaimed = Read-ISCSIClaim
+  if (-not $out.mpioClaimed) {
+    # Attempted in the SAME pass as the install, not deferred until after the
+    # restart. Enabling the claim needs a restart of its own, so deferring it
+    # costs two restarts where one would do — and the node spends the gap on a
+    # single path with its storage unprotected.
+    try {
+      Enable-MSDSMAutomaticClaim -BusType iSCSI -ErrorAction Stop
+      $changed = $true
+      $out.mpioClaimed = Read-ISCSIClaim
+      # The setting takes effect at boot, so a claim enabled now still leaves the
+      # host unprotected until it restarts.
+      $out.rebootRequired = $true
+    } catch {
+      # The MSDSM cmdlets arrive with the feature and may not be usable until it
+      # has been restarted into. That is not a failure — the next pass claims it.
+    }
+  }
+}
 `)
 	} else {
 		b.WriteString("$out.mpioInstalled = [bool](Get-WindowsFeature -Name Multipath-IO -ErrorAction SilentlyContinue).Installed\n")

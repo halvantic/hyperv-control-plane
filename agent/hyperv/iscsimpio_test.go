@@ -45,19 +45,60 @@ func TestLoginIsRestrictedToOnePathUntilMultipathIsInEffect(t *testing.T) {
 	}
 }
 
-// The claim is what makes MPIO act on iSCSI at all, and it has to be observed
-// rather than assumed: the feature can be present with no bus type claimed,
-// which looks configured and protects nothing.
-func TestTheClaimIsObservedNotAssumed(t *testing.T) {
+// The claim is what makes MPIO act on iSCSI at all, and it has to be read from
+// the automatic-claim SETTINGS.
+//
+// Get-MSDSMSupportedHW lists vendor/product pairs and carries no BusType, so
+// filtering it on one matched nothing on every host for ever: the claim read as
+// absent however many times it had been enabled, mpioEffective could never become
+// true, and no restart cleared "restart required". Seen on the rig 2026-08-09.
+func TestTheClaimIsReadFromTheClaimSettings(t *testing.T) {
 	s := iscsiScript(multiPortalSpec(), true)
 
-	if !strings.Contains(s, "$out.mpioClaimed = [bool](Get-MSDSMSupportedHW") {
-		t.Fatal("whether iSCSI is actually claimed must be read back, not inferred from the install")
+	if !strings.Contains(s, "Get-MSDSMAutomaticClaimSettings") {
+		t.Fatal("the claim must be read from the automatic-claim settings")
+	}
+	// Get-Disk genuinely has a BusType and filtering iSCSI disks on it is correct,
+	// so the assertion targets the specific mistake: INVOKING the MSDSM hardware
+	// list, whose entries are vendor/product pairs with no BusType at all. The
+	// name still appears in the comment explaining why it is not used.
+	if strings.Contains(s, "Get-MSDSMSupportedHW -") || strings.Contains(s, "Get-MSDSMSupportedHW |") {
+		t.Fatal("the MSDSM hardware list is being queried again; its entries have no BusType, so any filter on one silently matches nothing")
+	}
+	if !strings.Contains(s, "$out.mpioClaimed = Read-ISCSIClaim") {
+		t.Fatal("the claim must be read back rather than inferred from the install succeeding")
 	}
 	claim := strings.Index(s, "Enable-MSDSMAutomaticClaim")
-	read := strings.Index(s, "$out.mpioClaimed = [bool](Get-MSDSMSupportedHW")
+	read := strings.LastIndex(s, "$out.mpioClaimed = Read-ISCSIClaim")
 	if claim == -1 || read == -1 || read < claim {
-		t.Fatal("the claim must be read after the attempt to make it, or a fresh claim reports as absent")
+		t.Fatal("the claim must be re-read after the attempt to make it, or a fresh claim reports as absent")
+	}
+}
+
+// Enabling the claim takes effect at boot, so a host that has just been given it
+// is still unprotected. Not saying so would leave mpioEffective true on a host
+// running single-path — the exact thing the flag exists to prevent.
+func TestEnablingTheClaimAsksForARestart(t *testing.T) {
+	s := iscsiScript(multiPortalSpec(), true)
+
+	enable := strings.Index(s, "Enable-MSDSMAutomaticClaim")
+	reboot := strings.Index(s[enable:], "$out.rebootRequired = $true")
+	if enable == -1 || reboot == -1 {
+		t.Fatal("a newly enabled claim must set rebootRequired; it does not take effect until the host restarts")
+	}
+}
+
+// The claim is attempted alongside the install rather than after the restart.
+// Deferring it costs two restarts where one would do, and the node spends the gap
+// on a single path with its storage unprotected.
+func TestTheClaimIsNotDeferredUntilAfterTheRestart(t *testing.T) {
+	s := iscsiScript(multiPortalSpec(), true)
+
+	if strings.Contains(s, "if ($out.mpioInstalled -and -not $out.rebootRequired) {") {
+		t.Fatal("the claim is gated on no pending reboot again, which defers it to a second restart")
+	}
+	if !strings.Contains(s, "if ($out.mpioInstalled) {") {
+		t.Fatal("the claim should be attempted whenever the feature is installed")
 	}
 }
 
