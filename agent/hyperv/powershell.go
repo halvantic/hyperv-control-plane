@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"log/slog"
 
@@ -90,7 +91,54 @@ func psFailureDetail(ctx context.Context, stdout, stderr string) string {
 		}
 		return "the command failed without writing any error output; its last output was: " + s
 	}
-	return "the command failed without writing any error output and was not cancelled, so PowerShell exited non-zero on its own — check the Hyper-V and System event logs on this host for the same timestamp"
+	// Nothing on either stream and not cancelled. Telling the operator to go and
+	// read the host's event log is the shape CLAUDE.md calls a defect: the agent
+	// is ON that host and reads those same logs in half a dozen other places, so
+	// a fact it can establish must not be posted as homework. Ask the host.
+	if ev := recentHostErrors(); ev != "" {
+		return "the command failed without writing any error output, but the host logged this at the same time: " + ev
+	}
+	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason"
+}
+
+// recentHostErrorsScript reads what the host itself recorded in the last two
+// minutes. Deliberately narrow: the Hyper-V channels plus System filtered to
+// Hyper-V and clustering providers, errors and warnings only, a handful of
+// events. A wide sweep would bury the one line that matters in unrelated noise
+// from a busy host.
+const recentHostErrorsScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+$since = (Get-Date).AddMinutes(-2)
+$ev = @()
+foreach ($l in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-Hyper-V-Worker-Admin','Microsoft-Windows-Hyper-V-Compute-Admin')) {
+  $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 4 -ErrorAction SilentlyContinue
+}
+$ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2 } -MaxEvents 40 -ErrorAction SilentlyContinue |
+  Where-Object { $_.ProviderName -like '*Hyper-V*' -or $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*iScsi*' }
+$ev = @($ev | Sort-Object TimeCreated -Descending | Select-Object -First 3)
+($ev | ForEach-Object {
+  $m = [string]$_.Message
+  if ($m.Length -gt 300) { $m = $m.Substring(0,300) + '…' }
+  ($m -replace '\s+',' ').Trim() + ' (' + [string]$_.ProviderName + ' event ' + [string]$_.Id + ')'
+}) -join ' | '
+`
+
+// recentHostErrors asks the host what it logged. Best-effort and self-contained:
+// it runs on its own short deadline and never reports its own failure, because it
+// exists only to enrich somebody else's error and must not replace one unhelpful
+// message with a different one. It deliberately does not go through execPowerShell,
+// so a failure here can never recurse back into psFailureDetail.
+func recentHostErrors() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", recentHostErrorsScript)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.String())
 }
 
 // execPowerShell runs a script under Windows PowerShell. It uses powershell.exe
