@@ -18,7 +18,7 @@ import (
    written nothing — so a cancellation and a genuine failure were indistinguishable. */
 
 func TestStderrIsUsedWhenThereIsAny(t *testing.T) {
-	got := psFailureDetail(context.Background(), "", "  Remove-VM : access denied  ")
+	got := psFailureDetail(context.Background(), time.Now(), "", "  Remove-VM : access denied  ")
 	if got != "Remove-VM : access denied" {
 		t.Fatalf("the command's own diagnostic must win and be trimmed, got %q", got)
 	}
@@ -28,7 +28,7 @@ func TestACancelledOperationSaysSoRatherThanNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	got := psFailureDetail(ctx, "", "")
+	got := psFailureDetail(ctx, time.Now(), "", "")
 	if got == "" {
 		t.Fatal("an empty explanation is the defect being fixed")
 	}
@@ -44,20 +44,20 @@ func TestATimedOutOperationIsDistinguishedFromACancelledOne(t *testing.T) {
 	defer cancel()
 	time.Sleep(2 * time.Millisecond)
 
-	timedOut := psFailureDetail(ctx, "", "")
+	timedOut := psFailureDetail(ctx, time.Now(), "", "")
 	if !strings.Contains(timedOut, "time limit") {
 		t.Fatalf("a deadline must be named as a deadline: %q", timedOut)
 	}
 
 	cctx, ccancel := context.WithCancel(context.Background())
 	ccancel()
-	if psFailureDetail(cctx, "", "") == timedOut {
+	if psFailureDetail(cctx, time.Now(), "", "") == timedOut {
 		t.Fatal("a timeout and a cancellation have different remedies and must not read identically")
 	}
 }
 
 func TestPartialOutputIsReportedWhenThereIsNoError(t *testing.T) {
-	got := psFailureDetail(context.Background(), "step one ok\nstep two ok\n", "")
+	got := psFailureDetail(context.Background(), time.Now(), "step one ok\nstep two ok\n", "")
 	if !strings.Contains(got, "step two ok") {
 		t.Fatalf("how far it got is more use than nothing: %q", got)
 	}
@@ -69,7 +69,7 @@ func TestPartialOutputIsReportedWhenThereIsNoError(t *testing.T) {
 // CLAUDE.md counts that as the defect, not the workaround. The last resort is
 // reached only once the logs have been asked and had nothing.
 func TestTheLastResortIsNeverEmptyAndDoesNotDelegateToTheOperator(t *testing.T) {
-	got := psFailureDetail(context.Background(), "", "")
+	got := psFailureDetail(context.Background(), time.Now(), "", "")
 	if strings.TrimSpace(got) == "" {
 		t.Fatal("no path through this function may return nothing")
 	}
@@ -88,5 +88,5 @@ func TestTheLastResortIsNeverEmptyAndDoesNotDelegateToTheOperator(t *testing.T) 
 // machine with no Hyper-V logs it simply returns nothing.
 func TestTheEventLogProbeNeverReportsItsOwnFailure(t *testing.T) {
 	// Whatever this host is, the probe must return a string and not panic.
-	_ = recentHostErrors()
+	_ = recentHostErrors(time.Now())
 }

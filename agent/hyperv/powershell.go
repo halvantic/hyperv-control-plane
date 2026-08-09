@@ -73,7 +73,7 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 // This does not decide why the command failed. It makes the difference between
 // "cancelled" and "failed silently" legible, which is what the empty message
 // took away.
-func psFailureDetail(ctx context.Context, stdout, stderr string) string {
+func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string) string {
 	if s := strings.TrimSpace(stderr); s != "" {
 		return s
 	}
@@ -95,20 +95,27 @@ func psFailureDetail(ctx context.Context, stdout, stderr string) string {
 	// read the host's event log is the shape CLAUDE.md calls a defect: the agent
 	// is ON that host and reads those same logs in half a dozen other places, so
 	// a fact it can establish must not be posted as homework. Ask the host.
-	if ev := recentHostErrors(); ev != "" {
-		return "the command failed without writing any error output, but the host logged this at the same time: " + ev
+	if ev := recentHostErrors(since); ev != "" {
+		return "the command failed without writing any error output, but the host logged this while it ran: " + ev
 	}
 	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason"
 }
 
-// recentHostErrorsScript reads what the host itself recorded in the last two
-// minutes. Deliberately narrow: the Hyper-V channels plus System filtered to
-// Hyper-V and clustering providers, errors and warnings only, a handful of
-// events. A wide sweep would bury the one line that matters in unrelated noise
-// from a busy host.
+// recentHostErrorsScript reads what the host recorded WHILE THE COMMAND RAN.
+//
+// The window is the command's own execution, not a fixed span, and that is
+// load-bearing. A host with a recurring background failure logs it every
+// reconcile pass — a member that is not the CSV owner cannot set its default VHD
+// path and records event 18172 every few seconds — so any fixed window is
+// guaranteed to catch it and present it as the cause of whatever else failed.
+// Correlation is all this can offer; restricting it to the command's own
+// lifetime is what stops it being spurious correlation.
+//
+// Narrow in what it reads, too: the Hyper-V channels plus System filtered to
+// Hyper-V, clustering and iSCSI providers, errors and warnings, three events.
 const recentHostErrorsScript = `
 $ErrorActionPreference = 'SilentlyContinue'
-$since = (Get-Date).AddMinutes(-2)
+$since = (Get-Date).AddSeconds(-%[1]d)
 $ev = @()
 foreach ($l in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-Hyper-V-Worker-Admin','Microsoft-Windows-Hyper-V-Compute-Admin')) {
   $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 4 -ErrorAction SilentlyContinue
@@ -128,11 +135,22 @@ $ev = @($ev | Sort-Object TimeCreated -Descending | Select-Object -First 3)
 // exists only to enrich somebody else's error and must not replace one unhelpful
 // message with a different one. It deliberately does not go through execPowerShell,
 // so a failure here can never recurse back into psFailureDetail.
-func recentHostErrors() string {
+func recentHostErrors(since time.Time) string {
+	// A second of slack either side: the event is timestamped by the provider, not
+	// by us, and a command that failed in its first instant would otherwise fall
+	// outside its own window.
+	secs := int(time.Since(since).Seconds()) + 1
+	if secs < 2 {
+		secs = 2
+	}
+	if secs > 300 {
+		secs = 300 // a very long command's whole lifetime is not a useful window
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", recentHostErrorsScript)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+		fmt.Sprintf(recentHostErrorsScript, secs))
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -149,8 +167,9 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, stdout.String(), stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
@@ -168,6 +187,7 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("powershell start: %w", err)
 	}
@@ -179,7 +199,7 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, "", stderr.String()))
 	}
 	return nil
 }
@@ -195,8 +215,9 @@ func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
 	}
 	return nil
 }
