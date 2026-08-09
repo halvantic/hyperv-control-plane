@@ -359,6 +359,13 @@ type HostStatus struct {
 	// whether the cluster's or its own. Nil when none is declared.
 	ISOLibrary *ISOLibraryStatus `json:"isoLibrary,omitempty"`
 
+	// ISCSI is this host's own array connection, for a standalone host that
+	// declares one. Nil for a cluster member — a member's iSCSI state is reported
+	// per node on the CLUSTER, where the members can be compared against each
+	// other, because that comparison is the whole point: iSCSI fails one node at a
+	// time and a single-node view is exactly what hides it.
+	ISCSI *ISCSIStatus `json:"iscsi,omitempty"`
+
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
 
@@ -678,6 +685,27 @@ type HostStorageSpec struct {
 	// DefaultVHDPath is the default directory for new virtual hard disks
 	// (Set-VMHost -VirtualHardDiskPath). Empty leaves the host default unchanged.
 	DefaultVHDPath string `json:"defaultVHDPath,omitempty"`
+
+	// ISCSI connects THIS host to an iSCSI array on its own account, for a
+	// standalone host backing its VMs with LUNs from a NAS or SAN.
+	//
+	// The initiator side was always host-shaped — the service, the portals, the
+	// logins and MPIO are per-node settings, and a cluster's spec is that same
+	// configuration fanned to every member. Only the reachability differed: it
+	// could be declared on a cluster and nowhere else, so a standalone host had no
+	// way to reach an array at all.
+	//
+	// Scoped like the ISO library: declared for ONE of cluster or host and never
+	// inherited across. A cluster member takes its initiator configuration from
+	// the cluster, because two authorities over one initiator is how a node ends
+	// up logged in to targets nobody declared. Setting both is refused with the
+	// reason rather than resolved by precedence.
+	//
+	// What happens to the LUN differs, which is why this is not simply the cluster
+	// spec moved. A cluster adopts it as a Cluster Shared Volume; a standalone host
+	// has nothing to share it with, so the disk appears in the host's inventory and
+	// is provisioned like any other local disk — formatted and given a drive letter.
+	ISCSI *ISCSIStorageSpec `json:"iscsi,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

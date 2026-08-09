@@ -778,6 +778,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	phase := types.PhasePending
 	var conds []types.Condition
 	var hyperVInstalled, rebootRequired, inMaintenance bool
+	var hostISCSI *types.ISCSIStatus
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
@@ -787,6 +788,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		inMaintenance = res.InMaintenance
+		hostISCSI = res.ISCSI
 		if rerr != nil {
 			r.log.Error("reconcile incomplete", "err", rerr)
 		}
@@ -799,6 +801,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ISOLibrary = r.observeISOLibrary(ctx, force)
+	st.ISCSI = hostISCSI
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it

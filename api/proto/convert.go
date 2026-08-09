@@ -373,6 +373,7 @@ func storageToProto(s types.HostStorageSpec) *HostStorageSpec {
 		EligibleDiskSelector: s.EligibleDiskSelector,
 		DefaultVmPath:        s.DefaultVMPath,
 		DefaultVhdPath:       s.DefaultVHDPath,
+		Iscsi:                iscsiSpecToProto(s.ISCSI),
 	}
 }
 
@@ -385,6 +386,7 @@ func storageFromProto(s *HostStorageSpec) types.HostStorageSpec {
 		EligibleDiskSelector: s.GetEligibleDiskSelector(),
 		DefaultVMPath:        s.GetDefaultVmPath(),
 		DefaultVHDPath:       s.GetDefaultVhdPath(),
+		ISCSI:                iscsiSpecFromProto(s.GetIscsi()),
 	}
 }
 
@@ -549,6 +551,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		NetworkProfile:     s.NetworkProfile,
 		InMaintenance:      s.InMaintenance,
 		IsoLibrary:         isoLibraryStatusToProto(s.ISOLibrary),
+		Iscsi:              iscsiStatusToProto(s.ISCSI),
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -649,6 +652,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		NetworkProfile:     s.GetNetworkProfile(),
 		InMaintenance:      s.GetInMaintenance(),
 		ISOLibrary:         isoLibraryStatusFromProto(s.GetIsoLibrary()),
+		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),

@@ -306,6 +306,9 @@ message HostStatus {
   // iso_library is what this host actually found at its declared library share,
   // whether the cluster's or its own.
   ISOLibraryStatus iso_library = 17;
+  // iscsi is a STANDALONE host's own array connection. A member's iSCSI state is
+  // reported per node on the cluster, where members can be compared.
+  ISCSIStatus iscsi = 18;
 }
 
 message HostMetrics {
@@ -446,6 +449,10 @@ message HostStorageSpec {
   // directories (Set-VMHost); a CSV path makes VMs migration-ready.
   string default_vm_path = 3;
   string default_vhd_path = 4;
+  // iscsi connects a STANDALONE host to its own array. A cluster member takes
+  // its initiator configuration from the cluster instead; declaring both is
+  // refused rather than resolved by precedence.
+  ISCSIStorageSpec iscsi = 5;
 }
 
 message ClusterMembershipSpec {

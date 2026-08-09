@@ -100,6 +100,10 @@ type Result struct {
 	// HyperVInstalled reflects the observed Hyper-V role state.
 	HyperVInstalled bool
 
+	// ISCSI is this standalone host's own array connection, nil when it declares
+	// none or is a cluster member (whose iSCSI is reported on the cluster).
+	ISCSI *types.ISCSIStatus
+
 	// RebootRequired is true when the spec cannot be fully honoured until a
 	// reboot and RebootPolicy forbids the agent rebooting autonomously.
 	RebootRequired bool
@@ -203,6 +207,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			r.log.Info("vm host paths reconciled", "vmPath", st.DefaultVMPath, "vhdPath", st.DefaultVHDPath, "outcome", out)
 		}
 	}
+
+	// This host's own iSCSI array, for a standalone host backing its VMs with
+	// LUNs. A cluster member is refused inside rather than skipped here, so an
+	// operator who declares both is told why one is ignored instead of watching
+	// an edit do nothing.
+	iscsiStatus, iscsiConds := r.reconcileHostISCSI(ctx, desired, secrets)
+	conds = append(conds, iscsiConds...)
 
 	// Live-migration configuration (enable/auth/networks). A VM only migrates
 	// cleanly when this is set up on every host.
@@ -486,6 +497,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		Changed:         changed,
 		Honoured:        failures == 0,
 		HyperVInstalled: hyperVInstalled,
+		ISCSI:           iscsiStatus,
 	}
 	if failures == 0 {
 		res.Phase = types.PhaseReady
