@@ -66,7 +66,7 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 		ServiceRunning: st.ServiceRunning,
 		Portals:        st.Portals,
 		MPIOInstalled:  st.MPIOInstalled,
-		MPIOEffective:  st.MPIOInstalled && st.MPIOClaimed && !st.RebootRequired,
+		MPIOEffective:  st.MPIOEffective,
 		Message:        st.Message,
 	}
 	for _, s := range st.Sessions {

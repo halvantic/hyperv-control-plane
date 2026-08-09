@@ -877,7 +877,16 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 			//
 			// The host status channel is the right one: every member reports it, and
 			// each host owns its own, so there is no write to race over.
-			r.clusterISCSI = cres.ISCSI
+			// A FAILED observation is not an absence. reconcileISCSI returns nil for
+			// a pass that could not read the initiator — a transient PowerShell
+			// failure, a slow VMMS, a credential not yet delivered — and assigning
+			// that straight through made the console's multipath row vanish and
+			// reappear as passes succeeded and failed. Absence has to mean the
+			// cluster no longer declares an array, which is the one case worth
+			// clearing for.
+			if cres.ISCSI != nil || assignment.Cluster.Spec.StorageKind() != types.StorageKindISCSI {
+				r.clusterISCSI = cres.ISCSI
+			}
 			if assignment.IsFormer {
 				r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
 			}

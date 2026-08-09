@@ -27,13 +27,23 @@ func multiPortalSpec() types.ISCSIStorageSpec {
 func TestLoginIsRestrictedToOnePathUntilMultipathIsInEffect(t *testing.T) {
 	s := iscsiScript(multiPortalSpec(), true)
 
-	if !strings.Contains(s, "$mpioEffective = ($out.mpioInstalled -and $out.mpioClaimed -and -not $out.rebootRequired)") {
-		t.Fatal("effectiveness must require the claim AND no pending reboot; installed alone protects nothing")
+	// Effectiveness is OBSERVED on the host, not derived from what this pass did.
+	// rebootRequired only ever described the current pass, so a pass that installed
+	// nothing and claimed nothing left it false — and a host that had never
+	// restarted since MPIO was installed reported multipath as protecting it.
+	if !strings.Contains(s, "$mpioEffective = ($out.mpioInstalled -and (Read-MPIOEffective) -and -not $out.rebootRequired)") {
+		t.Fatal("effectiveness must be read from the host, not inferred from this pass's actions")
+	}
+	if !strings.Contains(s, "Get-Service -Name 'mpio'") {
+		t.Fatal("the MPIO bus driver is what coalesces the paths; whether it is RUNNING is the observable that distinguishes installed from in effect")
 	}
 	if !strings.Contains(s, "if (-not $mpioEffective -and $portals.Count -gt 1)") {
 		t.Fatal("with multipath not in effect and more than one portal, the login must be restricted to a single path")
 	}
-	if !strings.Contains(s, "if ($restrictPortal) { $c['TargetPortalAddress'] = $restrictPortal }") {
+	// The restriction reaches the login by narrowing the set of portals a session
+	// is established through — every path is one login, so constraining the list is
+	// constraining the paths.
+	if !strings.Contains(s, "if ($restrictPortal) { $wantPortals = @($restrictPortal) }") {
 		t.Fatal("the restriction has to reach the login call, or it is decoration")
 	}
 

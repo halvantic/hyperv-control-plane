@@ -21,10 +21,10 @@ func iscsiSpec() types.ISCSIStorageSpec {
 // left as a working-until-restarted state.
 func TestISCSILoginsArePersistent(t *testing.T) {
 	s := iscsiScript(iscsiSpec(), false)
-	// Splatted, so the single-path restriction can be one optional key rather than
-	// a second copy of the whole call. The property asserted is unchanged.
-	if !strings.Contains(s, "$c = @{ NodeAddress = $t; IsPersistent = $true }") {
-		t.Error("a new login must be persistent")
+	// Splatted, and carrying the portal it is made through, so each declared path
+	// gets its own session. The persistence property asserted is unchanged.
+	if !strings.Contains(s, "$c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }") {
+		t.Error("a new login must be persistent and made through a named portal")
 	}
 	if !strings.Contains(s, "Connect-IscsiTarget @c") {
 		t.Error("the login must actually be made from the assembled arguments")
@@ -55,16 +55,27 @@ func TestISCSIReconcileNeverDisconnects(t *testing.T) {
 	}
 }
 
-// Idempotency: a portal that is already registered must not be added again
-// (New-IscsiTargetPortal throws), and a target already logged in must not be
-// connected twice.
-func TestISCSIIsIdempotent(t *testing.T) {
+// Idempotency is judged PER PORTAL, not per target.
+//
+// "Is this target logged in at all?" was the wrong question: with three portals
+// and one session the answer is yes, so the target was skipped and the node stayed
+// on a single path for ever — multipath in effect and nothing to coalesce. What
+// must not be repeated is a login through a portal that already carries one.
+func TestISCSIIsIdempotentPerPortal(t *testing.T) {
 	s := iscsiScript(iscsiSpec(), false)
 	if !strings.Contains(s, "if ($have.Count -eq 0) {") {
 		t.Error("a portal must only be registered when absent")
 	}
-	if !strings.Contains(s, "if ($existing.Count -gt 0) {") || !strings.Contains(s, "continue") {
-		t.Error("a target already logged in must be skipped, not reconnected")
+	if !strings.Contains(s, "if ($covered -contains $addr) { continue }") {
+		t.Error("a portal that already carries a session must be skipped; skipping the whole target strands the node on one path")
+	}
+	if strings.Contains(s, "if ($existing.Count -gt 0) {") {
+		t.Error("the target-level skip is back, which is what stopped the remaining paths ever being established")
+	}
+	// The portals a session covers come from its connections — a session does not
+	// carry the portal it was made through.
+	if !strings.Contains(s, "Get-IscsiConnection") {
+		t.Error("which portals are already covered must be read from the sessions' connections")
 	}
 }
 

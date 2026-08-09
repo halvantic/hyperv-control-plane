@@ -22,6 +22,11 @@ type ISCSIState struct {
 	// is not the same thing: the feature can be present with no bus type claimed,
 	// which protects nothing while looking configured.
 	MPIOClaimed bool
+	// MPIOEffective is multipath actually protecting this host: claiming iSCSI AND
+	// the bus driver running, which only happens after the restart. OBSERVED on the
+	// host rather than derived here — deriving it from what a pass happened to do
+	// reported a host that had never restarted as protected.
+	MPIOEffective bool
 	Disks       []ISCSIDiskState
 	// RebootRequired is set when installing MPIO asked for one. Multipath claim
 	// does not take effect until then, so a cluster is NOT safe to put multipath
@@ -65,7 +70,8 @@ type ISCSIDiskState struct {
 func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO bool) string {
 	var b strings.Builder
 	b.WriteString(`$ErrorActionPreference = 'Stop'
-$out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; disks=@(); rebootRequired=$false; message='' }
+$out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; mpioEffective=$false; disks=@(); rebootRequired=$false; message='' }
+$pathErrs = @()
 $changed = $false
 
 # The initiator service is set to start ON DEMAND by default on Windows Server,
@@ -129,6 +135,23 @@ function Read-ISCSIClaim {
   } catch { return $false }
 }
 
+# Whether multipath is IN EFFECT is observed, never inferred from what this pass
+# happened to do.
+#
+# rebootRequired only ever described THIS pass: a pass that installed nothing and
+# claimed nothing left it false, so a host that had never restarted since MPIO was
+# installed reported multipath as in effect — which HVNEW04 did, on one path, with
+# three portals declared. The driver either loaded at boot or it did not, and that
+# is a fact about the host that any pass can read.
+function Read-MPIOEffective {
+  if (-not (Read-ISCSIClaim)) { return $false }
+  # The MPIO bus driver is what actually coalesces the paths. Installed but not
+  # restarted into means the service exists and is not running.
+  $svc = Get-Service -Name 'mpio' -ErrorAction SilentlyContinue
+  if (-not $svc -or [string]$svc.Status -ne 'Running') { return $false }
+  return $true
+}
+
 if ($out.mpioInstalled) {
   $out.mpioClaimed = Read-ISCSIClaim
   if (-not $out.mpioClaimed) {
@@ -186,7 +209,8 @@ $out.portals = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-O
 	// remaining paths — which MPIO then coalesces into the one disk.
 	if wantMPIO {
 		b.WriteString(`
-$mpioEffective = ($out.mpioInstalled -and $out.mpioClaimed -and -not $out.rebootRequired)
+$mpioEffective = ($out.mpioInstalled -and (Read-MPIOEffective) -and -not $out.rebootRequired)
+$out.mpioEffective = $mpioEffective
 $restrictPortal = ''
 if (-not $mpioEffective -and $portals.Count -gt 1) {
   $first = $portals[0]
@@ -207,27 +231,48 @@ if (-not $mpioEffective -and $portals.Count -gt 1) {
   # a deliberate choice rather than a default anybody arrives at by accident.
   $wanted = @(Get-IscsiTarget -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NodeAddress })
 }
+# A session PER PORTAL, not one per target.
+#
+# "Is this target logged in at all?" was the wrong question. With three portals
+# and one session the answer is yes, so the loop skipped the target and the node
+# stayed on a single path for ever — multipath in effect, MPIO claiming, and
+# nothing to claim, because the other two paths were never established. Seen on
+# the rig with DRCluster: mpioEffective true on both members, both on one path.
+#
+# The portals a session already covers come from its CONNECTIONS; a session does
+# not carry the portal it was made through.
 foreach ($t in $wanted) {
   $existing = @(Get-IscsiSession -ErrorAction SilentlyContinue | Where-Object { $_.TargetNodeAddress -eq $t })
-  if ($existing.Count -gt 0) {
-    # Already logged in. A session that is NOT persistent will vanish at the next
-    # reboot and take this node's disks with it, so make it persistent rather
-    # than leaving a working-until-restarted state in place.
-    foreach ($s in $existing) {
-      if (-not $s.IsPersistent) {
-        try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true } catch {}
-      }
+  # A session that is NOT persistent vanishes at the next reboot and takes this
+  # node's disks with it, so make it persistent rather than leaving a
+  # working-until-restarted state in place.
+  foreach ($s in $existing) {
+    if (-not $s.IsPersistent) {
+      try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true } catch {}
     }
-    continue
   }
+  $covered = @()
+  foreach ($s in $existing) {
+    foreach ($cn in @(Get-IscsiConnection -ErrorAction SilentlyContinue | Where-Object { $_.SessionIdentifier -eq $s.SessionIdentifier })) {
+      $covered += [string]$cn.TargetAddress
+    }
+  }
+  # While multipath is not in effect this is deliberately one portal, which is
+  # what stops duplicate disks appearing before MPIO can coalesce them.
+  $wantPortals = @()
+  if ($restrictPortal) { $wantPortals = @($restrictPortal) }
+  else {
+    foreach ($p in $portals) { $a = $p; if ($p -match '^(.+):(\d+)$') { $a = $Matches[1] }; $wantPortals += $a }
+  }
+  foreach ($addr in $wantPortals) {
+    if ($covered -contains $addr) { continue }
 `)
 	// The connect call, with CHAP only when a credential was supplied. The secret
 	// arrives via the environment so it is never in the script text or a log.
-	// Splatted rather than concatenated so the single-path restriction is one
-	// optional key instead of a second copy of the whole call with its CHAP
-	// arguments — two spellings of the same login is how they drift apart.
-	connect := "  $c = @{ NodeAddress = $t; IsPersistent = $true }\n" +
-		"  if ($restrictPortal) { $c['TargetPortalAddress'] = $restrictPortal }\n"
+	// Splatted rather than concatenated so the per-portal address is one key
+	// instead of a second copy of the whole call with its CHAP arguments — two
+	// spellings of the same login is how they drift apart.
+	connect := "    $c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }\n"
 	if spec.CredentialSecret != "" {
 		auth := "ONEWAYCHAP"
 		if spec.MutualCHAP {
@@ -236,11 +281,21 @@ foreach ($t in $wanted) {
 		// One -ChapSecret, whichever direction. Mutual CHAP additionally needs the
 		// initiator's own secret set once on the host (Set-IscsiChapSecret); it is
 		// NOT a second -ChapSecret here, which the cmdlet rejects outright.
-		connect += "  $c['AuthenticationType'] = '" + auth + "'\n" +
-			"  $c['ChapUsername'] = $env:BALLAST_CHAP_USER\n" +
-			"  $c['ChapSecret'] = $env:BALLAST_CHAP_SECRET\n"
+		connect += "    $c['AuthenticationType'] = '" + auth + "'\n" +
+			"    $c['ChapUsername'] = $env:BALLAST_CHAP_USER\n" +
+			"    $c['ChapSecret'] = $env:BALLAST_CHAP_SECRET\n"
 	}
-	b.WriteString(connect + "  Connect-IscsiTarget @c -ErrorAction Stop | Out-Null\n  $changed = $true\n}\n")
+	// One portal being unreachable must not fail the pass or abandon the others:
+	// losing a path is the ordinary iSCSI fault, and the remaining paths are
+	// exactly what the node keeps working on.
+	b.WriteString(connect + `    try { Connect-IscsiTarget @c -ErrorAction Stop | Out-Null; $changed = $true }
+    catch { $pathErrs += ($addr + ': ' + $_.Exception.Message) }
+  }
+}
+if ($pathErrs.Count -gt 0 -and -not $out.message) {
+  $out.message = 'could not log in through ' + ($pathErrs -join '; ')
+}
+`)
 
 	b.WriteString(`
 $out.sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue | Group-Object TargetNodeAddress | ForEach-Object {
@@ -309,6 +364,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		Portals        []string `json:"portals"`
 		MPIOInstalled  bool     `json:"mpioInstalled"`
 		MPIOClaimed    bool     `json:"mpioClaimed"`
+		MPIOEffective  bool     `json:"mpioEffective"`
 		RebootRequired bool     `json:"rebootRequired"`
 		Message        string   `json:"message"`
 		Changed        bool     `json:"changed"`
@@ -334,6 +390,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 	st.InitiatorIQN = res.InitiatorIQN
 	st.ServiceRunning, st.Portals = res.ServiceRunning, res.Portals
 	st.MPIOInstalled, st.MPIOClaimed, st.RebootRequired, st.Message = res.MPIOInstalled, res.MPIOClaimed, res.RebootRequired, res.Message
+	st.MPIOEffective = res.MPIOEffective
 	for _, s := range res.Sessions {
 		st.Sessions = append(st.Sessions, ISCSISessionState{
 			TargetIQN: s.TargetIQN, Connected: s.Connected, Persistent: s.Persistent, Paths: s.Paths,
