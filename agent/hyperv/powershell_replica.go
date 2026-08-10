@@ -532,8 +532,30 @@ if (-not $enabled) {
                    else { "That path does not exist on the target. Create it, or repoint the replica storage location, then retry." }
             throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist on ' + $probe + '. ' + $fix)
           }
-          $fix2 = if ($csv) { " If the target cluster no longer has that Cluster Shared Volume, create it or repoint the Replica Broker's storage path." } else { " Verify that path exists on the target." }
-          throw ('cannot enable replication for ' + $vm + ': ' + $what + '.' + $fix2 + ' Hyper-V reported: ' + $_.Exception.Message)
+          # The path was checked and NOT found missing, so the target's
+          # configuration is positively verified: it accepts this host, and its
+          # storage location is there. Repeating "the volume might be missing" here
+          # is advice contradicted by the check just performed.
+          #
+          # What has not been read is the TARGET's own account of the refusal. The
+          # source only ever sees Hyper-V's generic %%12002; the node that declined
+          # writes the reason to its own VMMS log, and that node is reachable —
+          # this whole diagnosis just queried it. Asking beats guessing, which is
+          # how every earlier explanation of this error was arrived at and wrong.
+          $far = ''
+          try {
+            $ev = @(Get-WinEvent -ComputerName $probe -FilterHashtable @{
+              LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-2); Level=1,2,3
+            } -MaxEvents 3 -ErrorAction Stop | ForEach-Object {
+              $m = ([string]$_.Message -replace '\s+',' ').Trim()
+              if ($m.Length -gt 260) { $m = $m.Substring(0,260) + '…' }
+              $m + ' (event ' + [string]$_.Id + ')'
+            })
+            if ($ev.Count -gt 0) { $far = ' ' + $probe + ' recorded: ' + ($ev -join ' | ') }
+          } catch {
+            $far = ' Its log could not be read from here (' + ([string]$_.Exception.Message).Trim() + '), so the reason it refused is only in ' + $probe + $([char]39) + 's Hyper-V-VMMS-Admin log.'
+          }
+          throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path is present - so the target accepts this host and its storage is in place, and the refusal is not one this host can see the reason for.' + $far + ' Hyper-V reported: ' + $_.Exception.Message)
         }
         if ($anyServer -eq $false) {
           throw ('cannot enable replication for ' + $vm + ": '" + $server + "' does not permit this host to replicate to it - it has no authorization entry for " + $env:COMPUTERNAME + ' and does not allow any server. Add an authorization entry on the target, then retry.')
