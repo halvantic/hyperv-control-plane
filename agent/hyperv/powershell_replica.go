@@ -384,6 +384,27 @@ $server = %[3]s
 $port = %[4]d
 $auth = %[5]s
 $freq = %[6]d
+$targetCluster = %[7]s
+
+# Get-QueryableTarget returns a host that Hyper-V management calls can actually
+# reach, for a replica server that may be a cluster's client access point.
+#
+# A Replica Broker CAP is the address you REPLICATE to, and it is not a machine:
+# VMMS runs on the physical nodes, so a management query against the CAP returns
+# "the object was not found - verify that the Virtual Machine Management service
+# on the computer is running". Ballast then reported the target as broken when it
+# had merely asked something that cannot answer.
+#
+# The target cluster is known from the VM's own spec, so ask one of its nodes.
+function Get-QueryableTarget {
+  if (-not $targetCluster) { return $server }
+  try {
+    $n = @(Get-ClusterNode -Cluster $targetCluster -ErrorAction Stop |
+      Where-Object { [string]$_.State -eq 'Up' } | ForEach-Object { [string]$_.Name })
+    if ($n.Count -gt 0) { return $n[0] }
+  } catch {}
+  return $server
+}
 # The VM must exist on THIS host to reconcile its replication. For a clustered VM
 # only the current owner has it; a non-owner member (which the centre may still
 # deliver the desired VM to) has nothing to do — Enable-VMReplication would fail
@@ -458,8 +479,10 @@ if (-not $enabled) {
       # rather than leaving the operator to find it.
       if ($_.Exception.Message -like '*failed to enable replication*') {
         $loc = ''; $anyServer = $null; $entry = $null; $readErr = ''
+        # Queried against a NODE of the target cluster, not the broker CAP.
+        $probe = Get-QueryableTarget
         try {
-          $rs = Get-VMReplicationServer -ComputerName $server -ErrorAction Stop
+          $rs = Get-VMReplicationServer -ComputerName $probe -ErrorAction Stop
           $anyServer = [bool]$rs.AllowAnyServer
           $loc = [string]$rs.DefaultStorageLocation
         } catch {
@@ -476,7 +499,7 @@ if (-not $enabled) {
         # wildcard entry.
         try {
           $me = ([string]$env:COMPUTERNAME).ToLower()
-          $entries = @(Get-VMReplicationAuthorizationEntry -ComputerName $server -ErrorAction Stop)
+          $entries = @(Get-VMReplicationAuthorizationEntry -ComputerName $probe -ErrorAction Stop)
           $mine = @($entries | Where-Object { ([string]$_.AllowedPrimaryServer).ToLower().StartsWith($me) })[0]
           if (-not $mine) { $mine = @($entries | Where-Object { [string]$_.AllowedPrimaryServer -eq '*' })[0] }
           if ($mine) { $entry = [string]$mine.AllowedPrimaryServer; $loc = [string]$mine.ReplicaStorageLocation }
@@ -513,8 +536,8 @@ if (-not $enabled) {
         # saying "the cause is on the target" asserts the one thing this host was
         # unable to establish — and it sent an operator to check a role that was
         # already enabled and a path that already existed.
-        $why = if ($readErr) { ' Querying it from ' + $env:COMPUTERNAME + ' failed with: ' + $readErr + ' — the same route Enable-VMReplication uses, so this is likely the same fault.' }
-               else { ' Querying it from ' + $env:COMPUTERNAME + ' returned nothing.' }
+        $why = if ($readErr) { ' Querying ' + $probe + ' from ' + $env:COMPUTERNAME + ' failed with: ' + $readErr }
+               else { ' Querying ' + $probe + ' from ' + $env:COMPUTERNAME + ' returned nothing.' }
         throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it, and this host cannot read its replication configuration either, so the fault is between ' + $env:COMPUTERNAME + ' and ' + $server + ' rather than necessarily on either one.' + $why + ' Hyper-V reported: ' + $_.Exception.Message)
       }
       throw
@@ -551,7 +574,7 @@ if (-not $enabled) {
   }
 }
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
-		psQuote(vmName), psBool(spec.Enabled), psQuote(spec.ReplicaServer), port, psQuote(auth), freq)
+		psQuote(vmName), psBool(spec.Enabled), psQuote(spec.ReplicaServer), port, psQuote(auth), freq, psQuote(spec.TargetCluster))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure vm replication %q: %w", vmName, err)
