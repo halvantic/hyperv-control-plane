@@ -407,6 +407,7 @@ func specToProto(s types.HostSpec) *HostSpec {
 		RebootPolicy:     rebootPolicyToProto(s.RebootPolicy),
 		ComputerName:     s.ComputerName,
 	}
+	out.WindowsLicence = windowsLicenceSpecToProto(s.WindowsLicence)
 	if s.ClusterMembership != nil {
 		out.ClusterMembership = &ClusterMembershipSpec{
 			ClusterName: s.ClusterMembership.ClusterName,
@@ -505,6 +506,7 @@ func specFromProto(s *HostSpec) types.HostSpec {
 		RebootPolicy:     rebootPolicyFromProto(s.GetRebootPolicy()),
 		ComputerName:     s.GetComputerName(),
 	}
+	out.WindowsLicence = windowsLicenceSpecFromProto(s.GetWindowsLicence())
 	if cm := s.GetClusterMembership(); cm != nil {
 		out.ClusterMembership = &types.ClusterMembershipSpec{
 			ClusterName: cm.GetClusterName(),
@@ -1550,4 +1552,18 @@ func windowsLicenceFromProto(s *WindowsLicenceStatus) *types.WindowsLicenceStatu
 		Channel: s.GetChannel(), PartialProductKey: s.GetPartialProductKey(),
 		KMSServer: s.GetKmsServer(), Message: s.GetMessage(),
 	}
+}
+
+func windowsLicenceSpecToProto(s *types.WindowsLicenceSpec) *WindowsLicenceSpec {
+	if s == nil {
+		return nil
+	}
+	return &WindowsLicenceSpec{Edition: s.Edition, ProductKeySecret: s.ProductKeySecret}
+}
+
+func windowsLicenceSpecFromProto(s *WindowsLicenceSpec) *types.WindowsLicenceSpec {
+	if s == nil {
+		return nil
+	}
+	return &types.WindowsLicenceSpec{Edition: s.GetEdition(), ProductKeySecret: s.GetProductKeySecret()}
 }

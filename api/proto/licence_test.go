@@ -55,3 +55,34 @@ func TestAHostWithNoLicenceReportedStaysNil(t *testing.T) {
 		t.Fatalf("expected nil, got %+v", got)
 	}
 }
+
+// The DECLARED edition. A spec field the proto drops round-trips as nil, and nil
+// means "Ballast does not manage the edition" — so the centre would store a
+// conversion the agent never hears about, and nothing anywhere would say why the
+// host stayed on its evaluation edition.
+func TestTheDeclaredEditionSurvivesTheProto(t *testing.T) {
+	in := types.HostSpec{
+		WindowsLicence: &types.WindowsLicenceSpec{
+			Edition: "ServerDatacenter", ProductKeySecret: "datacenter-key",
+		},
+	}
+
+	got := HostFromProto(HostToProto(types.Host{Spec: in})).Spec.WindowsLicence
+
+	if got == nil {
+		t.Fatal("the declared edition did not survive; the agent would never convert")
+	}
+	if got.Edition != "ServerDatacenter" {
+		t.Errorf("edition: %q", got.Edition)
+	}
+	// The NAME of the secret crosses; the key itself never does.
+	if got.ProductKeySecret != "datacenter-key" {
+		t.Errorf("product key secret: %q — without it the conversion has no key", got.ProductKeySecret)
+	}
+}
+
+func TestAHostDeclaringNoEditionStaysNil(t *testing.T) {
+	if got := HostFromProto(HostToProto(types.Host{})).Spec.WindowsLicence; got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}

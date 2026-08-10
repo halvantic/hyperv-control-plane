@@ -88,6 +88,83 @@ if ($out.evaluation -and -not $out.message) {
 $out | ConvertTo-Json -Compress
 `
 
+// editionScript converts the host to the target edition.
+//
+// IRREVERSIBLE: there is no way back to an evaluation edition and no way down
+// from a higher one. So it refuses everything it is not certain about, and asks
+// Windows which conversions are legal rather than reasoning about it — the
+// servicing stack knows, and a rule written here would be a guess that ages badly
+// across releases.
+//
+// The key arrives in the environment, never in the script text: the script is
+// what appears in an error message and in a log line, and a product key cannot be
+// rotated once it has been used.
+const editionScript = `
+$ErrorActionPreference = 'Stop'
+$target = %[1]s
+$key = $env:BALLAST_PRODUCT_KEY
+
+$cur = ''
+try { $cur = [string](Get-WindowsEdition -Online -ErrorAction Stop).Edition } catch {}
+if (-not $cur) { throw 'the current Windows edition could not be read, so a conversion cannot be judged safe' }
+if ($cur -eq $target) { 'RESULT=NOOP'; return }
+
+if (-not $key) { throw ('converting ' + $cur + ' to ' + $target + ' needs a product key, and none was delivered to this host') }
+
+# A domain controller cannot be converted — DISM refuses, and it refuses late,
+# after the operator has been told the change is under way.
+try {
+  $role = [int](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).DomainRole
+  if ($role -eq 4 -or $role -eq 5) {
+    throw ('this host is a domain controller, and Windows cannot change the edition of one. Demote it first, or convert a different host.')
+  }
+} catch {
+  if ($_.Exception.Message -like '*domain controller*') { throw }
+}
+
+# Ask Windows which targets it will accept. This is the authoritative answer to
+# "is this conversion legal", and it makes an impossible request fail with the
+# list of possible ones instead of a servicing error.
+$valid = @()
+try { $valid = @(Get-WindowsEdition -Online -Target -ErrorAction Stop | ForEach-Object { [string]$_.Edition }) } catch {}
+if ($valid.Count -gt 0 -and ($valid -notcontains $target)) {
+  throw ('Windows will not convert ' + $cur + ' to ' + $target + '. From here it offers: ' + ($valid -join ', ') + '. An edition cannot be converted downwards, and an evaluation converts only to its own retail or volume equivalent.')
+}
+
+$r = Set-WindowsEdition -Online -ProductKey $key -NoRestart -ErrorAction Stop
+# The conversion is staged and applied by the restart; nothing has changed on disk
+# for the operator to see until then, which is why the reboot is reported rather
+# than assumed to have happened.
+'RESULT=REBOOT'
+`
+
+// EnsureWindowsEdition converts the host to the target edition when it differs.
+//
+// Returns OutcomeUnchanged when the host is already there, and OutcomeUpdated with
+// rebootRequired true when a conversion was staged — the change only takes effect
+// on restart, which the reconciler governs by RebootPolicy.
+func (p *PowerShell) EnsureWindowsEdition(ctx context.Context, targetEdition, productKey string) (Outcome, bool, error) {
+	target := strings.TrimSpace(targetEdition)
+	if target == "" {
+		return OutcomeUnchanged, false, nil
+	}
+	out, err := p.runWithEnvOut(ctx, fmt.Sprintf(editionScript, psQuote(target)),
+		[]string{"BALLAST_PRODUCT_KEY=" + productKey})
+	if err != nil {
+		return OutcomeUnchanged, false, fmt.Errorf("set windows edition: %w", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "RESULT=NOOP") {
+		return OutcomeUnchanged, false, nil
+	}
+	if strings.Contains(s, "RESULT=REBOOT") {
+		return OutcomeUpdated, true, nil
+	}
+	// No marker means the script died part-way. Treating that as success would
+	// report an edition change that may not have been staged at all.
+	return OutcomeUnchanged, false, fmt.Errorf("set windows edition: the conversion ended without a result marker, so whether it was staged is unknown")
+}
+
 // GetWindowsLicence observes the host's Windows edition and activation state. A
 // pure read; it never changes licensing.
 func (p *PowerShell) GetWindowsLicence(ctx context.Context) (WindowsLicence, error) {

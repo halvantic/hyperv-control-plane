@@ -341,6 +341,15 @@ type Interface interface {
 	// has no remedy an operator would guess at — it needs converting first.
 	GetWindowsLicence(ctx context.Context) (WindowsLicence, error)
 
+	// EnsureWindowsEdition converts the host to targetEdition when it differs,
+	// returning rebootRequired true when a conversion was staged — the change takes
+	// effect only on restart.
+	//
+	// IRREVERSIBLE, so it refuses anything it is not certain of: it asks Windows
+	// which target editions are valid rather than reasoning about which conversions
+	// are legal, and refuses a domain controller, which Windows cannot convert.
+	EnsureWindowsEdition(ctx context.Context, targetEdition, productKey string) (Outcome, bool, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.

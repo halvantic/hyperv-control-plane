@@ -196,6 +196,9 @@ message HostSpec {
   HostStorageSpec storage = 4;
   // cluster_membership is optional; absence means standalone.
   ClusterMembershipSpec cluster_membership = 5;
+  // windows_licence declares the Windows EDITION this host should run. The
+  // conversion is irreversible, so an absent declaration converts nothing.
+  WindowsLicenceSpec windows_licence = 20;
   RebootPolicy reboot_policy = 6;
   string computer_name = 7;
   PhysicalNICConfig management_nic = 8;
@@ -313,6 +316,12 @@ message HostStatus {
   // for Windows deliberately: Ballast's own product licensing is a separate
   // concern the agent is never aware of.
   WindowsLicenceStatus windows_licence = 19;
+}
+
+message WindowsLicenceSpec {
+  string edition = 1;
+  // product_key_secret NAMES a stored secret; the key itself never crosses here.
+  string product_key_secret = 2;
 }
 
 message WindowsLicenceStatus {

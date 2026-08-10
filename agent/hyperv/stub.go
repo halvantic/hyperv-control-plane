@@ -28,6 +28,13 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// EditionAsked / EditionKeySeen record what EnsureWindowsEdition was asked for,
+	// so a test can prove the key reached it and was not logged. FailEdition drives
+	// the failure path.
+	EditionAsked   string
+	EditionKeySeen string
+	FailEdition    bool
+
 	// WindowsLicence overrides the reported edition/activation, so tests can drive
 	// the evaluation and grace-period paths.
 	WindowsLicence *WindowsLicence
@@ -553,6 +560,23 @@ func (s *Stub) GetWindowsLicence(_ context.Context) (WindowsLicence, error) {
 		Edition: "ServerDatacenter", Description: "Microsoft Windows Server 2025 Datacenter",
 		Status: "Licensed", Channel: "Volume:MAK", PartialProductKey: "ABCDE",
 	}, nil
+}
+
+// EnsureWindowsEdition records the request and reports a staged conversion, so
+// the reconciler's reboot governance can be exercised without a host.
+func (s *Stub) EnsureWindowsEdition(_ context.Context, targetEdition, productKey string) (Outcome, bool, error) {
+	s.EditionAsked, s.EditionKeySeen = targetEdition, productKey
+	if s.FailEdition {
+		return OutcomeUnchanged, false, fmt.Errorf("stub: forced failure converting edition")
+	}
+	cur := "ServerDatacenter"
+	if s.WindowsLicence != nil && s.WindowsLicence.Edition != "" {
+		cur = s.WindowsLicence.Edition
+	}
+	if cur == targetEdition {
+		return OutcomeUnchanged, false, nil
+	}
+	return OutcomeUpdated, true, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

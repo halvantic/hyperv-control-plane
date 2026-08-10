@@ -147,6 +147,17 @@ type HostSpec struct {
 	// Storage describes host-local and shared storage intent.
 	Storage HostStorageSpec `json:"storage,omitempty"`
 
+	// WindowsLicence declares the Windows EDITION this host should run.
+	//
+	// Desired state like the domain join and the Hyper-V role: declared once,
+	// applied by the agent, restart governed by RebootPolicy. It does NOT activate
+	// the host — a conversion and an activation are different acts, one consuming
+	// nothing and the other consuming a key, so they are declared separately.
+	//
+	// Nil means Ballast does not manage the edition, which is not the same as
+	// declaring the current one: an absent declaration never converts anything.
+	WindowsLicence *WindowsLicenceSpec `json:"windowsLicence,omitempty"`
+
 	// ClusterMembership, when set, declares which cluster this host should
 	// belong to. Nil means standalone.
 	ClusterMembership *ClusterMembershipSpec `json:"clusterMembership,omitempty"`
@@ -234,6 +245,27 @@ type ISOLibrarySpec struct {
 // library that lists perfectly and cannot boot a VM is the failure this
 // distinction exists to make visible — and it is the normal outcome of a share
 // granted to a user rather than to the machines.
+// WindowsLicenceSpec declares the Windows edition a host should run.
+//
+// Converting is IRREVERSIBLE — there is no way back to an evaluation edition, and
+// no way down from a higher edition — so this is applied only when the declared
+// edition differs from the running one AND Windows itself offers it as a valid
+// target. Ballast asks rather than reasoning about which conversions are legal:
+// the servicing stack knows, and a rule written here would be a guess that ages.
+type WindowsLicenceSpec struct {
+	// Edition is the target edition ID as Windows names it — ServerDatacenter,
+	// ServerStandard. Not the friendly caption, which is localised.
+	Edition string `json:"edition"`
+
+	// ProductKeySecret names a stored secret holding the product key the
+	// conversion needs.
+	//
+	// A reference, never the key. A key inline in the spec would sit in Postgres,
+	// in every spec-history row, and in any diff an operator pastes into a ticket —
+	// and unlike a password it cannot be rotated once it has been used.
+	ProductKeySecret string `json:"productKeySecret"`
+}
+
 // WindowsLicenceStatus is the host's observed Windows edition and activation.
 //
 // Read-only, and deliberately shipped before anything that changes it. An
@@ -410,9 +442,9 @@ type HostStatus struct {
 	// confuse — one gates Ballast features, the other is Microsoft's and gates
 	// nothing Ballast does.
 	//
-	// Observed only for now. Nothing here is desired state: converting an edition
-	// is irreversible and activation consumes a key, so both are declared
-	// separately when that lands.
+	// Observed. What is DECLARED lives on HostSpec.WindowsLicence — the edition
+	// the host should run — and the two are compared to decide whether a
+	// conversion is owed.
 	WindowsLicence *WindowsLicenceStatus `json:"windowsLicence,omitempty"`
 
 	// ISCSI is this host's own array connection, for a standalone host that
@@ -1757,6 +1789,15 @@ const (
 	// pickers filter by type, and that filtering is what stops a guest account
 	// being offered as a WinRM target.
 	SecretLocalCredential = "LocalCredential"
+
+	// SecretProductKey is a Windows product key, in the key "productKey".
+	//
+	// Its own type because it is not a credential and the pickers filter by type:
+	// offering a domain account where a product key belongs, or the reverse, is a
+	// mistake one wrong selection away. A product key also differs from every
+	// other secret here in that it CANNOT be rotated once used — which is why it
+	// is a stored reference rather than a value in a spec.
+	SecretProductKey = "ProductKey"
 )
 
 // User is an operator account that can sign in to the centre's UI/REST surface.

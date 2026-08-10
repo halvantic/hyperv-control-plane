@@ -161,6 +161,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// The Windows EDITION comes before everything else that configures the host.
+	//
+	// A staged conversion replaces the operating system on the next boot, so
+	// configuring a host and then converting it underneath means reconciling
+	// against something about to be replaced. It is also the step most likely to
+	// be refused outright — an evaluation converts only to its own retail or
+	// volume equivalent — and finding that out first is cheaper than finding it
+	// out after a domain join.
+	if edRes, done, err := r.reconcileWindowsEdition(ctx, desired, secrets); done || err != nil || len(edRes.Conditions) > 0 {
+		conds = append(conds, edRes.Conditions...)
+		changed = changed || edRes.Changed
+		if done || err != nil {
+			edRes.Conditions = conds
+			return edRes, err
+		}
+	}
+
 	// Identity comes next: the host should have its final name, management IP
 	// and domain before the role and networking are configured. Rename/domain
 	// changes need a reboot governed by RebootPolicy, so like the role step this
