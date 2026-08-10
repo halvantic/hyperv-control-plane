@@ -266,8 +266,31 @@ if (-not $witness) {
   $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
   if (-not $existing) {
     Add-ClusterSharedVolume -InputObject $clusDisk -ErrorAction Stop | Out-Null
-    $check = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
-    if (-not $check) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
+    $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
+    if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
+  }
+
+  # The MOUNT POINT is named separately from the resource.
+  #
+  # Add-ClusterSharedVolume always mounts at C:\ClusterStorage\VolumeN whatever the
+  # resource is called, so naming the resource iSCSI_DS1 left the volume living at
+  # Volume1 — and the cluster's default storage path, which names the volume the
+  # operator declared, pointed at a directory that does not exist. That is the same
+  # fault that makes VMMS log 18172 and every VM creation land somewhere else.
+  #
+  # Renaming the directory under ClusterStorage is how the mount point is renamed;
+  # there is no cmdlet for it.
+  $cur = ''
+  try { $cur = [string]$existing.SharedVolumeInfo.FriendlyVolumeName } catch {}
+  $want = Join-Path (Split-Path -Path $cur -Parent) $name
+  if ($cur -and $name -and $cur -ne $want) {
+    # Only when nothing is using the old path yet — renaming a mount point with VMs
+    # running from it takes their storage out from under them.
+    $inUse = $false
+    try { $inUse = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object { [string]$_.Path -like ($cur + '*') }).Count -gt 0 } catch {}
+    if (-not $inUse) {
+      try { Rename-Item -LiteralPath $cur -NewName $name -ErrorAction Stop } catch {}
+    }
   }
 }
 
