@@ -72,7 +72,7 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 			}
 			continue
 		}
-		serial, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
+		serial, note, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
 			Name:   vol.Name,
 			Source: *vol.Source,
 			// Wipe is never set from desired state. Formatting a LUN that has
@@ -81,7 +81,16 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 			// re-applies itself on every pass.
 			Wipe: false,
 		})
-		conds = append(conds, r.condition("CSV/"+vol.Name, out, err))
+		c := r.condition("CSV/"+vol.Name, out, err)
+		// A note is something the adoption could not finish but did not fail on —
+		// the mount point still named VolumeN because another node owns the volume,
+		// or because VMs are running from the old path. Reporting only "already
+		// matches desired state" would present a volume whose declared name is not
+		// its path as fully settled.
+		if err == nil && note != "" {
+			c.Message = note
+		}
+		conds = append(conds, c)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("adopt volume %q: %w", vol.Name, err)
@@ -99,7 +108,7 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 	// is a separate step and belongs with the other witness handling.
 	if w := spec.Witness; w.Type == types.WitnessDisk && w.Disk != nil {
 		name := a.Cluster.Meta.Name + " Witness"
-		_, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
+		_, _, out, err := r.hv.AdoptISCSIDisk(ctx, hyperv.ISCSIAdoption{
 			Name: name, Source: *w.Disk, AsWitness: true,
 		})
 		conds = append(conds, r.condition("WitnessDisk", out, err))

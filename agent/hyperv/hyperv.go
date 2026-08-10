@@ -322,7 +322,7 @@ type Interface interface {
 	// LUNs to whoever it is told to: a serial typed one character out, or a LUN
 	// re-presented from another cluster, is indistinguishable from a new one right
 	// up to the moment its contents are gone.
-	AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial string, out Outcome, err error)
+	AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial, note string, out Outcome, err error)
 
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read

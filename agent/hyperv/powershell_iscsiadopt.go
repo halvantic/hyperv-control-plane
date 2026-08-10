@@ -64,19 +64,42 @@ function Fail($m) { throw $m }
 # fault behind VMMS 18172, where every new VM lands somewhere unintended.
 #
 # Renaming the directory is how a mount point is renamed; there is no cmdlet.
+# A failure here is REPORTED, not swallowed. The first version caught everything
+# and returned false, so a rename that could not happen was indistinguishable from
+# one that was not needed — the volumes stayed at VolumeN, the adoption reported
+# "already matches desired state", and nothing anywhere said why.
+$script:mountNote = ''
 function Ensure-MountPoint($csvObj, $want) {
   if (-not $csvObj -or -not $want) { return $false }
   $cur = ''
   try { $cur = [string]$csvObj.SharedVolumeInfo.FriendlyVolumeName } catch {}
-  if (-not $cur) { return $false }
+  if (-not $cur) { $script:mountNote = 'the volume did not report a mount path'; return $false }
   $leaf = Split-Path -Path $cur -Leaf
   if ($leaf -eq $want) { return $false }
   # Never while something is running from the old path: renaming a mount point
   # with VMs on it takes their storage out from under them.
   $inUse = $false
   try { $inUse = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object { [string]$_.Path -like ($cur + '*') }).Count -gt 0 } catch {}
-  if ($inUse) { return $false }
-  try { Rename-Item -LiteralPath $cur -NewName $want -ErrorAction Stop; return $true } catch { return $false }
+  if ($inUse) {
+    $script:mountNote = 'the mount point is still ' + $leaf + ' because VMs are running from it; it is renamed once nothing is using it'
+    return $false
+  }
+  # The directory can only be renamed by the node that OWNS the volume. On a
+  # cluster the former runs the adoption, and it does not necessarily own every
+  # CSV, so this legitimately has to wait for a pass on the owning node.
+  $owner = ''
+  try { $owner = [string]$csvObj.OwnerNode.Name } catch {}
+  if ($owner -and -not ($owner -like ($env:COMPUTERNAME + '*'))) {
+    $script:mountNote = 'the mount point is still ' + $leaf + ' and can only be renamed on its owner ' + $owner
+    return $false
+  }
+  try {
+    Rename-Item -LiteralPath $cur -NewName $want -ErrorAction Stop
+    return $true
+  } catch {
+    $script:mountNote = 'could not rename the mount point ' + $leaf + ' to ' + $want + ': ' + ([string]$_.Exception.Message).Trim()
+    return $false
+  }
 }
 
 # ---- locate the LUN -------------------------------------------------------
@@ -190,7 +213,9 @@ if ($csv -and -not $witness) {
   # C:\ClusterStorage\VolumeN for ever, and the declared name never became the
   # path the operator was told to expect.
   $renamed = Ensure-MountPoint $csv $name
-  [pscustomobject]@{ changed = $renamed; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
+  $n = 'already a CSV'
+  if ($script:mountNote) { $n = $script:mountNote }
+  [pscustomobject]@{ changed = $renamed; serial = ([string]$disk.SerialNumber).Trim(); note = $n } | ConvertTo-Json -Compress
   return
 }
 if ($clusDisk -and $witness) {
@@ -304,7 +329,7 @@ if (-not $witness) {
   Ensure-MountPoint $existing $name | Out-Null
 }
 
-[pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress
+[pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = $script:mountNote } | ConvertTo-Json -Compress
 `
 
 // AdoptISCSIDisk takes an array-presented LUN into the cluster, as a CSV or as
@@ -313,9 +338,9 @@ if (-not $witness) {
 //
 // Idempotent: a LUN already adopted is a no-op, judged on the cluster's view
 // rather than this node's, since another member may have done it.
-func (p *PowerShell) AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial string, out Outcome, err error) {
+func (p *PowerShell) AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial, note string, out Outcome, err error) {
 	if strings.TrimSpace(a.Source.SerialNumber) == "" && strings.TrimSpace(a.Source.TargetIQN) == "" {
-		return "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is: give the disk's serial number, or the target IQN it is presented on", a.Name)
+		return "", "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is: give the disk's serial number, or the target IQN it is presented on", a.Name)
 	}
 	fs := strings.TrimSpace(a.FileSystem)
 	if fs == "" {
@@ -336,7 +361,7 @@ func (p *PowerShell) AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (seria
 	)
 	raw, rerr := p.run(ctx, script)
 	if rerr != nil {
-		return "", OutcomeUnchanged, fmt.Errorf("adopt iSCSI disk %q: %w", a.Name, rerr)
+		return "", "", OutcomeUnchanged, fmt.Errorf("adopt iSCSI disk %q: %w", a.Name, rerr)
 	}
 	var res struct {
 		Changed bool   `json:"changed"`
@@ -344,12 +369,12 @@ func (p *PowerShell) AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (seria
 		Note    string `json:"note"`
 	}
 	if derr := decodeJSON(raw, &res); derr != nil {
-		return "", OutcomeUnchanged, fmt.Errorf("adopt iSCSI disk %q: %w", a.Name, derr)
+		return "", "", OutcomeUnchanged, fmt.Errorf("adopt iSCSI disk %q: %w", a.Name, derr)
 	}
 	if res.Changed {
-		return res.Serial, OutcomeUpdated, nil
+		return res.Serial, res.Note, OutcomeUpdated, nil
 	}
-	return res.Serial, OutcomeUnchanged, nil
+	return res.Serial, res.Note, OutcomeUnchanged, nil
 }
 
 // diskWitnessScript points quorum at an already-clustered disk.

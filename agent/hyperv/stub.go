@@ -499,13 +499,13 @@ func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ 
 
 // AdoptISCSIDisk succeeds for any identified LUN, and refuses one the test has
 // declared as carrying data — the refusal is the behaviour worth exercising.
-func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, Outcome, error) {
+func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, string, Outcome, error) {
 	if a.Source.SerialNumber == "" && a.Source.TargetIQN == "" {
-		return "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is (stub)", a.Name)
+		return "", "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is (stub)", a.Name)
 	}
 	for _, occupied := range s.ISCSIOccupiedSerials {
 		if occupied == a.Source.SerialNumber && !a.Wipe {
-			return "", OutcomeUnchanged, fmt.Errorf("the LUN (serial %s) already contains an NTFS volume. Adopting it formats it, so Ballast will not do that to a disk with contents (stub)", occupied)
+			return "", "", OutcomeUnchanged, fmt.Errorf("the LUN (serial %s) already contains an NTFS volume. Adopting it formats it, so Ballast will not do that to a disk with contents (stub)", occupied)
 		}
 	}
 	serial := a.Source.SerialNumber
@@ -516,10 +516,10 @@ func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, Outco
 		s.ISCSIAdopted = map[string]bool{}
 	}
 	if s.ISCSIAdopted[a.Name] {
-		return serial, OutcomeUnchanged, nil
+		return serial, "", OutcomeUnchanged, nil
 	}
 	s.ISCSIAdopted[a.Name] = true
-	return serial, OutcomeUpdated, nil
+	return serial, "", OutcomeUpdated, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {
