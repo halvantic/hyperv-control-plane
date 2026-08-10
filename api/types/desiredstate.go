@@ -234,6 +234,49 @@ type ISOLibrarySpec struct {
 // library that lists perfectly and cannot boot a VM is the failure this
 // distinction exists to make visible — and it is the normal outcome of a share
 // granted to a user rather than to the machines.
+// WindowsLicenceStatus is the host's observed Windows edition and activation.
+//
+// Read-only, and deliberately shipped before anything that changes it. An
+// evaluation edition cannot be activated at all — it has to be converted first,
+// irreversibly, with a reboot — so the fleet's real position is worth seeing
+// before Ballast is given the power to alter it. A 120-day clock nobody can see
+// is the failure this prevents.
+type WindowsLicenceStatus struct {
+	// Edition is the installed edition ID (ServerDatacenter, ServerStandard…) as
+	// DISM reports it, and Description is what a person recognises.
+	Edition     string `json:"edition,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Evaluation marks an edition that CANNOT be activated. It is the single most
+	// consequential fact here: an operator who does not know it will try to
+	// activate, fail, and have no idea why — the remedy is a DISM edition change,
+	// not a key.
+	Evaluation bool `json:"evaluation,omitempty"`
+
+	// Status is the SoftwareLicensingProduct LicenseStatus in words — Licensed,
+	// InitialGrace, OutOfTolerance, Notification, Unlicensed. The numeric form is
+	// not carried: nothing downstream should have to know that 1 means licensed.
+	Status string `json:"status,omitempty"`
+
+	// GraceDaysRemaining is how long an unactivated or evaluation host has before
+	// Windows starts objecting. Zero when licensed, and zero when unknown — the
+	// two are told apart by Status, because a countdown is only meaningful
+	// alongside what it is counting down to.
+	GraceDaysRemaining int `json:"graceDaysRemaining,omitempty"`
+
+	// Channel is Retail, Volume:MAK, Volume:GVLK or Evaluation, which is what
+	// decides HOW a host activates. PartialProductKey is the last five characters
+	// Windows exposes: enough to tell two keys apart, and never the key itself.
+	Channel           string `json:"channel,omitempty"`
+	PartialProductKey string `json:"partialProductKey,omitempty"`
+
+	// KMSServer is where a volume-licensed host activates, when it has one.
+	KMSServer string `json:"kmsServer,omitempty"`
+
+	// Message explains a state the fields cannot, in the operator's terms.
+	Message string `json:"message,omitempty"`
+}
+
 type ISOLibraryStatus struct {
 	// Path echoes the declared share, so a status is readable without the spec.
 	Path string `json:"path,omitempty"`
@@ -358,6 +401,19 @@ type HostStatus struct {
 	// ISOLibrary is what this host actually found at its declared library share,
 	// whether the cluster's or its own. Nil when none is declared.
 	ISOLibrary *ISOLibraryStatus `json:"isoLibrary,omitempty"`
+
+	// WindowsLicence is the host's Windows edition and activation state.
+	//
+	// Named WindowsLicence, never just Licence: centre/license is BALLAST's own
+	// product licensing, a signed vendor token the agent is deliberately never
+	// aware of. These are unrelated concerns that would be a genuine hazard to
+	// confuse — one gates Ballast features, the other is Microsoft's and gates
+	// nothing Ballast does.
+	//
+	// Observed only for now. Nothing here is desired state: converting an edition
+	// is irreversible and activation consumes a key, so both are declared
+	// separately when that lands.
+	WindowsLicence *WindowsLicenceStatus `json:"windowsLicence,omitempty"`
 
 	// ISCSI is this host's own array connection, for a standalone host that
 	// declares one. Nil for a cluster member — a member's iSCSI state is reported

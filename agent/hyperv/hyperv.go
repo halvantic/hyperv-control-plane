@@ -333,6 +333,14 @@ type Interface interface {
 	// former-only step could never fix them all.
 	EnsureCSVMountPoints(ctx context.Context, want map[string]string) (Outcome, string, error)
 
+	// GetWindowsLicence observes the host's Windows edition and activation state.
+	// A pure read; it never changes licensing.
+	//
+	// The edition matters as much as the activation: an EVALUATION edition cannot
+	// be activated by any key, so a host reported as unlicensed with a countdown
+	// has no remedy an operator would guess at — it needs converting first.
+	GetWindowsLicence(ctx context.Context) (WindowsLicence, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.

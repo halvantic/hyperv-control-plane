@@ -556,6 +556,7 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		InMaintenance:      s.InMaintenance,
 		IsoLibrary:         isoLibraryStatusToProto(s.ISOLibrary),
 		Iscsi:              iscsiStatusToProto(s.ISCSI),
+		WindowsLicence:     windowsLicenceToProto(s.WindowsLicence),
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -657,6 +658,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		InMaintenance:      s.GetInMaintenance(),
 		ISOLibrary:         isoLibraryStatusFromProto(s.GetIsoLibrary()),
 		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
+		WindowsLicence:     windowsLicenceFromProto(s.GetWindowsLicence()),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),
@@ -1523,5 +1525,29 @@ func VMFromProto(v *VM) types.VM {
 		Meta:   MetaFromProto(v.GetMeta()),
 		Spec:   vmSpecFromProto(v.GetSpec()),
 		Status: VMStatusFromProto(v.GetStatus()),
+	}
+}
+
+func windowsLicenceToProto(s *types.WindowsLicenceStatus) *WindowsLicenceStatus {
+	if s == nil {
+		return nil
+	}
+	return &WindowsLicenceStatus{
+		Edition: s.Edition, Description: s.Description, Evaluation: s.Evaluation,
+		Status: s.Status, GraceDaysRemaining: int32(s.GraceDaysRemaining),
+		Channel: s.Channel, PartialProductKey: s.PartialProductKey,
+		KmsServer: s.KMSServer, Message: s.Message,
+	}
+}
+
+func windowsLicenceFromProto(s *WindowsLicenceStatus) *types.WindowsLicenceStatus {
+	if s == nil {
+		return nil
+	}
+	return &types.WindowsLicenceStatus{
+		Edition: s.GetEdition(), Description: s.GetDescription(), Evaluation: s.GetEvaluation(),
+		Status: s.GetStatus(), GraceDaysRemaining: int(s.GetGraceDaysRemaining()),
+		Channel: s.GetChannel(), PartialProductKey: s.GetPartialProductKey(),
+		KMSServer: s.GetKmsServer(), Message: s.GetMessage(),
 	}
 }

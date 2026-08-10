@@ -28,6 +28,10 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// WindowsLicence overrides the reported edition/activation, so tests can drive
+	// the evaluation and grace-period paths.
+	WindowsLicence *WindowsLicence
+
 	// ISCSIOccupiedSerials names LUNs the stub should treat as already carrying a
 	// filesystem, so the refusal-to-destroy path can be tested.
 	ISCSIOccupiedSerials []string
@@ -537,6 +541,18 @@ func (s *Stub) EnsureCSVMountPoints(_ context.Context, want map[string]string) (
 		return OutcomeUnchanged, "", fmt.Errorf("stub: forced failure naming CSV mount points")
 	}
 	return OutcomeUnchanged, s.CSVMountNote, nil
+}
+
+// GetWindowsLicence reports an activated Datacenter host, so a stub-backed
+// reconcile does not show a fleet in evaluation. WindowsLicence overrides it.
+func (s *Stub) GetWindowsLicence(_ context.Context) (WindowsLicence, error) {
+	if s.WindowsLicence != nil {
+		return *s.WindowsLicence, nil
+	}
+	return WindowsLicence{
+		Edition: "ServerDatacenter", Description: "Microsoft Windows Server 2025 Datacenter",
+		Status: "Licensed", Channel: "Volume:MAK", PartialProductKey: "ABCDE",
+	}, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

@@ -309,6 +309,24 @@ message HostStatus {
   // iscsi is a STANDALONE host's own array connection. A member's iSCSI state is
   // reported per node on the cluster, where members can be compared.
   ISCSIStatus iscsi = 18;
+  // windows_licence is the host's Windows edition and activation state. Named
+  // for Windows deliberately: Ballast's own product licensing is a separate
+  // concern the agent is never aware of.
+  WindowsLicenceStatus windows_licence = 19;
+}
+
+message WindowsLicenceStatus {
+  string edition = 1;
+  string description = 2;
+  // evaluation marks an edition that CANNOT be activated by any key — it must be
+  // converted first. The most consequential field here.
+  bool evaluation = 3;
+  string status = 4;
+  int32 grace_days_remaining = 5;
+  string channel = 6;
+  string partial_product_key = 7;
+  string kms_server = 8;
+  string message = 9;
 }
 
 message HostMetrics {

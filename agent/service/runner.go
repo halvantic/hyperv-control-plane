@@ -112,6 +112,13 @@ const (
 	// timescales; the centre carries the last result forward between probes, so a
 	// skipped pass shows the previous answer rather than blanking the library.
 	isoLibraryEvery = 20
+	// windowsLicenceEvery — the Windows edition and activation read. The slowest
+	// of the lot, and rightly: an edition changes once in a host's life and an
+	// activation state on the order of months. Reading it every pass would spend a
+	// PowerShell invocation to re-learn a 120-day countdown that moves by a day at
+	// a time. The last value is carried forward between reads, so the console is
+	// never blank between them.
+	windowsLicenceEvery = 60
 	// screenCaptureEvery — the VM console thumbnail. Per RUNNING VM per cycle, and
 	// the least urgent thing collected: a preview of a screen nobody may be
 	// looking at, on a path the live console does not use. On a host with many
@@ -213,6 +220,11 @@ type runner struct {
 	// that skip the probe so a skipped pass shows the previous answer rather than
 	// blanking the library in the console.
 	isoLibState *types.ISOLibraryStatus
+
+	// licenceState is the last Windows edition/activation read, carried forward
+	// between the slow refreshes so the console always has the previous answer
+	// rather than a gap.
+	licenceState *types.WindowsLicenceStatus
 
 	// clusterISCSI is this member's own iSCSI view from the last cluster
 	// reconcile, carried forward between cluster passes (which run on a slower
@@ -806,6 +818,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ISOLibrary = r.observeISOLibrary(ctx, force)
+	st.WindowsLicence = r.observeWindowsLicence(ctx, force)
 	// A standalone host's own array, or — for a member — its own view of the
 	// cluster's, which the centre folds into the cluster's per-node list. Both are
 	// the same fact about this host: its initiator, its sessions, its paths.
@@ -1146,6 +1159,36 @@ func (r *runner) stampISCSINode(st *types.ISCSIStatus) []types.ISCSIStatus {
 //
 // A library that is no longer declared clears immediately, though — that is a
 // decision, not a stale reading, and it must not linger.
+// observeWindowsLicence reads the host's Windows edition and activation on a slow
+// cadence, carrying the last answer forward in between.
+//
+// A FAILED read keeps the previous value rather than clearing it. Reporting no
+// licence because one pass could not read it would make a host look unlicensed
+// for a reason that has nothing to do with its licence — the same absent-versus-
+// unknown confusion that has caused most of the damage elsewhere in this agent.
+func (r *runner) observeWindowsLicence(ctx context.Context, force bool) *types.WindowsLicenceStatus {
+	if !force && r.licenceState != nil && r.cycles%windowsLicenceEvery != 0 {
+		return r.licenceState
+	}
+	lic, err := r.hv.GetWindowsLicence(ctx)
+	if err != nil {
+		r.log.Warn("read windows licence failed (keeping last known)", "err", err)
+		return r.licenceState
+	}
+	r.licenceState = &types.WindowsLicenceStatus{
+		Edition:            lic.Edition,
+		Description:        lic.Description,
+		Evaluation:         lic.Evaluation,
+		Status:             lic.Status,
+		GraceDaysRemaining: lic.GraceDaysRemaining,
+		Channel:            lic.Channel,
+		PartialProductKey:  lic.PartialProductKey,
+		KMSServer:          lic.KMSServer,
+		Message:            lic.Message,
+	}
+	return r.licenceState
+}
+
 func (r *runner) observeISOLibrary(ctx context.Context, force bool) *types.ISOLibraryStatus {
 	if r.isoLib == nil || r.isoLib.Path == "" {
 		r.isoLibState = nil
