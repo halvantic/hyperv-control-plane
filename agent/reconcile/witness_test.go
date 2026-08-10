@@ -29,7 +29,7 @@ func TestFormerAppliesADeclaredFileShareWitness(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\fs01\bcluster-witness`}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestOnlyTheFormerTouchesQuorum(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\fs01\bcluster-witness`}
 
-	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(false, spec)); err != nil {
+	if _, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(false, spec), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(stub.WitnessCalls) != 0 {
@@ -79,7 +79,7 @@ func TestAnUndeclaredWitnessIsLeftAlone(t *testing.T) {
 		Witness: &hyperv.ClusterWitness{Type: "FileShare", Path: `\\manual\share`, State: "Online"},
 	}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, types.WitnessSpec{}))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, types.WitnessSpec{}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +107,14 @@ func TestApplyingTheSameWitnessTwiceChangesNothing(t *testing.T) {
 	})
 	r := testReconciler(stub)
 
-	first, err := r.ReconcileCluster(context.Background(), a)
+	first, err := r.ReconcileCluster(context.Background(), a, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !first.Changed {
 		t.Fatal("the first pass sets the witness, so it changed something")
 	}
-	second, err := r.ReconcileCluster(context.Background(), a)
+	second, err := r.ReconcileCluster(context.Background(), a, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestAnUnreachableWitnessDoesNotDegradeTheCluster(t *testing.T) {
 	}
 	spec := types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\gone\share`}
 
-	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec))
+	res, err := testReconciler(stub).ReconcileCluster(context.Background(), witnessAssignment(true, spec), nil)
 	if err != nil {
 		t.Fatalf("a failed witness must not fail the pass: %v", err)
 	}
@@ -157,12 +157,18 @@ func TestAnUnreachableWitnessDoesNotDegradeTheCluster(t *testing.T) {
 	}
 }
 
-// A disk witness cannot work with S2D at all — it needs shared block storage,
-// which S2D has none of. Refusing it with a reason beats letting
-// Set-ClusterQuorum fail obscurely three layers down.
-func TestADiskWitnessIsRefusedWithAReason(t *testing.T) {
+// Whether a disk witness is possible depends on the cluster's storage kind, and
+// that is the point of the discriminator: it turns a flat invariant into a
+// per-kind rule.
+//
+// S2D has no shared block storage, so a disk witness cannot work there and the
+// refusal must say so — letting Set-ClusterQuorum fail three layers down tells
+// the operator nothing. On an array-backed cluster the same request is
+// legitimate (it is the classic choice), so the same refusal would be wrong.
+func TestADiskWitnessIsRefusedOnS2DWithAReason(t *testing.T) {
 	ps := &hyperv.PowerShell{}
-	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk})
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindS2D)
 	if err == nil {
 		t.Fatal("a disk witness must be refused on an S2D cluster")
 	}
@@ -171,11 +177,46 @@ func TestADiskWitnessIsRefusedWithAReason(t *testing.T) {
 	}
 }
 
+// On iSCSI a disk witness is possible, so the refusal must NOT blame S2D. What
+// remains missing is which LUN to use: quorum pointed at the wrong disk is the
+// one failure in this area the console cannot undo, so the disk is named
+// explicitly or not attempted.
+func TestADiskWitnessOnISCSIAsksWhichLUN(t *testing.T) {
+	ps := &hyperv.PowerShell{}
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindISCSI)
+	if err == nil {
+		t.Fatal("a disk witness that does not say which disk cannot be applied")
+	}
+	if strings.Contains(err.Error(), "Storage Spaces Direct") {
+		t.Fatalf("an array-backed cluster must not be told S2D is the problem, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "serial number") {
+		t.Fatalf("the refusal must name what is missing and how to supply it, got %q", err)
+	}
+}
+
+// A cluster that declares no storage kind at all cannot have a disk witness
+// either, and must not be told it is an S2D limitation.
+func TestADiskWitnessWithNoStorageKindSaysSo(t *testing.T) {
+	ps := &hyperv.PowerShell{}
+	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk}, "")
+	if err == nil {
+		t.Fatal("no storage means no disk witness")
+	}
+	if !strings.Contains(err.Error(), "does not declare any") {
+		t.Fatalf("the refusal must say the cluster declares no storage, got %q", err)
+	}
+}
+
 // A file share witness with no path is a mistake worth catching before it
 // reaches PowerShell, where it becomes a parameter-binding error.
 func TestAFileShareWitnessNeedsAPath(t *testing.T) {
 	ps := &hyperv.PowerShell{}
-	_, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessFileShare})
+	// A file share witness is valid on any storage kind, so the kind is irrelevant
+	// here — the missing path is the fault.
+	_, err := ps.EnsureClusterWitness(context.Background(),
+		types.WitnessSpec{Type: types.WitnessFileShare}, types.StorageKindS2D)
 	if err == nil {
 		t.Fatal("a file share witness with no path must be refused")
 	}

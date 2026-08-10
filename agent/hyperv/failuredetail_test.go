@@ -18,7 +18,7 @@ import (
    written nothing — so a cancellation and a genuine failure were indistinguishable. */
 
 func TestStderrIsUsedWhenThereIsAny(t *testing.T) {
-	got := psFailureDetail(context.Background(), "", "  Remove-VM : access denied  ")
+	got := psFailureDetail(context.Background(), time.Now(), "", "  Remove-VM : access denied  ")
 	if got != "Remove-VM : access denied" {
 		t.Fatalf("the command's own diagnostic must win and be trimmed, got %q", got)
 	}
@@ -28,7 +28,7 @@ func TestACancelledOperationSaysSoRatherThanNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	got := psFailureDetail(ctx, "", "")
+	got := psFailureDetail(ctx, time.Now(), "", "")
 	if got == "" {
 		t.Fatal("an empty explanation is the defect being fixed")
 	}
@@ -44,33 +44,49 @@ func TestATimedOutOperationIsDistinguishedFromACancelledOne(t *testing.T) {
 	defer cancel()
 	time.Sleep(2 * time.Millisecond)
 
-	timedOut := psFailureDetail(ctx, "", "")
+	timedOut := psFailureDetail(ctx, time.Now(), "", "")
 	if !strings.Contains(timedOut, "time limit") {
 		t.Fatalf("a deadline must be named as a deadline: %q", timedOut)
 	}
 
 	cctx, ccancel := context.WithCancel(context.Background())
 	ccancel()
-	if psFailureDetail(cctx, "", "") == timedOut {
+	if psFailureDetail(cctx, time.Now(), "", "") == timedOut {
 		t.Fatal("a timeout and a cancellation have different remedies and must not read identically")
 	}
 }
 
 func TestPartialOutputIsReportedWhenThereIsNoError(t *testing.T) {
-	got := psFailureDetail(context.Background(), "step one ok\nstep two ok\n", "")
+	got := psFailureDetail(context.Background(), time.Now(), "step one ok\nstep two ok\n", "")
 	if !strings.Contains(got, "step two ok") {
 		t.Fatalf("how far it got is more use than nothing: %q", got)
 	}
 }
 
-// The last resort still has to say something actionable. This is the case that
-// produced the empty message, and it must never again be empty.
-func TestTheLastResortIsNeverEmptyAndPointsSomewhere(t *testing.T) {
-	got := psFailureDetail(context.Background(), "", "")
+// The last resort still has to say something, and what it must NOT say is "go
+// and read the host's event log". The agent is on that host and reads those same
+// logs elsewhere, so a fact it can establish must not be posted as homework —
+// CLAUDE.md counts that as the defect, not the workaround. The last resort is
+// reached only once the logs have been asked and had nothing.
+func TestTheLastResortIsNeverEmptyAndDoesNotDelegateToTheOperator(t *testing.T) {
+	got := psFailureDetail(context.Background(), time.Now(), "", "")
 	if strings.TrimSpace(got) == "" {
 		t.Fatal("no path through this function may return nothing")
 	}
-	if !strings.Contains(got, "event log") {
-		t.Fatalf("with no output and no cancellation there is nowhere to look but the host's event logs; say so: %q", got)
+	if strings.Contains(got, "check the") {
+		t.Fatalf("the agent reads these logs itself; it must not ask the operator to: %q", got)
 	}
+	// It must say the logs were consulted, or the reader cannot tell "nothing was
+	// recorded" from "nobody looked".
+	if !strings.Contains(got, "recorded nothing") {
+		t.Fatalf("say that the host was asked and had nothing, so silence is a finding rather than an omission: %q", got)
+	}
+}
+
+// The enrichment is best-effort by design: it exists to improve somebody else's
+// error and must never replace one unhelpful message with a different one. On a
+// machine with no Hyper-V logs it simply returns nothing.
+func TestTheEventLogProbeNeverReportsItsOwnFailure(t *testing.T) {
+	// Whatever this host is, the probe must return a string and not panic.
+	_ = recentHostErrors(time.Now())
 }

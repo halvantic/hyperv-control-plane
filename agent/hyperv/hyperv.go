@@ -303,6 +303,36 @@ type Interface interface {
 	// IRREVERSIBLE, so it is only ever an explicit operator action.
 	UpdateClusterFunctionalLevel(ctx context.Context) (string, error)
 
+	// EnsureISCSI connects this node to an iSCSI array — service, portals,
+	// persistent logins, MPIO — and reports what it can see. Additive only: it
+	// never disconnects a session or removes a portal.
+	//
+	// shared marks a CLUSTER member, whose newly arrived LUNs must NOT be brought
+	// online automatically: a shared disk mounted on two nodes at once is the state
+	// clustering exists to prevent, and the cluster will not take it. A standalone
+	// host is the opposite — its LUN should come online to be provisioned.
+	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool) (ISCSIState, Outcome, error)
+
+	// AdoptISCSIDisk takes an array-presented LUN into the cluster, as a Cluster
+	// Shared Volume or as the witness disk, and reports the disk's serial so a
+	// volume authored by target can be pinned to a cluster-wide identifier.
+	//
+	// It REFUSES a LUN that already carries a partition or filesystem unless the
+	// adoption asks to wipe it. Adoption formats the disk, and an array presents
+	// LUNs to whoever it is told to: a serial typed one character out, or a LUN
+	// re-presented from another cluster, is indistinguishable from a new one right
+	// up to the moment its contents are gone.
+	AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial, note string, out Outcome, err error)
+
+	// EnsureCSVMountPoints makes each named CSV's mount point match its declared
+	// volume name, for the CSVs THIS NODE OWNS. want maps CSV name to the directory
+	// leaf it should have; the returned note explains any it could not do.
+	//
+	// Per node, not per cluster, because renaming a mount point belongs with owning
+	// the volume — and a cluster's volumes are not all owned by one member, so a
+	// former-only step could never fix them all.
+	EnsureCSVMountPoints(ctx context.Context, want map[string]string) (Outcome, string, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.
@@ -513,7 +543,7 @@ type Interface interface {
 	// the witness resource even when re-applying the same value, which drops a
 	// vote for a moment, so re-applying every pass would be a recurring wobble
 	// rather than a no-op.
-	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec) (Outcome, error)
+	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, error)
 
 	// RemoveReplicaBroker deletes the Hyper-V Replica Broker cluster role and the
 	// client access point it lives in. Run on the former. Idempotent: a cluster

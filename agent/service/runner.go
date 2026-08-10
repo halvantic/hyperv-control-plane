@@ -214,6 +214,11 @@ type runner struct {
 	// blanking the library in the console.
 	isoLibState *types.ISOLibraryStatus
 
+	// clusterISCSI is this member's own iSCSI view from the last cluster
+	// reconcile, carried forward between cluster passes (which run on a slower
+	// cadence than the status report) so every report carries it.
+	clusterISCSI *types.ISCSIStatus
+
 	// vmObservedGen tracks, per VM name, the last desired Generation fully
 	// honoured for that VM. Like observedGen it persists across cycles and
 	// autonomy windows. Lazily initialised.
@@ -778,6 +783,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	phase := types.PhasePending
 	var conds []types.Condition
 	var hyperVInstalled, rebootRequired, inMaintenance bool
+	var hostISCSI *types.ISCSIStatus
 	if cached, ok, lerr := r.st.LoadDesiredHost(); lerr != nil {
 		r.log.Error("read cached desired state failed", "err", lerr)
 	} else if ok {
@@ -787,6 +793,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		phase, conds = res.Phase, res.Conditions
 		hyperVInstalled, rebootRequired = res.HyperVInstalled, res.RebootRequired
 		inMaintenance = res.InMaintenance
+		hostISCSI = res.ISCSI
 		if rerr != nil {
 			r.log.Error("reconcile incomplete", "err", rerr)
 		}
@@ -799,6 +806,13 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ISOLibrary = r.observeISOLibrary(ctx, force)
+	// A standalone host's own array, or — for a member — its own view of the
+	// cluster's, which the centre folds into the cluster's per-node list. Both are
+	// the same fact about this host: its initiator, its sessions, its paths.
+	st.ISCSI = hostISCSI
+	if st.ISCSI == nil {
+		st.ISCSI = r.clusterISCSI
+	}
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it
@@ -844,12 +858,35 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
 		if force || genChanged || maintChanged || r.cycles%clusterReconcileEvery == 0 {
 			doneCluster := t.mark("clusterReconcile")
-			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment)
+			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment, secrets)
 			doneCluster()
 			if cerr != nil {
 				r.log.Error("cluster reconcile incomplete", "err", cerr)
 			}
 			r.lastClusterGen = assignment.Cluster.Meta.Generation
+			// This node's OWN iSCSI view is kept whether or not it is the former,
+			// and carried out on the host status below.
+			//
+			// Only the former reports CLUSTER status, which is right for everything
+			// cluster-wide — several members writing the same groups, CSVs and pool
+			// would race. But iSCSI is not cluster-wide: every member has its own
+			// initiator, its own sessions and its own paths, and a non-former simply
+			// computed that and dropped it. The centre then held one member's view
+			// and called it the cluster's, which is exactly the failure iSCSI
+			// produces — one node loses a path while the others are perfect.
+			//
+			// The host status channel is the right one: every member reports it, and
+			// each host owns its own, so there is no write to race over.
+			// A FAILED observation is not an absence. reconcileISCSI returns nil for
+			// a pass that could not read the initiator — a transient PowerShell
+			// failure, a slow VMMS, a credential not yet delivered — and assigning
+			// that straight through made the console's multipath row vanish and
+			// reappear as passes succeeded and failed. Absence has to mean the
+			// cluster no longer declares an array, which is the one case worth
+			// clearing for.
+			if cres.ISCSI != nil || assignment.Cluster.Spec.StorageKind() != types.StorageKindISCSI {
+				r.clusterISCSI = cres.ISCSI
+			}
 			if assignment.IsFormer {
 				r.reportClusterStatus(ctx, client, assignment.Cluster, cres)
 			}
@@ -1081,6 +1118,24 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 	}
 }
 
+// stampISCSINode names the member an iSCSI snapshot came from.
+//
+// The reconciler cannot: it would have to use the OS hostname, which need not
+// match the name the centre keys this host by. Reporting a name the centre does
+// not recognise would make a per-node fault impossible to attribute — which is
+// the entire reason the status is per-node.
+// An agent reports ONLY ITS OWN entry — a single-element list. It has no view of
+// any other member's iSCSI state and must not appear to speak for one; the
+// centre merges the entries into the cluster's list on receipt.
+func (r *runner) stampISCSINode(st *types.ISCSIStatus) []types.ISCSIStatus {
+	if st == nil {
+		return nil
+	}
+	out := *st
+	out.Node = r.cfg.hostName
+	return []types.ISCSIStatus{out}
+}
+
 // observeISOLibrary probes the host's effective boot-media share, throttled.
 //
 // The probe reaches a file server and its computer-account half runs a scheduled
@@ -1139,6 +1194,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		ReplicaBroker:      res.ReplicaBroker,
 		FunctionalLevel:    res.FunctionalLevel,
 		NodeOSBuild:        res.NodeOSBuild,
+		ISCSI:              r.stampISCSINode(res.ISCSI),
 	}
 	if !res.Honoured {
 		cs.ObservedGeneration = 0

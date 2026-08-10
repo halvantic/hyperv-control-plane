@@ -306,6 +306,9 @@ message HostStatus {
   // iso_library is what this host actually found at its declared library share,
   // whether the cluster's or its own.
   ISOLibraryStatus iso_library = 17;
+  // iscsi is a STANDALONE host's own array connection. A member's iSCSI state is
+  // reported per node on the cluster, where members can be compared.
+  ISCSIStatus iscsi = 18;
 }
 
 message HostMetrics {
@@ -388,6 +391,10 @@ message PhysicalDisk {
   bool can_pool = 4;
   bool is_os_disk = 5;
   string drive_letter = 6;
+  // unique_id identifies the disk without ambiguity; device_id is unique per bus
+  // only, so a destructive operation must select on this.
+  string unique_id = 7;
+  string bus_type = 8;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +453,10 @@ message HostStorageSpec {
   // directories (Set-VMHost); a CSV path makes VMs migration-ready.
   string default_vm_path = 3;
   string default_vhd_path = 4;
+  // iscsi connects a STANDALONE host to its own array. A cluster member takes
+  // its initiator configuration from the cluster instead; declaring both is
+  // refused rather than resolved by precedence.
+  ISCSIStorageSpec iscsi = 5;
 }
 
 message ClusterMembershipSpec {
@@ -486,6 +497,9 @@ message ClusterSpec {
   // iso_library is the SMB share every member mounts boot media from, read by
   // each member from its cluster assignment rather than fanned into host specs.
   ISOLibrarySpec iso_library = 8;
+  // storage selects the shared-storage model. Unset falls back to enable_s2d,
+  // so a cluster authored before this existed keeps working unchanged.
+  ClusterStorageSpec storage = 9;
 }
 
 // ReplicaBrokerSpec is the Hyper-V Replica Broker cluster role: a client
@@ -498,10 +512,100 @@ message ReplicaBrokerSpec {
 
 message CSVSpec {
   string name = 1;
+  // size_bytes, resiliency_type and number_of_copies are S2D ONLY — what Ballast
+  // asks the pool to provision. Under iSCSI the array decided all three before
+  // Ballast saw the LUN, so they carry no meaning and the reconciler ignores them.
   uint64 size_bytes = 2;
   // resiliency_type is Mirror or Parity; empty defaults to Mirror.
   string resiliency_type = 3;
   int32 number_of_copies = 4;
+  // source identifies an EXISTING disk to adopt, for kinds where Ballast does
+  // not create the volume. Required under iSCSI.
+  CSVSourceSpec source = 5;
+}
+
+// CSVSourceSpec binds a volume to a disk the array presents. The serial is the
+// identifier that means the same thing on every node — LUN numbers are
+// per-target and disk numbers are per-node and move across reboots.
+message CSVSourceSpec {
+  string serial_number = 1;
+  string target_iqn = 2;
+  optional int32 lun = 3;
+}
+
+// ClusterStorageKind names how shared storage is provided. It is a discriminator
+// because the models do not overlap: an iSCSI cluster has no pool, so pool
+// capacity, resiliency and repair are meaningless rather than empty.
+enum ClusterStorageKind {
+  CLUSTER_STORAGE_KIND_UNSPECIFIED = 0;
+  CLUSTER_STORAGE_KIND_S2D = 1;
+  CLUSTER_STORAGE_KIND_ISCSI = 2;
+}
+
+message ClusterStorageSpec {
+  ClusterStorageKind kind = 1;
+  ISCSIStorageSpec iscsi = 2;
+}
+
+// ISCSIStorageSpec connects every member to an iSCSI array. Ballast owns the
+// INITIATOR side only: service, portals, logins, persistence. LUN creation,
+// sizing and redundancy belong to the array.
+message ISCSIStorageSpec {
+  // portals are discovery addresses. More than one is what MPIO needs.
+  repeated string portals = 1;
+  // targets are the IQNs to log in to; empty means every target advertised.
+  repeated string targets = 2;
+  // credential_secret names a stored CHAP credential — a reference, not a value,
+  // because the spec reaches every member and every spec-history row.
+  string credential_secret = 3;
+  bool mutual_chap = 4;
+  // enable_mpio is optional so "unset" can default from the portal count.
+  // Multiple paths without MPIO makes Windows present one LUN as several disks,
+  // and a cluster writing to two of them corrupts data — so it is not a
+  // preference that can be honoured when several portals are declared.
+  optional bool enable_mpio = 5;
+}
+
+// ISCSIStatus is ONE NODE's observed iSCSI state. Per-node because that is how
+// iSCSI fails: one member loses a path while the others are fine, and a single
+// cluster-wide "connected" would hide the one condition worth reporting.
+message ISCSIStatus {
+  string node = 1;
+  // initiator_iqn is what the array grants the LUN to. Knowable only on the
+  // host, so without it an operator opens a session on every node to collect
+  // them before they can configure anything.
+  string initiator_iqn = 8;
+  bool service_running = 2;
+  repeated string portals = 3;
+  repeated ISCSISession sessions = 4;
+  bool mpio_installed = 5;
+  repeated ISCSIDisk disks = 6;
+  string message = 7;
+  // mpio_effective is multipath actually protecting the node: installed,
+  // claiming iSCSI devices, and restarted into. Installed alone protects nothing.
+  bool mpio_effective = 9;
+}
+
+message ISCSISession {
+  string target_iqn = 1;
+  bool connected = 2;
+  // persistent means the login is restored at boot. Without it a node works
+  // until it reboots and then its disks simply do not arrive.
+  bool persistent = 3;
+  int32 paths = 4;
+}
+
+message ISCSIDisk {
+  // serial_number is the cluster-wide identity of the LUN.
+  string serial_number = 1;
+  int32 number = 2;
+  uint64 size_bytes = 3;
+  string target_iqn = 4;
+  int32 lun = 5;
+  bool clustered = 6;
+  // offline is NORMAL for a clustered disk on a non-owner and a problem on the
+  // owner, so it is reported rather than judged here.
+  bool offline = 7;
 }
 
 enum WitnessType {
@@ -516,6 +620,9 @@ message WitnessSpec {
   WitnessType type = 1;
   string file_share_path = 2;
   string cloud_account = 3;
+  // disk identifies the LUN behind a Disk witness, the same way a volume
+  // identifies its own. Adopted as a clustered disk, never as a CSV.
+  CSVSourceSpec disk = 4;
 }
 
 message ClusterStatus {
@@ -551,6 +658,11 @@ message ClusterStatus {
   // node_os_build is the reporting node's Windows build, which bounds the level
   // the cluster could run at.
   int32 node_os_build = 15;
+  // iscsi is the observed iSCSI state, ONE ENTRY PER MEMBER. An agent sends only
+  // its own; the centre merges on receipt. A single value would be overwritten
+  // by whichever node reported last, hiding the one-member-at-a-time failure
+  // that is how iSCSI actually breaks.
+  repeated ISCSIStatus iscsi = 16;
 }
 
 // ClusterReplicaBroker is the Hyper-V Replica Broker as observed on the cluster.

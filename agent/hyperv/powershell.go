@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"log/slog"
 
@@ -72,8 +73,8 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 // This does not decide why the command failed. It makes the difference between
 // "cancelled" and "failed silently" legible, which is what the empty message
 // took away.
-func psFailureDetail(ctx context.Context, stdout, stderr string) string {
-	if s := strings.TrimSpace(stderr); s != "" {
+func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string) string {
+	if s := tidyPSError(stderr); s != "" {
 		return s
 	}
 	switch ctx.Err() {
@@ -90,19 +91,151 @@ func psFailureDetail(ctx context.Context, stdout, stderr string) string {
 		}
 		return "the command failed without writing any error output; its last output was: " + s
 	}
-	return "the command failed without writing any error output and was not cancelled, so PowerShell exited non-zero on its own — check the Hyper-V and System event logs on this host for the same timestamp"
+	// Nothing on either stream and not cancelled. Telling the operator to go and
+	// read the host's event log is the shape CLAUDE.md calls a defect: the agent
+	// is ON that host and reads those same logs in half a dozen other places, so
+	// a fact it can establish must not be posted as homework. Ask the host.
+	if ev := recentHostErrors(since); ev != "" {
+		return "the command failed without writing any error output, but the host logged this while it ran: " + ev
+	}
+	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason"
+}
+
+// tidyPSError reduces a PowerShell error record to the sentence a person needs.
+//
+// A record rendered to stderr repeats the message up to three times — once as the
+// message, once in the offending source line, once in FullyQualifiedErrorId — and
+// wraps it in positional noise:
+//
+//	the LUN … already contains a ReFS volume … use "Wipe and adopt".
+//	At line:12 char:21
+//	+ function Fail($m) { throw $m }
+//	+ ~~~~~~~~
+//	    + CategoryInfo          : OperationStopped: (…)
+//	    + FullyQualifiedErrorId : the LUN … already contains …
+//
+// The carefully written first sentence is the part that helps, and burying it in
+// its own echo is the "raw error passed through" failure by another route: the
+// remedy is there and nobody reads that far. The source line is worse than
+// useless here, naming the helper that threw rather than anything about the host.
+//
+// Anything not matching the known boilerplate is kept, because an unrecognised
+// error losing its detail is far worse than a tidy one keeping some noise.
+func tidyPSError(stderr string) string {
+	// Everything from the first position marker onwards is boilerplate, INCLUDING
+	// its wrapped continuations. Dropping only the lines that start with a marker
+	// kept the continuation of a CategoryInfo line — PowerShell wraps mid-word — so
+	// the tidied message ended with fragments like "ntimeException offers 2
+	// available disk(s)…", which reads as corruption.
+	var keep []string
+	for _, line := range strings.Split(stderr, "\n") {
+		t := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if strings.HasPrefix(t, "At line:") || strings.HasPrefix(t, "At char:") || strings.HasPrefix(t, "+") {
+			break
+		}
+		if t != "" {
+			keep = append(keep, t)
+		}
+	}
+	out := strings.TrimSpace(strings.Join(keep, " "))
+	// PowerShell's own wrapping breaks long messages mid-word across lines; the
+	// join above restores them, but the doubled spaces it leaves read as typos.
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	return out
+}
+
+// recentHostErrorsScript reads what the host recorded WHILE THE COMMAND RAN.
+//
+// The window is the command's own execution, not a fixed span, and that is
+// load-bearing. A host with a recurring background failure logs it every
+// reconcile pass — a member that is not the CSV owner cannot set its default VHD
+// path and records event 18172 every few seconds — so any fixed window is
+// guaranteed to catch it and present it as the cause of whatever else failed.
+// Correlation is all this can offer; restricting it to the command's own
+// lifetime is what stops it being spurious correlation.
+//
+// Narrow in what it reads, too: the Hyper-V channels plus System filtered to
+// Hyper-V, clustering and iSCSI providers, errors and warnings, three events.
+const recentHostErrorsScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+$since = (Get-Date).AddSeconds(-%[1]d)
+$ev = @()
+foreach ($l in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-Hyper-V-Worker-Admin','Microsoft-Windows-Hyper-V-Compute-Admin')) {
+  $ev += Get-WinEvent -FilterHashtable @{ LogName=$l; StartTime=$since; Level=1,2,3 } -MaxEvents 4 -ErrorAction SilentlyContinue
+}
+$ev += Get-WinEvent -FilterHashtable @{ LogName='System'; StartTime=$since; Level=1,2 } -MaxEvents 40 -ErrorAction SilentlyContinue |
+  Where-Object { $_.ProviderName -like '*Hyper-V*' -or $_.ProviderName -like '*FailoverClustering*' -or $_.ProviderName -like '*iScsi*' }
+$ev = @($ev | Sort-Object TimeCreated -Descending | Select-Object -First 3)
+($ev | ForEach-Object {
+  $m = [string]$_.Message
+  if ($m.Length -gt 300) { $m = $m.Substring(0,300) + '…' }
+  ($m -replace '\s+',' ').Trim() + ' (' + [string]$_.ProviderName + ' event ' + [string]$_.Id + ')'
+}) -join ' | '
+`
+
+// recentHostErrors asks the host what it logged. Best-effort and self-contained:
+// it runs on its own short deadline and never reports its own failure, because it
+// exists only to enrich somebody else's error and must not replace one unhelpful
+// message with a different one. It deliberately does not go through execPowerShell,
+// so a failure here can never recurse back into psFailureDetail.
+func recentHostErrors(since time.Time) string {
+	// A second of slack either side: the event is timestamped by the provider, not
+	// by us, and a command that failed in its first instant would otherwise fall
+	// outside its own window.
+	secs := int(time.Since(since).Seconds()) + 1
+	if secs < 2 {
+		secs = 2
+	}
+	if secs > 300 {
+		secs = 300 // a very long command's whole lifetime is not a useful window
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+		fmt.Sprintf(recentHostErrorsScript, secs))
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.String())
+}
+
+// withExplicitSuccess makes reaching the end of a script mean success.
+//
+// powershell.exe -Command takes its exit code from $? at the end, so a script
+// whose LAST statement emitted a suppressed non-terminating error exits 1 having
+// written nothing at all — indistinguishable from a real failure and impossible
+// to diagnose. It is not a corner case: the natural way to verify a removal is
+//
+//	$still = Get-VM -Name $vm -ErrorAction SilentlyContinue
+//	if ($still) { throw ... }
+//
+// where the VM being gone IS the success condition, and Get-VM not finding it
+// leaves $? false. Ballast reported Failed for VM and replica deletions that had
+// completed, repeatedly, over days.
+//
+// Every script here signals failure by throwing, and $ErrorActionPreference is
+// Stop, so a throw terminates before this line is ever reached. Reaching it means
+// the script ran to the end, which is exactly what success means.
+func withExplicitSuccess(script string) string {
+	return script + "\nexit 0"
 }
 
 // execPowerShell runs a script under Windows PowerShell. It uses powershell.exe
 // (5.1) rather than pwsh because the Hyper-V and NetAdapter modules target it.
 func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, stdout.String(), stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
@@ -113,13 +246,14 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 // error, as with execPowerShell.
 func execPowerShellStream(ctx context.Context, script string, onLine func(string)) error {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("powershell stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("powershell start: %w", err)
 	}
@@ -131,7 +265,7 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, "", stderr.String()))
 	}
 	return nil
 }
@@ -142,13 +276,14 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 // it, and it is never unit-tested through the stub.
 func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []string) error {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	cmd.Env = append(os.Environ(), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, "", stderr.String()))
+		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
 	}
 	return nil
 }
@@ -241,10 +376,18 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $isMgmt = $static -and $gw -ne ''
   [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
+# Keyed on UniqueId, NOT DeviceId.
+#
+# PhysicalDisk DeviceId is unique per bus, not per host: a local SSD and an iSCSI
+# LUN both report DeviceId 2, and keying either map on it attributes one disk's
+# facts to the other. On the rig HVNEW04 reported its 10GB iSCSI LUN as holding
+# drive F — F belongs to the 100GB local SSD that shares its DeviceId, and the LUN
+# has no letter at all. The same collision can mark the wrong disk as the OS disk,
+# which is what hides a disk from the console and guards it from being formatted.
 $osIds = @()
-try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
-# Build a map of PhysicalDisk DeviceId → first drive letter assigned via a
-# partition (e.g. an NTFS volume formatted with Format-Volume and a drive letter).
+try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.UniqueId }) } catch {}
+# Map UniqueId → first drive letter assigned via a partition (e.g. an NTFS volume
+# formatted with Format-Volume and a drive letter).
 $diskToLetter = @{}
 try {
   Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
@@ -252,7 +395,7 @@ try {
     $letters = @($d | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
     if ($letters.Count -gt 0) {
       $pds = @($d | Get-PhysicalDisk -ErrorAction SilentlyContinue)
-      foreach ($pd in $pds) { $diskToLetter[[string]$pd.DeviceId] = $letters[0] }
+      foreach ($pd in $pds) { $diskToLetter[[string]$pd.UniqueId] = $letters[0] }
     }
   }
 } catch {}
@@ -269,8 +412,9 @@ $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object {
 if (-not $pdisks -or $pdisks.Count -eq 0) { $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue) }
 $disks = $pdisks | ForEach-Object {
   $id = [string]$_.DeviceId
-  $letter = if ($diskToLetter.ContainsKey($id)) { $diskToLetter[$id] } else { '' }
-  [pscustomobject]@{ deviceId = $id; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($id -in $osIds); driveLetter = $letter }
+  $uid = [string]$_.UniqueId
+  $letter = if ($diskToLetter.ContainsKey($uid)) { $diskToLetter[$uid] } else { '' }
+  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem

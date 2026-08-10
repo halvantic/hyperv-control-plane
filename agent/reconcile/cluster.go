@@ -35,6 +35,9 @@ type ClusterResult struct {
 	ReplicaBroker   *types.ClusterReplicaBrokerStatus
 	FunctionalLevel int
 	NodeOSBuild     int
+	// ISCSI is this node's iSCSI state, nil for a cluster that is not iSCSI-backed
+	// so "not applicable" never renders as "connected to nothing".
+	ISCSI *types.ISCSIStatus
 }
 
 // ReconcileCluster drives this node towards its cluster assignment: ensure the
@@ -46,7 +49,7 @@ type ClusterResult struct {
 // the agent does not re-form or second-guess it, and cluster survival does not
 // depend on the centre. So this runs only when the centre delivered a current
 // assignment; it never tries to form a cluster autonomously.
-func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) (ClusterResult, error) {
+func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, secrets map[string]types.Secret) (ClusterResult, error) {
 	if !a.IsMember {
 		return ClusterResult{Phase: types.PhaseReady, Honoured: true}, nil
 	}
@@ -158,6 +161,42 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	conds = append(conds, storageConds...)
 	changed = changed || storageChanged
 
+	// 4b. iSCSI shared storage. Unlike everything else cluster-wide here, this
+	// runs on EVERY MEMBER rather than the former only: a login is per-node, and
+	// a node that has not logged in simply does not see the disks. There is no
+	// race to guard against — each node is configuring its own initiator, not a
+	// shared object — and gating it on the former would leave the other members
+	// with no storage at all.
+	iscsiStatus, iscsiConds, iscsiChanged := r.reconcileISCSI(ctx, a, secrets)
+	conds = append(conds, iscsiConds...)
+	changed = changed || iscsiChanged
+
+	// 4c. Adopting the array's LUNs is former-only and comes after the login,
+	// because a node that is not logged in cannot see a LUN and would report the
+	// array as not presenting it — sending the operator to the array to fix
+	// something that is right.
+	volConds, volChanged, volErr := r.reconcileISCSIVolumes(ctx, a, iscsiStatus)
+	conds = append(conds, volConds...)
+	changed = changed || volChanged
+
+	// 4d. A volume's MOUNT POINT must be its declared name, and that runs on every
+	// member because renaming belongs with owning the volume.
+	//
+	// Add-ClusterSharedVolume mounts at C:\ClusterStorage\VolumeN whatever the
+	// resource is named, so without this a volume the operator called iSCSI_DS1
+	// lives at Volume1 and every path built from the declared name points at
+	// nothing — the cluster's default storage path, replica storage, anything
+	// typed. It sat inside the former-only adoption before, where it could only
+	// ever have fixed the volumes the former happened to own; on the rig the two
+	// members owned one each.
+	mConds, mChanged := r.reconcileCSVMountPoints(ctx, a)
+	conds = append(conds, mConds...)
+	changed = changed || mChanged
+
+	if volErr != nil {
+		r.log.Warn("adopt iSCSI volumes failed (retries next pass)", "err", volErr)
+	}
+
 	// 5. Kerberos live migration needs constrained delegation between the nodes'
 	// computer accounts. The former (a domain admin) configures it once when the
 	// cluster's live-migration auth is Kerberos — so provisioning a cluster with
@@ -190,7 +229,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 	// does not make the cluster degraded — quorum is unchanged from before the
 	// attempt, and the existing configuration keeps working.
 	if a.IsFormer && a.Cluster.Spec.Witness.Type != "" {
-		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness)
+		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind())
 		conds = append(conds, r.condition("ClusterWitness", wOut, wErr))
 		if wErr != nil {
 			r.log.Warn("ensure cluster witness failed (retries next pass)", "err", wErr)
@@ -234,6 +273,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment) 
 		Pool: clusterPoolToStatus(state.Pool), Networks: clusterNetworksToStatus(state.Networks),
 		Witness: clusterWitnessToStatus(state.Witness), ReplicaBroker: clusterBrokerToStatus(state.ReplicaBroker),
 		FunctionalLevel: state.FunctionalLevel, NodeOSBuild: state.NodeOSBuild,
+		ISCSI: iscsiStatus,
 	}, storageErr
 }
 
@@ -317,9 +357,18 @@ func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
 }
 
 // reconcileStorage enables S2D (if requested and not already on) and provisions
-// the desired CSVs. It is a no-op for non-formers or when EnableS2D is false.
+// the desired CSVs. It is a no-op for non-formers or for any storage kind other
+// than S2D.
+//
+// Gated on StorageKind() rather than EnableS2D so the two eras of spec are
+// indistinguishable here: a cluster authored before ClusterStorageSpec existed
+// carries only the flag, one authored after carries only the kind, and this must
+// behave identically for both. Reading the flag directly would silently stop
+// provisioning storage for every cluster converted to the new field — the
+// reconciler would simply return, with every condition it would have raised
+// absent rather than failing.
 func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) (s2dEnabled bool, conds []types.Condition, changed bool, firstErr error) {
-	if !a.IsFormer || !a.Cluster.Spec.EnableS2D {
+	if !a.IsFormer || a.Cluster.Spec.StorageKind() != types.StorageKindS2D {
 		return false, nil, false, nil
 	}
 

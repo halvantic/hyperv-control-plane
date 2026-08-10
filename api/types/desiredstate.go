@@ -359,6 +359,13 @@ type HostStatus struct {
 	// whether the cluster's or its own. Nil when none is declared.
 	ISOLibrary *ISOLibraryStatus `json:"isoLibrary,omitempty"`
 
+	// ISCSI is this host's own array connection, for a standalone host that
+	// declares one. Nil for a cluster member — a member's iSCSI state is reported
+	// per node on the CLUSTER, where the members can be compared against each
+	// other, because that comparison is the whole point: iSCSI fails one node at a
+	// time and a single-node view is exactly what hides it.
+	ISCSI *ISCSIStatus `json:"iscsi,omitempty"`
+
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
 
@@ -540,7 +547,18 @@ type PhysicalAdapter struct {
 }
 
 type PhysicalDisk struct {
-	DeviceID  string `json:"deviceId"`
+	// DeviceID is unique per BUS, not per host: a local SSD and an iSCSI LUN both
+	// report DeviceId 2. It stays because it is short and familiar, but nothing
+	// may identify a disk by it alone — see UniqueID.
+	DeviceID string `json:"deviceId"`
+	// UniqueID identifies the disk on this host without ambiguity, and is what a
+	// destructive operation must select on. Keying anything on DeviceID attributed
+	// one disk's facts to another: HVNEW04 reported its iSCSI LUN as holding drive
+	// F, which belongs to the local SSD sharing its DeviceId.
+	UniqueID string `json:"uniqueId,omitempty"`
+	// BusType is how the disk is attached (SAS, SATA, iSCSI, …), which is what
+	// makes two disks with the same DeviceID tellable apart in the console.
+	BusType   string `json:"busType,omitempty"`
 	SizeBytes uint64 `json:"sizeBytes"`
 	MediaType string `json:"mediaType,omitempty"` // SSD/HDD/SCM
 	CanPool   bool   `json:"canPool,omitempty"`
@@ -678,6 +696,27 @@ type HostStorageSpec struct {
 	// DefaultVHDPath is the default directory for new virtual hard disks
 	// (Set-VMHost -VirtualHardDiskPath). Empty leaves the host default unchanged.
 	DefaultVHDPath string `json:"defaultVHDPath,omitempty"`
+
+	// ISCSI connects THIS host to an iSCSI array on its own account, for a
+	// standalone host backing its VMs with LUNs from a NAS or SAN.
+	//
+	// The initiator side was always host-shaped — the service, the portals, the
+	// logins and MPIO are per-node settings, and a cluster's spec is that same
+	// configuration fanned to every member. Only the reachability differed: it
+	// could be declared on a cluster and nowhere else, so a standalone host had no
+	// way to reach an array at all.
+	//
+	// Scoped like the ISO library: declared for ONE of cluster or host and never
+	// inherited across. A cluster member takes its initiator configuration from
+	// the cluster, because two authorities over one initiator is how a node ends
+	// up logged in to targets nobody declared. Setting both is refused with the
+	// reason rather than resolved by precedence.
+	//
+	// What happens to the LUN differs, which is why this is not simply the cluster
+	// spec moved. A cluster adopts it as a Cluster Shared Volume; a standalone host
+	// has nothing to share it with, so the disk appears in the host's inventory and
+	// is provisioned like any other local disk — formatted and given a drive letter.
+	ISCSI *ISCSIStorageSpec `json:"iscsi,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -740,9 +779,29 @@ type ClusterSpec struct {
 
 	// EnableS2D requests Storage Spaces Direct be enabled on the cluster
 	// once it is formed. Pool and volume definitions follow.
+	//
+	// DEPRECATED in favour of Storage.Kind, and kept because clusters already
+	// exist that set it. Read it through StorageKind(), never directly: a cluster
+	// authored before Storage existed has only this, and one authored after has
+	// only that. Nothing should have to know which era it came from.
 	EnableS2D bool `json:"enableS2D,omitempty"`
 
-	// Volumes are Cluster Shared Volumes to provision on the S2D pool.
+	// Storage selects how this cluster's shared storage is provided. Nil means
+	// fall back to EnableS2D; see StorageKind().
+	//
+	// It is a DISCRIMINATOR rather than more optional fields because the models do
+	// not overlap. S2D pools local disks and Ballast decides resiliency and
+	// capacity; an iSCSI array owns both, and a cluster backed by one has no pool
+	// at all — so pool health, capacity, disk counts, repair and rebuild are not
+	// "empty" for it, they are meaningless. Bolting iSCSI onto the S2D fields
+	// would make half the console assert things about storage that does not work
+	// that way, which is what CLAUDE.md means by "future kinds, not retrofits".
+	Storage *ClusterStorageSpec `json:"storage,omitempty"`
+
+	// Volumes are the cluster's Cluster Shared Volumes. What a volume MEANS
+	// depends on the storage kind: under S2D it is provisioned from the pool to
+	// the size and resiliency declared here, while under iSCSI the array already
+	// owns the LUN and Ballast only adopts it. See CSVSpec.
 	Volumes []CSVSpec `json:"volumes,omitempty"`
 
 	// Switches are cluster-wide virtual switches: one SET switch, identical in
@@ -876,6 +935,20 @@ type WitnessSpec struct {
 	FileSharePath string `json:"fileSharePath,omitempty"`
 	// CloudAccount / endpoint for cloud witnesses (secret handled out of band).
 	CloudAccount string `json:"cloudAccount,omitempty"`
+
+	// Disk identifies the LUN to use for a Disk witness, by the same means a CSV
+	// identifies its LUN — a serial number is what every node sees for the same
+	// disk, whereas a disk number is per-node and a LUN number is per-target.
+	//
+	// The witness disk is adopted as a CLUSTERED DISK and never as a CSV. A CSV is
+	// mounted on every node at once so all of them can write to it, which is the
+	// opposite of what a witness is for: the witness is owned by one node and its
+	// ownership is part of how quorum is arbitrated. Adopting it as a CSV would
+	// produce a cluster that looked configured and had no working witness.
+	//
+	// Small is correct. A witness holds a few kilobytes of cluster state, so the
+	// 512MB minimum is the real floor and anything above it is unused capacity.
+	Disk *CSVSourceSpec `json:"disk,omitempty"`
 }
 
 type WitnessType string
@@ -911,6 +984,97 @@ type ClusterWitnessStatus struct {
 	QuorumType string `json:"quorumType,omitempty"`
 }
 
+// ISCSIStatus is one node's observed iSCSI connection state.
+//
+// It is per-NODE even though it lives on the cluster, because that is how iSCSI
+// fails: one member loses a path or a login while the others are fine, and the
+// cluster keeps working until that member is asked to own a disk. A single
+// cluster-wide "connected" would hide exactly the condition worth reporting, so
+// the reporting node is named and the console compares members.
+type ISCSIStatus struct {
+	// Node is the member this snapshot came from.
+	Node string `json:"node,omitempty"`
+
+	// InitiatorIQN is this node's iSCSI initiator name.
+	//
+	// Reported because no array can be configured without it, and it is the first
+	// thing anyone setting up iSCSI needs: the LUN is granted TO these names. It
+	// is knowable only on the host, so an operator who cannot see it here has to
+	// open a session on every node to collect them — which CLAUDE.md counts as a
+	// defect in Ballast rather than a step in a runbook.
+	InitiatorIQN string `json:"initiatorIQN,omitempty"`
+
+	// ServiceRunning is whether the Microsoft iSCSI Initiator service is up. It
+	// is set to start on demand by default on Windows Server, so a node that has
+	// never had a target configured reports false — which is a state to fix, not
+	// a fault to alarm on.
+	ServiceRunning bool `json:"serviceRunning,omitempty"`
+
+	// Portals are the discovery addresses this node has registered.
+	Portals []string `json:"portals,omitempty"`
+
+	// Sessions are the target logins this node currently holds.
+	Sessions []ISCSISession `json:"sessions,omitempty"`
+
+	// MPIOInstalled reports the Multipath-IO feature's presence. With more than
+	// one path and no MPIO, Windows presents the same LUN as several disks, and a
+	// cluster writing to two of them corrupts data — so this is reported even
+	// when everything else looks healthy.
+	MPIOInstalled bool `json:"mpioInstalled,omitempty"`
+
+	// MPIOEffective reports that multipath is actually protecting this node —
+	// installed, claiming iSCSI devices, and restarted into.
+	//
+	// It is separate from MPIOInstalled because installed is not protection. The
+	// feature asks for a restart, and between installing it and restarting, a LUN
+	// reached by several paths is still presented as several disks. Anything that
+	// decides whether multipath storage is safe to use must read THIS, not the
+	// presence of the feature.
+	MPIOEffective bool `json:"mpioEffective,omitempty"`
+
+	// Disks are the block devices this node sees over iSCSI, keyed by the serial
+	// a CSVSourceSpec binds to.
+	Disks []ISCSIDisk `json:"disks,omitempty"`
+
+	// Message explains a connection failure in the operator's terms, naming the
+	// step where the remedy is on the array rather than on the host — Ballast
+	// administers the initiator, not the target.
+	Message string `json:"message,omitempty"`
+}
+
+// ISCSISession is one initiator-to-target login.
+type ISCSISession struct {
+	TargetIQN string `json:"targetIQN"`
+	// Connected distinguishes a target that is known from one that is logged in.
+	Connected bool `json:"connected,omitempty"`
+	// Persistent means the login is restored at boot. A non-persistent session
+	// works perfectly until the node reboots and then silently does not come
+	// back, which on a cluster member means its disks simply do not arrive.
+	Persistent bool `json:"persistent,omitempty"`
+	// Paths is how many connections back this session — more than one only when
+	// MPIO is doing its job.
+	Paths int `json:"paths,omitempty"`
+}
+
+// ISCSIDisk is a block device presented over iSCSI as one node sees it.
+type ISCSIDisk struct {
+	// SerialNumber is the cluster-wide identity of the LUN; disk numbers are
+	// per-node and change across reboots, so they identify nothing shared.
+	SerialNumber string `json:"serialNumber,omitempty"`
+	Number       int    `json:"number,omitempty"`
+	SizeBytes    uint64 `json:"sizeBytes,omitempty"`
+	// TargetIQN and LUN say where it came from, for authoring a volume against a
+	// disk that has no serial recorded yet.
+	TargetIQN string `json:"targetIQN,omitempty"`
+	LUN       int    `json:"lun,omitempty"`
+	// Clustered is whether this disk is already a cluster resource.
+	Clustered bool `json:"clustered,omitempty"`
+	// Offline reports a disk present but not online on this node. That is NORMAL
+	// for a clustered disk on a non-owner and a problem on the owner, so it is
+	// reported rather than judged here.
+	Offline bool `json:"offline,omitempty"`
+}
+
 // ClusterReplicaBrokerStatus is the observed Hyper-V Replica Broker: the role a
 // cluster needs before it can send or receive Hyper-V Replica traffic.
 type ClusterReplicaBrokerStatus struct {
@@ -930,11 +1094,137 @@ type ClusterReplicaBrokerStatus struct {
 	StorageLocation string `json:"storageLocation,omitempty"`
 }
 
+// ClusterStorageKind names how a cluster's shared storage is provided.
+type ClusterStorageKind string
+
+const (
+	// StorageKindS2D is Storage Spaces Direct: local disks pooled by the cluster,
+	// with Ballast declaring capacity and resiliency.
+	StorageKindS2D ClusterStorageKind = "S2D"
+	// StorageKindISCSI is shared block storage from an iSCSI array. The array
+	// owns the LUNs, their size and their redundancy; Ballast connects the nodes
+	// to it and adopts what it presents. There is no pool to report on.
+	StorageKindISCSI ClusterStorageKind = "iSCSI"
+)
+
+// ClusterStorageSpec selects and configures the cluster's storage model.
+type ClusterStorageSpec struct {
+	Kind ClusterStorageKind `json:"kind"`
+	// ISCSI is required when Kind is iSCSI and ignored otherwise.
+	ISCSI *ISCSIStorageSpec `json:"iscsi,omitempty"`
+}
+
+// StorageKind is the cluster's storage model, tolerating specs authored before
+// ClusterStorageSpec existed. Every consumer should use this rather than reading
+// either field, so an old cluster and a new one are indistinguishable to it.
+func (s ClusterSpec) StorageKind() ClusterStorageKind {
+	if s.Storage != nil && s.Storage.Kind != "" {
+		return s.Storage.Kind
+	}
+	if s.EnableS2D {
+		return StorageKindS2D
+	}
+	return ""
+}
+
+// ISCSIStorageSpec connects every cluster member to an iSCSI array.
+//
+// Ballast's job here is ONLY the initiator side: start the service, register the
+// portals, log the node in, and keep those logins persistent across reboots. It
+// does not create LUNs, set their size, or configure the array's redundancy —
+// that is the array's, and it is outside what Ballast administers. Where a LUN
+// is missing or too small the console says so and names the step, rather than
+// failing obscurely.
+type ISCSIStorageSpec struct {
+	// Portals are the array's discovery addresses ("10.0.70.10" or
+	// "10.0.70.10:3260"). More than one is normal and is what MPIO needs: two
+	// portals on separate fabrics is the usual reason an iSCSI cluster survives a
+	// switch failure.
+	Portals []string `json:"portals"`
+
+	// Targets are the target IQNs each node should log in to. Empty means log in
+	// to every target the portals advertise, which is convenient for a dedicated
+	// array and wrong for a shared one — so it is a deliberate choice, not a
+	// default anybody falls into.
+	Targets []string `json:"targets,omitempty"`
+
+	// CredentialSecret names a stored credential holding the CHAP username and
+	// secret. Empty means no CHAP.
+	//
+	// It is a secret reference rather than a value because the spec is stored in
+	// Postgres and delivered to every member: an inline CHAP secret would sit in
+	// the desired state of each node and in every spec-history row of the cluster.
+	CredentialSecret string `json:"credentialSecret,omitempty"`
+
+	// MutualCHAP requires the target to authenticate back to the initiator. It
+	// needs the same credential configured on the array, and it is off by default
+	// because a mismatch presents as a login failure with no indication which
+	// direction failed.
+	MutualCHAP bool `json:"mutualCHAP,omitempty"`
+
+	// EnableMPIO installs and configures Multipath I/O.
+	//
+	// With several portals and no MPIO, Windows sees the SAME LUN once per path
+	// as separate disks. Clustering will then happily use one path's disk while
+	// another node uses a different path to the same blocks, which is a data
+	// corruption, not a performance problem. So this defaults ON when more than
+	// one portal is declared, and turning it off with multiple portals is refused
+	// rather than honoured.
+	EnableMPIO *bool `json:"enableMPIO,omitempty"`
+}
+
+// MPIORequired reports whether MPIO must be configured for this spec, and
+// whether the operator's setting was overridden.
+//
+// Multiple paths without MPIO means Windows presents one LUN as several disks,
+// and a cluster that writes to two of them is corrupting data rather than
+// performing badly. That is not a preference to honour.
+func (s ISCSIStorageSpec) MPIORequired() (required bool, overridden bool) {
+	multipath := len(s.Portals) > 1
+	if s.EnableMPIO == nil {
+		return multipath, false
+	}
+	if multipath && !*s.EnableMPIO {
+		return true, true
+	}
+	return *s.EnableMPIO, false
+}
+
+// CSVSpec is one Cluster Shared Volume. Which fields apply depends on the
+// cluster's storage kind, and the ones that do not apply are not merely unset —
+// they have no meaning.
 type CSVSpec struct {
-	Name           string `json:"name"`
-	SizeBytes      uint64 `json:"sizeBytes"`
+	Name string `json:"name"`
+
+	// SizeBytes, ResiliencyType and NumberOfCopies are S2D ONLY: they are what
+	// Ballast asks the pool to provision. Under iSCSI the array already decided
+	// all three before Ballast saw the LUN, so a value here would be a wish with
+	// nothing to enforce it — the console does not offer them, and the reconciler
+	// must not read them.
+	SizeBytes      uint64 `json:"sizeBytes,omitempty"`
 	ResiliencyType string `json:"resiliencyType,omitempty"` // Mirror/Parity
 	NumberOfCopies int    `json:"numberOfCopies,omitempty"`
+
+	// Source identifies an EXISTING disk to adopt as this volume, for storage
+	// kinds where Ballast does not create it. Required under iSCSI.
+	Source *CSVSourceSpec `json:"source,omitempty"`
+}
+
+// CSVSourceSpec identifies a disk the array presents, so a CSV can be bound to
+// the right LUN on every node.
+//
+// Identification matters more here than it looks. A LUN number is per-target and
+// a disk number is per-node and changes across reboots, so neither identifies the
+// same storage cluster-wide. The serial number does, and it is what every node
+// sees for the same LUN — which is exactly what a clustered disk needs to be.
+type CSVSourceSpec struct {
+	// SerialNumber is the disk's unique serial as Windows reports it
+	// (Get-Disk .SerialNumber). The reliable cluster-wide identifier.
+	SerialNumber string `json:"serialNumber,omitempty"`
+	// TargetIQN and LUN narrow the search when a serial is not known yet — for
+	// instance when authoring a volume before the array has presented it.
+	TargetIQN string `json:"targetIQN,omitempty"`
+	LUN       *int   `json:"lun,omitempty"`
 }
 
 type ClusterStatus struct {
@@ -954,6 +1244,24 @@ type ClusterStatus struct {
 	// reported it yet — which is not the same as "no witness", and the console
 	// must not render it as such.
 	Witness *ClusterWitnessStatus `json:"witness,omitempty"`
+
+	// ISCSI is the observed iSCSI connection state, ONE ENTRY PER MEMBER.
+	//
+	// A list rather than a single value because every member reports its own
+	// cluster status: a single field would be overwritten by whichever node
+	// reported last, leaving the console showing one arbitrary member's view and
+	// calling it the cluster's. That is precisely the failure iSCSI produces — one
+	// node loses a path while the others are fine — so the shape that hides it is
+	// the wrong shape.
+	//
+	// The centre MERGES on receipt, replacing the reporting node's entry and
+	// keeping the rest; an agent only ever sends its own.
+	//
+	// It exists rather than being folded into Pool because an iSCSI cluster has
+	// no pool: capacity, resiliency, disk health and repair all belong to the
+	// array, and reporting empty pool fields would say Ballast looked and found
+	// nothing when in fact there was never anything of that shape to look at.
+	ISCSI []ISCSIStatus `json:"iscsi,omitempty"`
 
 	// ReplicaBroker is the observed Hyper-V Replica Broker. Nil means none was
 	// found (or none reported yet); a non-nil value while ClusterSpec.ReplicaBroker
@@ -1368,6 +1676,17 @@ type Secret struct {
 const (
 	// SecretDomainCredential carries "username" + "password" for domain join.
 	SecretDomainCredential = "DomainCredential"
+
+	// SecretCHAPCredential carries an iSCSI CHAP username and secret, in the same
+	// "username" + "password" keys.
+	//
+	// It is its own type rather than a domain credential because the two are
+	// offered in different places and confusing them is a real hazard: a domain
+	// credential reaches hosts over WinRM, and putting one forward as a CHAP
+	// secret would send an account password to a storage array. The dialogs that
+	// pick a credential filter by type, so the separation is what keeps that from
+	// being one wrong selection away.
+	SecretCHAPCredential = "CHAPCredential"
 
 	// SecretLocalCredential is a LOCAL administrator on a host, in the same
 	// "username" + "password" keys.

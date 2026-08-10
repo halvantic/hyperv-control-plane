@@ -28,6 +28,24 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// ISCSIOccupiedSerials names LUNs the stub should treat as already carrying a
+	// filesystem, so the refusal-to-destroy path can be tested.
+	ISCSIOccupiedSerials []string
+	// ISCSIAdopted records which volumes have been adopted, so a second pass is
+	// the no-op idempotency requires.
+	ISCSIAdopted map[string]bool
+	// CSVMountNote / FailCSVMount / CSVMountWant drive and record
+	// EnsureCSVMountPoints, so the reconciler's advisory and not-yet-applied paths
+	// can be exercised without a cluster.
+	CSVMountNote string
+	FailCSVMount bool
+	CSVMountWant map[string]string
+
+	// ISCSIUnconnected names targets EnsureISCSI should report as discovered but
+	// not logged in — the state an array in reach but not granting this initiator
+	// produces, which has a different remedy from an unreachable array.
+	ISCSIUnconnected []string
+
 	// HyperVInstalled / RebootPending seed GetHostRoleState. Default false (a
 	// host where the role is not yet installed); set HyperVInstalled true to
 	// model a ready host.
@@ -463,6 +481,64 @@ func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
 	return "cluster functional level is already 12 (no change) (stub)", nil
 }
 
+// EnsureISCSI reports a connected, single-path array so a stub-backed reconcile
+// exercises the success path without a network.
+func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string, _ bool) (ISCSIState, Outcome, error) {
+	st := ISCSIState{
+		InitiatorIQN:   "iqn.1991-05.com.microsoft:stub.lab.local",
+		ServiceRunning: true,
+		Portals:        spec.Portals,
+		MPIOInstalled:  true,
+	}
+	for _, t := range spec.Targets {
+		connected := true
+		for _, u := range s.ISCSIUnconnected {
+			if u == t {
+				connected = false
+			}
+		}
+		st.Sessions = append(st.Sessions, ISCSISessionState{
+			TargetIQN: t, Connected: connected, Persistent: connected, Paths: map[bool]int{true: 1, false: 0}[connected],
+		})
+	}
+	return st, OutcomeUnchanged, nil
+}
+
+// AdoptISCSIDisk succeeds for any identified LUN, and refuses one the test has
+// declared as carrying data — the refusal is the behaviour worth exercising.
+func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, string, Outcome, error) {
+	if a.Source.SerialNumber == "" && a.Source.TargetIQN == "" {
+		return "", "", OutcomeUnchanged, fmt.Errorf("volume %q does not say which LUN it is (stub)", a.Name)
+	}
+	for _, occupied := range s.ISCSIOccupiedSerials {
+		if occupied == a.Source.SerialNumber && !a.Wipe {
+			return "", "", OutcomeUnchanged, fmt.Errorf("the LUN (serial %s) already contains an NTFS volume. Adopting it formats it, so Ballast will not do that to a disk with contents (stub)", occupied)
+		}
+	}
+	serial := a.Source.SerialNumber
+	if serial == "" {
+		serial = "STUBSERIAL0001"
+	}
+	if s.ISCSIAdopted == nil {
+		s.ISCSIAdopted = map[string]bool{}
+	}
+	if s.ISCSIAdopted[a.Name] {
+		return serial, "", OutcomeUnchanged, nil
+	}
+	s.ISCSIAdopted[a.Name] = true
+	return serial, "", OutcomeUpdated, nil
+}
+
+// EnsureCSVMountPoints reports every declared volume as already correctly
+// mounted, so a stub-backed reconcile does not invent a rename.
+func (s *Stub) EnsureCSVMountPoints(_ context.Context, want map[string]string) (Outcome, string, error) {
+	s.CSVMountWant = want
+	if s.FailCSVMount {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: forced failure naming CSV mount points")
+	}
+	return OutcomeUnchanged, s.CSVMountNote, nil
+}
+
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {
 	if path == "" {
 		return ISOLibraryState{}, nil
@@ -698,7 +774,7 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 // only what was asked for but that a non-former asked for nothing at all.
 // WitnessErr, when set, models a witness that cannot be applied (an unreachable
 // share, or permissions missing on the cluster computer object).
-func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec) (Outcome, error) {
+func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind) (Outcome, error) {
 	s.WitnessCalls = append(s.WitnessCalls, w)
 	if s.WitnessErr != nil {
 		return OutcomeUnchanged, s.WitnessErr
