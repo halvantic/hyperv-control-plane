@@ -477,6 +477,25 @@ if (-not $enabled) {
       #
       # The storage location is a fact the target will simply tell us, so ask
       # rather than leaving the operator to find it.
+      # 0x00002EE2 is 12002 — ERROR_INTERNET_TIMEOUT. Hyper-V Replica moves over
+      # HTTP, so it surfaces WinINet codes, and Hyper-V prints this one as the
+      # unexpanded message-table reference "%%12002" because the string lives in a
+      # module it did not load. Read as a generic failure it sent every diagnosis
+      # looking for something the target had refused; it is not a refusal at all.
+      #
+      # The target accepts the request and starts work — a zero-length replica
+      # VHDX appears in its storage location — and the call gives up before that
+      # work finishes. So everything the earlier checks verified was verified
+      # correctly, and none of it was ever the cause.
+      if ($_.Exception.Message -like '*12002*' -or $_.Exception.Message -like '*0x00002EE2*') {
+        $extra = ''
+        try {
+          $ok = Test-NetConnection -ComputerName $server -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+          if ($ok) { $extra = ' Port ' + [string]$port + ' answers, so the two can talk — this is slowness, not a blocked path.' }
+        } catch {}
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' accepted the request and the call TIMED OUT waiting for it (0x2EE2 / 12002 is an HTTP timeout, which Hyper-V prints as %%12002).' + $extra +
+          ' The target creates the replica disk before answering, so this is what a target that is working but too slow looks like — commonly a replica storage location on storage that is slow to allocate, such as an iSCSI LUN over a congested or single path. A part-created VHDX of zero length is left behind each attempt and should be removed before retrying. Check the write speed of the replica storage location on the target, and that its multipath is in effect.')
+      }
       if ($_.Exception.Message -like '*failed to enable replication*') {
         $loc = ''; $anyServer = $null; $entry = $null; $readErr = ''
         # Queried against a NODE of the target cluster, not the broker CAP.
@@ -548,6 +567,23 @@ if (-not $enabled) {
           # reported failure while partly succeeding — leaves disks at the
           # destination and every retry afterwards fails with %%12002 and no clue.
           # The path is reachable: it was just checked.
+          # A replica that already EXISTS AS A VM is the blocker, and it is not the
+          # same question as files in the storage folder. A timed-out attempt leaves
+          # the VM registered on the target — visible in Failover Cluster Manager as
+          # a powered-off role — and Hyper-V will not create a replica over it, so
+          # every retry afterwards fails however correct the configuration is.
+          # Looking only at the folder missed exactly that, and left an operator to
+          # find the role by hand in another tool.
+          $existing = ''
+          try {
+            $tv = Get-VM -ComputerName $probe -Name $vm -ErrorAction SilentlyContinue
+            if ($tv) {
+              $rep = ''
+              try { $rep = [string](Get-VMReplication -ComputerName $probe -VMName $vm -ErrorAction SilentlyContinue).Mode } catch {}
+              $existing = 'a VM named ' + $vm + ' already exists on ' + $probe + ' (' + [string]$tv.State + $(if ($rep) { ', replication mode ' + $rep } else { '' }) + ')'
+            }
+          } catch {}
+
           $left = @()
           try {
             $rroot = '\\' + (($probe -split '\.')[0]) + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
@@ -606,6 +642,9 @@ if (-not $enabled) {
               } catch {}
               $far = ' ' + $probe + ' has logged nothing in its Hyper-V-VMMS-Admin channel for the last ten minutes, and it logs the refusals it makes — so the request most likely never reached it.' + $reach
             }
+          }
+          if ($existing) {
+            throw ('cannot enable replication for ' + $vm + ': ' + $existing + '. Hyper-V will not create a replica over one that is already there, so this fails however correct the rest of the configuration is. It is usually left behind by an earlier attempt that timed out part-way. Remove the replica copy on the target, then retry.' + $far)
           }
           if ($left.Count -gt 0) {
             throw ('cannot enable replication for ' + $vm + ': the target already holds replica files for it at ' + $loc + ' - ' + ($left -join ', ') + '. Hyper-V will not create a replica over an existing one, so this fails however correct everything else is. Remove the replica copy on the target (or delete those files) and retry.' + $far)
