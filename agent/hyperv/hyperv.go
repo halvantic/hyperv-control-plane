@@ -306,7 +306,12 @@ type Interface interface {
 	// EnsureISCSI connects this node to an iSCSI array — service, portals,
 	// persistent logins, MPIO — and reports what it can see. Additive only: it
 	// never disconnects a session or removes a portal.
-	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string) (ISCSIState, Outcome, error)
+	//
+	// shared marks a CLUSTER member, whose newly arrived LUNs must NOT be brought
+	// online automatically: a shared disk mounted on two nodes at once is the state
+	// clustering exists to prevent, and the cluster will not take it. A standalone
+	// host is the opposite — its LUN should come online to be provisioned.
+	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool) (ISCSIState, Outcome, error)
 
 	// AdoptISCSIDisk takes an array-presented LUN into the cluster, as a Cluster
 	// Shared Volume or as the witness disk, and reports the disk's serial so a

@@ -20,7 +20,7 @@ func iscsiSpec() types.ISCSIStorageSpec {
 // are persistent, and an existing non-persistent one is registered rather than
 // left as a working-until-restarted state.
 func TestISCSILoginsArePersistent(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false)
+	s := iscsiScript(iscsiSpec(), false, true)
 	// Splatted, and carrying the portal it is made through, so each declared path
 	// gets its own session. The persistence property asserted is unchanged.
 	if !strings.Contains(s, "$c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }") {
@@ -43,7 +43,7 @@ func TestISCSILoginsArePersistent(t *testing.T) {
 // whether an unlisted target is one the operator dropped or one something else
 // on the host needs.
 func TestISCSIReconcileNeverDisconnects(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), true)
+	s := iscsiScript(iscsiSpec(), true, true)
 	for _, forbidden := range []string{
 		"Disconnect-IscsiTarget",
 		"Remove-IscsiTargetPortal",
@@ -62,7 +62,7 @@ func TestISCSIReconcileNeverDisconnects(t *testing.T) {
 // on a single path for ever — multipath in effect and nothing to coalesce. What
 // must not be repeated is a login through a portal that already carries one.
 func TestISCSIIsIdempotentPerPortal(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false)
+	s := iscsiScript(iscsiSpec(), false, true)
 	if !strings.Contains(s, "if ($have.Count -eq 0) {") {
 		t.Error("a portal must only be registered when absent")
 	}
@@ -84,7 +84,7 @@ func TestISCSIIsIdempotentPerPortal(t *testing.T) {
 // devices the cluster believes are unrelated, which is a corruption, not a
 // tuning problem.
 func TestMPIOIsInstalledBeforeAnyLogin(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), true)
+	s := iscsiScript(iscsiSpec(), true, true)
 	mpio := strings.Index(s, "Install-WindowsFeature -Name Multipath-IO")
 	login := strings.Index(s, "Connect-IscsiTarget")
 	if mpio == -1 || login == -1 {
@@ -101,7 +101,7 @@ func TestMPIOIsInstalledBeforeAnyLogin(t *testing.T) {
 }
 
 func TestMPIOIsNotInstalledWhenNotWanted(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false)
+	s := iscsiScript(iscsiSpec(), false, true)
 	if strings.Contains(s, "Install-WindowsFeature -Name Multipath-IO") {
 		t.Fatal("a single-path cluster must not have MPIO forced on it")
 	}
@@ -117,7 +117,7 @@ func TestMPIOIsNotInstalledWhenNotWanted(t *testing.T) {
 // where nothing works yet — Get-InitiatorPort returns nothing without the
 // service, so the registry is the fallback.
 func TestTheInitiatorNameIsReportedEvenIfNothingElseWorks(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false)
+	s := iscsiScript(iscsiSpec(), false, true)
 	if !strings.Contains(s, "Get-InitiatorPort") {
 		t.Fatal("the initiator IQN must be reported")
 	}
@@ -131,7 +131,7 @@ func TestTheInitiatorNameIsReportedEvenIfNothingElseWorks(t *testing.T) {
 func TestCHAPSecretsAreNotWrittenIntoTheScript(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret = "nas-chap"
-	s := iscsiScript(spec, false)
+	s := iscsiScript(spec, false, true)
 	if !strings.Contains(s, "$env:BALLAST_CHAP_SECRET") {
 		t.Fatal("the secret must come from the environment")
 	}
@@ -147,7 +147,7 @@ func TestCHAPSecretsAreNotWrittenIntoTheScript(t *testing.T) {
 func TestMutualCHAPSelectsTheRightAuthType(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret, spec.MutualCHAP = "nas-chap", true
-	s := iscsiScript(spec, false)
+	s := iscsiScript(spec, false, true)
 	if !strings.Contains(s, "$c['AuthenticationType'] = 'MUTUALCHAP'") {
 		t.Error("mutual CHAP must be requested as such")
 	}
@@ -159,7 +159,7 @@ func TestMutualCHAPSelectsTheRightAuthType(t *testing.T) {
 // No credential means no CHAP flags at all — an open target must not be sent
 // empty credentials, which fails the login rather than connecting.
 func TestNoCredentialMeansNoCHAP(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false)
+	s := iscsiScript(iscsiSpec(), false, true)
 	if strings.Contains(s, "-AuthenticationType") || strings.Contains(s, "-ChapSecret") {
 		t.Fatal("an open target must be connected without CHAP flags")
 	}

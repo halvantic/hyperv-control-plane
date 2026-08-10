@@ -67,7 +67,7 @@ type ISCSIDiskState struct {
 // node reboots and then simply does not come back, which on a cluster member
 // means its disks do not arrive and the roles it owned fail over — with nothing
 // anywhere saying why.
-func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO bool) string {
+func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO, shared bool) string {
 	var b strings.Builder
 	b.WriteString(`$ErrorActionPreference = 'Stop'
 $out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; mpioEffective=$false; disks=@(); rebootRequired=$false; message='' }
@@ -96,6 +96,30 @@ if (-not $out.initiatorIQN) {
   try { $out.initiatorIQN = [string](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\iSCSI' -ErrorAction Stop).NodeName } catch {}
 }
 `)
+
+	// On a CLUSTER MEMBER a newly arrived shared LUN must not be brought online
+	// automatically.
+	//
+	// Windows' default new-disk policy mounts a LUN read/write on every node that
+	// can see it, and a shared disk online on two nodes at once is the state
+	// clustering exists to prevent — so Get-ClusterAvailableDisk does not offer it,
+	// and Add-ClusterDisk silently has nothing to add. On the rig both DRCluster
+	// members reported both LUNs online simultaneously, and the adoption failed
+	// with the cluster declining to take a disk that was in front of it.
+	//
+	// A standalone host is the opposite case: its LUN SHOULD come online, because
+	// it is provisioned there like any other local disk. Hence the flag.
+	if shared {
+		b.WriteString(`
+try {
+  $pol = [string](Get-StorageSetting -ErrorAction SilentlyContinue).NewDiskPolicy
+  if ($pol -and $pol -ne 'OfflineShared' -and $pol -ne 'OfflineAll') {
+    Set-StorageSetting -NewDiskPolicy OfflineShared -ErrorAction Stop
+    $changed = $true
+  }
+} catch {}
+`)
+	}
 
 	// MPIO before any login: claiming multipath devices after sessions already
 	// exist leaves the duplicates already presented.
@@ -363,7 +387,7 @@ $out.changed = $changed
 
 // EnsureISCSI connects this node to the cluster's iSCSI storage and reports what
 // it sees. Additive only — it never disconnects a session or removes a portal.
-func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string) (ISCSIState, Outcome, error) {
+func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool) (ISCSIState, Outcome, error) {
 	var st ISCSIState
 	if len(spec.Portals) == 0 {
 		return st, OutcomeUnchanged, fmt.Errorf("ensure iscsi: at least one portal is required")
@@ -378,7 +402,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		env = append(env, "BALLAST_CHAP_USER="+chapUser, "BALLAST_CHAP_SECRET="+chapSecret)
 	}
 
-	out, err := p.runWithEnvOut(ctx, iscsiScript(spec, wantMPIO), env)
+	out, err := p.runWithEnvOut(ctx, iscsiScript(spec, wantMPIO, shared), env)
 	if err != nil {
 		return st, OutcomeUnchanged, fmt.Errorf("ensure iscsi: %w", err)
 	}

@@ -174,11 +174,38 @@ if (-not $vol -or -not $vol.FileSystem) {
 if (-not $clusDisk) {
   # Add-ClusterDisk takes disks the cluster can see and are not already clustered.
   $before = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Physical Disk' } | ForEach-Object { [string]$_.Name })
-  Get-ClusterAvailableDisk -ErrorAction SilentlyContinue | Where-Object { [int]$_.Number -eq [int]$disk.Number } | Add-ClusterDisk -ErrorAction Stop | Out-Null
+  $avail = @(Get-ClusterAvailableDisk -ErrorAction SilentlyContinue)
+  $mine = @($avail | Where-Object { [int]$_.Number -eq [int]$disk.Number })
+  if ($mine.Count -gt 0) {
+    $mine | Add-ClusterDisk -ErrorAction SilentlyContinue | Out-Null
+  }
   $after = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Physical Disk' } | ForEach-Object { [string]$_.Name })
   $new = @($after | Where-Object { $before -notcontains $_ })
   if ($new.Count -eq 0) {
-    Fail ('the disk was prepared but the cluster did not take it. It must be visible to every member — check the array grants this LUN to all of their initiators and that each is logged in.')
+    # Report what is actually the case rather than asserting a cause.
+    #
+    # "It must be visible to every member" was a guess dressed as a diagnosis: the
+    # disk WAS visible to every member, and saying otherwise sent the operator to
+    # the array to check something that was already right. Get-ClusterAvailableDisk
+    # excludes a disk for several reasons and does not say which, so state the
+    # facts that distinguish them and let them be read.
+    $why = @()
+    if ($avail.Count -eq 0) {
+      $why += 'the cluster currently offers no available disks at all'
+    } else {
+      $why += ('the cluster offers ' + $avail.Count + ' available disk(s), none of them disk ' + [string]$disk.Number)
+    }
+    # The usual reason a presented LUN is not offered: it is mounted read/write on
+    # more than one node at once, which is the state clustering exists to prevent.
+    # Windows brings a newly arrived shared LUN online on every node that sees it
+    # unless the node's new-disk policy says otherwise.
+    $pol = ''
+    try { $pol = [string](Get-StorageSetting -ErrorAction SilentlyContinue).NewDiskPolicy } catch {}
+    if ($pol -and $pol -ne 'OfflineShared' -and $pol -ne 'OfflineAll') {
+      $why += ('this node''s new-disk policy is ' + $pol + ', so a shared LUN is brought online here automatically; a LUN online on more than one node at once is not offered to the cluster')
+    }
+    $why += ('this node sees it as disk ' + [string]$disk.Number + ', online=' + (-not $disk.IsOffline) + ', partition style ' + [string]$disk.PartitionStyle)
+    Fail ('the disk was prepared but the cluster did not take it: ' + ($why -join '; ') + '. Check the same LUN is offline on the other members, or that it is not already held by another cluster.')
   }
   $clusDisk = Get-ClusterResource -Name $new[0] -ErrorAction Stop
   if ($name -and [string]$clusDisk.Name -ne $name) {

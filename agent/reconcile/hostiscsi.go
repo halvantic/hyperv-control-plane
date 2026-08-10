@@ -56,7 +56,7 @@ func (r *Reconciler) reconcileHostISCSI(ctx context.Context, desired types.Host,
 		}
 	}
 
-	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret)
+	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, false)
 	conds := []types.Condition{r.condition("HostISCSI", out, err)}
 	if err != nil {
 		r.log.Error("ensure host iscsi failed", "err", err)

@@ -51,7 +51,7 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 		}
 	}
 
-	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret)
+	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, true)
 	conds := []types.Condition{r.condition("ISCSIConnected", out, err)}
 	if err != nil {
 		r.log.Error("ensure iscsi failed", "err", err)

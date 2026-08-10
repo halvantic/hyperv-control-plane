@@ -476,7 +476,7 @@ func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
 
 // EnsureISCSI reports a connected, single-path array so a stub-backed reconcile
 // exercises the success path without a network.
-func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string) (ISCSIState, Outcome, error) {
+func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string, _ bool) (ISCSIState, Outcome, error) {
 	st := ISCSIState{
 		InitiatorIQN:   "iqn.1991-05.com.microsoft:stub.lab.local",
 		ServiceRunning: true,
