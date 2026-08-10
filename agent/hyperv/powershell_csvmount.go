@@ -36,11 +36,19 @@ $notes = @()
 $seen = @()
 foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
   $name = [string]$csv.Name
-  if (-not $want.ContainsKey($name)) {
+  # A volume provisioned FROM THE POOL is named "Cluster Virtual Disk (DS1)" —
+  # Add-ClusterSharedVolume wraps the virtual disk's name — while the operator
+  # declared it as DS1. An adopted LUN carries the declared name directly, because
+  # adoption renames the resource. Matching only the raw name therefore worked on
+  # array-backed volumes and never on S2D ones, which reported every volume as
+  # "not a declared volume" on a cluster whose mounts were already correct.
+  $key = $name
+  if (-not $want.ContainsKey($key) -and $name -match '\(([^)]+)\)\s*$') { $key = $Matches[1] }
+  if (-not $want.ContainsKey($key)) {
     $seen += ($name + ': not a declared volume')
     continue
   }
-  $target = [string]$want[$name]
+  $target = [string]$want[$key]
   if (-not $target) { $seen += ($name + ': no name wanted'); continue }
 
   # SharedVolumeInfo is a COLLECTION, one entry per volume on the disk. Reading a
@@ -128,7 +136,10 @@ func (p *PowerShell) EnsureCSVMountPoints(ctx context.Context, want map[string]s
 	for name := range want {
 		var found bool
 		for _, s := range res.Seen {
-			if strings.HasPrefix(s, name+":") {
+			// The line is keyed by the CSV's own name, which for a pool-provisioned
+			// volume wraps the declared one — "Cluster Virtual Disk (DS1): already at
+			// DS1". Match either form, or an S2D cluster reports every volume missing.
+			if strings.HasPrefix(s, name+":") || strings.Contains(s, "("+name+"):") {
 				found = true
 				break
 			}

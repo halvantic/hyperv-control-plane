@@ -384,6 +384,27 @@ $server = %[3]s
 $port = %[4]d
 $auth = %[5]s
 $freq = %[6]d
+$targetCluster = %[7]s
+
+# Get-QueryableTarget returns a host that Hyper-V management calls can actually
+# reach, for a replica server that may be a cluster's client access point.
+#
+# A Replica Broker CAP is the address you REPLICATE to, and it is not a machine:
+# VMMS runs on the physical nodes, so a management query against the CAP returns
+# "the object was not found - verify that the Virtual Machine Management service
+# on the computer is running". Ballast then reported the target as broken when it
+# had merely asked something that cannot answer.
+#
+# The target cluster is known from the VM's own spec, so ask one of its nodes.
+function Get-QueryableTarget {
+  if (-not $targetCluster) { return $server }
+  try {
+    $n = @(Get-ClusterNode -Cluster $targetCluster -ErrorAction Stop |
+      Where-Object { [string]$_.State -eq 'Up' } | ForEach-Object { [string]$_.Name })
+    if ($n.Count -gt 0) { return $n[0] }
+  } catch {}
+  return $server
+}
 # The VM must exist on THIS host to reconcile its replication. For a clustered VM
 # only the current owner has it; a non-owner member (which the centre may still
 # deliver the desired VM to) has nothing to do — Enable-VMReplication would fail
@@ -456,30 +477,69 @@ if (-not $enabled) {
       #
       # The storage location is a fact the target will simply tell us, so ask
       # rather than leaving the operator to find it.
-      if ($_.Exception.Message -like '*failed to enable replication*') {
-        $loc = ''; $anyServer = $null; $entry = $null
+      # 0x00002EE2 is 12002 — ERROR_INTERNET_TIMEOUT. Hyper-V Replica moves over
+      # HTTP, so it surfaces WinINet codes, and Hyper-V prints this one as the
+      # unexpanded message-table reference "%%12002" because the string lives in a
+      # module it did not load. Read as a generic failure it sent every diagnosis
+      # looking for something the target had refused; it is not a refusal at all.
+      #
+      # The target accepts the request and starts work — a zero-length replica
+      # VHDX appears in its storage location — and the call gives up before that
+      # work finishes. So everything the earlier checks verified was verified
+      # correctly, and none of it was ever the cause.
+      if ($_.Exception.Message -like '*12002*' -or $_.Exception.Message -like '*0x00002EE2*') {
+        $extra = ''
         try {
-          $rs = Get-VMReplicationServer -ComputerName $server -ErrorAction Stop
+          $ok = Test-NetConnection -ComputerName $server -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+          if ($ok) { $extra = ' Port ' + [string]$port + ' answers, so the two can talk — this is slowness, not a blocked path.' }
+        } catch {}
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' accepted the request and the call TIMED OUT waiting for it (0x2EE2 / 12002 is an HTTP timeout, which Hyper-V prints as %%12002).' + $extra +
+          ' The target creates the replica disk before answering, so this is what a target that is working but too slow looks like — commonly a replica storage location on storage that is slow to allocate, such as an iSCSI LUN over a congested or single path. A part-created VHDX of zero length is left behind each attempt and should be removed before retrying. Check the write speed of the replica storage location on the target, and that its multipath is in effect.')
+      }
+      if ($_.Exception.Message -like '*failed to enable replication*') {
+        $loc = ''; $anyServer = $null; $entry = $null; $readErr = ''
+        # Queried against a NODE of the target cluster, not the broker CAP.
+        $probe = Get-QueryableTarget
+        try {
+          $rs = Get-VMReplicationServer -ComputerName $probe -ErrorAction Stop
           $anyServer = [bool]$rs.AllowAnyServer
           $loc = [string]$rs.DefaultStorageLocation
-        } catch {}
+        } catch {
+          # KEEP the reason. Swallowing it left "its replica storage location could
+          # not be read" with nothing to act on, and sent the operator to the target
+          # to check a role that was already enabled and a path that already existed.
+          # This query and Enable-VMReplication reach the target the same way, so
+          # whatever refuses one usually refuses the other — this exception is the
+          # closest thing to the real cause the source host can see.
+          $readErr = ([string]$_.Exception.Message).Trim()
+        }
         # A per-primary authorization entry overrides the default location, so it
         # is the one that actually applies to us. Match this host's FQDN, then the
         # wildcard entry.
         try {
           $me = ([string]$env:COMPUTERNAME).ToLower()
-          $entries = @(Get-VMReplicationAuthorizationEntry -ComputerName $server -ErrorAction Stop)
+          $entries = @(Get-VMReplicationAuthorizationEntry -ComputerName $probe -ErrorAction Stop)
           $mine = @($entries | Where-Object { ([string]$_.AllowedPrimaryServer).ToLower().StartsWith($me) })[0]
           if (-not $mine) { $mine = @($entries | Where-Object { [string]$_.AllowedPrimaryServer -eq '*' })[0] }
           if ($mine) { $entry = [string]$mine.AllowedPrimaryServer; $loc = [string]$mine.ReplicaStorageLocation }
-        } catch {}
+        } catch {
+          # Only worth keeping when the first query said nothing either: two
+          # failures with one cause should not be reported as two problems.
+          if (-not $readErr) { $readErr = ([string]$_.Exception.Message).Trim() }
+        }
         if ($loc) {
           # Verify rather than assert. The admin share is the one way to check a
           # remote path without a second hop; when it cannot be reached, say the
           # path could not be checked instead of claiming it is missing.
+          # Reached through a NODE's admin share, not the broker CAP's. A cluster
+          # name object does not serve C$, so \\DRCluster-Brk\C$\... answers no and
+          # the path reads as missing — which is how a volume that existed, mounted
+          # and Online, was reported as a Cluster Shared Volume that is not there.
+          # The same mistake as querying the CAP for its replication config, one
+          # line further down.
           $missing = $null
           try {
-            $host0 = ($server -split '\.')[0]
+            $host0 = ($probe -split '\.')[0]
             $unc = '\\' + $host0 + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
             $missing = -not (Test-Path -LiteralPath $unc -ErrorAction Stop)
           } catch { $missing = $null }
@@ -489,15 +549,118 @@ if (-not $enabled) {
           if ($missing -eq $true) {
             $fix = if ($csv) { "That Cluster Shared Volume is not mounted on the target cluster. Create the volume, or repoint the Replica Broker's storage path, then retry." }
                    else { "That path does not exist on the target. Create it, or repoint the replica storage location, then retry." }
-            throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist. ' + $fix)
+            throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist on ' + $probe + '. ' + $fix)
           }
-          $fix2 = if ($csv) { " If the target cluster no longer has that Cluster Shared Volume, create it or repoint the Replica Broker's storage path." } else { " Verify that path exists on the target." }
-          throw ('cannot enable replication for ' + $vm + ': ' + $what + '.' + $fix2 + ' Hyper-V reported: ' + $_.Exception.Message)
+          # The path was checked and NOT found missing, so the target's
+          # configuration is positively verified: it accepts this host, and its
+          # storage location is there. Repeating "the volume might be missing" here
+          # is advice contradicted by the check just performed.
+          #
+          # What has not been read is the TARGET's own account of the refusal. The
+          # source only ever sees Hyper-V's generic %%12002; the node that declined
+          # writes the reason to its own VMMS log, and that node is reachable —
+          # this whole diagnosis just queried it. Asking beats guessing, which is
+          # how every earlier explanation of this error was arrived at and wrong.
+          # Leftover replica files for THIS VM are a refusal Hyper-V reports
+          # generically. It will not create a replica over one that is already
+          # there, so a previous attempt that half-completed — or a removal that
+          # reported failure while partly succeeding — leaves disks at the
+          # destination and every retry afterwards fails with %%12002 and no clue.
+          # The path is reachable: it was just checked.
+          # A replica that already EXISTS AS A VM is the blocker, and it is not the
+          # same question as files in the storage folder. A timed-out attempt leaves
+          # the VM registered on the target — visible in Failover Cluster Manager as
+          # a powered-off role — and Hyper-V will not create a replica over it, so
+          # every retry afterwards fails however correct the configuration is.
+          # Looking only at the folder missed exactly that, and left an operator to
+          # find the role by hand in another tool.
+          $existing = ''
+          try {
+            $tv = Get-VM -ComputerName $probe -Name $vm -ErrorAction SilentlyContinue
+            if ($tv) {
+              $rep = ''
+              try { $rep = [string](Get-VMReplication -ComputerName $probe -VMName $vm -ErrorAction SilentlyContinue).Mode } catch {}
+              $existing = 'a VM named ' + $vm + ' already exists on ' + $probe + ' (' + [string]$tv.State + $(if ($rep) { ', replication mode ' + $rep } else { '' }) + ')'
+            }
+          } catch {}
+
+          $left = @()
+          try {
+            $rroot = '\\' + (($probe -split '\.')[0]) + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
+            $left = @(Get-ChildItem -LiteralPath $rroot -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like ('*' + $vm + '*') } |
+              Select-Object -First 5 | ForEach-Object {
+                $sz = if ($_.PSIsContainer) { 'folder' } else { [string][math]::Round($_.Length/1GB,1) + 'GB' }
+                $_.FullName.Substring($rroot.Length).TrimStart('\') + ' (' + $sz + ')'
+              })
+          } catch {}
+
+          # "No events were found" is NOT a read failure — it is the query working
+          # and matching nothing, which is a finding in its own right and the more
+          # useful of the two. Conflating them reported a reachable log as
+          # unreadable and hid what it was actually saying: that the target
+          # recorded nothing about this refusal at all.
+          #
+          # Informational events are included and the window widened, because a
+          # refusal is not always logged as an error and a failing attempt takes
+          # longer than a couple of minutes to give up.
+          $far = ''
+          $reachable = $false
+          $ev = @()
+          try {
+            $ev = @(Get-WinEvent -ComputerName $probe -FilterHashtable @{
+              LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-10)
+            } -MaxEvents 4 -ErrorAction SilentlyContinue | ForEach-Object {
+              $m = ([string]$_.Message -replace '\s+',' ').Trim()
+              if ($m.Length -gt 260) { $m = $m.Substring(0,260) + '…' }
+              $m + ' (event ' + [string]$_.Id + ')'
+            })
+            # Reachability is proved by the channel answering at all, not by it
+            # having something to say.
+            $null = Get-WinEvent -ComputerName $probe -ListLog 'Microsoft-Windows-Hyper-V-VMMS-Admin' -ErrorAction Stop
+            $reachable = $true
+          } catch {
+            $far = ' Its Hyper-V log could not be read from ' + $env:COMPUTERNAME + ' (' + ([string]$_.Exception.Message).Trim() + '), so the reason it refused is visible only on ' + $probe + '.'
+          }
+          if ($reachable) {
+            if ($ev.Count -gt 0) {
+              $far = ' ' + $probe + ' recorded: ' + ($ev -join ' | ')
+            } else {
+              # The target's log is readable and empty for this window. Hyper-V logs
+              # a refusal it makes, so a target with nothing to say most likely never
+              # got the request — which points at the path between the two rather
+              # than at the target's configuration, all of which checked out above.
+              # Do not post that as homework: the reachability this depends on is
+              # testable from right here, and telling an operator to check a port
+              # Ballast could have opened a socket to is the shape CLAUDE.md calls
+              # a defect.
+              $reach = ''
+              try {
+                $ok = Test-NetConnection -ComputerName $server -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+                $reach = if ($ok) { ' Port ' + [string]$port + ' on ' + $server + ' does answer from here, so the listener is up and the request is being refused before it is logged — which points at authentication rather than connectivity.' }
+                         else { ' Port ' + [string]$port + ' on ' + $server + ' does NOT answer from ' + $env:COMPUTERNAME + ': the replication request cannot arrive at all. Enable the Hyper-V Replica listener rule on the target, or open that port between them.' }
+              } catch {}
+              $far = ' ' + $probe + ' has logged nothing in its Hyper-V-VMMS-Admin channel for the last ten minutes, and it logs the refusals it makes — so the request most likely never reached it.' + $reach
+            }
+          }
+          if ($existing) {
+            throw ('cannot enable replication for ' + $vm + ': ' + $existing + '. Hyper-V will not create a replica over one that is already there, so this fails however correct the rest of the configuration is. It is usually left behind by an earlier attempt that timed out part-way. Remove the replica copy on the target, then retry.' + $far)
+          }
+          if ($left.Count -gt 0) {
+            throw ('cannot enable replication for ' + $vm + ': the target already holds replica files for it at ' + $loc + ' - ' + ($left -join ', ') + '. Hyper-V will not create a replica over an existing one, so this fails however correct everything else is. Remove the replica copy on the target (or delete those files) and retry.' + $far)
+          }
+          throw ('cannot enable replication for ' + $vm + ': ' + $what + ', that path is present and holds no leftover files for this VM - so the target accepts this host and its storage is in place, and the refusal is not one this host can see the reason for.' + $far + ' Hyper-V reported: ' + $_.Exception.Message)
         }
         if ($anyServer -eq $false) {
           throw ('cannot enable replication for ' + $vm + ": '" + $server + "' does not permit this host to replicate to it - it has no authorization entry for " + $env:COMPUTERNAME + ' and does not allow any server. Add an authorization entry on the target, then retry.')
         }
-        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it and its replica storage location could not be read, so the cause is on the target. Check its Replica server role is enabled and its replica storage path exists. Hyper-V reported: ' + $_.Exception.Message)
+        # Where the cause is, is NOT known here. The target could not be queried, so
+        # saying "the cause is on the target" asserts the one thing this host was
+        # unable to establish — and it sent an operator to check a role that was
+        # already enabled and a path that already existed.
+        $why = if ($readErr) { ' Querying ' + $probe + ' from ' + $env:COMPUTERNAME + ' failed with: ' + $readErr }
+               else { ' Querying ' + $probe + ' from ' + $env:COMPUTERNAME + ' returned nothing.' }
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it, and this host cannot read its replication configuration either, so the fault is between ' + $env:COMPUTERNAME + ' and ' + $server + ' rather than necessarily on either one.' + $why + ' Hyper-V reported: ' + $_.Exception.Message)
       }
       throw
     }
@@ -533,7 +696,7 @@ if (-not $enabled) {
   }
 }
 if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
-		psQuote(vmName), psBool(spec.Enabled), psQuote(spec.ReplicaServer), port, psQuote(auth), freq)
+		psQuote(vmName), psBool(spec.Enabled), psQuote(spec.ReplicaServer), port, psQuote(auth), freq, psQuote(spec.TargetCluster))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure vm replication %q: %w", vmName, err)

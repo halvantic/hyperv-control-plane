@@ -33,9 +33,18 @@ func TestEnsureVMReplicationNamesWhereTheReplicaWouldLand(t *testing.T) {
 	// Both sources of the target's storage location. The per-primary
 	// authorization entry overrides the server default, so it is the one that
 	// actually applies and must be preferred.
+	//
+	// Queried against $probe, NOT $server. A Replica Broker CAP is the address you
+	// replicate TO and is not a machine: VMMS runs on the physical nodes, so a
+	// management query against the CAP answers "the object was not found — verify
+	// that the Virtual Machine Management service on the computer is running", and
+	// Ballast reported the target as broken for failing to answer a question it
+	// cannot be asked.
 	for _, want := range []string{
-		"Get-VMReplicationServer -ComputerName $server",
-		"Get-VMReplicationAuthorizationEntry -ComputerName $server",
+		"Get-VMReplicationServer -ComputerName $probe",
+		"Get-VMReplicationAuthorizationEntry -ComputerName $probe",
+		"function Get-QueryableTarget",
+		"Get-ClusterNode -Cluster $targetCluster",
 		"ReplicaStorageLocation",
 		"DefaultStorageLocation",
 	} {
