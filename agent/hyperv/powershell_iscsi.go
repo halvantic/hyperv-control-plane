@@ -220,7 +220,10 @@ if (-not $mpioEffective -and $portals.Count -gt 1) {
 }
 `)
 	} else {
-		b.WriteString("$restrictPortal = ''\n")
+		// A single declared portal is a single path, so multipath is neither
+		// required nor claimed — but the variable must still exist, or the login
+		// below reads it as absent and quietly never declares a session multipath.
+		b.WriteString("$restrictPortal = ''\n$mpioEffective = $false\n")
 	}
 
 	// Targets: explicit list, or everything advertised.
@@ -251,9 +254,14 @@ foreach ($t in $wanted) {
       try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true } catch {}
     }
   }
+  # Which portals already carry a session, taken through the session's own
+  # connection association rather than by filtering all connections on a
+  # SessionIdentifier property — the connection objects do not reliably expose
+  # one, so the filter matched nothing and every portal looked uncovered. That is
+  # why .52 was retried on a node already logged in through it.
   $covered = @()
   foreach ($s in $existing) {
-    foreach ($cn in @(Get-IscsiConnection -ErrorAction SilentlyContinue | Where-Object { $_.SessionIdentifier -eq $s.SessionIdentifier })) {
+    foreach ($cn in @($s | Get-IscsiConnection -ErrorAction SilentlyContinue)) {
       $covered += [string]$cn.TargetAddress
     }
   }
@@ -272,7 +280,16 @@ foreach ($t in $wanted) {
 	// Splatted rather than concatenated so the per-portal address is one key
 	// instead of a second copy of the whole call with its CHAP arguments — two
 	// spellings of the same login is how they drift apart.
-	connect := "    $c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }\n"
+	// IsMultipathEnabled is what permits a SECOND session to the same target.
+	//
+	// Without it Windows refuses one outright — "The target has already been logged
+	// in via an iSCSI session" — which is exactly what every extra path hit on the
+	// rig, leaving both members on one path with MPIO genuinely in effect and
+	// nothing to coalesce. It is set only when multipath really is in effect,
+	// because declaring a session multipath while MPIO is not claiming is how the
+	// same LUN arrives twice as unrelated disks.
+	connect := "    $c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }\n" +
+		"    if ($mpioEffective) { $c['IsMultipathEnabled'] = $true }\n"
 	if spec.CredentialSecret != "" {
 		auth := "ONEWAYCHAP"
 		if spec.MutualCHAP {
@@ -289,7 +306,14 @@ foreach ($t in $wanted) {
 	// losing a path is the ordinary iSCSI fault, and the remaining paths are
 	// exactly what the node keeps working on.
 	b.WriteString(connect + `    try { Connect-IscsiTarget @c -ErrorAction Stop | Out-Null; $changed = $true }
-    catch { $pathErrs += ($addr + ': ' + $_.Exception.Message) }
+    catch {
+      # "Already logged in" means the path exists — the session simply was not
+      # matched above. Reporting it as a failure would put a permanent error on a
+      # node whose paths are all present.
+      if ([string]$_.Exception.Message -notmatch 'already been logged in') {
+        $pathErrs += ($addr + ': ' + ([string]$_.Exception.Message).Trim())
+      }
+    }
   }
 }
 if ($pathErrs.Count -gt 0 -and -not $out.message) {

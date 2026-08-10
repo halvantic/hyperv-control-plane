@@ -126,6 +126,52 @@ func TestASinglePortalIsNotRestricted(t *testing.T) {
 	}
 }
 
+// Windows refuses a SECOND session to a target unless the login declares itself
+// multipath — "The target has already been logged in via an iSCSI session". That
+// is what every extra path hit on the rig, leaving both members on one path with
+// MPIO genuinely in effect and nothing to coalesce.
+func TestASecondPathDeclaresItselfMultipath(t *testing.T) {
+	s := iscsiScript(multiPortalSpec(), true)
+
+	if !strings.Contains(s, "if ($mpioEffective) { $c['IsMultipathEnabled'] = $true }") {
+		t.Fatal("without IsMultipathEnabled Windows refuses the second session outright, so the extra paths can never be established")
+	}
+	// Only when multipath really is in effect: declaring a session multipath while
+	// MPIO is not claiming is how the same LUN arrives twice as unrelated disks.
+	if strings.Contains(s, "$c['IsMultipathEnabled'] = $true\n") && !strings.Contains(s, "if ($mpioEffective)") {
+		t.Fatal("multipath must be declared conditionally, not unconditionally")
+	}
+}
+
+// A single-portal spec never enters the MPIO block, so the variable the login
+// reads must still exist — otherwise it evaluates as absent and the login quietly
+// never declares itself multipath even once MPIO is in effect.
+func TestTheMultipathFlagIsDefinedEvenWithoutTheMPIOBlock(t *testing.T) {
+	s := iscsiScript(types.ISCSIStorageSpec{Portals: []string{"10.0.60.52"}}, false)
+	if !strings.Contains(s, "$mpioEffective = $false") {
+		t.Fatal("the flag must be defined on every path through the script")
+	}
+}
+
+// An "already logged in" refusal means the path EXISTS. Reporting it as a failure
+// puts a permanent error on a node whose paths are all present.
+func TestAnAlreadyLoggedInPathIsNotAnError(t *testing.T) {
+	s := iscsiScript(multiPortalSpec(), true)
+	if !strings.Contains(s, "-notmatch 'already been logged in'") {
+		t.Fatal("a path that already exists must not be reported as a login failure")
+	}
+}
+
+// The portals a session covers come through the session's own association. A
+// filter on a SessionIdentifier property matched nothing, so every portal looked
+// uncovered and an existing path was retried on every pass.
+func TestCoveredPortalsComeFromTheSessionsAssociation(t *testing.T) {
+	s := iscsiScript(multiPortalSpec(), true)
+	if !strings.Contains(s, "foreach ($cn in @($s | Get-IscsiConnection -ErrorAction SilentlyContinue))") {
+		t.Fatal("connections must be taken from the session itself, not filtered on a property they do not reliably expose")
+	}
+}
+
 // CHAP has to survive the move to splatting. Two spellings of the same login is
 // how they drift apart, which is why the restriction is a key rather than a
 // second copy of the call.
