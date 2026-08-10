@@ -132,11 +132,30 @@ if ($hasData -and -not $wipe -and -not $ours) {
 # ---- already adopted? ------------------------------------------------------
 # Idempotency is judged on the cluster, not on this node's view: another member
 # may have adopted it, in which case this node has nothing to do.
+# Matched on the disk's own identity, NOT on a DiskNumber parameter.
+#
+# A Physical Disk resource does not carry the node's disk number, so the match
+# never succeeded: the disk was added to the cluster on the first pass, and every
+# pass after it failed to notice, tried to add it again, found nothing on offer
+# because it was already clustered, and reported that the cluster would not take
+# a disk the cluster already had. Available Storage came Online holding both LUNs
+# while the console showed two failed adoptions.
+#
+# DiskIdGuid is the GPT disk GUID, which Get-Disk reports as Guid; DiskUniqueId
+# is the page-83 identity. Both are read rather than assumed, because assuming a
+# parameter exists is exactly what produced this.
 $clusDisk = $null
+$dguid = ''
+try { $dguid = ([string]$disk.Guid).Trim('{}').ToLowerInvariant() } catch {}
+$duid = ''
+try { $duid = ([string]$disk.UniqueId).Trim() } catch {}
 foreach ($res in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Physical Disk' })) {
-  $sig = ($res | Get-ClusterParameter -Name DiskIdGuid -ErrorAction SilentlyContinue).Value
-  $num = ($res | Get-ClusterParameter -Name DiskNumber -ErrorAction SilentlyContinue).Value
-  if ($num -ne $null -and [int]$num -eq [int]$disk.Number) { $clusDisk = $res; break }
+  foreach ($pp in @($res | Get-ClusterParameter -ErrorAction SilentlyContinue)) {
+    $pv = ([string]$pp.Value).Trim()
+    if ($pp.Name -eq 'DiskIdGuid' -and $dguid -and $pv.Trim('{}').ToLowerInvariant() -eq $dguid) { $clusDisk = $res; break }
+    if ($pp.Name -eq 'DiskUniqueId' -and $duid -and $pv -eq $duid) { $clusDisk = $res; break }
+  }
+  if ($clusDisk) { break }
 }
 $csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name } | Select-Object -First 1
 if ($csv -and -not $witness) {
@@ -149,6 +168,11 @@ if ($clusDisk -and $witness) {
 }
 
 # ---- prepare the disk ------------------------------------------------------
+# Skipped entirely once the cluster holds the disk: it is prepared already (that
+# is why it could be added), and bringing a clustered disk online or repartitioning
+# it from a node that may not own it is reaching past the cluster for something it
+# is managing.
+if (-not $clusDisk) {
 if ($disk.IsOffline)  { Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop }
 if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop }
 
@@ -168,6 +192,7 @@ if (-not $vol -or -not $vol.FileSystem) {
   $useFs = $fs
   if ($witness) { $useFs = 'NTFS' }
   Format-Volume -Partition $part -FileSystem $useFs -NewFileSystemLabel $name -Confirm:$false -Force -ErrorAction Stop | Out-Null
+}
 }
 
 # ---- hand it to the cluster ------------------------------------------------
@@ -225,15 +250,25 @@ if (-not $clusDisk) {
     Fail ('the disk was prepared but the cluster did not take it: ' + ($why -join '; ') + '. Check the same LUN is offline on the other members, or that it is not already held by another cluster.')
   }
   $clusDisk = Get-ClusterResource -Name $new[0] -ErrorAction Stop
-  if ($name -and [string]$clusDisk.Name -ne $name) {
-    try { $clusDisk.Name = $name } catch {}
-  }
+}
+
+# Named outside the add, so a disk the cluster already holds is named too. Inside
+# it, a resumed adoption kept whatever the cluster called the resource — "Cluster
+# Disk 1" — and the operator's volume name appeared nowhere.
+if ($name -and [string]$clusDisk.Name -ne $name) {
+  try { $clusDisk.Name = $name; $clusDisk = Get-ClusterResource -Name $name -ErrorAction Stop } catch {}
 }
 
 if (-not $witness) {
-  Add-ClusterSharedVolume -InputObject $clusDisk -ErrorAction Stop | Out-Null
-  $check = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
-  if (-not $check) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
+  # Already a CSV under this resource's name is success, not a failure to re-add:
+  # Add-ClusterSharedVolume throws for a disk that is already shared, and a
+  # resumed adoption would otherwise fail on the step it had already completed.
+  $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
+  if (-not $existing) {
+    Add-ClusterSharedVolume -InputObject $clusDisk -ErrorAction Stop | Out-Null
+    $check = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
+    if (-not $check) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
+  }
 }
 
 [pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress
