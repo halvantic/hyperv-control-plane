@@ -1538,7 +1538,7 @@ func windowsLicenceToProto(s *types.WindowsLicenceStatus) *WindowsLicenceStatus 
 		Edition: s.Edition, Description: s.Description, Evaluation: s.Evaluation,
 		Status: s.Status, GraceDaysRemaining: int32(s.GraceDaysRemaining),
 		Channel: s.Channel, PartialProductKey: s.PartialProductKey,
-		KmsServer: s.KMSServer, Message: s.Message,
+		KmsServer: s.KMSServer, Message: s.Message, TargetEditions: s.TargetEditions,
 	}
 }
 
@@ -1550,7 +1550,7 @@ func windowsLicenceFromProto(s *WindowsLicenceStatus) *types.WindowsLicenceStatu
 		Edition: s.GetEdition(), Description: s.GetDescription(), Evaluation: s.GetEvaluation(),
 		Status: s.GetStatus(), GraceDaysRemaining: int(s.GetGraceDaysRemaining()),
 		Channel: s.GetChannel(), PartialProductKey: s.GetPartialProductKey(),
-		KMSServer: s.GetKmsServer(), Message: s.GetMessage(),
+		KMSServer: s.GetKmsServer(), Message: s.GetMessage(), TargetEditions: s.GetTargetEditions(),
 	}
 }
 

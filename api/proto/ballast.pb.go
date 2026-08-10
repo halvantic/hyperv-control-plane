@@ -2318,8 +2318,11 @@ type WindowsLicenceStatus struct {
 	PartialProductKey  string `protobuf:"bytes,7,opt,name=partial_product_key,json=partialProductKey,proto3" json:"partial_product_key,omitempty"`
 	KmsServer          string `protobuf:"bytes,8,opt,name=kms_server,json=kmsServer,proto3" json:"kms_server,omitempty"`
 	Message            string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// What this installation may convert to, as Windows reports it. Empty means
+	// not reported, not "nothing is possible".
+	TargetEditions []string `protobuf:"bytes,10,rep,name=target_editions,json=targetEditions,proto3" json:"target_editions,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WindowsLicenceStatus) Reset() {
@@ -2413,6 +2416,13 @@ func (x *WindowsLicenceStatus) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *WindowsLicenceStatus) GetTargetEditions() []string {
+	if x != nil {
+		return x.TargetEditions
+	}
+	return nil
 }
 
 type HostMetrics struct {
@@ -6387,7 +6397,7 @@ const file_ballast_proto_rawDesc = "" +
 	"activation\x122\n" +
 	"\x15activation_key_secret\x18\x04 \x01(\tR\x13activationKeySecret\x12\x1d\n" +
 	"\n" +
-	"kms_server\x18\x05 \x01(\tR\tkmsServer\"\xbf\x02\n" +
+	"kms_server\x18\x05 \x01(\tR\tkmsServer\"\xe8\x02\n" +
 	"\x14WindowsLicenceStatus\x12\x18\n" +
 	"\aedition\x18\x01 \x01(\tR\aedition\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1e\n" +
@@ -6400,7 +6410,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\x13partial_product_key\x18\a \x01(\tR\x11partialProductKey\x12\x1d\n" +
 	"\n" +
 	"kms_server\x18\b \x01(\tR\tkmsServer\x12\x18\n" +
-	"\amessage\x18\t \x01(\tR\amessage\"\x8f\x01\n" +
+	"\amessage\x18\t \x01(\tR\amessage\x12'\n" +
+	"\x0ftarget_editions\x18\n" +
+	" \x03(\tR\x0etargetEditions\"\x8f\x01\n" +
 	"\vHostMetrics\x12*\n" +
 	"\x11cpu_usage_percent\x18\x01 \x01(\x05R\x0fcpuUsagePercent\x12-\n" +
 	"\x13memory_in_use_bytes\x18\x02 \x01(\x04R\x10memoryInUseBytes\x12%\n" +

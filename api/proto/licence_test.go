@@ -1,6 +1,7 @@
 package ballastpb
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -17,7 +18,10 @@ func TestTheWindowsLicenceSurvivesTheProto(t *testing.T) {
 			Edition: "ServerDatacenterEval", Description: "Microsoft Windows Server 2025 Datacenter Evaluation",
 			Evaluation: true, Status: "Notification", GraceDaysRemaining: 118,
 			Channel: "Evaluation", PartialProductKey: "ABCDE", KMSServer: "kms.ballast.local",
-			Message: "this is an evaluation edition and cannot be activated",
+			// A Core install's targets are Core names — the case that makes this list
+			// worth carrying at all, since nobody would type ServerDatacenterCor.
+			TargetEditions: []string{"ServerDatacenterCor", "ServerStandardCor"},
+			Message:        "this is an evaluation edition and cannot be activated",
 		},
 	}
 
@@ -40,6 +44,7 @@ func TestTheWindowsLicenceSurvivesTheProto(t *testing.T) {
 		{"partial key", got.PartialProductKey, in.WindowsLicence.PartialProductKey},
 		{"KMS server", got.KMSServer, in.WindowsLicence.KMSServer},
 		{"message", got.Message, in.WindowsLicence.Message},
+		{"target editions", strings.Join(got.TargetEditions, ","), strings.Join(in.WindowsLicence.TargetEditions, ",")},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, c.got, c.want)

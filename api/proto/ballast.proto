@@ -341,6 +341,9 @@ message WindowsLicenceStatus {
   string partial_product_key = 7;
   string kms_server = 8;
   string message = 9;
+  // What this installation may convert to, as Windows reports it. Empty means
+  // not reported, not "nothing is possible".
+  repeated string target_editions = 10;
 }
 
 message HostMetrics {

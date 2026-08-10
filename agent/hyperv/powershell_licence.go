@@ -18,6 +18,11 @@ type WindowsLicence struct {
 	PartialProductKey  string
 	KMSServer          string
 	Message            string
+
+	// TargetEditions is what THIS installation may convert to, as Windows reports
+	// it. Empty means not reported, never "no conversion is possible" — the two
+	// have to stay distinguishable or a failed read becomes a refusal.
+	TargetEditions []string
 }
 
 // licenceScript reads the edition and the activation state.
@@ -33,7 +38,7 @@ type WindowsLicence struct {
 // to interpret, and it does not write to the servicing log on every reconcile.
 const licenceScript = `
 $ErrorActionPreference = 'SilentlyContinue'
-$out = [ordered]@{ edition=''; description=''; evaluation=$false; status=''; graceDays=0; channel=''; partialKey=''; kmsServer=''; message='' }
+$out = [ordered]@{ edition=''; description=''; evaluation=$false; status=''; graceDays=0; channel=''; partialKey=''; kmsServer=''; message=''; targets=@() }
 
 try {
   $ed = Get-WindowsEdition -Online -ErrorAction Stop
@@ -85,7 +90,10 @@ if ($p) {
 if ($out.evaluation -and -not $out.message) {
   $out.message = 'this is an evaluation edition and cannot be activated - it has to be converted to a retail or volume edition first, which needs a restart and cannot be undone'
 }
-$out | ConvertTo-Json -Compress
+# Read on the licence cadence rather than every pass: it goes through the
+# servicing stack, which is slow and writes to the servicing log each time.
+$out.targets = @(Read-TargetEditions)
+$out | ConvertTo-Json -Compress -Depth 4
 `
 
 // editionScript converts the host to the target edition.
@@ -125,17 +133,54 @@ try {
 # Ask Windows which targets it will accept. This is the authoritative answer to
 # "is this conversion legal", and it makes an impossible request fail with the
 # list of possible ones instead of a servicing error.
-$valid = @()
-try { $valid = @(Get-WindowsEdition -Online -Target -ErrorAction Stop | ForEach-Object { [string]$_.Edition }) } catch {}
+$valid = @(Read-TargetEditions)
 if ($valid.Count -gt 0 -and ($valid -notcontains $target)) {
-  throw ('Windows will not convert ' + $cur + ' to ' + $target + '. From here it offers: ' + ($valid -join ', ') + '. An edition cannot be converted downwards, and an evaluation converts only to its own retail or volume equivalent.')
+  throw ('Windows will not convert ' + $cur + ' to ' + $target + '. From here it offers: ' + ($valid -join ', ') + '. An edition cannot be converted downwards, an evaluation converts only to its own retail or volume equivalent, and a Core installation converts only to a Core target.')
 }
 
-$r = Set-WindowsEdition -Online -ProductKey $key -NoRestart -ErrorAction Stop
+# DISM.exe, not Set-WindowsEdition. The cmdlet services an offline IMAGE and takes
+# -Path; it has no -Online parameter set at all, so the online conversion has to go
+# through the executable. That is also why the key lands on a command line: DISM
+# takes it no other way, and it reaches the servicing log either way.
+$out = & dism.exe /online ('/Set-Edition:' + $target) ('/ProductKey:' + $key) /AcceptEula /NoRestart 2>&1
+$code = $LASTEXITCODE
+# 3010 is ERROR_SUCCESS_REBOOT_REQUIRED — a success that DISM reports with a
+# non-zero code, and treating it as a failure would report nothing staged when the
+# conversion is in fact waiting on the restart.
+if ($code -ne 0 -and $code -ne 3010) {
+  # -split takes a regex, so the line break is written as one: this file is a Go
+  # raw string and cannot carry a PowerShell backtick escape.
+  $text = (($out | Out-String) -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -Last 6) -join ' '
+  throw ('DISM refused to convert ' + $cur + ' to ' + $target + ' (exit ' + $code + '): ' + $text.Trim())
+}
 # The conversion is staged and applied by the restart; nothing has changed on disk
 # for the operator to see until then, which is why the reboot is reported rather
 # than assumed to have happened.
 'RESULT=REBOOT'
+`
+
+// readTargetEditionsFunc asks Windows which editions this installation may convert
+// to. Microsoft's own instruction is to run this and read the answer rather than
+// reason about it, and the answer genuinely is per-installation: a Standard Core
+// evaluation converts only to DATACENTER Core, and the name it wants is
+// ServerDatacenterCor, which nobody would guess.
+//
+// The cmdlet is tried first because it returns objects. DISM.exe is the fallback,
+// parsed for edition-shaped tokens rather than for its labels, which are
+// localised. An empty result means NOT REPORTED, never "no conversion is possible"
+// — the caller must not turn a failed read into a refusal.
+const readTargetEditionsFunc = `
+function Read-TargetEditions {
+  $eds = @()
+  try { $eds = @(Get-WindowsEdition -Online -Target -ErrorAction Stop | ForEach-Object { [string]$_.Edition }) } catch {}
+  if ($eds.Count -eq 0) {
+    try {
+      $raw = & dism.exe /online /Get-TargetEditions 2>&1 | Out-String
+      $eds = @([regex]::Matches($raw, '(?m):\s*(Server[A-Za-z0-9]*)\s*$') | ForEach-Object { $_.Groups[1].Value })
+    } catch {}
+  }
+  @($eds | Where-Object { $_ } | Sort-Object -Unique)
+}
 `
 
 // EnsureWindowsEdition converts the host to the target edition when it differs.
@@ -148,7 +193,7 @@ func (p *PowerShell) EnsureWindowsEdition(ctx context.Context, targetEdition, pr
 	if target == "" {
 		return OutcomeUnchanged, false, nil
 	}
-	out, err := p.runWithEnvOut(ctx, fmt.Sprintf(editionScript, psQuote(target)),
+	out, err := p.runWithEnvOut(ctx, readTargetEditionsFunc+fmt.Sprintf(editionScript, psQuote(target)),
 		[]string{"BALLAST_PRODUCT_KEY=" + productKey})
 	if err != nil {
 		return OutcomeUnchanged, false, fmt.Errorf("set windows edition: %w", err)
@@ -270,20 +315,21 @@ func (p *PowerShell) EnsureWindowsActivation(ctx context.Context, method, key, k
 // GetWindowsLicence observes the host's Windows edition and activation state. A
 // pure read; it never changes licensing.
 func (p *PowerShell) GetWindowsLicence(ctx context.Context) (WindowsLicence, error) {
-	raw, err := p.run(ctx, licenceScript)
+	raw, err := p.run(ctx, readTargetEditionsFunc+licenceScript)
 	if err != nil {
 		return WindowsLicence{}, fmt.Errorf("get windows licence: %w", err)
 	}
 	var res struct {
-		Edition     string `json:"edition"`
-		Description string `json:"description"`
-		Evaluation  bool   `json:"evaluation"`
-		Status      string `json:"status"`
-		GraceDays   int    `json:"graceDays"`
-		Channel     string `json:"channel"`
-		PartialKey  string `json:"partialKey"`
-		KMSServer   string `json:"kmsServer"`
-		Message     string `json:"message"`
+		Edition     string   `json:"edition"`
+		Description string   `json:"description"`
+		Evaluation  bool     `json:"evaluation"`
+		Status      string   `json:"status"`
+		GraceDays   int      `json:"graceDays"`
+		Channel     string   `json:"channel"`
+		PartialKey  string   `json:"partialKey"`
+		KMSServer   string   `json:"kmsServer"`
+		Message     string   `json:"message"`
+		Targets     []string `json:"targets"`
 	}
 	if derr := decodeJSON(raw, &res); derr != nil {
 		return WindowsLicence{}, fmt.Errorf("get windows licence: %w", derr)
@@ -298,5 +344,6 @@ func (p *PowerShell) GetWindowsLicence(ctx context.Context) (WindowsLicence, err
 		PartialProductKey:  res.PartialKey,
 		KMSServer:          res.KMSServer,
 		Message:            res.Message,
+		TargetEditions:     res.Targets,
 	}, nil
 }

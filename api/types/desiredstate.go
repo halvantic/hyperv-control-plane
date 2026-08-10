@@ -289,6 +289,15 @@ type WindowsLicenceSpec struct {
 	// uses whatever DNS auto-discovery finds, which is how most KMS estates are
 	// meant to work — setting it explicitly is for the ones that are not.
 	KMSServer string `json:"kmsServer,omitempty"`
+
+	// TargetEditions is what THIS installation may convert to, as Windows itself
+	// reports it. Per-installation and not derivable: a Standard Core evaluation
+	// converts only to Datacenter Core, under the name ServerDatacenterCor.
+	//
+	// Empty means NOT REPORTED. It must never be read as "no conversion is
+	// possible" — a list Ballast could not gather is not a refusal, and a console
+	// that offered an empty menu would block a conversion Windows would allow.
+	TargetEditions []string `json:"targetEditions,omitempty"`
 }
 
 // Windows activation methods.
@@ -339,6 +348,15 @@ type WindowsLicenceStatus struct {
 
 	// KMSServer is where a volume-licensed host activates, when it has one.
 	KMSServer string `json:"kmsServer,omitempty"`
+
+	// TargetEditions is what THIS installation may convert to, as Windows itself
+	// reports it. Per-installation and not derivable: a Standard Core evaluation
+	// converts only to Datacenter Core, under the name ServerDatacenterCor.
+	//
+	// Empty means NOT REPORTED. It must never be read as "no conversion is
+	// possible" — a list Ballast could not gather is not a refusal, and a console
+	// that offered an empty menu would block a conversion Windows would allow.
+	TargetEditions []string `json:"targetEditions,omitempty"`
 
 	// Message explains a state the fields cannot, in the operator's terms.
 	Message string `json:"message,omitempty"`

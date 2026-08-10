@@ -1185,6 +1185,7 @@ func (r *runner) observeWindowsLicence(ctx context.Context, force bool) *types.W
 		PartialProductKey:  lic.PartialProductKey,
 		KMSServer:          lic.KMSServer,
 		Message:            lic.Message,
+		TargetEditions:     lic.TargetEditions,
 	}
 	return r.licenceState
 }
