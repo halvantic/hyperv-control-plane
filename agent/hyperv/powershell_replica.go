@@ -103,6 +103,24 @@ if (-not $enabled) {
     if ($csv -and [string]$csv.State -ne 'Online') {
       throw ("waiting for volume '" + [string]$csv.Name + "' to come back online before configuring the replica server (the cluster reports it " + [string]$csv.State + ")")
     }
+    # No CSV matched the path at all: the mount point it names does not exist.
+    #
+    # C:\ClusterStorage holds mount points and nothing else — an ordinary
+    # directory cannot be created there — so New-Item reports "Access to the path
+    # 'iSCSI_DS1' is denied", which reads as a permissions fault and sends the
+    # operator to ACLs. The real fault is a declared path pointing at a volume
+    # under a different name, which is what a CSV mounted at VolumeN while its
+    # resource is named otherwise produces.
+    if (-not $csv) {
+      $mounted = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object {
+        $n = [string]$_.Name; $f = [string]$_.SharedVolumeInfo.FriendlyVolumeName
+        if ($f) { $n + ' at ' + $f } else { $n }
+      })
+      if ($mounted.Count -eq 0) {
+        throw ("the replica storage path " + $storage + " is on a Cluster Shared Volume, but this cluster has no CSV mounted yet")
+      }
+      throw ("the replica storage path " + $storage + " names a Cluster Shared Volume that is not mounted under that name. The cluster has: " + ($mounted -join '; ') + ". A CSV keeps the mount point it was created with (C:\ClusterStorage\VolumeN) even after its resource is renamed, so point the path at the mount above or let Ballast rename the mount to match the volume.")
+    }
   }
   if (-not (Test-Path $storage)) { New-Item -ItemType Directory -Path $storage -Force | Out-Null; $changed = $true }
   $wrongPort = $true

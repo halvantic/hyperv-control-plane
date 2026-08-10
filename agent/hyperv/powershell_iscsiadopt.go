@@ -84,20 +84,21 @@ function Ensure-MountPoint($csvObj, $want) {
     $script:mountNote = 'the mount point is still ' + $leaf + ' because VMs are running from it; it is renamed once nothing is using it'
     return $false
   }
-  # The directory can only be renamed by the node that OWNS the volume. On a
-  # cluster the former runs the adoption, and it does not necessarily own every
-  # CSV, so this legitimately has to wait for a pass on the owning node.
+  # Attempted from whichever node is reconciling, and the failure reported.
+  #
+  # A previous version refused unless this node owned the volume, on the
+  # assumption that a CSV mount point can only be renamed by its owner — which was
+  # a guess, and it stopped the rename ever being tried on a cluster whose former
+  # does not own every CSV. A CSV root is reachable from every member; if
+  # ownership does turn out to matter, the error says so and that is worth more
+  # than the guess.
   $owner = ''
   try { $owner = [string]$csvObj.OwnerNode.Name } catch {}
-  if ($owner -and -not ($owner -like ($env:COMPUTERNAME + '*'))) {
-    $script:mountNote = 'the mount point is still ' + $leaf + ' and can only be renamed on its owner ' + $owner
-    return $false
-  }
   try {
     Rename-Item -LiteralPath $cur -NewName $want -ErrorAction Stop
     return $true
   } catch {
-    $script:mountNote = 'could not rename the mount point ' + $leaf + ' to ' + $want + ': ' + ([string]$_.Exception.Message).Trim()
+    $script:mountNote = 'the volume is a Cluster Shared Volume but is mounted at ' + $leaf + ' rather than ' + $want + ', and renaming it here failed' + $(if ($owner) { ' (this node is ' + $env:COMPUTERNAME + '; the cluster says ' + $owner + ' owns it)' } else { '' }) + ': ' + ([string]$_.Exception.Message).Trim() + '. Anything referring to the volume by its declared name — the cluster''s default storage path, replica storage — points at a directory that does not exist until this is resolved.'
     return $false
   }
 }
