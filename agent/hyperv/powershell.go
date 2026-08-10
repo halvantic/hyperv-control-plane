@@ -159,11 +159,32 @@ func recentHostErrors(since time.Time) string {
 	return strings.TrimSpace(out.String())
 }
 
+// withExplicitSuccess makes reaching the end of a script mean success.
+//
+// powershell.exe -Command takes its exit code from $? at the end, so a script
+// whose LAST statement emitted a suppressed non-terminating error exits 1 having
+// written nothing at all — indistinguishable from a real failure and impossible
+// to diagnose. It is not a corner case: the natural way to verify a removal is
+//
+//	$still = Get-VM -Name $vm -ErrorAction SilentlyContinue
+//	if ($still) { throw ... }
+//
+// where the VM being gone IS the success condition, and Get-VM not finding it
+// leaves $? false. Ballast reported Failed for VM and replica deletions that had
+// completed, repeatedly, over days.
+//
+// Every script here signals failure by throwing, and $ErrorActionPreference is
+// Stop, so a throw terminates before this line is ever reached. Reaching it means
+// the script ran to the end, which is exactly what success means.
+func withExplicitSuccess(script string) string {
+	return script + "\nexit 0"
+}
+
 // execPowerShell runs a script under Windows PowerShell. It uses powershell.exe
 // (5.1) rather than pwsh because the Hyper-V and NetAdapter modules target it.
 func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -180,7 +201,7 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 // error, as with execPowerShell.
 func execPowerShellStream(ctx context.Context, script string, onLine func(string)) error {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("powershell stdout pipe: %w", err)
@@ -210,7 +231,7 @@ func execPowerShellStream(ctx context.Context, script string, onLine func(string
 // it, and it is never unit-tested through the stub.
 func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []string) error {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
 	cmd.Env = append(os.Environ(), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
