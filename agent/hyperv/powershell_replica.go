@@ -457,12 +457,20 @@ if (-not $enabled) {
       # The storage location is a fact the target will simply tell us, so ask
       # rather than leaving the operator to find it.
       if ($_.Exception.Message -like '*failed to enable replication*') {
-        $loc = ''; $anyServer = $null; $entry = $null
+        $loc = ''; $anyServer = $null; $entry = $null; $readErr = ''
         try {
           $rs = Get-VMReplicationServer -ComputerName $server -ErrorAction Stop
           $anyServer = [bool]$rs.AllowAnyServer
           $loc = [string]$rs.DefaultStorageLocation
-        } catch {}
+        } catch {
+          # KEEP the reason. Swallowing it left "its replica storage location could
+          # not be read" with nothing to act on, and sent the operator to the target
+          # to check a role that was already enabled and a path that already existed.
+          # This query and Enable-VMReplication reach the target the same way, so
+          # whatever refuses one usually refuses the other — this exception is the
+          # closest thing to the real cause the source host can see.
+          $readErr = ([string]$_.Exception.Message).Trim()
+        }
         # A per-primary authorization entry overrides the default location, so it
         # is the one that actually applies to us. Match this host's FQDN, then the
         # wildcard entry.
@@ -472,7 +480,11 @@ if (-not $enabled) {
           $mine = @($entries | Where-Object { ([string]$_.AllowedPrimaryServer).ToLower().StartsWith($me) })[0]
           if (-not $mine) { $mine = @($entries | Where-Object { [string]$_.AllowedPrimaryServer -eq '*' })[0] }
           if ($mine) { $entry = [string]$mine.AllowedPrimaryServer; $loc = [string]$mine.ReplicaStorageLocation }
-        } catch {}
+        } catch {
+          # Only worth keeping when the first query said nothing either: two
+          # failures with one cause should not be reported as two problems.
+          if (-not $readErr) { $readErr = ([string]$_.Exception.Message).Trim() }
+        }
         if ($loc) {
           # Verify rather than assert. The admin share is the one way to check a
           # remote path without a second hop; when it cannot be reached, say the
@@ -497,7 +509,13 @@ if (-not $enabled) {
         if ($anyServer -eq $false) {
           throw ('cannot enable replication for ' + $vm + ": '" + $server + "' does not permit this host to replicate to it - it has no authorization entry for " + $env:COMPUTERNAME + ' and does not allow any server. Add an authorization entry on the target, then retry.')
         }
-        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it and its replica storage location could not be read, so the cause is on the target. Check its Replica server role is enabled and its replica storage path exists. Hyper-V reported: ' + $_.Exception.Message)
+        # Where the cause is, is NOT known here. The target could not be queried, so
+        # saying "the cause is on the target" asserts the one thing this host was
+        # unable to establish — and it sent an operator to check a role that was
+        # already enabled and a path that already existed.
+        $why = if ($readErr) { ' Querying it from ' + $env:COMPUTERNAME + ' failed with: ' + $readErr + ' — the same route Enable-VMReplication uses, so this is likely the same fault.' }
+               else { ' Querying it from ' + $env:COMPUTERNAME + ' returned nothing.' }
+        throw ('cannot enable replication for ' + $vm + ': ' + $server + ' refused it, and this host cannot read its replication configuration either, so the fault is between ' + $env:COMPUTERNAME + ' and ' + $server + ' rather than necessarily on either one.' + $why + ' Hyper-V reported: ' + $_.Exception.Message)
       }
       throw
     }
