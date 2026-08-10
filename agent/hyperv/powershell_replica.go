@@ -542,6 +542,23 @@ if (-not $enabled) {
           # writes the reason to its own VMMS log, and that node is reachable —
           # this whole diagnosis just queried it. Asking beats guessing, which is
           # how every earlier explanation of this error was arrived at and wrong.
+          # Leftover replica files for THIS VM are a refusal Hyper-V reports
+          # generically. It will not create a replica over one that is already
+          # there, so a previous attempt that half-completed — or a removal that
+          # reported failure while partly succeeding — leaves disks at the
+          # destination and every retry afterwards fails with %%12002 and no clue.
+          # The path is reachable: it was just checked.
+          $left = @()
+          try {
+            $rroot = '\\' + (($probe -split '\.')[0]) + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
+            $left = @(Get-ChildItem -LiteralPath $rroot -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like ('*' + $vm + '*') } |
+              Select-Object -First 5 | ForEach-Object {
+                $sz = if ($_.PSIsContainer) { 'folder' } else { [string][math]::Round($_.Length/1GB,1) + 'GB' }
+                $_.FullName.Substring($rroot.Length).TrimStart('\') + ' (' + $sz + ')'
+              })
+          } catch {}
+
           $far = ''
           try {
             $ev = @(Get-WinEvent -ComputerName $probe -FilterHashtable @{
@@ -555,7 +572,10 @@ if (-not $enabled) {
           } catch {
             $far = ' Its log could not be read from here (' + ([string]$_.Exception.Message).Trim() + '), so the reason it refused is only in ' + $probe + $([char]39) + 's Hyper-V-VMMS-Admin log.'
           }
-          throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path is present - so the target accepts this host and its storage is in place, and the refusal is not one this host can see the reason for.' + $far + ' Hyper-V reported: ' + $_.Exception.Message)
+          if ($left.Count -gt 0) {
+            throw ('cannot enable replication for ' + $vm + ': the target already holds replica files for it at ' + $loc + ' - ' + ($left -join ', ') + '. Hyper-V will not create a replica over an existing one, so this fails however correct everything else is. Remove the replica copy on the target (or delete those files) and retry.' + $far)
+          }
+          throw ('cannot enable replication for ' + $vm + ': ' + $what + ', that path is present and holds no leftover files for this VM - so the target accepts this host and its storage is in place, and the refusal is not one this host can see the reason for.' + $far + ' Hyper-V reported: ' + $_.Exception.Message)
         }
         if ($anyServer -eq $false) {
           throw ('cannot enable replication for ' + $vm + ": '" + $server + "' does not permit this host to replicate to it - it has no authorization entry for " + $env:COMPUTERNAME + ' and does not allow any server. Add an authorization entry on the target, then retry.')
