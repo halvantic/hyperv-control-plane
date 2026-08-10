@@ -559,18 +559,53 @@ if (-not $enabled) {
               })
           } catch {}
 
+          # "No events were found" is NOT a read failure — it is the query working
+          # and matching nothing, which is a finding in its own right and the more
+          # useful of the two. Conflating them reported a reachable log as
+          # unreadable and hid what it was actually saying: that the target
+          # recorded nothing about this refusal at all.
+          #
+          # Informational events are included and the window widened, because a
+          # refusal is not always logged as an error and a failing attempt takes
+          # longer than a couple of minutes to give up.
           $far = ''
+          $reachable = $false
+          $ev = @()
           try {
             $ev = @(Get-WinEvent -ComputerName $probe -FilterHashtable @{
-              LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-2); Level=1,2,3
-            } -MaxEvents 3 -ErrorAction Stop | ForEach-Object {
+              LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-10)
+            } -MaxEvents 4 -ErrorAction SilentlyContinue | ForEach-Object {
               $m = ([string]$_.Message -replace '\s+',' ').Trim()
               if ($m.Length -gt 260) { $m = $m.Substring(0,260) + '…' }
               $m + ' (event ' + [string]$_.Id + ')'
             })
-            if ($ev.Count -gt 0) { $far = ' ' + $probe + ' recorded: ' + ($ev -join ' | ') }
+            # Reachability is proved by the channel answering at all, not by it
+            # having something to say.
+            $null = Get-WinEvent -ComputerName $probe -ListLog 'Microsoft-Windows-Hyper-V-VMMS-Admin' -ErrorAction Stop
+            $reachable = $true
           } catch {
-            $far = ' Its log could not be read from here (' + ([string]$_.Exception.Message).Trim() + '), so the reason it refused is only in ' + $probe + $([char]39) + 's Hyper-V-VMMS-Admin log.'
+            $far = ' Its Hyper-V log could not be read from ' + $env:COMPUTERNAME + ' (' + ([string]$_.Exception.Message).Trim() + '), so the reason it refused is visible only on ' + $probe + '.'
+          }
+          if ($reachable) {
+            if ($ev.Count -gt 0) {
+              $far = ' ' + $probe + ' recorded: ' + ($ev -join ' | ')
+            } else {
+              # The target's log is readable and empty for this window. Hyper-V logs
+              # a refusal it makes, so a target with nothing to say most likely never
+              # got the request — which points at the path between the two rather
+              # than at the target's configuration, all of which checked out above.
+              # Do not post that as homework: the reachability this depends on is
+              # testable from right here, and telling an operator to check a port
+              # Ballast could have opened a socket to is the shape CLAUDE.md calls
+              # a defect.
+              $reach = ''
+              try {
+                $ok = Test-NetConnection -ComputerName $server -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+                $reach = if ($ok) { ' Port ' + [string]$port + ' on ' + $server + ' does answer from here, so the listener is up and the request is being refused before it is logged — which points at authentication rather than connectivity.' }
+                         else { ' Port ' + [string]$port + ' on ' + $server + ' does NOT answer from ' + $env:COMPUTERNAME + ': the replication request cannot arrive at all. Enable the Hyper-V Replica listener rule on the target, or open that port between them.' }
+              } catch {}
+              $far = ' ' + $probe + ' has logged nothing in its Hyper-V-VMMS-Admin channel for the last ten minutes, and it logs the refusals it makes — so the request most likely never reached it.' + $reach
+            }
           }
           if ($left.Count -gt 0) {
             throw ('cannot enable replication for ' + $vm + ': the target already holds replica files for it at ' + $loc + ' - ' + ($left -join ', ') + '. Hyper-V will not create a replica over an existing one, so this fails however correct everything else is. Remove the replica copy on the target (or delete those files) and retry.' + $far)
