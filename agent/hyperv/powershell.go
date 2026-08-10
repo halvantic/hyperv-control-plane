@@ -122,14 +122,18 @@ func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string
 // Anything not matching the known boilerplate is kept, because an unrecognised
 // error losing its detail is far worse than a tidy one keeping some noise.
 func tidyPSError(stderr string) string {
+	// Everything from the first position marker onwards is boilerplate, INCLUDING
+	// its wrapped continuations. Dropping only the lines that start with a marker
+	// kept the continuation of a CategoryInfo line — PowerShell wraps mid-word — so
+	// the tidied message ended with fragments like "ntimeException offers 2
+	// available disk(s)…", which reads as corruption.
 	var keep []string
 	for _, line := range strings.Split(stderr, "\n") {
 		t := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		switch {
-		case t == "":
-		case strings.HasPrefix(t, "At line:"), strings.HasPrefix(t, "At "+"char:"):
-		case strings.HasPrefix(t, "+"):
-		default:
+		if strings.HasPrefix(t, "At line:") || strings.HasPrefix(t, "At char:") || strings.HasPrefix(t, "+") {
+			break
+		}
+		if t != "" {
 			keep = append(keep, t)
 		}
 	}

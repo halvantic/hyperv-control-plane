@@ -175,7 +175,20 @@ if (-not $clusDisk) {
   # Add-ClusterDisk takes disks the cluster can see and are not already clustered.
   $before = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Physical Disk' } | ForEach-Object { [string]$_.Name })
   $avail = @(Get-ClusterAvailableDisk -ErrorAction SilentlyContinue)
-  $mine = @($avail | Where-Object { [int]$_.Number -eq [int]$disk.Number })
+  # Matched on UniqueId first, because a ClusterAvailableDisk's Number is NOT this
+  # node's disk number — the cluster numbers what it offers independently. Filtering
+  # on it discarded the very disks the cluster was offering: two available, neither
+  # of them "disk 5", while disk 5 sat there prepared and waiting.
+  $mine = @($avail | Where-Object { $_.UniqueId -and [string]$_.UniqueId -eq [string]$disk.UniqueId })
+  if ($mine.Count -eq 0) {
+    $mine = @($avail | Where-Object { $null -ne $_.Number -and [int]$_.Number -eq [int]$disk.Number })
+  }
+  if ($mine.Count -eq 0) {
+    # Size is a last resort and only when it is unambiguous: two LUNs of the same
+    # size would make it a coin toss, and adopting the wrong one is not recoverable.
+    $bySize = @($avail | Where-Object { $_.Size -and [uint64]$_.Size -eq [uint64]$disk.Size })
+    if ($bySize.Count -eq 1) { $mine = $bySize }
+  }
   if ($mine.Count -gt 0) {
     $mine | Add-ClusterDisk -ErrorAction SilentlyContinue | Out-Null
   }
@@ -193,7 +206,11 @@ if (-not $clusDisk) {
     if ($avail.Count -eq 0) {
       $why += 'the cluster currently offers no available disks at all'
     } else {
-      $why += ('the cluster offers ' + $avail.Count + ' available disk(s), none of them disk ' + [string]$disk.Number)
+      # Say WHAT it offers, not just how many. "None of them matched" without the
+      # candidates is unfalsifiable — it was a filtering bug, and the count alone
+      # could not have shown that.
+      $shown = @($avail | ForEach-Object { 'number ' + [string]$_.Number + ' / ' + [math]::Round($_.Size/1GB,1) + 'GB / ' + [string]$_.UniqueId })
+      $why += ('the cluster offers ' + $avail.Count + ' available disk(s) and none matched this one: ' + ($shown -join ', '))
     }
     # The usual reason a presented LUN is not offered: it is mounted read/write on
     # more than one node at once, which is the state clustering exists to prevent.

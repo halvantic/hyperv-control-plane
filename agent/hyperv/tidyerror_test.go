@@ -43,6 +43,27 @@ func TestTheMessageSurvivesAndTheNoiseDoesNot(t *testing.T) {
 	}
 }
 
+// Dropping only the lines that START with a marker kept the WRAPPED CONTINUATION
+// of a dropped one — PowerShell wraps mid-word — so a tidied message ended with
+// fragments like "ntimeException offers 2 available disk(s)", which reads as
+// corruption. Everything from the first marker onwards is boilerplate.
+func TestWrappedBoilerplateIsDroppedWithItsOwner(t *testing.T) {
+	in := "the cluster did not take it: 2 available disks.\n" +
+		"At line:12 char:21\n" +
+		"+ function Fail($m) { throw $m }\n" +
+		"    + CategoryInfo : OperationStopped: (the cluster...:String) [], Ru\n" +
+		"   ntimeException offers 2 available disk(s), none of them disk 5\n"
+
+	got := tidyPSError(in)
+
+	if got != "the cluster did not take it: 2 available disks." {
+		t.Fatalf("only the message itself should survive, got %q", got)
+	}
+	if strings.Contains(got, "ntimeException") {
+		t.Error("a wrapped continuation of dropped boilerplate leaked through")
+	}
+}
+
 // An unrecognised error losing its detail is far worse than a tidy one keeping
 // some noise, so anything not matching the known boilerplate is kept.
 func TestAnUnfamiliarErrorIsLeftAlone(t *testing.T) {
