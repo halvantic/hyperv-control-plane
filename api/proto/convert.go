@@ -1558,12 +1558,18 @@ func windowsLicenceSpecToProto(s *types.WindowsLicenceSpec) *WindowsLicenceSpec 
 	if s == nil {
 		return nil
 	}
-	return &WindowsLicenceSpec{Edition: s.Edition, ProductKeySecret: s.ProductKeySecret}
+	return &WindowsLicenceSpec{
+		Edition: s.Edition, ProductKeySecret: s.ProductKeySecret,
+		Activation: s.Activation, ActivationKeySecret: s.ActivationKeySecret, KmsServer: s.KMSServer,
+	}
 }
 
 func windowsLicenceSpecFromProto(s *WindowsLicenceSpec) *types.WindowsLicenceSpec {
 	if s == nil {
 		return nil
 	}
-	return &types.WindowsLicenceSpec{Edition: s.GetEdition(), ProductKeySecret: s.GetProductKeySecret()}
+	return &types.WindowsLicenceSpec{
+		Edition: s.GetEdition(), ProductKeySecret: s.GetProductKeySecret(),
+		Activation: s.GetActivation(), ActivationKeySecret: s.GetActivationKeySecret(), KMSServer: s.GetKmsServer(),
+	}
 }

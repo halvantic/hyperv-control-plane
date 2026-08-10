@@ -35,6 +35,17 @@ type Stub struct {
 	EditionKeySeen string
 	FailEdition    bool
 
+	// ActivationAsked / ActivationKeySeen / ActivationKMS record what
+	// EnsureWindowsActivation was asked for; AVMAAsked / AVMAKeySeen the same for
+	// the guest. FailActivation / FailAVMA drive the failure paths.
+	ActivationAsked   string
+	ActivationKeySeen string
+	ActivationKMS     string
+	FailActivation    bool
+	AVMAAsked         string
+	AVMAKeySeen       string
+	FailAVMA          bool
+
 	// WindowsLicence overrides the reported edition/activation, so tests can drive
 	// the evaluation and grace-period paths.
 	WindowsLicence *WindowsLicence
@@ -577,6 +588,35 @@ func (s *Stub) EnsureWindowsEdition(_ context.Context, targetEdition, productKey
 		return OutcomeUnchanged, false, nil
 	}
 	return OutcomeUpdated, true, nil
+}
+
+// EnsureWindowsActivation records what it was asked for. It refuses an
+// evaluation edition, which is the guard worth exercising.
+func (s *Stub) EnsureWindowsActivation(_ context.Context, method, key, kmsServer string) (Outcome, error) {
+	s.ActivationAsked, s.ActivationKeySeen, s.ActivationKMS = method, key, kmsServer
+	if s.FailActivation {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced activation failure")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Evaluation {
+		return OutcomeUnchanged, fmt.Errorf("this host runs an evaluation edition, and no product key can activate one (stub)")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Status == "Licensed" && key == "" {
+		return OutcomeUnchanged, nil
+	}
+	return OutcomeUpdated, nil
+}
+
+// EnsureGuestAVMA records the request and refuses on a host that cannot vouch for
+// a guest, which is the behaviour worth testing.
+func (s *Stub) EnsureGuestAVMA(_ context.Context, vmName, avmaKey, guestUser, guestPass string) (Outcome, error) {
+	s.AVMAAsked, s.AVMAKeySeen = vmName, avmaKey
+	if s.FailAVMA {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced AVMA failure")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Evaluation {
+		return OutcomeUnchanged, fmt.Errorf("this host runs an evaluation edition and cannot vouch for a guest (stub)")
+	}
+	return OutcomeUpdated, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

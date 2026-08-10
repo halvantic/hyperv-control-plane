@@ -322,6 +322,11 @@ message WindowsLicenceSpec {
   string edition = 1;
   // product_key_secret NAMES a stored secret; the key itself never crosses here.
   string product_key_secret = 2;
+  // activation is MAK, KMS, or empty for neither — a separate act from the
+  // conversion, on a different schedule and with a different cost.
+  string activation = 3;
+  string activation_key_secret = 4;
+  string kms_server = 5;
 }
 
 message WindowsLicenceStatus {

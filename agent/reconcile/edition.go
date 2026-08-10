@@ -74,3 +74,46 @@ func (r *Reconciler) reconcileWindowsEdition(ctx context.Context, desired types.
 	// meant something different here than everywhere else.
 	return r.rebootResult(ctx, desired.Spec.RebootPolicy, conds, "convert windows edition")
 }
+
+// reconcileWindowsActivation activates the host by its declared method.
+//
+// Runs AFTER the edition step and only when that step did not stop the pass: a
+// host with a conversion staged is about to become a different edition, and
+// activating the one it is leaving would consume a MAK seat for an installation
+// that ceases to exist at the next restart.
+//
+// Advisory throughout. An unactivated host runs, serves VMs and reconciles
+// everything else perfectly — Windows nags and eventually restricts, but that is
+// not a reason to hold back a host's entire desired state.
+func (r *Reconciler) reconcileWindowsActivation(ctx context.Context, desired types.Host, secrets map[string]types.Secret) []types.Condition {
+	spec := desired.Spec.WindowsLicence
+	if spec == nil || spec.Activation == "" {
+		return nil
+	}
+
+	var key string
+	if spec.ActivationKeySecret != "" {
+		s, ok := secrets[spec.ActivationKeySecret]
+		if !ok {
+			return []types.Condition{{
+				Type: "WindowsActivation", Status: false, Reason: "NotApplied",
+				Message: fmt.Sprintf("this host activates by %s with key %q, but that key was not sent to it. If it exists in Settings this is a delivery fault at the centre rather than anything to fix here.", spec.Activation, spec.ActivationKeySecret),
+				LastTransitionTime: r.now(),
+			}}
+		}
+		key = s.Data["productKey"]
+		if key == "" {
+			key = s.Data["password"]
+		}
+	}
+
+	out, err := r.hv.EnsureWindowsActivation(ctx, spec.Activation, key, spec.KMSServer)
+	if err != nil {
+		r.log.Warn("windows activation failed (advisory, retries next pass)", "err", err)
+		return []types.Condition{r.advisoryCondition("WindowsActivation", hyperv.OutcomeUnchanged, err)}
+	}
+	if out != hyperv.OutcomeUnchanged {
+		r.log.Info("windows activated", "method", spec.Activation)
+	}
+	return []types.Condition{r.advisoryCondition("WindowsActivation", out, nil)}
+}

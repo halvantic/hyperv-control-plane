@@ -264,7 +264,42 @@ type WindowsLicenceSpec struct {
 	// in every spec-history row, and in any diff an operator pastes into a ticket —
 	// and unlike a password it cannot be rotated once it has been used.
 	ProductKeySecret string `json:"productKeySecret"`
+
+	// Activation is how this host activates: MAK, KMS, or empty for neither.
+	//
+	// Separate from the edition because they are different acts on different
+	// schedules: a conversion happens once and consumes nothing, an activation
+	// consumes a seat from a key pool and may be repeated after hardware changes.
+	// A host can also be converted and left unactivated on purpose, during a
+	// staged rollout.
+	Activation string `json:"activation,omitempty"`
+
+	// ActivationKeySecret names the key to activate WITH — a MAK, or the public
+	// GVLK for a KMS client.
+	//
+	// Supplied rather than derived. GVLKs are public and per edition and release,
+	// so Ballast could carry a table of them — and that table would be a rule that
+	// ages every time Microsoft ships a version, which is the same trap as deciding
+	// for ourselves which edition conversions are legal. Empty leaves the key the
+	// host already has, which is right for a host that only needs pointing at a
+	// KMS server.
+	ActivationKeySecret string `json:"activationKeySecret,omitempty"`
+
+	// KMSServer is the KMS host to activate against, optionally with :port. Empty
+	// uses whatever DNS auto-discovery finds, which is how most KMS estates are
+	// meant to work — setting it explicitly is for the ones that are not.
+	KMSServer string `json:"kmsServer,omitempty"`
 }
+
+// Windows activation methods.
+const (
+	// ActivationMAK is a Multiple Activation Key: one key, a pool of activations,
+	// each host consuming a seat and needing to reach Microsoft once.
+	ActivationMAK = "MAK"
+	// ActivationKMS points the host at a Key Management Service host, which
+	// reactivates it every 180 days and needs no outbound internet.
+	ActivationKMS = "KMS"
+)
 
 // WindowsLicenceStatus is the host's observed Windows edition and activation.
 //
@@ -1690,6 +1725,16 @@ const (
 	JobResync = "Resync" // no params — force an immediate full reconcile on this host
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
+
+	// JobGuestActivateAVMA installs an Automatic Virtual Machine Activation key
+	// inside a guest so it activates against its Hyper-V host.
+	//
+	// A JOB rather than desired state, for the same reason the guest domain join
+	// is one: it runs INSIDE the guest over PowerShell Direct, so it needs the VM
+	// running and an administrator account within it. As desired state a VM that
+	// is legitimately powered off would report unmet intent for as long as it
+	// stayed off, which is not drift and not something to fix.
+	JobGuestActivateAVMA = "GuestActivateAVMA" // params: vm, avmaKey, guestUser, guestPass
 
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct

@@ -350,6 +350,22 @@ type Interface interface {
 	// are legal, and refuses a domain controller, which Windows cannot convert.
 	EnsureWindowsEdition(ctx context.Context, targetEdition, productKey string) (Outcome, bool, error)
 
+	// EnsureWindowsActivation activates Windows by MAK or against a KMS host.
+	//
+	// Idempotent in the way that matters: a host already licensed, whose key and
+	// KMS server already match, is not activated again — a repeat MAK activation
+	// consumes another seat from the key's pool. An evaluation edition is refused
+	// before anything is attempted, since no key can activate one.
+	EnsureWindowsActivation(ctx context.Context, method, key, kmsServer string) (Outcome, error)
+
+	// EnsureGuestAVMA installs an Automatic Virtual Machine Activation key inside
+	// a guest so it activates against this host.
+	//
+	// Refuses on a host that cannot vouch for a guest — Standard, evaluation, or
+	// not itself activated — BEFORE touching the guest, because that failure is the
+	// host's and an error naming the guest sends an operator to the wrong machine.
+	EnsureGuestAVMA(ctx context.Context, vmName, avmaKey, guestUser, guestPass string) (Outcome, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.

@@ -165,6 +165,108 @@ func (p *PowerShell) EnsureWindowsEdition(ctx context.Context, targetEdition, pr
 	return OutcomeUnchanged, false, fmt.Errorf("set windows edition: the conversion ended without a result marker, so whether it was staged is unknown")
 }
 
+// activationScript activates Windows, by MAK or against a KMS host.
+//
+// Driven through the licensing CIM classes rather than slmgr.vbs: slmgr is a
+// script that prints localised prose and returns 0 whatever happens, so every
+// outcome would have to be recovered by matching translated text. The CIM methods
+// return HRESULTs and the product's own LicenseStatus says whether it worked.
+//
+// An EVALUATION edition is refused before anything is attempted. No key activates
+// one — the remedy is a conversion — and letting it fail at the licensing service
+// produces an error about a key when the key was never the problem.
+const activationScript = `
+$ErrorActionPreference = 'Stop'
+$method = %[1]s
+$kms = %[2]s
+$key = $env:BALLAST_ACTIVATION_KEY
+
+$ed = ''
+try { $ed = [string](Get-WindowsEdition -Online -ErrorAction Stop).Edition } catch {}
+if ($ed -like '*Eval*') {
+  throw ('this host runs ' + $ed + ', an evaluation edition, and no product key can activate one. Convert it to a retail or volume edition first.')
+}
+
+function Get-WindowsProduct {
+  @(Get-CimInstance SoftwareLicensingProduct -ErrorAction SilentlyContinue |
+    Where-Object { $_.PartialProductKey -and $_.Name -like 'Windows*' })[0]
+}
+
+$before = Get-WindowsProduct
+$wasLicensed = ($before -and [int]$before.LicenseStatus -eq 1)
+$svc = Get-CimInstance SoftwareLicensingService -ErrorAction Stop
+$changed = $false
+
+# The key is installed only when one was supplied AND it is not the one already
+# there. Reinstalling a MAK re-consumes a seat from its pool, which is a real cost
+# and not something a reconcile loop should do on every pass.
+if ($key) {
+  $tail = $key.Substring([math]::Max(0, $key.Length - 5))
+  if (-not $before -or [string]$before.PartialProductKey -ne $tail) {
+    Invoke-CimMethod -InputObject $svc -MethodName InstallProductKey -Arguments @{ ProductKey = $key } -ErrorAction Stop | Out-Null
+    Invoke-CimMethod -InputObject $svc -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue | Out-Null
+    $changed = $true
+  }
+}
+
+if ($method -eq 'KMS' -and $kms) {
+  $cur = [string]$svc.KeyManagementServiceMachine
+  if ($cur -ne $kms) {
+    Invoke-CimMethod -InputObject $svc -MethodName SetKeyManagementServiceMachine -Arguments @{ MachineName = $kms } -ErrorAction Stop | Out-Null
+    $changed = $true
+  }
+}
+
+# Already licensed and nothing was changed: activating again would contact
+# Microsoft or the KMS host for an answer already held.
+if ($wasLicensed -and -not $changed) { 'RESULT=NOOP'; return }
+
+$p = Get-WindowsProduct
+if (-not $p) { throw 'no Windows licensing product is present to activate' }
+try {
+  Invoke-CimMethod -InputObject $p -MethodName Activate -ErrorAction Stop | Out-Null
+} catch {
+  $hint = ''
+  if ($method -eq 'KMS') {
+    $target = if ($kms) { $kms } else { 'the KMS host found by DNS' }
+    $hint = ' Activation went to ' + $target + '. A KMS host issues nothing until enough machines have asked it, and a client with a MAK or retail key installed will not use KMS at all — the key has to be the public GVLK for this edition.'
+  } else {
+    $hint = ' A MAK activation needs to reach Microsoft once, and fails when the key pool is exhausted.'
+  }
+  throw ('activation was refused: ' + ([string]$_.Exception.Message).Trim() + '.' + $hint)
+}
+Invoke-CimMethod -InputObject $svc -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue | Out-Null
+
+# Judged on the state afterwards, not on the call returning. Activate() succeeds
+# against a KMS host that then declines to issue a licence, and reporting that as
+# activated is how a host reads settled while counting down.
+$after = Get-WindowsProduct
+if (-not $after -or [int]$after.LicenseStatus -ne 1) {
+  $st = if ($after) { [string]$after.LicenseStatus } else { 'unknown' }
+  throw ('activation was accepted but Windows still reports the host as not licensed (status ' + $st + '), so nothing was actually activated')
+}
+'RESULT=UPDATED'
+`
+
+// EnsureWindowsActivation activates Windows by MAK or against a KMS host.
+//
+// Idempotent in the way that matters: a host already licensed, whose key and KMS
+// server already match, is not activated again — a repeat MAK activation consumes
+// another seat from the pool.
+func (p *PowerShell) EnsureWindowsActivation(ctx context.Context, method, key, kmsServer string) (Outcome, error) {
+	m := strings.TrimSpace(method)
+	if m == "" {
+		return OutcomeUnchanged, nil
+	}
+	out, err := p.runWithEnvOut(ctx,
+		fmt.Sprintf(activationScript, psQuote(m), psQuote(strings.TrimSpace(kmsServer))),
+		[]string{"BALLAST_ACTIVATION_KEY=" + key})
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("activate windows: %w", err)
+	}
+	return resultOutcome(out, "activate windows")
+}
+
 // GetWindowsLicence observes the host's Windows edition and activation state. A
 // pure read; it never changes licensing.
 func (p *PowerShell) GetWindowsLicence(ctx context.Context) (WindowsLicence, error) {

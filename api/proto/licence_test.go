@@ -86,3 +86,51 @@ func TestAHostDeclaringNoEditionStaysNil(t *testing.T) {
 		t.Fatalf("expected nil, got %+v", got)
 	}
 }
+
+// The spec side matters more than the status side, and fails more quietly. A
+// field the proto does not carry round-trips as its zero value: the centre stores
+// the activation method, the agent never receives it, and the host sits
+// unactivated with nothing anywhere reporting a problem.
+func TestTheLicenceSpecSurvivesTheProto(t *testing.T) {
+	in := &types.WindowsLicenceSpec{
+		Edition:             "ServerDatacenter",
+		ProductKeySecret:    "conversion-key",
+		Activation:          types.ActivationKMS,
+		ActivationKeySecret: "gvlk",
+		KMSServer:           "kms.ballast.local:1688",
+	}
+
+	got := HostFromProto(HostToProto(types.Host{
+		Spec: types.HostSpec{WindowsLicence: in},
+	})).Spec.WindowsLicence
+	if got == nil {
+		t.Fatal("the licence spec did not survive at all")
+	}
+
+	for _, c := range []struct{ name, got, want string }{
+		{"edition", got.Edition, in.Edition},
+		{"product key secret", got.ProductKeySecret, in.ProductKeySecret},
+		{"activation method", got.Activation, in.Activation},
+		{"activation key secret", got.ActivationKeySecret, in.ActivationKeySecret},
+		{"KMS server", got.KMSServer, in.KMSServer},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, c.got, c.want)
+		}
+	}
+}
+
+// The conversion key and the activation key are routinely DIFFERENT keys — a
+// retail key to convert and a GVLK to activate — so they must not collapse into
+// one field on the way across.
+func TestTheTwoKeysStaySeparateAcrossTheProto(t *testing.T) {
+	got := HostFromProto(HostToProto(types.Host{Spec: types.HostSpec{
+		WindowsLicence: &types.WindowsLicenceSpec{
+			ProductKeySecret: "retail", ActivationKeySecret: "mak",
+		},
+	}})).Spec.WindowsLicence
+
+	if got.ProductKeySecret == got.ActivationKeySecret {
+		t.Fatalf("the two key references collapsed into one: %q", got.ProductKeySecret)
+	}
+}

@@ -178,6 +178,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Activation follows the edition, and only on a pass the edition did not stop.
+	// A host with a conversion staged is about to become a different edition, and
+	// activating the one it is leaving would spend a MAK seat on an installation
+	// that ceases to exist at the next restart.
+	conds = append(conds, r.reconcileWindowsActivation(ctx, desired, secrets)...)
+
 	// Identity comes next: the host should have its final name, management IP
 	// and domain before the role and networking are configured. Rename/domain
 	// changes need a reboot governed by RebootPolicy, so like the role step this

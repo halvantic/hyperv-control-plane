@@ -2231,8 +2231,13 @@ type WindowsLicenceSpec struct {
 	Edition string                 `protobuf:"bytes,1,opt,name=edition,proto3" json:"edition,omitempty"`
 	// product_key_secret NAMES a stored secret; the key itself never crosses here.
 	ProductKeySecret string `protobuf:"bytes,2,opt,name=product_key_secret,json=productKeySecret,proto3" json:"product_key_secret,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// activation is MAK, KMS, or empty for neither — a separate act from the
+	// conversion, on a different schedule and with a different cost.
+	Activation          string `protobuf:"bytes,3,opt,name=activation,proto3" json:"activation,omitempty"`
+	ActivationKeySecret string `protobuf:"bytes,4,opt,name=activation_key_secret,json=activationKeySecret,proto3" json:"activation_key_secret,omitempty"`
+	KmsServer           string `protobuf:"bytes,5,opt,name=kms_server,json=kmsServer,proto3" json:"kms_server,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *WindowsLicenceSpec) Reset() {
@@ -2275,6 +2280,27 @@ func (x *WindowsLicenceSpec) GetEdition() string {
 func (x *WindowsLicenceSpec) GetProductKeySecret() string {
 	if x != nil {
 		return x.ProductKeySecret
+	}
+	return ""
+}
+
+func (x *WindowsLicenceSpec) GetActivation() string {
+	if x != nil {
+		return x.Activation
+	}
+	return ""
+}
+
+func (x *WindowsLicenceSpec) GetActivationKeySecret() string {
+	if x != nil {
+		return x.ActivationKeySecret
+	}
+	return ""
+}
+
+func (x *WindowsLicenceSpec) GetKmsServer() string {
+	if x != nil {
+		return x.KmsServer
 	}
 	return ""
 }
@@ -6352,10 +6378,16 @@ const file_ballast_proto_rawDesc = "" +
 	"\viso_library\x18\x11 \x01(\v2\x1c.ballast.v1.ISOLibraryStatusR\n" +
 	"isoLibrary\x12-\n" +
 	"\x05iscsi\x18\x12 \x01(\v2\x17.ballast.v1.ISCSIStatusR\x05iscsi\x12I\n" +
-	"\x0fwindows_licence\x18\x13 \x01(\v2 .ballast.v1.WindowsLicenceStatusR\x0ewindowsLicence\"\\\n" +
+	"\x0fwindows_licence\x18\x13 \x01(\v2 .ballast.v1.WindowsLicenceStatusR\x0ewindowsLicence\"\xcf\x01\n" +
 	"\x12WindowsLicenceSpec\x12\x18\n" +
 	"\aedition\x18\x01 \x01(\tR\aedition\x12,\n" +
-	"\x12product_key_secret\x18\x02 \x01(\tR\x10productKeySecret\"\xbf\x02\n" +
+	"\x12product_key_secret\x18\x02 \x01(\tR\x10productKeySecret\x12\x1e\n" +
+	"\n" +
+	"activation\x18\x03 \x01(\tR\n" +
+	"activation\x122\n" +
+	"\x15activation_key_secret\x18\x04 \x01(\tR\x13activationKeySecret\x12\x1d\n" +
+	"\n" +
+	"kms_server\x18\x05 \x01(\tR\tkmsServer\"\xbf\x02\n" +
 	"\x14WindowsLicenceStatus\x12\x18\n" +
 	"\aedition\x18\x01 \x01(\tR\aedition\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1e\n" +
