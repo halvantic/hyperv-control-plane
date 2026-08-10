@@ -94,6 +94,7 @@ if (-not $disk) {
 # operator has explicitly asked to wipe it. Adoption formats the disk, and an
 # array will happily present a LUN that belongs to something else.
 $hasData = $false
+$ours = $false
 $what = @()
 if ($disk.PartitionStyle -ne 'RAW') {
   $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' })
@@ -101,6 +102,16 @@ if ($disk.PartitionStyle -ne 'RAW') {
     $hasData = $true
     $v = Get-Volume -Partition $p -ErrorAction SilentlyContinue
     if ($v -and $v.FileSystem) {
+      # A volume carrying THIS volume's name is one Ballast formatted for this
+      # very adoption — it labels with the volume name — so a pass that formatted
+      # the disk and then failed before the cluster took it leaves exactly this.
+      # Refusing it makes the adoption unresumable: every retry finds the contents
+      # its own previous attempt wrote and stops. Seen on the rig with iSCSI_DS1
+      # and iSCSI_DS2, both refused for holding a volume of their own name.
+      #
+      # Nothing is destroyed by continuing: an existing filesystem is not
+      # reformatted below, so this resumes the adoption rather than redoing it.
+      if ([string]$v.FileSystemLabel -eq $name) { $ours = $true }
       $used = ''
       if ($v.Size -gt 0) { $used = ', ' + [math]::Round(($v.Size - $v.SizeRemaining)/1GB,1) + 'GB used of ' + [math]::Round($v.Size/1GB,1) + 'GB' }
       $what += ('a ' + [string]$v.FileSystem + ' volume' + $(if ($v.FileSystemLabel) { ' labelled "' + $v.FileSystemLabel + '"' } else { '' }) + $used)
@@ -114,7 +125,7 @@ if ($disk.PartitionStyle -ne 'RAW') {
     $hasData = $false
   }
 }
-if ($hasData -and -not $wipe) {
+if ($hasData -and -not $wipe -and -not $ours) {
   Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) already contains ' + ($what -join ' and ') + '. Adopting it formats it, so Ballast will not do that to a disk with contents. If this is the right LUN and its contents are finished with, use "Wipe and adopt"; otherwise correct the serial or present a different LUN.')
 }
 

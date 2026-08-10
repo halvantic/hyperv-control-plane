@@ -74,7 +74,7 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 // "cancelled" and "failed silently" legible, which is what the empty message
 // took away.
 func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string) string {
-	if s := strings.TrimSpace(stderr); s != "" {
+	if s := tidyPSError(stderr); s != "" {
 		return s
 	}
 	switch ctx.Err() {
@@ -99,6 +99,47 @@ func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string
 		return "the command failed without writing any error output, but the host logged this while it ran: " + ev
 	}
 	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason"
+}
+
+// tidyPSError reduces a PowerShell error record to the sentence a person needs.
+//
+// A record rendered to stderr repeats the message up to three times — once as the
+// message, once in the offending source line, once in FullyQualifiedErrorId — and
+// wraps it in positional noise:
+//
+//	the LUN … already contains a ReFS volume … use "Wipe and adopt".
+//	At line:12 char:21
+//	+ function Fail($m) { throw $m }
+//	+ ~~~~~~~~
+//	    + CategoryInfo          : OperationStopped: (…)
+//	    + FullyQualifiedErrorId : the LUN … already contains …
+//
+// The carefully written first sentence is the part that helps, and burying it in
+// its own echo is the "raw error passed through" failure by another route: the
+// remedy is there and nobody reads that far. The source line is worse than
+// useless here, naming the helper that threw rather than anything about the host.
+//
+// Anything not matching the known boilerplate is kept, because an unrecognised
+// error losing its detail is far worse than a tidy one keeping some noise.
+func tidyPSError(stderr string) string {
+	var keep []string
+	for _, line := range strings.Split(stderr, "\n") {
+		t := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		switch {
+		case t == "":
+		case strings.HasPrefix(t, "At line:"), strings.HasPrefix(t, "At "+"char:"):
+		case strings.HasPrefix(t, "+"):
+		default:
+			keep = append(keep, t)
+		}
+	}
+	out := strings.TrimSpace(strings.Join(keep, " "))
+	// PowerShell's own wrapping breaks long messages mid-word across lines; the
+	// join above restores them, but the doubled spaces it leaves read as typos.
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	return out
 }
 
 // recentHostErrorsScript reads what the host recorded WHILE THE COMMAND RAN.
