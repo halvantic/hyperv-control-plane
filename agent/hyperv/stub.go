@@ -34,6 +34,13 @@ type Stub struct {
 	// ISCSIAdopted records which volumes have been adopted, so a second pass is
 	// the no-op idempotency requires.
 	ISCSIAdopted map[string]bool
+	// CSVMountNote / FailCSVMount / CSVMountWant drive and record
+	// EnsureCSVMountPoints, so the reconciler's advisory and not-yet-applied paths
+	// can be exercised without a cluster.
+	CSVMountNote string
+	FailCSVMount bool
+	CSVMountWant map[string]string
+
 	// ISCSIUnconnected names targets EnsureISCSI should report as discovered but
 	// not logged in — the state an array in reach but not granting this initiator
 	// produces, which has a different remedy from an unreachable array.
@@ -520,6 +527,16 @@ func (s *Stub) AdoptISCSIDisk(_ context.Context, a ISCSIAdoption) (string, strin
 	}
 	s.ISCSIAdopted[a.Name] = true
 	return serial, "", OutcomeUpdated, nil
+}
+
+// EnsureCSVMountPoints reports every declared volume as already correctly
+// mounted, so a stub-backed reconcile does not invent a rename.
+func (s *Stub) EnsureCSVMountPoints(_ context.Context, want map[string]string) (Outcome, string, error) {
+	s.CSVMountWant = want
+	if s.FailCSVMount {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: forced failure naming CSV mount points")
+	}
+	return OutcomeUnchanged, s.CSVMountNote, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

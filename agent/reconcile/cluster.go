@@ -178,6 +178,21 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	volConds, volChanged, volErr := r.reconcileISCSIVolumes(ctx, a, iscsiStatus)
 	conds = append(conds, volConds...)
 	changed = changed || volChanged
+
+	// 4d. A volume's MOUNT POINT must be its declared name, and that runs on every
+	// member because renaming belongs with owning the volume.
+	//
+	// Add-ClusterSharedVolume mounts at C:\ClusterStorage\VolumeN whatever the
+	// resource is named, so without this a volume the operator called iSCSI_DS1
+	// lives at Volume1 and every path built from the declared name points at
+	// nothing — the cluster's default storage path, replica storage, anything
+	// typed. It sat inside the former-only adoption before, where it could only
+	// ever have fixed the volumes the former happened to own; on the rig the two
+	// members owned one each.
+	mConds, mChanged := r.reconcileCSVMountPoints(ctx, a)
+	conds = append(conds, mConds...)
+	changed = changed || mChanged
+
 	if volErr != nil {
 		r.log.Warn("adopt iSCSI volumes failed (retries next pass)", "err", volErr)
 	}

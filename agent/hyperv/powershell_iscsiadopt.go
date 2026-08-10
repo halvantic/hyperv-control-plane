@@ -54,55 +54,6 @@ Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
 function Fail($m) { throw $m }
 
-# Ensure-MountPoint makes the volume's path under ClusterStorage match its
-# declared name, and reports whether it had to change it.
-#
-# The mount point is named separately from the cluster resource:
-# Add-ClusterSharedVolume always mounts at C:\ClusterStorage\VolumeN whatever the
-# resource is called. So a resource named iSCSI_DS1 can sit at Volume1 while the
-# cluster's default storage path names iSCSI_DS1 and points at nothing — the
-# fault behind VMMS 18172, where every new VM lands somewhere unintended.
-#
-# Renaming the directory is how a mount point is renamed; there is no cmdlet.
-# A failure here is REPORTED, not swallowed. The first version caught everything
-# and returned false, so a rename that could not happen was indistinguishable from
-# one that was not needed — the volumes stayed at VolumeN, the adoption reported
-# "already matches desired state", and nothing anywhere said why.
-$script:mountNote = ''
-function Ensure-MountPoint($csvObj, $want) {
-  if (-not $csvObj -or -not $want) { return $false }
-  $cur = ''
-  try { $cur = [string]$csvObj.SharedVolumeInfo.FriendlyVolumeName } catch {}
-  if (-not $cur) { $script:mountNote = 'the volume did not report a mount path'; return $false }
-  $leaf = Split-Path -Path $cur -Leaf
-  if ($leaf -eq $want) { return $false }
-  # Never while something is running from the old path: renaming a mount point
-  # with VMs on it takes their storage out from under them.
-  $inUse = $false
-  try { $inUse = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object { [string]$_.Path -like ($cur + '*') }).Count -gt 0 } catch {}
-  if ($inUse) {
-    $script:mountNote = 'the mount point is still ' + $leaf + ' because VMs are running from it; it is renamed once nothing is using it'
-    return $false
-  }
-  # Attempted from whichever node is reconciling, and the failure reported.
-  #
-  # A previous version refused unless this node owned the volume, on the
-  # assumption that a CSV mount point can only be renamed by its owner — which was
-  # a guess, and it stopped the rename ever being tried on a cluster whose former
-  # does not own every CSV. A CSV root is reachable from every member; if
-  # ownership does turn out to matter, the error says so and that is worth more
-  # than the guess.
-  $owner = ''
-  try { $owner = [string]$csvObj.OwnerNode.Name } catch {}
-  try {
-    Rename-Item -LiteralPath $cur -NewName $want -ErrorAction Stop
-    return $true
-  } catch {
-    $script:mountNote = 'the volume is a Cluster Shared Volume but is mounted at ' + $leaf + ' rather than ' + $want + ', and renaming it here failed' + $(if ($owner) { ' (this node is ' + $env:COMPUTERNAME + '; the cluster says ' + $owner + ' owns it)' } else { '' }) + ': ' + ([string]$_.Exception.Message).Trim() + '. Anything referring to the volume by its declared name — the cluster''s default storage path, replica storage — points at a directory that does not exist until this is resolved.'
-    return $false
-  }
-}
-
 # ---- locate the LUN -------------------------------------------------------
 $disk = $null
 if ($serial) {
@@ -213,10 +164,7 @@ if ($csv -and -not $witness) {
   # a volume adopted before Ballast knew to name the mount point kept
   # C:\ClusterStorage\VolumeN for ever, and the declared name never became the
   # path the operator was told to expect.
-  $renamed = Ensure-MountPoint $csv $name
-  $n = 'already a CSV'
-  if ($script:mountNote) { $n = $script:mountNote }
-  [pscustomobject]@{ changed = $renamed; serial = ([string]$disk.SerialNumber).Trim(); note = $n } | ConvertTo-Json -Compress
+  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
   return
 }
 if ($clusDisk -and $witness) {
@@ -327,10 +275,9 @@ if (-not $witness) {
     if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
   }
 
-  Ensure-MountPoint $existing $name | Out-Null
 }
 
-[pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = $script:mountNote } | ConvertTo-Json -Compress
+[pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress
 `
 
 // AdoptISCSIDisk takes an array-presented LUN into the cluster, as a CSV or as

@@ -324,6 +324,15 @@ type Interface interface {
 	// up to the moment its contents are gone.
 	AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (serial, note string, out Outcome, err error)
 
+	// EnsureCSVMountPoints makes each named CSV's mount point match its declared
+	// volume name, for the CSVs THIS NODE OWNS. want maps CSV name to the directory
+	// leaf it should have; the returned note explains any it could not do.
+	//
+	// Per node, not per cluster, because renaming a mount point belongs with owning
+	// the volume — and a cluster's volumes are not all owned by one member, so a
+	// former-only step could never fix them all.
+	EnsureCSVMountPoints(ctx context.Context, want map[string]string) (Outcome, string, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.
