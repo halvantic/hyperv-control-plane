@@ -54,6 +54,31 @@ Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
 function Fail($m) { throw $m }
 
+# Ensure-MountPoint makes the volume's path under ClusterStorage match its
+# declared name, and reports whether it had to change it.
+#
+# The mount point is named separately from the cluster resource:
+# Add-ClusterSharedVolume always mounts at C:\ClusterStorage\VolumeN whatever the
+# resource is called. So a resource named iSCSI_DS1 can sit at Volume1 while the
+# cluster's default storage path names iSCSI_DS1 and points at nothing — the
+# fault behind VMMS 18172, where every new VM lands somewhere unintended.
+#
+# Renaming the directory is how a mount point is renamed; there is no cmdlet.
+function Ensure-MountPoint($csvObj, $want) {
+  if (-not $csvObj -or -not $want) { return $false }
+  $cur = ''
+  try { $cur = [string]$csvObj.SharedVolumeInfo.FriendlyVolumeName } catch {}
+  if (-not $cur) { return $false }
+  $leaf = Split-Path -Path $cur -Leaf
+  if ($leaf -eq $want) { return $false }
+  # Never while something is running from the old path: renaming a mount point
+  # with VMs on it takes their storage out from under them.
+  $inUse = $false
+  try { $inUse = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object { [string]$_.Path -like ($cur + '*') }).Count -gt 0 } catch {}
+  if ($inUse) { return $false }
+  try { Rename-Item -LiteralPath $cur -NewName $want -ErrorAction Stop; return $true } catch { return $false }
+}
+
 # ---- locate the LUN -------------------------------------------------------
 $disk = $null
 if ($serial) {
@@ -159,7 +184,13 @@ foreach ($res in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Obj
 }
 $csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name } | Select-Object -First 1
 if ($csv -and -not $witness) {
-  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
+  # An adopted volume still has its mount point checked. Returning here without
+  # doing so meant the rename only ever ran on the pass that created the CSV — so
+  # a volume adopted before Ballast knew to name the mount point kept
+  # C:\ClusterStorage\VolumeN for ever, and the declared name never became the
+  # path the operator was told to expect.
+  $renamed = Ensure-MountPoint $csv $name
+  [pscustomobject]@{ changed = $renamed; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
   return
 }
 if ($clusDisk -and $witness) {
@@ -270,28 +301,7 @@ if (-not $witness) {
     if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
   }
 
-  # The MOUNT POINT is named separately from the resource.
-  #
-  # Add-ClusterSharedVolume always mounts at C:\ClusterStorage\VolumeN whatever the
-  # resource is called, so naming the resource iSCSI_DS1 left the volume living at
-  # Volume1 — and the cluster's default storage path, which names the volume the
-  # operator declared, pointed at a directory that does not exist. That is the same
-  # fault that makes VMMS log 18172 and every VM creation land somewhere else.
-  #
-  # Renaming the directory under ClusterStorage is how the mount point is renamed;
-  # there is no cmdlet for it.
-  $cur = ''
-  try { $cur = [string]$existing.SharedVolumeInfo.FriendlyVolumeName } catch {}
-  $want = Join-Path (Split-Path -Path $cur -Parent) $name
-  if ($cur -and $name -and $cur -ne $want) {
-    # Only when nothing is using the old path yet — renaming a mount point with VMs
-    # running from it takes their storage out from under them.
-    $inUse = $false
-    try { $inUse = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object { [string]$_.Path -like ($cur + '*') }).Count -gt 0 } catch {}
-    if (-not $inUse) {
-      try { Rename-Item -LiteralPath $cur -NewName $name -ErrorAction Stop } catch {}
-    }
-  }
+  Ensure-MountPoint $existing $name | Out-Null
 }
 
 [pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress
