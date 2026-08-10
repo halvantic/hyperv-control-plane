@@ -512,9 +512,15 @@ if (-not $enabled) {
           # Verify rather than assert. The admin share is the one way to check a
           # remote path without a second hop; when it cannot be reached, say the
           # path could not be checked instead of claiming it is missing.
+          # Reached through a NODE's admin share, not the broker CAP's. A cluster
+          # name object does not serve C$, so \\DRCluster-Brk\C$\... answers no and
+          # the path reads as missing — which is how a volume that existed, mounted
+          # and Online, was reported as a Cluster Shared Volume that is not there.
+          # The same mistake as querying the CAP for its replication config, one
+          # line further down.
           $missing = $null
           try {
-            $host0 = ($server -split '\.')[0]
+            $host0 = ($probe -split '\.')[0]
             $unc = '\\' + $host0 + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
             $missing = -not (Test-Path -LiteralPath $unc -ErrorAction Stop)
           } catch { $missing = $null }
@@ -524,7 +530,7 @@ if (-not $enabled) {
           if ($missing -eq $true) {
             $fix = if ($csv) { "That Cluster Shared Volume is not mounted on the target cluster. Create the volume, or repoint the Replica Broker's storage path, then retry." }
                    else { "That path does not exist on the target. Create it, or repoint the replica storage location, then retry." }
-            throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist. ' + $fix)
+            throw ('cannot enable replication for ' + $vm + ': ' + $what + ', and that path does not exist on ' + $probe + '. ' + $fix)
           }
           $fix2 = if ($csv) { " If the target cluster no longer has that Cluster Shared Volume, create it or repoint the Replica Broker's storage path." } else { " Verify that path exists on the target." }
           throw ('cannot enable replication for ' + $vm + ': ' + $what + '.' + $fix2 + ' Hyper-V reported: ' + $_.Exception.Message)
