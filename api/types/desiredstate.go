@@ -547,7 +547,18 @@ type PhysicalAdapter struct {
 }
 
 type PhysicalDisk struct {
-	DeviceID  string `json:"deviceId"`
+	// DeviceID is unique per BUS, not per host: a local SSD and an iSCSI LUN both
+	// report DeviceId 2. It stays because it is short and familiar, but nothing
+	// may identify a disk by it alone — see UniqueID.
+	DeviceID string `json:"deviceId"`
+	// UniqueID identifies the disk on this host without ambiguity, and is what a
+	// destructive operation must select on. Keying anything on DeviceID attributed
+	// one disk's facts to another: HVNEW04 reported its iSCSI LUN as holding drive
+	// F, which belongs to the local SSD sharing its DeviceId.
+	UniqueID string `json:"uniqueId,omitempty"`
+	// BusType is how the disk is attached (SAS, SATA, iSCSI, …), which is what
+	// makes two disks with the same DeviceID tellable apart in the console.
+	BusType   string `json:"busType,omitempty"`
 	SizeBytes uint64 `json:"sizeBytes"`
 	MediaType string `json:"mediaType,omitempty"` // SSD/HDD/SCM
 	CanPool   bool   `json:"canPool,omitempty"`

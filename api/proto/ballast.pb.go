@@ -2823,13 +2823,17 @@ func (x *PhysicalAdapter) GetPrefixLength() int32 {
 }
 
 type PhysicalDisk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	SizeBytes     uint64                 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	MediaType     string                 `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
-	CanPool       bool                   `protobuf:"varint,4,opt,name=can_pool,json=canPool,proto3" json:"can_pool,omitempty"`
-	IsOsDisk      bool                   `protobuf:"varint,5,opt,name=is_os_disk,json=isOsDisk,proto3" json:"is_os_disk,omitempty"`
-	DriveLetter   string                 `protobuf:"bytes,6,opt,name=drive_letter,json=driveLetter,proto3" json:"drive_letter,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId    string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	SizeBytes   uint64                 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	MediaType   string                 `protobuf:"bytes,3,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	CanPool     bool                   `protobuf:"varint,4,opt,name=can_pool,json=canPool,proto3" json:"can_pool,omitempty"`
+	IsOsDisk    bool                   `protobuf:"varint,5,opt,name=is_os_disk,json=isOsDisk,proto3" json:"is_os_disk,omitempty"`
+	DriveLetter string                 `protobuf:"bytes,6,opt,name=drive_letter,json=driveLetter,proto3" json:"drive_letter,omitempty"`
+	// unique_id identifies the disk without ambiguity; device_id is unique per bus
+	// only, so a destructive operation must select on this.
+	UniqueId      string `protobuf:"bytes,7,opt,name=unique_id,json=uniqueId,proto3" json:"unique_id,omitempty"`
+	BusType       string `protobuf:"bytes,8,opt,name=bus_type,json=busType,proto3" json:"bus_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2902,6 +2906,20 @@ func (x *PhysicalDisk) GetIsOsDisk() bool {
 func (x *PhysicalDisk) GetDriveLetter() string {
 	if x != nil {
 		return x.DriveLetter
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetUniqueId() string {
+	if x != nil {
+		return x.UniqueId
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetBusType() string {
+	if x != nil {
+		return x.BusType
 	}
 	return ""
 }
@@ -6203,7 +6221,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
 	"\agateway\x18\t \x01(\tR\agateway\x12#\n" +
 	"\rprefix_length\x18\n" +
-	" \x01(\x05R\fprefixLength\"\xc5\x01\n" +
+	" \x01(\x05R\fprefixLength\"\xfd\x01\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -6213,7 +6231,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\bcan_pool\x18\x04 \x01(\bR\acanPool\x12\x1c\n" +
 	"\n" +
 	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\x12!\n" +
-	"\fdrive_letter\x18\x06 \x01(\tR\vdriveLetter\"\xfb\x01\n" +
+	"\fdrive_letter\x18\x06 \x01(\tR\vdriveLetter\x12\x1b\n" +
+	"\tunique_id\x18\a \x01(\tR\buniqueId\x12\x19\n" +
+	"\bbus_type\x18\b \x01(\tR\abusType\"\xfb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +

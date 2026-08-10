@@ -226,6 +226,8 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 	for _, d := range inv.PhysicalDisks {
 		out.PhysicalDisks = append(out.PhysicalDisks, &PhysicalDisk{
 			DeviceId:    d.DeviceID,
+			UniqueId:    d.UniqueID,
+			BusType:     d.BusType,
 			SizeBytes:   d.SizeBytes,
 			MediaType:   d.MediaType,
 			CanPool:     d.CanPool,
@@ -263,6 +265,8 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 	for _, d := range inv.GetPhysicalDisks() {
 		out.PhysicalDisks = append(out.PhysicalDisks, types.PhysicalDisk{
 			DeviceID:    d.GetDeviceId(),
+			UniqueID:    d.GetUniqueId(),
+			BusType:     d.GetBusType(),
 			SizeBytes:   d.GetSizeBytes(),
 			MediaType:   d.GetMediaType(),
 			CanPool:     d.GetCanPool(),

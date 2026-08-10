@@ -324,18 +324,38 @@ if ($vm) {
 // Idempotent: a disk that is already raw simply ends up raw again.
 func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	id := psQuote(deviceID)
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
-		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
-		"if (-not $pd) { throw 'no physical disk with DeviceId ' + %[1]s }; "+
-		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; "+
-		"if ($disk) { "+
-		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "+
-		"Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; "+
-		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; "+
-		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue } }; "+
-		"Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue; "+
-		"$after = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
-		"if ($after.CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }", id)
+	// Selected by UniqueId when the identifier is one, and AMBIGUITY IS REFUSED.
+	//
+	// DeviceId is unique per bus, not per host: a local SSD and an iSCSI LUN both
+	// report DeviceId 2. Matching on it could return two disks, and then the OS
+	// guard silently stopped working — $disk.IsBoot on a two-element array is null,
+	// which is falsy — while Clear-Disk took the first Number in the array. A
+	// destructive operation was choosing its target by an identifier that does not
+	// identify. Refusing costs one message; guessing costs the wrong disk.
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$want = %[1]s
+$pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq $want })
+if ($pd.Count -eq 0) {
+  $pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.DeviceId -eq $want })
+}
+if ($pd.Count -eq 0) { throw ('no physical disk with id ' + $want + ' on this host') }
+if ($pd.Count -gt 1) {
+  $seen = @($pd | ForEach-Object { [string]$_.UniqueId + ' (' + [string]$_.BusType + ', ' + [math]::Round($_.Size/1GB,1) + 'GB)' })
+  throw ('id ' + $want + ' matches ' + $pd.Count + ' disks on this host, because a disk id is unique per bus and not per host: ' + ($seen -join '; ') + '. Refusing to erase one of them by guessing — identify the disk by its unique id instead.')
+}
+$pd = $pd[0]
+$disk = @($pd | Get-Disk -ErrorAction SilentlyContinue)
+if ($disk.Count -gt 1) { throw ('id ' + $want + ' resolves to more than one disk; refusing to erase by guessing') }
+if ($disk.Count -eq 1) {
+  $d = $disk[0]
+  if ($d.IsBoot -or $d.IsSystem) { throw 'refusing to format the OS/boot disk' }
+  Set-Disk -Number $d.Number -IsReadOnly $false -ErrorAction SilentlyContinue
+  Set-Disk -Number $d.Number -IsOffline $false -ErrorAction SilentlyContinue
+  if ($d.PartitionStyle -ne 'RAW') { Clear-Disk -Number $d.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue }
+}
+Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
+$after = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId })
+if ($after.Count -gt 0 -and $after[0].CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }`, id)
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("format disk %q: %w", deviceID, err)
 	}

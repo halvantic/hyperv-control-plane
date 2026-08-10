@@ -372,10 +372,18 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $isMgmt = $static -and $gw -ne ''
   [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
 }
+# Keyed on UniqueId, NOT DeviceId.
+#
+# PhysicalDisk DeviceId is unique per bus, not per host: a local SSD and an iSCSI
+# LUN both report DeviceId 2, and keying either map on it attributes one disk's
+# facts to the other. On the rig HVNEW04 reported its 10GB iSCSI LUN as holding
+# drive F — F belongs to the 100GB local SSD that shares its DeviceId, and the LUN
+# has no letter at all. The same collision can mark the wrong disk as the OS disk,
+# which is what hides a disk from the console and guards it from being formatted.
 $osIds = @()
-try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DeviceId }) } catch {}
-# Build a map of PhysicalDisk DeviceId → first drive letter assigned via a
-# partition (e.g. an NTFS volume formatted with Format-Volume and a drive letter).
+try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.UniqueId }) } catch {}
+# Map UniqueId → first drive letter assigned via a partition (e.g. an NTFS volume
+# formatted with Format-Volume and a drive letter).
 $diskToLetter = @{}
 try {
   Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
@@ -383,7 +391,7 @@ try {
     $letters = @($d | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
     if ($letters.Count -gt 0) {
       $pds = @($d | Get-PhysicalDisk -ErrorAction SilentlyContinue)
-      foreach ($pd in $pds) { $diskToLetter[[string]$pd.DeviceId] = $letters[0] }
+      foreach ($pd in $pds) { $diskToLetter[[string]$pd.UniqueId] = $letters[0] }
     }
   }
 } catch {}
@@ -400,8 +408,9 @@ $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object {
 if (-not $pdisks -or $pdisks.Count -eq 0) { $pdisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue) }
 $disks = $pdisks | ForEach-Object {
   $id = [string]$_.DeviceId
-  $letter = if ($diskToLetter.ContainsKey($id)) { $diskToLetter[$id] } else { '' }
-  [pscustomobject]@{ deviceId = $id; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($id -in $osIds); driveLetter = $letter }
+  $uid = [string]$_.UniqueId
+  $letter = if ($diskToLetter.ContainsKey($uid)) { $diskToLetter[$uid] } else { '' }
+  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem

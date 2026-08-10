@@ -391,6 +391,10 @@ message PhysicalDisk {
   bool can_pool = 4;
   bool is_os_disk = 5;
   string drive_letter = 6;
+  // unique_id identifies the disk without ambiguity; device_id is unique per bus
+  // only, so a destructive operation must select on this.
+  string unique_id = 7;
+  string bus_type = 8;
 }
 
 // ---------------------------------------------------------------------------
