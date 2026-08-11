@@ -1740,6 +1740,15 @@ const (
 	// saying "try again now", which is what the situation actually calls for.
 	JobClusterStartCoreGroup = "ClusterStartCoreGroup" // no params
 
+	// JobClusterClearQuarantine readmits a node the cluster has quarantined.
+	//
+	// MUST be enqueued on a different member. Quarantine works by stopping the
+	// cluster service on the node it applies to, so that node cannot act for the
+	// cluster — asking it to readmit itself asks the one machine that has been cut
+	// off, which is also how Ballast came to be blind to a whole cluster whose
+	// designated former was the quarantined node.
+	JobClusterClearQuarantine = "ClusterClearQuarantine" // params: node
+
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster

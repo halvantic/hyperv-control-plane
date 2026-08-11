@@ -106,9 +106,13 @@ type Stub struct {
 	ClusterGroups []ClusterGroup
 	// CoreGroupStarted records the recovery being asked for; FailCoreGroupStart
 	// drives the path where the cluster refuses.
-	CoreGroupStarted   bool
-	FailCoreGroupStart bool
-	FormCalled         bool
+	CoreGroupStarted bool
+	// QuarantineCleared records which node was readmitted; FailClearQuarantine
+	// drives the path where the cluster refuses.
+	QuarantineCleared   string
+	FailClearQuarantine bool
+	FailCoreGroupStart  bool
+	FormCalled          bool
 
 	// Witness models the cluster's observed quorum configuration; WitnessCalls
 	// and WitnessErr drive and record EnsureClusterWitness.
@@ -455,6 +459,19 @@ func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error)
 		return OutcomeUnchanged, "the cluster's resources were already online", nil
 	}
 	return OutcomeUpdated, "the cluster core group", nil
+}
+
+// ClearNodeQuarantine records the node and brings it Up in the stub's node list,
+// so a test can assert the cluster stops reporting it as ejected rather than only
+// that the call was made.
+func (s *Stub) ClearNodeQuarantine(_ context.Context, node string) (Outcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.FailClearQuarantine {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: the cluster would not readmit %s", node)
+	}
+	s.QuarantineCleared = node
+	return OutcomeUpdated, node + " rejoined the cluster", nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {

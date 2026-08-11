@@ -531,6 +531,9 @@ type Interface interface {
 	// storage stranded behind it. Returns what was started.
 	StartClusterCoreGroup(ctx context.Context) (Outcome, string, error)
 
+	// ClearNodeQuarantine readmits a quarantined node. Run from another member.
+	ClearNodeQuarantine(ctx context.Context, node string) (Outcome, string, error)
+
 	MoveClusterGroup(ctx context.Context, group, node string) error
 
 	// MoveClusterSharedVolume moves ownership of a CSV to node. Run locally on a

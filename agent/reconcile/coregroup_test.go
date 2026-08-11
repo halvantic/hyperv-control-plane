@@ -165,3 +165,50 @@ func TestStartingAnAlreadyOnlineCoreGroupIsANoOp(t *testing.T) {
 		t.Errorf("it should say nothing needed doing, got %q", msg)
 	}
 }
+
+/* Quarantine works by STOPPING the cluster service on the offending node, so the
+   node cannot act for the cluster at all. bcluster2's designated former was the
+   quarantined node, so every pass asked a stopped service what the cluster looked
+   like and deferred — which is how one node's quarantine blinded Ballast to a
+   whole cluster. The recovery therefore runs from a peer. */
+
+func TestClearingAQuarantineIsAJob(t *testing.T) {
+	stub := &hyperv.Stub{ClusterExists: true}
+	r := testReconciler(stub)
+
+	msg, err := r.ExecuteJob(context.Background(),
+		types.Job{Kind: types.JobClusterClearQuarantine, Params: map[string]string{"node": "HVNEW02"}}, nil)
+	if err != nil {
+		t.Fatalf("run job: %v", err)
+	}
+	if stub.QuarantineCleared != "HVNEW02" {
+		t.Fatalf("the job named node %q", stub.QuarantineCleared)
+	}
+	if !strings.Contains(msg, "HVNEW02") {
+		t.Errorf("the outcome must name the node: %q", msg)
+	}
+}
+
+// A cluster that will not readmit the node must not report the recovery as done —
+// the node is still outside, and the reason it kept leaving has not gone away.
+func TestARefusedReadmissionIsAFailure(t *testing.T) {
+	stub := &hyperv.Stub{ClusterExists: true, FailClearQuarantine: true}
+	r := testReconciler(stub)
+
+	if _, err := r.ExecuteJob(context.Background(),
+		types.Job{Kind: types.JobClusterClearQuarantine, Params: map[string]string{"node": "HVNEW02"}}, nil); err == nil {
+		t.Fatal("a cluster refusing to readmit the node must surface as a failed job")
+	}
+}
+
+// The script must refuse a node that is not actually quarantined: Start-ClusterNode
+// on a node that is Down for a real reason papers over the reason, and the two
+// states mean different things.
+func TestTheScriptRefusesANodeThatIsNotQuarantined(t *testing.T) {
+	if !strings.Contains(hyperv.QuarantineScriptForTest(), "not quarantined") {
+		t.Error("a node in some other state must be refused rather than started")
+	}
+	if !strings.Contains(hyperv.QuarantineScriptForTest(), "cannot answer for the cluster") {
+		t.Error("running it on the quarantined node itself must be explained, not just fail")
+	}
+}

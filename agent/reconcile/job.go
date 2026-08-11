@@ -100,6 +100,15 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			return note, nil
 		}
 		return "brought " + note + " online", nil
+	case types.JobClusterClearQuarantine:
+		out, note, err := r.hv.ClearNodeQuarantine(ctx, p["node"])
+		if err != nil {
+			return "", err
+		}
+		if out == hyperv.OutcomeUnchanged {
+			return note, nil
+		}
+		return note, nil
 	case types.JobClusterMoveGroup:
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:
