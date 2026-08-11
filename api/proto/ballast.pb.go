@@ -2023,7 +2023,12 @@ func (x *DomainJoinSpec) GetCredentialSecret() string {
 }
 
 type HostStatus struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// This host's own membership state and cluster service state. Reported per
+	// host because the cluster's node list comes from one member, and that member
+	// is exactly what is missing when it is the broken one.
+	ClusterNode        string                 `protobuf:"bytes,70,opt,name=cluster_node,json=clusterNode,proto3" json:"cluster_node,omitempty"`
+	ClusterService     string                 `protobuf:"bytes,71,opt,name=cluster_service,json=clusterService,proto3" json:"cluster_service,omitempty"`
 	Phase              Phase                  `protobuf:"varint,1,opt,name=phase,proto3,enum=ballast.v1.Phase" json:"phase,omitempty"`
 	ObservedGeneration int64                  `protobuf:"varint,2,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
 	HypervInstalled    bool                   `protobuf:"varint,3,opt,name=hyperv_installed,json=hypervInstalled,proto3" json:"hyperv_installed,omitempty"`
@@ -2091,6 +2096,20 @@ func (x *HostStatus) ProtoReflect() protoreflect.Message {
 // Deprecated: Use HostStatus.ProtoReflect.Descriptor instead.
 func (*HostStatus) Descriptor() ([]byte, []int) {
 	return file_ballast_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *HostStatus) GetClusterNode() string {
+	if x != nil {
+		return x.ClusterNode
+	}
+	return ""
+}
+
+func (x *HostStatus) GetClusterService() string {
+	if x != nil {
+		return x.ClusterService
+	}
+	return ""
 }
 
 func (x *HostStatus) GetPhase() Phase {
@@ -6371,9 +6390,11 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x17\n" +
 	"\aou_path\x18\x02 \x01(\tR\x06ouPath\x12+\n" +
-	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\x8c\a\n" +
+	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xd8\a\n" +
 	"\n" +
-	"HostStatus\x12'\n" +
+	"HostStatus\x12!\n" +
+	"\fcluster_node\x18F \x01(\tR\vclusterNode\x12'\n" +
+	"\x0fcluster_service\x18G \x01(\tR\x0eclusterService\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12)\n" +
 	"\x10hyperv_installed\x18\x03 \x01(\bR\x0fhypervInstalled\x12'\n" +

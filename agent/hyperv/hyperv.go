@@ -531,6 +531,10 @@ type Interface interface {
 	// storage stranded behind it. Returns what was started.
 	StartClusterCoreGroup(ctx context.Context) (Outcome, string, error)
 
+	// GetNodeSelf reads this host's OWN cluster membership state. Answerable when
+	// the cluster itself is not, which is the point of it.
+	GetNodeSelf(ctx context.Context) (NodeSelf, error)
+
 	// ClearNodeQuarantine readmits a quarantined node. Run from another member.
 	ClearNodeQuarantine(ctx context.Context, node string) (Outcome, string, error)
 

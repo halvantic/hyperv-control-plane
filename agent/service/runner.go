@@ -225,6 +225,9 @@ type runner struct {
 	// between the slow refreshes so the console always has the previous answer
 	// rather than a gap.
 	licenceState *types.WindowsLicenceStatus
+	// nodeSelf is this host's own view of its cluster membership, refreshed each
+	// pass. Held here because it is read once and used in the status build.
+	nodeSelf hyperv.NodeSelf
 
 	// clusterISCSI is this member's own iSCSI view from the last cluster
 	// reconcile, carried forward between cluster passes (which run on a slower
@@ -815,6 +818,13 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		}
 	}
 
+	// Read before the status is built. Cheap, and it is the one reading that
+	// survives the cluster being unreadable — which is exactly when it is needed,
+	// since a quarantined node's cluster service is stopped and it can answer
+	// nothing else.
+	if ns, err := r.hv.GetNodeSelf(ctx); err == nil {
+		r.nodeSelf = ns
+	}
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
 	st.ObservedVMs = r.observeVMs(ctx, force || observeForce)
 	st.ISOLibrary = r.observeISOLibrary(ctx, force)
@@ -1317,6 +1327,8 @@ func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics,
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,
 		HyperVInstalled:    hyperVInstalled,
+		ClusterNode:        r.nodeSelf.State,
+		ClusterService:     r.nodeSelf.Service,
 		RebootRequired:     rebootRequired,
 		InMaintenance:      inMaintenance,
 		Autonomous:         autonomous,

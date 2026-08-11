@@ -109,6 +109,10 @@ type Stub struct {
 	CoreGroupStarted bool
 	// QuarantineCleared records which node was readmitted; FailClearQuarantine
 	// drives the path where the cluster refuses.
+	// NodeSelfState / NodeSelfService model what this host says about its own
+	// membership, which is answerable when the cluster is not.
+	NodeSelfState       string
+	NodeSelfService     string
 	QuarantineCleared   string
 	FailClearQuarantine bool
 	FailCoreGroupStart  bool
@@ -464,6 +468,12 @@ func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error)
 // ClearNodeQuarantine records the node and brings it Up in the stub's node list,
 // so a test can assert the cluster stops reporting it as ejected rather than only
 // that the call was made.
+func (s *Stub) GetNodeSelf(_ context.Context) (NodeSelf, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return NodeSelf{State: s.NodeSelfState, Service: s.NodeSelfService, Joined: s.ClusterExists}, nil
+}
+
 func (s *Stub) ClearNodeQuarantine(_ context.Context, node string) (Outcome, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

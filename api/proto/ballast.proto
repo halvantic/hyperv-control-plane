@@ -281,6 +281,12 @@ message DomainJoinSpec {
 }
 
 message HostStatus {
+  // This host's own membership state and cluster service state. Reported per
+  // host because the cluster's node list comes from one member, and that member
+  // is exactly what is missing when it is the broken one.
+  string cluster_node = 70;
+  string cluster_service = 71;
+
   Phase phase = 1;
   int64 observed_generation = 2;
   bool hyperv_installed = 3;

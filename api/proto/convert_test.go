@@ -57,6 +57,8 @@ func sampleHost() types.Host {
 			ObservedGeneration: 7,
 			HyperVInstalled:    true,
 			RebootRequired:     false,
+			ClusterNode:        "Quarantined",
+			ClusterService:     "Stopped",
 			Autonomous:         true,
 			LastContact:        ts.Add(2 * time.Hour),
 			Inventory: types.HostInventory{

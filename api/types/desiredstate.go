@@ -469,6 +469,22 @@ type HostStatus struct {
 	ComputerName string `json:"computerName,omitempty"`
 	Domain       string `json:"domain,omitempty"`
 
+	// ClusterNode is this host's OWN membership state, as its cluster sees it:
+	// Up, Paused, Quarantined, Isolated, Down. Empty when the host is not
+	// clustered, or when its cluster service could not answer.
+	//
+	// Reported per host rather than read off the cluster, because the cluster's
+	// node list comes from ONE member and is exactly what is missing when that
+	// member is the broken one. A host can always answer for itself.
+	ClusterNode string `json:"clusterNode,omitempty"`
+
+	// ClusterService is the state of this host's Failover Clustering service
+	// (Running, Stopped, StartPending...). It is what a node can still report when
+	// it cannot answer anything else: quarantine works by STOPPING this service, so
+	// a stopped one is both the reason a node reports no membership and the signal
+	// that it must not be asked to speak for the cluster.
+	ClusterService string `json:"clusterService,omitempty"`
+
 	// RebootRequired is true when spec cannot be fully honoured until reboot
 	// and RebootPolicy forbids the agent doing it autonomously.
 	RebootRequired bool `json:"rebootRequired"`
