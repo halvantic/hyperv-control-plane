@@ -61,7 +61,24 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
     if ($info) { $cur = [string]$info.FriendlyVolumeName }
   } catch {}
   if (-not $cur) {
-    $seen += ($name + ': reported no mount path')
+    # Say WHAT was seen instead of only that nothing was. A CSV has no mount path
+    # for one ordinary reason -- the resource is not Online, so C:\ClusterStorage
+    # holds nothing for it -- and "reported no mount path" is equally true of a
+    # volume that is fine and a volume that is offline. Only one of them is a
+    # problem, and the difference cost two rounds of guessing.
+    $why = ''
+    try {
+      $r = Get-ClusterResource -Name $name -ErrorAction SilentlyContinue
+      if ($r) {
+        $why = ', resource state ' + [string]$r.State + ' on owner ' + [string]$r.OwnerNode
+        if ([string]$r.State -ne 'Online') {
+          $why += ' - an offline volume has no mount path, so this is the state to fix rather than the name'
+        }
+      } else {
+        $why = ', and no cluster resource of that name exists on this node'
+      }
+    } catch {}
+    $seen += ($name + ': reported no mount path' + $why)
     continue
   }
   $leaf = Split-Path -Path $cur -Leaf

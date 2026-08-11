@@ -470,7 +470,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// Only report when something actually happened or is wrong. Exit runs every
 		// cycle on every host and is a no-op almost always; a condition each time
 		// would be pure noise.
-		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" {
+		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" || ms.Blocked != "" {
 			c := r.condition("Maintenance", out, err)
 			// The node is back in service but its disks are still marked out of the
 			// pool, and Ballast could not put them back. The cluster releases them
@@ -485,6 +485,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 				c.Reason = "StorageStranded"
 				c.Message = ms.StorageError +
 					" — retrying each pass. Clearing it by hand is Disable-StorageMaintenanceMode on the affected physical disks."
+			}
+			// The cluster refused the drain, and it was right to. Reported as
+			// WaitingForStorage rather than as a failure: the request stands, the
+			// node is healthy, nothing is wrong, and the drain begins by itself when
+			// the pool is. "ApplyFailed" on a healthy node invites forcing it, and
+			// forcing it removes a copy the pool still needs.
+			if err == nil && ms.Blocked != "" {
+				c.Status = false
+				c.Reason = "WaitingForStorage"
+				c.Message = ms.Blocked
 			}
 			conds = append(conds, c)
 		}

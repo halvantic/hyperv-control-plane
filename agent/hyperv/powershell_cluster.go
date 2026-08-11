@@ -836,6 +836,16 @@ type NodeMaintenanceState struct {
 	// out, and the clear did not take. A paused node's disks being out is never an
 	// error, or every drain would raise one.
 	StorageError string
+
+	// Blocked is set when the CLUSTER refused the drain for a reason that is not a
+	// fault and not the operator's to fix — today, a degraded space, which clears
+	// itself when the repair finishes.
+	//
+	// Distinct from an error because it is neither: the request stands, the node is
+	// healthy, and the correct action is to wait. Reported as an error it read as
+	// "maintenance failed", which invites forcing it — and forcing it removes a
+	// copy the pool still needs.
+	Blocked string
 }
 
 // MaintenanceIntent says what a pass should do about a node's availability.
@@ -963,10 +973,47 @@ $storageOut = Get-BallastStorageOut %[1]s
 $storageErr = ''
 # Entering is the drain and nothing else. The cluster takes the node's disks
 # out as part of it, so there is no storage half to run, in either order.
+$blocked = ''
 if ($intent -eq 'enter') {
   if (-not $paused) {
-    Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
-    $changed = $true
+    try {
+      Suspend-ClusterNode -Name %[1]s -Drain -ErrorAction Stop | Out-Null
+      $changed = $true
+    } catch {
+      # A degraded space refuses the pause, and that refusal is CORRECT: draining
+      # this node takes its disks out of the pool, and a space that is already a
+      # copy short cannot afford to lose another. It is not a fault to fix and not
+      # a request to retry differently — it succeeds by itself when the repair
+      # finishes.
+      #
+      # Passed through raw it read "Suspend-ClusterNode : An error occurred pausing
+      # node", which says a cmdlet failed and nothing about why or what to do. The
+      # repair progress is right here for the asking, so it is asked for.
+      $m = [string]$_.Exception.Message
+      if ($m -match 'degraded' -or $m -match 'clustered space') {
+        $bits = @()
+        foreach ($j in @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object { [string]$_.JobState -ne 'Completed' })) {
+          $pc = ''
+          try { $pc = ' at ' + [string][int]$j.PercentComplete + ' per cent' } catch {}
+          $bits += ([string]$j.Name + $pc)
+        }
+        $bad = @(Get-VirtualDisk -ErrorAction SilentlyContinue |
+          Where-Object { [string]$_.HealthStatus -ne 'Healthy' } |
+          ForEach-Object { [string]$_.FriendlyName + ' (' + [string]$_.HealthStatus + ')' })
+        $blocked = 'The cluster will not pause this node yet: '
+        if ($bad.Count -gt 0) {
+          $blocked += ($bad -join ', ') + ' ' + $(if ($bad.Count -eq 1) { 'is' } else { 'are' }) + ' not healthy, and draining this node takes its disks out of the pool as well.'
+        } else {
+          $blocked += 'a clustered space is degraded, and draining this node takes its disks out of the pool as well.'
+        }
+        if ($bits.Count -gt 0) {
+          $blocked += ' A repair is running (' + ($bits -join ', ') + ').'
+        }
+        $blocked += ' Nothing to do: maintenance stays requested and starts on its own once the pool is healthy again. Forcing it would remove a copy the pool still needs.'
+      } else {
+        throw
+      }
+    }
   }
 } elseif ($intent -eq 'exit') {
   if ($paused) {
@@ -996,7 +1043,7 @@ if ($changed) {
 if ($intent -eq 'exit' -and (-not $paused) -and $storageOut) {
   $storageErr = "This node is back in service but its disks are still marked In Maintenance Mode in the storage pool, which holds every virtual disk degraded. Ballast tried to clear it and could not."
 }
-[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; storageError=$storageErr; changed=$changed } | ConvertTo-Json -Compress`,
+[pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; storageError=$storageErr; blocked=$blocked; changed=$changed } | ConvertTo-Json -Compress`,
 		psQuote(node), psQuote(intentWord(intent)))
 }
 
@@ -1013,12 +1060,13 @@ func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, int
 		Draining     bool   `json:"draining"`
 		StorageOut   bool   `json:"storageOut"`
 		StorageError string `json:"storageError"`
+		Blocked      string `json:"blocked"`
 		Changed      bool   `json:"changed"`
 	}
 	if derr := decodeJSON(out, &obs); derr != nil {
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, derr)
 	}
-	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining, StorageOut: obs.StorageOut, StorageError: obs.StorageError}
+	st := NodeMaintenanceState{IsMember: obs.Member, Paused: obs.Paused, Draining: obs.Draining, StorageOut: obs.StorageOut, StorageError: obs.StorageError, Blocked: obs.Blocked}
 	if obs.Changed {
 		return OutcomeUpdated, st, nil
 	}
