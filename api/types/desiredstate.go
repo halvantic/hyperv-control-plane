@@ -894,14 +894,67 @@ type Site struct {
 // VLAN, giving operators a stable abstraction to attach VM NICs to instead of
 // juggling raw switch names and VLAN IDs. It is centre-only metadata; a VM NIC
 // references it by name and the centre resolves it to the NIC's SwitchName and
-// VLANID, which the existing per-VM reconciler applies. The name is globally
-// unique; SwitchName is immutable after creation.
+// VLANID, which the existing per-VM reconciler applies. SwitchName is immutable
+// after creation.
+//
+// SCOPED to the thing that owns the switch — a cluster, or a standalone host —
+// and unique only within it. A name has to mean one switch, and a vSwitch is only
+// real on the hosts that have it: a fleet-wide port would assert that its switch
+// exists everywhere, so authoring a VM on another cluster against it resolves
+// cleanly at the centre and then fails on the host with a switch that was never
+// there. Scoping is what makes the resolution correct; being able to call the
+// port VLAN100 on both clusters is the consequence, not the reason.
+//
+// Never inherited, the same rule as the ISO library and host iSCSI: a cluster
+// member takes its ports from the cluster, never from its own host scope, because
+// two authorities over one VM's networking is how a NIC ends up on a switch
+// nobody declared.
 type Dvport struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+
+	// ClusterName and HostName are the scope, mutually exclusive, mirroring
+	// VMPlacementSpec — which is what the resolution keys off, so the two must not
+	// drift apart.
+	//
+	// Both empty means UNSCOPED: a port authored before scoping existed, whose
+	// scope could not be inferred. It is not a fleet-wide port and does not resolve
+	// — see DvportUnscopedMessage.
+	ClusterName string `json:"clusterName,omitempty"`
+	HostName    string `json:"hostName,omitempty"`
+
 	SwitchName  string `json:"switchName"`
 	VLANID      int    `json:"vlanId"`
 	Description string `json:"description,omitempty"`
 }
+
+// Scope returns the dvport's scope, and whether it has one at all.
+func (d Dvport) Scope() (kind, name string, scoped bool) {
+	switch {
+	case d.ClusterName != "":
+		return "cluster", d.ClusterName, true
+	case d.HostName != "":
+		return "host", d.HostName, true
+	}
+	return "", "", false
+}
+
+// SameScope reports whether two dvports live in the same scope, which is what
+// makes their names collide.
+func (d Dvport) SameScope(o Dvport) bool {
+	return d.ClusterName == o.ClusterName && d.HostName == o.HostName
+}
+
+// DvportUnscopedMessage explains a port that has no scope, in the terms an
+// operator can act on.
+//
+// It refuses to resolve rather than falling back to matching any scope. Resolving
+// it fleet-wide is precisely the behaviour scoping exists to remove, and it would
+// bind a NIC to a switch that may not exist on the target — the failure would then
+// surface on a host, as a switch-not-found, a long way from the cause.
+const DvportUnscopedMessage = "this port has no cluster or host, so Ballast cannot tell which switch it means. " +
+	"It was created before ports were scoped and its scope could not be worked out from the switch name. " +
+	"Set its cluster or host and it will resolve again; VMs already using it are unaffected, " +
+	"because a VM's adapter carries the switch and VLAN it was given at the time."
 
 // SiteLabel is the ObjectMeta label key by which clusters and hosts declare the
 // site they belong to.
