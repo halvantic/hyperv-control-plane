@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -265,6 +266,15 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	if storageErr != nil {
 		phase, honoured = types.PhaseDegraded, false
 	}
+	// The cluster's OWN core group decides whether it is Ready, and it was being
+	// observed and thrown away. DRCluster reported Ready for hours with Cluster
+	// Group PartialOnline -- its Cluster Name and both Cluster IP Address
+	// resources offline -- so every diagnosis went to the storage that had failed
+	// downstream of it, and the console said the cluster was fine throughout.
+	if c := coreGroupProblem(state.Groups); c != nil {
+		conds = append(conds, *c)
+		phase, honoured = types.PhaseDegraded, false
+	}
 	return ClusterResult{
 		Phase: phase, Honoured: honoured, Changed: changed,
 		FormedMembers: state.Members, S2DEnabled: s2dEnabled, Conditions: conds,
@@ -435,4 +445,46 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) 
 		}
 	}
 	return s2dEnabled, conds, changed, firstErr
+}
+
+// coreGroupProblem reports the cluster's own core group when it is not fully
+// online.
+//
+// "Cluster Group" holds the cluster name and its IP addresses. While it is down
+// the cluster has no identity on the network: storage will not come online,
+// roles fail, and everything downstream reports its own separate fault — which is
+// what makes this worth naming first rather than letting an operator work back to
+// it from a CSV that would not mount.
+//
+// PartialOnline is included deliberately. It means some resources in the group
+// are online and some are not, which reads like a half-success and is not one:
+// the cluster name being offline is total, whatever else in the group is up.
+func coreGroupProblem(groups []hyperv.ClusterGroup) *types.Condition {
+	for _, g := range groups {
+		if !strings.EqualFold(g.Name, "Cluster Group") {
+			continue
+		}
+		if strings.EqualFold(g.State, "Online") {
+			return nil
+		}
+		msg := "the cluster's core group is " + g.State +
+			", so the cluster name and its IP addresses are not fully online. " +
+			"While that is the case the cluster has no identity on the network: " +
+			"shared volumes will not come online and roles will fail, each reporting its own separate problem. " +
+			"Fix this first — the rest is downstream of it."
+		if g.State == "" {
+			msg = "the cluster's core group did not report a state, so whether the cluster name and its IP addresses are online is unknown."
+		}
+		return &types.Condition{
+			Type: "ClusterCoreGroup", Status: false, Reason: "NotOnline",
+			Message: msg, LastTransitionTime: time.Now().UTC(),
+		}
+	}
+	// Absent is NOT online. A cluster that reported no core group at all is one
+	// this pass could not read, and saying nothing would report it as healthy.
+	return &types.Condition{
+		Type: "ClusterCoreGroup", Status: false, Reason: "NotReported",
+		Message:            "this cluster reported no core group, so whether its name and IP addresses are online could not be established.",
+		LastTransitionTime: time.Now().UTC(),
+	}
 }
