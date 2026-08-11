@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -58,15 +59,18 @@ type NodeSelf struct {
 	Joined bool
 }
 
-// GetNodeSelf reads this host's own cluster membership state. A pure read, and it
-// never fails: a host in no cluster answers with an empty state, which is correct
-// rather than an error.
+// GetNodeSelf reads this host's own cluster membership state.
+//
+// A failure is REPORTED, not swallowed. The first version returned an empty
+// NodeSelf and a nil error on any failure, which made a script that could not run
+// indistinguishable from a host with nothing to say — three hosts reported no
+// membership at all and there was no way to find out why. A host in no cluster
+// genuinely has nothing to report; a host whose read failed has something to
+// report and it is the failure.
 func (p *PowerShell) GetNodeSelf(ctx context.Context) (NodeSelf, error) {
 	raw, err := p.run(ctx, nodeSelfScript)
 	if err != nil {
-		// Not an error worth propagating: this is an observation, and a host that
-		// cannot answer is reported as not having answered.
-		return NodeSelf{}, nil
+		return NodeSelf{}, fmt.Errorf("read own cluster membership: %w", err)
 	}
 	var res struct {
 		Node    string `json:"node"`
@@ -74,7 +78,7 @@ func (p *PowerShell) GetNodeSelf(ctx context.Context) (NodeSelf, error) {
 		Joined  bool   `json:"joined"`
 	}
 	if derr := decodeJSON(raw, &res); derr != nil {
-		return NodeSelf{}, nil
+		return NodeSelf{}, fmt.Errorf("read own cluster membership: %w", derr)
 	}
 	return NodeSelf{
 		State:   strings.TrimSpace(res.Node),

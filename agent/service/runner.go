@@ -822,7 +822,13 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// survives the cluster being unreadable — which is exactly when it is needed,
 	// since a quarantined node's cluster service is stopped and it can answer
 	// nothing else.
-	if ns, err := r.hv.GetNodeSelf(ctx); err == nil {
+	// A failed read keeps the last known value rather than clearing it — the same
+	// absent-versus-unknown rule as the licence read — and says so, because an
+	// empty membership that nobody can explain is how three hosts came to report
+	// nothing with no way to find out why.
+	if ns, err := r.hv.GetNodeSelf(ctx); err != nil {
+		r.log.Warn("read own cluster membership failed (keeping last known)", "err", err)
+	} else {
 		r.nodeSelf = ns
 	}
 	st := r.buildStatus(inv, metrics, resources, autonomous, phase, conds, hyperVInstalled, rebootRequired, inMaintenance)
