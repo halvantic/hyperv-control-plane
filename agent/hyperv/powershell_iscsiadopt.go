@@ -68,17 +68,31 @@ function Fail($m) { throw $m }
 function Ensure-ResourceOnline {
   param($res)
   if (-not $res) { return $false }
-  $r = Get-ClusterResource -Name ([string]$res.Name) -ErrorAction SilentlyContinue
-  if (-not $r) { return $false }
-  if ([string]$r.State -eq 'Online') { return $false }
+  # The object IS the resource -- do not look it up again.
+  #
+  # The first version re-fetched it with Get-ClusterResource -Name, and on the rig
+  # that returned nothing: the cluster reported no Physical Disk resources at all
+  # while Get-ClusterSharedVolume was handing back two CSVs, both Offline. So the
+  # lookup silently found nothing, reported nothing to do, and two offline volumes
+  # stayed offline through an upgrade written to fix exactly that.
+  #
+  # A name lookup was never needed. Whatever a CSV or disk resource is called on
+  # this build, and whatever ResourceType it carries, the caller already holds it.
+  $state = ''
+  try { $state = [string]$res.State } catch {}
+  if ($state -eq 'Online') { return $false }
+  $rname = ''
+  try { $rname = [string]$res.Name } catch {}
   try {
-    Start-ClusterResource -InputObject $r -ErrorAction Stop | Out-Null
+    Start-ClusterResource -InputObject $res -ErrorAction Stop | Out-Null
   } catch {
-    Fail ('the cluster holds ' + [string]$r.Name + ' but it is ' + [string]$r.State + ' and would not come online: ' + ([string]$_.Exception.Message).Trim() + '. An offline volume has no mount path, so nothing can be stored on it. Check the LUN is reachable from every member and that it is not held by another cluster.')
+    Fail ('the cluster holds ' + $rname + ' but it is ' + $state + ' and would not come online: ' + ([string]$_.Exception.Message).Trim() + '. An offline volume has no mount path, so nothing can be stored on it. Check the LUN is reachable from every member and that it is not held by another cluster.')
   }
-  $r = Get-ClusterResource -Name ([string]$res.Name) -ErrorAction SilentlyContinue
-  if ($r -and [string]$r.State -ne 'Online') {
-    Fail ('the cluster was asked to bring ' + [string]$r.Name + ' online and it is still ' + [string]$r.State + '. An offline volume has no mount path, so nothing can be stored on it.')
+  # Re-read through the same object, not by name, for the same reason.
+  $after = ''
+  try { $after = [string](Get-ClusterResource -InputObject $res -ErrorAction SilentlyContinue).State } catch {}
+  if ($after -and $after -ne 'Online') {
+    Fail ('the cluster was asked to bring ' + $rname + ' online and it is still ' + $after + '. An offline volume has no mount path, so nothing can be stored on it.')
   }
   return $true
 }

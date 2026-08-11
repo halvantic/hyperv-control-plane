@@ -279,3 +279,29 @@ func TestAResourceThatWillNotStartIsReported(t *testing.T) {
 		t.Error("the failure must say why an offline volume matters")
 	}
 }
+
+// The object IS the resource. Re-fetching it by name returned nothing on the rig
+// — the cluster reported no Physical Disk resources while handing back two
+// offline CSVs — so the online step found nothing, reported nothing to do, and
+// two offline volumes survived the upgrade written to fix exactly that.
+func TestTheOnlineStepDoesNotReFetchTheResourceByName(t *testing.T) {
+	i := strings.Index(adoptScript, "function Ensure-ResourceOnline")
+	if i < 0 {
+		t.Fatal("no Ensure-ResourceOnline in the script")
+	}
+	body := adoptScript[i:]
+	if end := strings.Index(body, "\n# ---- locate"); end > 0 {
+		body = body[:end]
+	}
+	// Comment lines skipped: the function explains why it does not look the
+	// resource up by name, and naming the call there is the point.
+	for _, line := range strings.Split(body, "\n") {
+		code := strings.TrimSpace(line)
+		if !strings.HasPrefix(code, "#") && strings.Contains(code, "Get-ClusterResource -Name") {
+			t.Errorf("the resource is looked up by name again; whatever it is called on this build, the caller already holds it: %q", code)
+		}
+	}
+	if !strings.Contains(body, "Start-ClusterResource -InputObject $res") {
+		t.Error("the resource must be started through the object it was given")
+	}
+}

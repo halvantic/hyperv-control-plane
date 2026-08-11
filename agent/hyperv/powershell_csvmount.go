@@ -80,18 +80,20 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
         # not match the way the resource is actually named, and the CSV
         # enumeration two lines up clearly found something. The candidates settle
         # it; a count would not.
+        # Every resource, not only Physical Disk ones. Filtering on that type is
+        # what produced "this cluster has no Physical Disk resources at all" while
+        # two CSVs were plainly present -- the filter was the thing that was wrong,
+        # and a narrower question cannot reveal that.
         $have = @()
         foreach ($rr in @(Get-ClusterResource -ErrorAction SilentlyContinue)) {
-          if ([string]$rr.ResourceType -eq 'Physical Disk') {
-            $have += ('"' + [string]$rr.Name + '" (' + [string]$rr.State + ', owner ' + [string]$rr.OwnerNode + ')')
-          }
+          $have += ('"' + [string]$rr.Name + '" [' + [string]$rr.ResourceType + '] (' + [string]$rr.State + ')')
         }
         $sv = ''
         try { $sv = ' The CSV object reports state ' + [string]$csv.State + ' and ' + [string]@($csv.SharedVolumeInfo).Count + ' volume entries.' } catch {}
         if ($have.Count -eq 0) {
-          $why = ', and this cluster has no Physical Disk resources at all.' + $sv
+          $why = ', and this cluster reports no resources at all.' + $sv
         } else {
-          $why = ', and the Physical Disk resources this cluster does have are: ' + ($have -join ', ') + '.' + $sv
+          $why = ', and the resources this cluster does have are: ' + ($have -join ', ') + '.' + $sv
         }
       }
     } catch {}
