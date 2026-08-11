@@ -93,7 +93,13 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	if state.Exists && !state.Known {
 		conds = append(conds, types.Condition{
 			Type: "ClusterFormed", Status: true, Reason: "StateUndetermined",
-			Message:            "cluster present but its state was unreadable this pass — deferring",
+			Message: "cluster present but its state was unreadable this pass — deferring" +
+				func() string {
+					if state.UnknownReason == "" {
+						return ""
+					}
+					return ". " + state.UnknownReason
+				}(),
 			LastTransitionTime: r.now(),
 		})
 		return ClusterResult{Phase: types.PhaseProgressing, Honoured: true, Changed: changed, Conditions: conds}, nil

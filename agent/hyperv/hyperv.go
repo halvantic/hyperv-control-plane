@@ -715,6 +715,12 @@ type ClusterState struct {
 	// When false, Exists is reported true (to avoid a spurious New-Cluster) but the
 	// detail fields are empty, so the reconciler must defer rather than clobber.
 	Known bool
+	// UnknownReason says why the state could not be read, when it could not.
+	// "Unreadable this pass" is equally true of a cluster service still starting
+	// and of a node the cluster has QUARANTINED, and only one of those clears
+	// itself — so the reason travels with the deferral rather than the operator
+	// being left to guess which they are waiting on.
+	UnknownReason string
 	// Name is the cluster's name (empty when Exists is false).
 	Name string
 	// Members are the node names currently in the cluster.

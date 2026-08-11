@@ -31,6 +31,7 @@ type clusterCSVObs struct {
 type clusterObservation struct {
 	Exists     bool                `json:"exists"`
 	Known      bool                `json:"known"`
+	Reason     string              `json:"reason"`
 	Name       string              `json:"name"`
 	Members    []string            `json:"members"`
 	Nodes      []clusterOwnedObs   `json:"nodes"`
@@ -86,7 +87,9 @@ type clusterNetworkObs struct {
 // keeps the nested arrays in the JSON.
 const clusterStateScript = `
 $ErrorActionPreference = 'Stop'
-$c = Get-Cluster -ErrorAction SilentlyContinue
+$getClusterErr = ''
+$c = $null
+try { $c = Get-Cluster -ErrorAction Stop } catch { $getClusterErr = ([string]$_.Exception.Message).Trim() }
 if (-not $c) {
   # Get-Cluster returned nothing — but is the node truly un-clustered, or was the
   # cluster service just momentarily unavailable (starting, mid-operation)? Report
@@ -117,7 +120,23 @@ if (-not $c) {
     $pn = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\ClusSvc\Parameters' -ErrorAction SilentlyContinue).ClusterName
     if ($pn) { $joined = $true }
   }
-  if ($joined) { [pscustomobject]@{ exists = $true; known = $false } | ConvertTo-Json -Compress; return }
+  if ($joined) {
+    # Say WHY, not only that it could not be read. "Unreadable this pass" is
+    # equally true of a service still starting and of a node the cluster has
+    # QUARANTINED — and only one of those clears itself. The cluster service's
+    # own state and this node's membership state distinguish them, and both are
+    # readable without the cluster being reachable.
+    $svc = ''
+    try { $svc = [string](Get-Service ClusSvc -ErrorAction Stop).Status } catch { $svc = 'unreadable' }
+    $me = ''
+    try { $me = [string](Get-ClusterNode -Name $env:COMPUTERNAME -ErrorAction SilentlyContinue).State } catch {}
+    $why = @()
+    if ($getClusterErr) { $why += $getClusterErr }
+    $why += ('cluster service is ' + $svc)
+    if ($me) { $why += ('this node reports itself as ' + $me) }
+    [pscustomobject]@{ exists = $true; known = $false; reason = ($why -join '; ') } | ConvertTo-Json -Compress
+    return
+  }
   [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return
 }
 $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
@@ -507,7 +526,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 		broker = &ClusterReplicaBroker{Name: obs.Broker.Name, State: obs.Broker.State,
 			StorageLocation: obs.Broker.StorageLocation}
 	}
-	return ClusterState{Exists: obs.Exists, Known: obs.Known, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker,
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, UnknownReason: obs.Reason, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker,
 		FunctionalLevel: obs.FuncLevel, NodeOSBuild: obs.NodeBuild}, nil
 }
 
