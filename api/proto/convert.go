@@ -909,6 +909,7 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 	return &ClusterStatus{
 		Phase:              phaseToProto(s.Phase),
 		ObservedGeneration: s.ObservedGeneration,
+		StateUnreadable:    s.StateUnreadable,
 		FormedMembers:      s.FormedMembers,
 		S2DEnabled:         s.S2DEnabled,
 		Conditions:         conditionsToProto(s.Conditions),
@@ -1133,6 +1134,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 	return types.ClusterStatus{
 		Phase:              phaseFromProto(s.GetPhase()),
 		ObservedGeneration: s.GetObservedGeneration(),
+		StateUnreadable:    s.GetStateUnreadable(),
 		FormedMembers:      s.GetFormedMembers(),
 		S2DEnabled:         s.GetS2DEnabled(),
 		Conditions:         conditionsFromProto(s.GetConditions()),

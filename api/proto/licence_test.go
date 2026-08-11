@@ -139,3 +139,18 @@ func TestTheTwoKeysStaySeparateAcrossTheProto(t *testing.T) {
 		t.Fatalf("the two key references collapsed into one: %q", got.ProductKeySecret)
 	}
 }
+
+// StateUnreadable decides whether a blind member's empty reading replaces a
+// healthy one. Dropped by the proto it arrives as false, every report looks
+// readable, and the centre is back to letting one deaf node erase a cluster.
+func TestTheUnreadableFlagSurvivesTheProto(t *testing.T) {
+	in := types.ClusterStatus{StateUnreadable: true, FormedMembers: []string{"HV01"}}
+	if got := ClusterStatusFromProto(ClusterStatusToProto(in)); !got.StateUnreadable {
+		t.Fatal("the unreadable flag did not survive the proto")
+	}
+	// And false must stay false, or every report claims to be blind.
+	readable := types.ClusterStatus{FormedMembers: []string{"HV01"}}
+	if got := ClusterStatusFromProto(ClusterStatusToProto(readable)); got.StateUnreadable {
+		t.Fatal("a readable report came back marked unreadable")
+	}
+}

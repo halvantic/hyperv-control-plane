@@ -20,8 +20,12 @@ type ClusterAssignment struct {
 
 // ClusterResult is the outcome of one cluster reconcile pass.
 type ClusterResult struct {
-	Phase           types.Phase
-	Honoured        bool
+	Phase    types.Phase
+	Honoured bool
+	// StateUnreadable means this member could not read the cluster at all, so
+	// every observed field here is empty because nothing was seen. The centre
+	// keeps a healthy member's reading rather than letting this one replace it.
+	StateUnreadable bool
 	Changed         bool
 	FormedMembers   []string
 	S2DEnabled      bool
@@ -102,7 +106,10 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 				}(),
 			LastTransitionTime: r.now(),
 		})
-		return ClusterResult{Phase: types.PhaseProgressing, Honoured: true, Changed: changed, Conditions: conds}, nil
+		// Flagged so the centre keeps a healthy member's reading instead of letting
+		// this empty one replace it. Every field below is empty because nothing was
+		// seen, not because nothing is there.
+		return ClusterResult{Phase: types.PhaseProgressing, Honoured: true, Changed: changed, Conditions: conds, StateUnreadable: true}, nil
 	}
 	// 3. Not formed yet.
 	if !state.Exists {

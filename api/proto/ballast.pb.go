@@ -4491,12 +4491,15 @@ func (x *WitnessSpec) GetDisk() *CSVSourceSpec {
 }
 
 type ClusterStatus struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Phase              Phase                  `protobuf:"varint,1,opt,name=phase,proto3,enum=ballast.v1.Phase" json:"phase,omitempty"`
-	ObservedGeneration int64                  `protobuf:"varint,2,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
-	FormedMembers      []string               `protobuf:"bytes,3,rep,name=formed_members,json=formedMembers,proto3" json:"formed_members,omitempty"`
-	S2DEnabled         bool                   `protobuf:"varint,4,opt,name=s2d_enabled,json=s2dEnabled,proto3" json:"s2d_enabled,omitempty"`
-	Conditions         []*Condition           `protobuf:"bytes,5,rep,name=conditions,proto3" json:"conditions,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The reporting member could not read the cluster at all: every observed field
+	// is empty because nothing was seen, not because nothing is there.
+	StateUnreadable    bool         `protobuf:"varint,60,opt,name=state_unreadable,json=stateUnreadable,proto3" json:"state_unreadable,omitempty"`
+	Phase              Phase        `protobuf:"varint,1,opt,name=phase,proto3,enum=ballast.v1.Phase" json:"phase,omitempty"`
+	ObservedGeneration int64        `protobuf:"varint,2,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
+	FormedMembers      []string     `protobuf:"bytes,3,rep,name=formed_members,json=formedMembers,proto3" json:"formed_members,omitempty"`
+	S2DEnabled         bool         `protobuf:"varint,4,opt,name=s2d_enabled,json=s2dEnabled,proto3" json:"s2d_enabled,omitempty"`
+	Conditions         []*Condition `protobuf:"bytes,5,rep,name=conditions,proto3" json:"conditions,omitempty"`
 	// groups are the clustered roles/groups and their current owner node.
 	Groups []*ClusterGroup `protobuf:"bytes,6,rep,name=groups,proto3" json:"groups,omitempty"`
 	// csvs are the Cluster Shared Volumes and their current owner node.
@@ -4561,6 +4564,13 @@ func (x *ClusterStatus) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ClusterStatus.ProtoReflect.Descriptor instead.
 func (*ClusterStatus) Descriptor() ([]byte, []int) {
 	return file_ballast_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *ClusterStatus) GetStateUnreadable() bool {
+	if x != nil {
+		return x.StateUnreadable
+	}
+	return false
 }
 
 func (x *ClusterStatus) GetPhase() Phase {
@@ -6597,8 +6607,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
 	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +
 	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\x12-\n" +
-	"\x04disk\x18\x04 \x01(\v2\x19.ballast.v1.CSVSourceSpecR\x04disk\"\x8f\x06\n" +
-	"\rClusterStatus\x12'\n" +
+	"\x04disk\x18\x04 \x01(\v2\x19.ballast.v1.CSVSourceSpecR\x04disk\"\xba\x06\n" +
+	"\rClusterStatus\x12)\n" +
+	"\x10state_unreadable\x18< \x01(\bR\x0fstateUnreadable\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12%\n" +
 	"\x0eformed_members\x18\x03 \x03(\tR\rformedMembers\x12\x1f\n" +

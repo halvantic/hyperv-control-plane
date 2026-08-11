@@ -661,6 +661,10 @@ message WitnessSpec {
 }
 
 message ClusterStatus {
+  // The reporting member could not read the cluster at all: every observed field
+  // is empty because nothing was seen, not because nothing is there.
+  bool state_unreadable = 60;
+
   Phase phase = 1;
   int64 observed_generation = 2;
   repeated string formed_members = 3;

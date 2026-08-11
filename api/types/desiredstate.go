@@ -1497,6 +1497,18 @@ type ClusterStatus struct {
 	// action on cluster health must check this is newer than whatever it did
 	// last, not merely that the numbers look good.
 	ObservedAt time.Time `json:"observedAt,omitempty"`
+
+	// StateUnreadable means the reporting member could not read the cluster at all
+	// this pass — its cluster service was stopped, or it has been ejected from
+	// membership — so every observed field below is EMPTY because nothing was
+	// seen, not because nothing is there.
+	//
+	// Every member reports, and a report replaces the last one, so without this a
+	// single blind member overwrites the readings of every healthy one. On the rig
+	// bcluster2's first member was quarantined — which stops its cluster service —
+	// and the whole cluster went dark to the centre: no nodes, no volumes, three
+	// of seven steps, while two healthy members could see it perfectly.
+	StateUnreadable bool `json:"stateUnreadable,omitempty"`
 }
 
 // ClusterNetworkStatus is one cluster network: subnet (CIDR), role

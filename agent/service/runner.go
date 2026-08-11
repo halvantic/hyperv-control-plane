@@ -1228,6 +1228,7 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		FormedMembers:      res.FormedMembers,
 		S2DEnabled:         res.S2DEnabled,
 		Conditions:         res.Conditions,
+		StateUnreadable:    res.StateUnreadable,
 		Groups:             res.Groups,
 		CSVs:               res.CSVs,
 		VMs:                res.VMs,

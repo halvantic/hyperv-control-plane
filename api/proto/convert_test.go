@@ -210,6 +210,7 @@ func sampleClusterStatus() types.ClusterStatus {
 	return types.ClusterStatus{
 		Phase:              types.PhaseReady,
 		ObservedGeneration: 7,
+		StateUnreadable:    true,
 		FormedMembers:      []string{"n1", "n2"},
 		S2DEnabled:         true,
 		Nodes:              []types.ClusterNodeStatus{{Name: "n1", State: "Up"}},
