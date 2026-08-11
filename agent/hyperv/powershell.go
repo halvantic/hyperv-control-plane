@@ -40,6 +40,9 @@ type PowerShell struct {
 	run       runFunc
 	runStream runStreamFunc
 	log       *slog.Logger
+	// timings records how long each exported method spent in PowerShell, so a
+	// slow pass can name its own slowest call instead of being guessed at.
+	timings *callTimings
 }
 
 // runFunc executes a PowerShell script and returns its stdout. It is a field so
@@ -56,7 +59,19 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &PowerShell{run: execPowerShell, runStream: execPowerShellStream, log: log}
+	// Timing wraps the two functions that actually execute a script, so every
+	// call is covered — including the ones nobody thought to instrument, which is
+	// where a surprise will be.
+	ps := &PowerShell{log: log, timings: newCallTimings()}
+	ps.run = func(ctx context.Context, script string) ([]byte, error) {
+		defer ps.timed(time.Now())
+		return execPowerShell(ctx, script)
+	}
+	ps.runStream = func(ctx context.Context, script string, onLine func(string)) error {
+		defer ps.timed(time.Now())
+		return execPowerShellStream(ctx, script, onLine)
+	}
+	return ps
 }
 
 // psFailureDetail explains a powershell.exe failure that left no diagnostic of

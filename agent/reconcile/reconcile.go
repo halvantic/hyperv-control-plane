@@ -124,6 +124,7 @@ type Result struct {
 // at the first failure: it attempts every resource so status reflects the whole
 // host, and reports Honoured == false if any failed.
 func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (Result, error) {
+	timer := newPassTimer()
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -522,6 +523,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 				(ms.Paused && !ms.Draining && (ms.StorageOut || !wantMaintenance))
 			draining = ms.Draining
 		}
+	}
+	// What this pass actually cost, reported only when it cost enough to matter.
+	//
+	// A pass longer than the agent's heartbeat stops the host reporting on time,
+	// and a host that reports late reads as OFFLINE — which showed up as unknown
+	// networks, hosts missing from the agent update list, and clusters with no
+	// member to report them. None of those symptoms named the cause, and reasoning
+	// about which step was slow produced two wrong answers in one evening.
+	//
+	// Reported on the pass rather than logged on the host: reading it must not
+	// require opening a session on the machine, which is the intervention Ballast
+	// exists to remove.
+	if msg := slowPassMessage(r.hv.TakeTimings(), timer.total(), slowPassThreshold); msg != "" {
+		conds = append(conds, types.Condition{
+			Type: "ReconcilePass", Status: false, Reason: "Slow",
+			Message: msg, LastTransitionTime: r.now(),
+		})
+		r.log.Warn("slow reconcile pass", "took", timer.total().String())
 	}
 	res := Result{
 		InMaintenance:   inMaintenance,

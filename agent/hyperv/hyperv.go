@@ -535,6 +535,12 @@ type Interface interface {
 	// the cluster itself is not, which is the point of it.
 	GetNodeSelf(ctx context.Context) (NodeSelf, error)
 
+	// TakeTimings returns how long each call spent in PowerShell since the last
+	// take, slowest first, and clears the record. Taken rather than read so each
+	// pass reports its own cost rather than an average that hides one slow pass
+	// among fast ones.
+	TakeTimings() []CallTiming
+
 	// ClearNodeQuarantine readmits a quarantined node. Run from another member.
 	ClearNodeQuarantine(ctx context.Context, node string) (Outcome, string, error)
 

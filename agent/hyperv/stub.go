@@ -468,6 +468,11 @@ func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error)
 // ClearNodeQuarantine records the node and brings it Up in the stub's node list,
 // so a test can assert the cluster stops reporting it as ejected rather than only
 // that the call was made.
+// TakeTimings reports nothing: the stub does not shell out, so there is no cost
+// to attribute and inventing one would make the slow-pass condition fire in tests
+// that exercise nothing slow.
+func (s *Stub) TakeTimings() []CallTiming { return nil }
+
 func (s *Stub) GetNodeSelf(_ context.Context) (NodeSelf, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
