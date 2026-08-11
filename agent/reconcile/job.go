@@ -91,6 +91,15 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobClusterStartCoreGroup:
+		out, note, err := r.hv.StartClusterCoreGroup(ctx)
+		if err != nil {
+			return "", err
+		}
+		if out == hyperv.OutcomeUnchanged {
+			return note, nil
+		}
+		return "brought " + note + " online", nil
 	case types.JobClusterMoveGroup:
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:

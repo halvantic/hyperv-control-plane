@@ -104,7 +104,11 @@ type Stub struct {
 	// whose Cluster Group is PartialOnline — the state that had DRCluster
 	// reporting Ready while its name and IP addresses were offline.
 	ClusterGroups []ClusterGroup
-	FormCalled    bool
+	// CoreGroupStarted records the recovery being asked for; FailCoreGroupStart
+	// drives the path where the cluster refuses.
+	CoreGroupStarted   bool
+	FailCoreGroupStart bool
+	FormCalled         bool
 
 	// Witness models the cluster's observed quorum configuration; WitnessCalls
 	// and WitnessErr drive and record EnsureClusterWitness.
@@ -428,6 +432,29 @@ func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 		st.Groups = []ClusterGroup{{Name: "Cluster Group", State: "Online"}}
 	}
 	return st, nil
+}
+
+// StartClusterCoreGroup records the request and brings the stub's core group
+// online, so a test can assert the cluster stops reporting a core-group problem
+// afterwards rather than only that the call was made.
+func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CoreGroupStarted = true
+	if s.FailCoreGroupStart {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: the cluster core group would not come online")
+	}
+	var changed bool
+	for i := range s.ClusterGroups {
+		if strings.EqualFold(s.ClusterGroups[i].Name, "Cluster Group") && s.ClusterGroups[i].State != "Online" {
+			s.ClusterGroups[i].State = "Online"
+			changed = true
+		}
+	}
+	if !changed {
+		return OutcomeUnchanged, "the cluster's resources were already online", nil
+	}
+	return OutcomeUpdated, "the cluster core group", nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {

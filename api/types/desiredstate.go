@@ -1730,6 +1730,16 @@ const (
 	// the reconcile loop does on its own.
 	JobClusterUpdateFunctionalLevel = "ClusterUpdateFunctionalLevel" // no params
 
+	// JobClusterStartCoreGroup brings the cluster's own resources back online: the
+	// core group first, then the storage that could not come online behind it.
+	//
+	// A job rather than reconcile state. Whether a cluster resource should be
+	// online is the CLUSTER's decision, made continuously by its own service, and
+	// a reconcile loop asserting it would fight the cluster every pass — including
+	// while it is deliberately moving a group between nodes. This is an operator
+	// saying "try again now", which is what the situation actually calls for.
+	JobClusterStartCoreGroup = "ClusterStartCoreGroup" // no params
+
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster

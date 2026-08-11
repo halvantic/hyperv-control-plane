@@ -527,6 +527,10 @@ type Interface interface {
 
 	// MoveClusterGroup moves (fails over) a clustered role/group to node. Run
 	// locally on a member. Imperative Job.
+	// StartClusterCoreGroup brings the cluster's core group online, then the
+	// storage stranded behind it. Returns what was started.
+	StartClusterCoreGroup(ctx context.Context) (Outcome, string, error)
+
 	MoveClusterGroup(ctx context.Context, group, node string) error
 
 	// MoveClusterSharedVolume moves ownership of a CSV to node. Run locally on a

@@ -111,3 +111,57 @@ func TestAClusterWithAPartialCoreGroupIsNotReady(t *testing.T) {
 		t.Error("the reason must be reported, not just the phase")
 	}
 }
+
+// The recovery has to be reachable from the centre. Needing Failover Cluster
+// Manager to start a resource on a host Ballast runs an agent on is a defect by
+// CLAUDE.md's own rule, not a runbook step.
+func TestBringingTheCoreGroupOnlineIsAJob(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusterExists: true, ClusteringInstalled: true, ClusterFirewallOpen: true,
+		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
+		ClusterGroups: []hyperv.ClusterGroup{{Name: "Cluster Group", State: "PartialOnline"}},
+	}
+	r := testReconciler(stub)
+
+	if _, err := r.ExecuteJob(context.Background(), types.Job{Kind: types.JobClusterStartCoreGroup}, nil); err != nil {
+		t.Fatalf("run job: %v", err)
+	}
+	if !stub.CoreGroupStarted {
+		t.Fatal("the job did not reach the host")
+	}
+
+	// And the cluster must stop reporting the problem afterwards — asserting the
+	// call was made would pass just as well against a job that did nothing.
+	res, _ := r.ReconcileCluster(context.Background(), clusterAssignment(true), nil)
+	if res.Phase != types.PhaseReady {
+		t.Fatalf("the cluster is still %s after the core group came online", res.Phase)
+	}
+}
+
+// A cluster that refuses must not report the recovery as done.
+func TestARefusedStartIsReportedAsAFailure(t *testing.T) {
+	stub := &hyperv.Stub{ClusterExists: true, FailCoreGroupStart: true}
+	r := testReconciler(stub)
+
+	if _, err := r.ExecuteJob(context.Background(), types.Job{Kind: types.JobClusterStartCoreGroup}, nil); err == nil {
+		t.Fatal("a cluster that would not start its core group must surface as a failed job")
+	}
+}
+
+// Running it against a healthy cluster is harmless, so the console can offer it
+// without first having to be right about whether anything is wrong.
+func TestStartingAnAlreadyOnlineCoreGroupIsANoOp(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusterExists: true,
+		ClusterGroups: []hyperv.ClusterGroup{{Name: "Cluster Group", State: "Online"}},
+	}
+	r := testReconciler(stub)
+
+	msg, err := r.ExecuteJob(context.Background(), types.Job{Kind: types.JobClusterStartCoreGroup}, nil)
+	if err != nil {
+		t.Fatalf("a healthy cluster must not error: %v", err)
+	}
+	if !strings.Contains(msg, "already online") {
+		t.Errorf("it should say nothing needed doing, got %q", msg)
+	}
+}
