@@ -1,10 +1,12 @@
 package reconcile
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/joshua-fourie/ballast/api/types"
 )
 
 /* DRCluster reported phase Ready for hours while its Cluster Group sat
@@ -78,5 +80,34 @@ func TestTheCoreGroupIsMatchedCaseInsensitively(t *testing.T) {
 	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "cluster group", State: "Online"}})
 	if got != nil {
 		t.Fatalf("case must not decide whether the core group was found: %+v", got)
+	}
+}
+
+// End to end: the phase, not just the condition. Reporting the problem while
+// still calling the cluster Ready is what happened for hours.
+func TestAClusterWithAPartialCoreGroupIsNotReady(t *testing.T) {
+	stub := &hyperv.Stub{
+		ClusterExists: true, ClusteringInstalled: true, ClusterFirewallOpen: true,
+		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
+		ClusterGroups: []hyperv.ClusterGroup{{Name: "Cluster Group", State: "PartialOnline"}},
+	}
+	r := testReconciler(stub)
+
+	res, _ := r.ReconcileCluster(context.Background(), clusterAssignment(true), nil)
+
+	if res.Phase == types.PhaseReady {
+		t.Fatal("a cluster whose name and IP addresses are offline must not report Ready")
+	}
+	if res.Honoured {
+		t.Error("it must not report its desired state as honoured either")
+	}
+	var found bool
+	for _, c := range res.Conditions {
+		if c.Type == "ClusterCoreGroup" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the reason must be reported, not just the phase")
 	}
 }

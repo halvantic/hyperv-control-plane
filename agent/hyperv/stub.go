@@ -100,7 +100,11 @@ type Stub struct {
 	ClusterExists       bool
 	ClusterName         string
 	ClusterMembers      []string
-	FormCalled          bool
+	// ClusterGroups override the default core group, so a test can model a cluster
+	// whose Cluster Group is PartialOnline — the state that had DRCluster
+	// reporting Ready while its name and IP addresses were offline.
+	ClusterGroups []ClusterGroup
+	FormCalled    bool
 
 	// Witness models the cluster's observed quorum configuration; WitnessCalls
 	// and WitnessErr drive and record EnsureClusterWitness.
@@ -415,8 +419,15 @@ func (s *Stub) EnableRDP(_ context.Context) error { return nil }
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
-		Members: s.ClusterMembers, Witness: s.Witness}, nil
+	st := ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
+		Members: s.ClusterMembers, Witness: s.Witness, Groups: s.ClusterGroups}
+	// A formed cluster always HAS a core group — it is what holds the cluster name
+	// and its IP addresses — so a stub that reported none was modelling a state
+	// that cannot occur, and would have made "no core group" look survivable.
+	if st.Exists && len(st.Groups) == 0 {
+		st.Groups = []ClusterGroup{{Name: "Cluster Group", State: "Online"}}
+	}
+	return st, nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {
