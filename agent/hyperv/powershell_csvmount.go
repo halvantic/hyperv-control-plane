@@ -75,7 +75,24 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
           $why += ' - an offline volume has no mount path, so this is the state to fix rather than the name'
         }
       } else {
-        $why = ', and no cluster resource of that name exists on this node'
+        # Say what DOES exist. "No resource of that name" is unfalsifiable on its
+        # own -- it cannot distinguish a missing resource from a lookup that does
+        # not match the way the resource is actually named, and the CSV
+        # enumeration two lines up clearly found something. The candidates settle
+        # it; a count would not.
+        $have = @()
+        foreach ($rr in @(Get-ClusterResource -ErrorAction SilentlyContinue)) {
+          if ([string]$rr.ResourceType -eq 'Physical Disk') {
+            $have += ('"' + [string]$rr.Name + '" (' + [string]$rr.State + ', owner ' + [string]$rr.OwnerNode + ')')
+          }
+        }
+        $sv = ''
+        try { $sv = ' The CSV object reports state ' + [string]$csv.State + ' and ' + [string]@($csv.SharedVolumeInfo).Count + ' volume entries.' } catch {}
+        if ($have.Count -eq 0) {
+          $why = ', and this cluster has no Physical Disk resources at all.' + $sv
+        } else {
+          $why = ', and the Physical Disk resources this cluster does have are: ' + ($have -join ', ') + '.' + $sv
+        }
       }
     } catch {}
     $seen += ($name + ': reported no mount path' + $why)
