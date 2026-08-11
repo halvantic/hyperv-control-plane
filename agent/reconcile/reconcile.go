@@ -124,6 +124,7 @@ type Result struct {
 // at the first failure: it attempts every resource so status reflects the whole
 // host, and reports Honoured == false if any failed.
 func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (Result, error) {
+	timer := newPassTimer()
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -160,6 +161,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			r.log.Info("host dns reconciled", "dns", dns, "outcome", out)
 		}
 	}
+
+	// The Windows EDITION comes before everything else that configures the host.
+	//
+	// A staged conversion replaces the operating system on the next boot, so
+	// configuring a host and then converting it underneath means reconciling
+	// against something about to be replaced. It is also the step most likely to
+	// be refused outright — an evaluation converts only to its own retail or
+	// volume equivalent — and finding that out first is cheaper than finding it
+	// out after a domain join.
+	if edRes, done, err := r.reconcileWindowsEdition(ctx, desired, secrets); done || err != nil || len(edRes.Conditions) > 0 {
+		conds = append(conds, edRes.Conditions...)
+		changed = changed || edRes.Changed
+		if done || err != nil {
+			edRes.Conditions = conds
+			return edRes, err
+		}
+	}
+
+	// Activation follows the edition, and only on a pass the edition did not stop.
+	// A host with a conversion staged is about to become a different edition, and
+	// activating the one it is leaving would spend a MAK seat on an installation
+	// that ceases to exist at the next restart.
+	conds = append(conds, r.reconcileWindowsActivation(ctx, desired, secrets)...)
 
 	// Identity comes next: the host should have its final name, management IP
 	// and domain before the role and networking are configured. Rename/domain
@@ -447,7 +471,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// Only report when something actually happened or is wrong. Exit runs every
 		// cycle on every host and is a no-op almost always; a condition each time
 		// would be pure noise.
-		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" {
+		if out != hyperv.OutcomeUnchanged || err != nil || ms.StorageError != "" || ms.Blocked != "" {
 			c := r.condition("Maintenance", out, err)
 			// The node is back in service but its disks are still marked out of the
 			// pool, and Ballast could not put them back. The cluster releases them
@@ -462,6 +486,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 				c.Reason = "StorageStranded"
 				c.Message = ms.StorageError +
 					" — retrying each pass. Clearing it by hand is Disable-StorageMaintenanceMode on the affected physical disks."
+			}
+			// The cluster refused the drain, and it was right to. Reported as
+			// WaitingForStorage rather than as a failure: the request stands, the
+			// node is healthy, nothing is wrong, and the drain begins by itself when
+			// the pool is. "ApplyFailed" on a healthy node invites forcing it, and
+			// forcing it removes a copy the pool still needs.
+			if err == nil && ms.Blocked != "" {
+				c.Status = false
+				c.Reason = "WaitingForStorage"
+				c.Message = ms.Blocked
 			}
 			conds = append(conds, c)
 		}
@@ -489,6 +523,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 				(ms.Paused && !ms.Draining && (ms.StorageOut || !wantMaintenance))
 			draining = ms.Draining
 		}
+	}
+	// What this pass actually cost, reported only when it cost enough to matter.
+	//
+	// A pass longer than the agent's heartbeat stops the host reporting on time,
+	// and a host that reports late reads as OFFLINE — which showed up as unknown
+	// networks, hosts missing from the agent update list, and clusters with no
+	// member to report them. None of those symptoms named the cause, and reasoning
+	// about which step was slow produced two wrong answers in one evening.
+	//
+	// Reported on the pass rather than logged on the host: reading it must not
+	// require opening a session on the machine, which is the intervention Ballast
+	// exists to remove.
+	if msg := slowPassMessage(r.hv.TakeTimings(), timer.total(), slowPassThreshold); msg != "" {
+		conds = append(conds, types.Condition{
+			Type: "ReconcilePass", Status: false, Reason: "Slow",
+			Message: msg, LastTransitionTime: r.now(),
+		})
+		r.log.Warn("slow reconcile pass", "took", timer.total().String())
 	}
 	res := Result{
 		InMaintenance:   inMaintenance,

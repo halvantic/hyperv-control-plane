@@ -64,6 +64,15 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			msg += " (" + note + ")"
 		}
 		return done(err, msg)
+	case types.JobGuestActivateAVMA:
+		out, err := r.hv.EnsureGuestAVMA(ctx, p["vm"], p["avmaKey"], p["guestUser"], p["guestPass"])
+		if err != nil {
+			return "", err
+		}
+		if out == hyperv.OutcomeUnchanged {
+			return p["vm"] + " is already activated with that key", nil
+		}
+		return "activated " + p["vm"] + " against this host", nil
 	case types.JobGuestJoinDomain:
 		return done(r.hv.GuestJoinDomain(ctx, p["vm"], p["domain"], p["ou"], p["guestUser"], p["guestPass"], p["domainUser"], p["domainPass"]),
 			"joined "+p["vm"]+" to "+p["domain"]+" (guest rebooting)")
@@ -82,6 +91,24 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobClusterStartCoreGroup:
+		out, note, err := r.hv.StartClusterCoreGroup(ctx)
+		if err != nil {
+			return "", err
+		}
+		if out == hyperv.OutcomeUnchanged {
+			return note, nil
+		}
+		return "brought " + note + " online", nil
+	case types.JobClusterClearQuarantine:
+		out, note, err := r.hv.ClearNodeQuarantine(ctx, p["node"])
+		if err != nil {
+			return "", err
+		}
+		if out == hyperv.OutcomeUnchanged {
+			return note, nil
+		}
+		return note, nil
 	case types.JobClusterMoveGroup:
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:

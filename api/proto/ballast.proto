@@ -196,6 +196,9 @@ message HostSpec {
   HostStorageSpec storage = 4;
   // cluster_membership is optional; absence means standalone.
   ClusterMembershipSpec cluster_membership = 5;
+  // windows_licence declares the Windows EDITION this host should run. The
+  // conversion is irreversible, so an absent declaration converts nothing.
+  WindowsLicenceSpec windows_licence = 20;
   RebootPolicy reboot_policy = 6;
   string computer_name = 7;
   PhysicalNICConfig management_nic = 8;
@@ -278,6 +281,12 @@ message DomainJoinSpec {
 }
 
 message HostStatus {
+  // This host's own membership state and cluster service state. Reported per
+  // host because the cluster's node list comes from one member, and that member
+  // is exactly what is missing when it is the broken one.
+  string cluster_node = 70;
+  string cluster_service = 71;
+
   Phase phase = 1;
   int64 observed_generation = 2;
   bool hyperv_installed = 3;
@@ -309,6 +318,38 @@ message HostStatus {
   // iscsi is a STANDALONE host's own array connection. A member's iSCSI state is
   // reported per node on the cluster, where members can be compared.
   ISCSIStatus iscsi = 18;
+  // windows_licence is the host's Windows edition and activation state. Named
+  // for Windows deliberately: Ballast's own product licensing is a separate
+  // concern the agent is never aware of.
+  WindowsLicenceStatus windows_licence = 19;
+}
+
+message WindowsLicenceSpec {
+  string edition = 1;
+  // product_key_secret NAMES a stored secret; the key itself never crosses here.
+  string product_key_secret = 2;
+  // activation is MAK, KMS, or empty for neither — a separate act from the
+  // conversion, on a different schedule and with a different cost.
+  string activation = 3;
+  string activation_key_secret = 4;
+  string kms_server = 5;
+}
+
+message WindowsLicenceStatus {
+  string edition = 1;
+  string description = 2;
+  // evaluation marks an edition that CANNOT be activated by any key — it must be
+  // converted first. The most consequential field here.
+  bool evaluation = 3;
+  string status = 4;
+  int32 grace_days_remaining = 5;
+  string channel = 6;
+  string partial_product_key = 7;
+  string kms_server = 8;
+  string message = 9;
+  // What this installation may convert to, as Windows reports it. Empty means
+  // not reported, not "nothing is possible".
+  repeated string target_editions = 10;
 }
 
 message HostMetrics {
@@ -626,6 +667,10 @@ message WitnessSpec {
 }
 
 message ClusterStatus {
+  // The reporting member could not read the cluster at all: every observed field
+  // is empty because nothing was seen, not because nothing is there.
+  bool state_unreadable = 60;
+
   Phase phase = 1;
   int64 observed_generation = 2;
   repeated string formed_members = 3;

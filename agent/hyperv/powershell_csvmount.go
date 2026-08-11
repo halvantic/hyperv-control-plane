@@ -61,7 +61,43 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
     if ($info) { $cur = [string]$info.FriendlyVolumeName }
   } catch {}
   if (-not $cur) {
-    $seen += ($name + ': reported no mount path')
+    # Say WHAT was seen instead of only that nothing was. A CSV has no mount path
+    # for one ordinary reason -- the resource is not Online, so C:\ClusterStorage
+    # holds nothing for it -- and "reported no mount path" is equally true of a
+    # volume that is fine and a volume that is offline. Only one of them is a
+    # problem, and the difference cost two rounds of guessing.
+    $why = ''
+    try {
+      $r = Get-ClusterResource -Name $name -ErrorAction SilentlyContinue
+      if ($r) {
+        $why = ', resource state ' + [string]$r.State + ' on owner ' + [string]$r.OwnerNode
+        if ([string]$r.State -ne 'Online') {
+          $why += ' - an offline volume has no mount path, so this is the state to fix rather than the name'
+        }
+      } else {
+        # Say what DOES exist. "No resource of that name" is unfalsifiable on its
+        # own -- it cannot distinguish a missing resource from a lookup that does
+        # not match the way the resource is actually named, and the CSV
+        # enumeration two lines up clearly found something. The candidates settle
+        # it; a count would not.
+        # Every resource, not only Physical Disk ones. Filtering on that type is
+        # what produced "this cluster has no Physical Disk resources at all" while
+        # two CSVs were plainly present -- the filter was the thing that was wrong,
+        # and a narrower question cannot reveal that.
+        $have = @()
+        foreach ($rr in @(Get-ClusterResource -ErrorAction SilentlyContinue)) {
+          $have += ('"' + [string]$rr.Name + '" [' + [string]$rr.ResourceType + '] (' + [string]$rr.State + ')')
+        }
+        $sv = ''
+        try { $sv = ' The CSV object reports state ' + [string]$csv.State + ' and ' + [string]@($csv.SharedVolumeInfo).Count + ' volume entries.' } catch {}
+        if ($have.Count -eq 0) {
+          $why = ', and this cluster reports no resources at all.' + $sv
+        } else {
+          $why = ', and the resources this cluster does have are: ' + ($have -join ', ') + '.' + $sv
+        }
+      }
+    } catch {}
+    $seen += ($name + ': reported no mount path' + $why)
     continue
   }
   $leaf = Split-Path -Path $cur -Leaf

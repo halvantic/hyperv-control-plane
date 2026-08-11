@@ -57,6 +57,8 @@ func sampleHost() types.Host {
 			ObservedGeneration: 7,
 			HyperVInstalled:    true,
 			RebootRequired:     false,
+			ClusterNode:        "Quarantined",
+			ClusterService:     "Stopped",
 			Autonomous:         true,
 			LastContact:        ts.Add(2 * time.Hour),
 			Inventory: types.HostInventory{
@@ -210,6 +212,7 @@ func sampleClusterStatus() types.ClusterStatus {
 	return types.ClusterStatus{
 		Phase:              types.PhaseReady,
 		ObservedGeneration: 7,
+		StateUnreadable:    true,
 		FormedMembers:      []string{"n1", "n2"},
 		S2DEnabled:         true,
 		Nodes:              []types.ClusterNodeStatus{{Name: "n1", State: "Up"}},

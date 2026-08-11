@@ -407,6 +407,7 @@ func specToProto(s types.HostSpec) *HostSpec {
 		RebootPolicy:     rebootPolicyToProto(s.RebootPolicy),
 		ComputerName:     s.ComputerName,
 	}
+	out.WindowsLicence = windowsLicenceSpecToProto(s.WindowsLicence)
 	if s.ClusterMembership != nil {
 		out.ClusterMembership = &ClusterMembershipSpec{
 			ClusterName: s.ClusterMembership.ClusterName,
@@ -505,6 +506,7 @@ func specFromProto(s *HostSpec) types.HostSpec {
 		RebootPolicy:     rebootPolicyFromProto(s.GetRebootPolicy()),
 		ComputerName:     s.GetComputerName(),
 	}
+	out.WindowsLicence = windowsLicenceSpecFromProto(s.GetWindowsLicence())
 	if cm := s.GetClusterMembership(); cm != nil {
 		out.ClusterMembership = &types.ClusterMembershipSpec{
 			ClusterName: cm.GetClusterName(),
@@ -556,6 +558,9 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		InMaintenance:      s.InMaintenance,
 		IsoLibrary:         isoLibraryStatusToProto(s.ISOLibrary),
 		Iscsi:              iscsiStatusToProto(s.ISCSI),
+		WindowsLicence:     windowsLicenceToProto(s.WindowsLicence),
+		ClusterNode:        s.ClusterNode,
+		ClusterService:     s.ClusterService,
 		RebootRequired:     s.RebootRequired,
 		Autonomous:         s.Autonomous,
 		LastContact:        tsToProto(s.LastContact),
@@ -657,6 +662,9 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		InMaintenance:      s.GetInMaintenance(),
 		ISOLibrary:         isoLibraryStatusFromProto(s.GetIsoLibrary()),
 		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
+		WindowsLicence:     windowsLicenceFromProto(s.GetWindowsLicence()),
+		ClusterNode:        s.GetClusterNode(),
+		ClusterService:     s.GetClusterService(),
 		RebootRequired:     s.GetRebootRequired(),
 		Autonomous:         s.GetAutonomous(),
 		LastContact:        tsFromProto(s.GetLastContact()),
@@ -905,6 +913,7 @@ func ClusterStatusToProto(s types.ClusterStatus) *ClusterStatus {
 	return &ClusterStatus{
 		Phase:              phaseToProto(s.Phase),
 		ObservedGeneration: s.ObservedGeneration,
+		StateUnreadable:    s.StateUnreadable,
 		FormedMembers:      s.FormedMembers,
 		S2DEnabled:         s.S2DEnabled,
 		Conditions:         conditionsToProto(s.Conditions),
@@ -1129,6 +1138,7 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 	return types.ClusterStatus{
 		Phase:              phaseFromProto(s.GetPhase()),
 		ObservedGeneration: s.GetObservedGeneration(),
+		StateUnreadable:    s.GetStateUnreadable(),
 		FormedMembers:      s.GetFormedMembers(),
 		S2DEnabled:         s.GetS2DEnabled(),
 		Conditions:         conditionsFromProto(s.GetConditions()),
@@ -1523,5 +1533,49 @@ func VMFromProto(v *VM) types.VM {
 		Meta:   MetaFromProto(v.GetMeta()),
 		Spec:   vmSpecFromProto(v.GetSpec()),
 		Status: VMStatusFromProto(v.GetStatus()),
+	}
+}
+
+func windowsLicenceToProto(s *types.WindowsLicenceStatus) *WindowsLicenceStatus {
+	if s == nil {
+		return nil
+	}
+	return &WindowsLicenceStatus{
+		Edition: s.Edition, Description: s.Description, Evaluation: s.Evaluation,
+		Status: s.Status, GraceDaysRemaining: int32(s.GraceDaysRemaining),
+		Channel: s.Channel, PartialProductKey: s.PartialProductKey,
+		KmsServer: s.KMSServer, Message: s.Message, TargetEditions: s.TargetEditions,
+	}
+}
+
+func windowsLicenceFromProto(s *WindowsLicenceStatus) *types.WindowsLicenceStatus {
+	if s == nil {
+		return nil
+	}
+	return &types.WindowsLicenceStatus{
+		Edition: s.GetEdition(), Description: s.GetDescription(), Evaluation: s.GetEvaluation(),
+		Status: s.GetStatus(), GraceDaysRemaining: int(s.GetGraceDaysRemaining()),
+		Channel: s.GetChannel(), PartialProductKey: s.GetPartialProductKey(),
+		KMSServer: s.GetKmsServer(), Message: s.GetMessage(), TargetEditions: s.GetTargetEditions(),
+	}
+}
+
+func windowsLicenceSpecToProto(s *types.WindowsLicenceSpec) *WindowsLicenceSpec {
+	if s == nil {
+		return nil
+	}
+	return &WindowsLicenceSpec{
+		Edition: s.Edition, ProductKeySecret: s.ProductKeySecret,
+		Activation: s.Activation, ActivationKeySecret: s.ActivationKeySecret, KmsServer: s.KMSServer,
+	}
+}
+
+func windowsLicenceSpecFromProto(s *WindowsLicenceSpec) *types.WindowsLicenceSpec {
+	if s == nil {
+		return nil
+	}
+	return &types.WindowsLicenceSpec{
+		Edition: s.GetEdition(), ProductKeySecret: s.GetProductKeySecret(),
+		Activation: s.GetActivation(), ActivationKeySecret: s.GetActivationKeySecret(), KMSServer: s.GetKmsServer(),
 	}
 }

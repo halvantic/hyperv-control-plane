@@ -164,3 +164,144 @@ func TestNoCredentialMeansNoCHAP(t *testing.T) {
 		t.Fatal("an open target must be connected without CHAP flags")
 	}
 }
+
+/* The adoption deadlocked on the rig, and the cause was ORDER, not logic: the
+   contents guard ran before the disk was readable and before the cluster was
+   consulted. An offline disk reports partitions but no filesystems, so a volume
+   Ballast itself labelled read as unknown data — and the only remedy the refusal
+   could offer was a wipe of exactly the volume that was meant to be resumed. */
+
+func adoptSectionOrder(t *testing.T) map[string]int {
+	t.Helper()
+	at := map[string]int{}
+	for _, sec := range []string{
+		"# ---- locate the LUN",
+		"# ---- already adopted?",
+		"# ---- make the disk readable",
+		"# ---- refuse to destroy data",
+		"# ---- prepare the disk",
+		"# ---- hand it to the cluster",
+	} {
+		i := strings.Index(adoptScript, sec)
+		if i < 0 {
+			t.Fatalf("adopt script has no %q section", sec)
+		}
+		at[sec] = i
+	}
+	return at
+}
+
+// A disk that is offline reports its partitions but not their filesystems, so the
+// label check cannot match and its own volume reads as somebody else's data.
+func TestTheDiskIsMadeReadableBeforeItsContentsAreJudged(t *testing.T) {
+	at := adoptSectionOrder(t)
+	if at["# ---- make the disk readable"] > at["# ---- refuse to destroy data"] {
+		t.Fatal("contents are judged before the disk is readable: an offline disk's own volume reads as unknown data and the adoption refuses itself for ever")
+	}
+}
+
+// Nothing formats a disk the cluster already holds, so judging its contents can
+// only refuse a risk that is not there — which stranded two LUNs the cluster was
+// already holding, offline, waiting to become CSVs.
+func TestTheClusterIsConsultedBeforeTheContentsGuard(t *testing.T) {
+	at := adoptSectionOrder(t)
+	if at["# ---- already adopted?"] > at["# ---- refuse to destroy data"] {
+		t.Fatal("the contents guard runs before the cluster check, so an already-clustered disk is refused for contents that will never be formatted")
+	}
+	if !strings.Contains(adoptScript, "if (-not $clusDisk) {") {
+		t.Error("the readability and contents steps must be skipped for a disk the cluster holds")
+	}
+}
+
+// Bringing a disk online is what makes it legible; it must not be reached past the
+// cluster for a disk the cluster is managing.
+func TestOnliningIsScopedToDisksTheClusterDoesNotHold(t *testing.T) {
+	script := adoptScript
+	guard := strings.Index(script, "if (-not $clusDisk) {")
+	online := strings.Index(script, "Set-Disk -Number $disk.Number -IsOffline $false")
+	if guard < 0 || online < 0 || online < guard {
+		t.Fatal("the first online step must sit inside the not-clustered guard")
+	}
+}
+
+// "a Basic partition" and "a partition we cannot read" are different facts, and
+// only the second makes a wipe a reckless suggestion.
+func TestAnUnreadableFilesystemIsReportedAsSuchNotAsBareData(t *testing.T) {
+	if !strings.Contains(adoptScript, "whose filesystem could not be read") {
+		t.Error("a partition with no readable filesystem must say so rather than read as empty")
+	}
+	if !strings.Contains(adoptScript, "will not format a LUN it cannot read") {
+		t.Error("the refusal for unreadable contents must not offer a wipe as the remedy")
+	}
+}
+
+// Being in the cluster is not the same as being available. Both DR LUNs were
+// adopted, named correctly, and Offline — so C:\ClusterStorage held nothing for
+// them and the mount-point step reported no path, while the adoption itself
+// reported success.
+func TestAnAdoptedDiskIsBroughtOnline(t *testing.T) {
+	if !strings.Contains(adoptScript, "Start-ClusterResource") {
+		t.Fatal("nothing starts the cluster resource: an offline CSV has no mount path, so the volume is present and unusable")
+	}
+}
+
+// The early returns are the ones that mattered: a CSV that already existed but
+// sat offline returned "already a CSV" and was never started.
+func TestTheAlreadyAdoptedPathsStillEnsureOnline(t *testing.T) {
+	// Anchored on the call itself, then on the report following it. Searching for
+	// the report first found the prose in the comment above it.
+	for _, c := range []struct{ call, reports string }{
+		{"$started = Ensure-ResourceOnline $csv", "already a CSV"},
+		{"$started = Ensure-ResourceOnline $clusDisk", "already a clustered disk"},
+	} {
+		i := strings.Index(adoptScript, c.call)
+		if i < 0 {
+			t.Fatalf("no %q call in the script", c.call)
+		}
+		rest := adoptScript[i:]
+		end := strings.Index(rest, "return")
+		if end < 0 {
+			t.Fatalf("%q is not followed by a return", c.call)
+		}
+		if !strings.Contains(rest[:end], c.reports) {
+			t.Errorf("the %q path does not report through the call that ensures it is online", c.reports)
+		}
+	}
+}
+
+// An offline resource that will not start is a real failure with a real remedy,
+// and reporting the adoption as done would hide it.
+func TestAResourceThatWillNotStartIsReported(t *testing.T) {
+	if !strings.Contains(adoptScript, "would not come online") {
+		t.Error("a resource that refuses to start must be reported, not swallowed")
+	}
+	if !strings.Contains(adoptScript, "An offline volume has no mount path") {
+		t.Error("the failure must say why an offline volume matters")
+	}
+}
+
+// The object IS the resource. Re-fetching it by name returned nothing on the rig
+// — the cluster reported no Physical Disk resources while handing back two
+// offline CSVs — so the online step found nothing, reported nothing to do, and
+// two offline volumes survived the upgrade written to fix exactly that.
+func TestTheOnlineStepDoesNotReFetchTheResourceByName(t *testing.T) {
+	i := strings.Index(adoptScript, "function Ensure-ResourceOnline")
+	if i < 0 {
+		t.Fatal("no Ensure-ResourceOnline in the script")
+	}
+	body := adoptScript[i:]
+	if end := strings.Index(body, "\n# ---- locate"); end > 0 {
+		body = body[:end]
+	}
+	// Comment lines skipped: the function explains why it does not look the
+	// resource up by name, and naming the call there is the point.
+	for _, line := range strings.Split(body, "\n") {
+		code := strings.TrimSpace(line)
+		if !strings.HasPrefix(code, "#") && strings.Contains(code, "Get-ClusterResource -Name") {
+			t.Errorf("the resource is looked up by name again; whatever it is called on this build, the caller already holds it: %q", code)
+		}
+	}
+	if !strings.Contains(body, "Start-ClusterResource -InputObject $res") {
+		t.Error("the resource must be started through the object it was given")
+	}
+}

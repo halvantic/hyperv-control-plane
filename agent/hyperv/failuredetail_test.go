@@ -40,9 +40,12 @@ func TestACancelledOperationSaysSoRatherThanNothing(t *testing.T) {
 // A deadline and a cancellation have different remedies — wait/raise the limit
 // versus find out what stopped the agent — so they must not read the same.
 func TestATimedOutOperationIsDistinguishedFromACancelledOne(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	// A deadline already in the PAST, not a short timeout slept through: Windows
+	// timer granularity is around 15ms, so a 1ns timer had often not fired after a
+	// 2ms sleep and ctx.Err() was still nil — a test that passed alone and failed
+	// in the package, which is the worst kind.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	time.Sleep(2 * time.Millisecond)
 
 	timedOut := psFailureDetail(ctx, time.Now(), "", "")
 	if !strings.Contains(timedOut, "time limit") {

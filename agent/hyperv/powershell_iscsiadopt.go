@@ -54,6 +54,49 @@ Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
 function Fail($m) { throw $m }
 
+# Ensure-ResourceOnline starts a cluster resource that is not already Online.
+#
+# A Physical Disk resource, and the CSV built on it, can sit in the cluster
+# Offline: adding a disk does not start it, and a resource that went Offline for
+# any reason stays there. An offline CSV has NO mount path -- C:\ClusterStorage
+# holds nothing for it -- so the volume is in the cluster, named correctly, and
+# unusable, which is how both DR LUNs ended up reported as adopted while the
+# mount-point step said "reported no mount path".
+#
+# Starting a resource is coordination through the cluster's own API, not a quorum
+# decision: the cluster still owns whether it can come online, and says so.
+function Ensure-ResourceOnline {
+  param($res)
+  if (-not $res) { return $false }
+  # The object IS the resource -- do not look it up again.
+  #
+  # The first version re-fetched it with Get-ClusterResource -Name, and on the rig
+  # that returned nothing: the cluster reported no Physical Disk resources at all
+  # while Get-ClusterSharedVolume was handing back two CSVs, both Offline. So the
+  # lookup silently found nothing, reported nothing to do, and two offline volumes
+  # stayed offline through an upgrade written to fix exactly that.
+  #
+  # A name lookup was never needed. Whatever a CSV or disk resource is called on
+  # this build, and whatever ResourceType it carries, the caller already holds it.
+  $state = ''
+  try { $state = [string]$res.State } catch {}
+  if ($state -eq 'Online') { return $false }
+  $rname = ''
+  try { $rname = [string]$res.Name } catch {}
+  try {
+    Start-ClusterResource -InputObject $res -ErrorAction Stop | Out-Null
+  } catch {
+    Fail ('the cluster holds ' + $rname + ' but it is ' + $state + ' and would not come online: ' + ([string]$_.Exception.Message).Trim() + '. An offline volume has no mount path, so nothing can be stored on it. Check the LUN is reachable from every member and that it is not held by another cluster.')
+  }
+  # Re-read through the same object, not by name, for the same reason.
+  $after = ''
+  try { $after = [string](Get-ClusterResource -InputObject $res -ErrorAction SilentlyContinue).State } catch {}
+  if ($after -and $after -ne 'Online') {
+    Fail ('the cluster was asked to bring ' + $rname + ' online and it is still ' + $after + '. An offline volume has no mount path, so nothing can be stored on it.')
+  }
+  return $true
+}
+
 # ---- locate the LUN -------------------------------------------------------
 $disk = $null
 if ($serial) {
@@ -87,46 +130,6 @@ if (-not $disk) {
     Fail ('no iSCSI disk with ' + $what + ' is presented to this node, and this node can see no iSCSI disks at all. Check the node is logged in to the array and that the array grants this LUN to this initiator.')
   }
   Fail ('no iSCSI disk with ' + $what + ' is presented to this node. It can see: ' + ($seen -join '; ') + '. Grant the LUN to this node''s initiator on the array, or correct the serial.')
-}
-
-# ---- refuse to destroy data ----------------------------------------------
-# A LUN that already carries a partition or a filesystem is refused unless the
-# operator has explicitly asked to wipe it. Adoption formats the disk, and an
-# array will happily present a LUN that belongs to something else.
-$hasData = $false
-$ours = $false
-$what = @()
-if ($disk.PartitionStyle -ne 'RAW') {
-  $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' })
-  foreach ($p in $parts) {
-    $hasData = $true
-    $v = Get-Volume -Partition $p -ErrorAction SilentlyContinue
-    if ($v -and $v.FileSystem) {
-      # A volume carrying THIS volume's name is one Ballast formatted for this
-      # very adoption — it labels with the volume name — so a pass that formatted
-      # the disk and then failed before the cluster took it leaves exactly this.
-      # Refusing it makes the adoption unresumable: every retry finds the contents
-      # its own previous attempt wrote and stops. Seen on the rig with iSCSI_DS1
-      # and iSCSI_DS2, both refused for holding a volume of their own name.
-      #
-      # Nothing is destroyed by continuing: an existing filesystem is not
-      # reformatted below, so this resumes the adoption rather than redoing it.
-      if ([string]$v.FileSystemLabel -eq $name) { $ours = $true }
-      $used = ''
-      if ($v.Size -gt 0) { $used = ', ' + [math]::Round(($v.Size - $v.SizeRemaining)/1GB,1) + 'GB used of ' + [math]::Round($v.Size/1GB,1) + 'GB' }
-      $what += ('a ' + [string]$v.FileSystem + ' volume' + $(if ($v.FileSystemLabel) { ' labelled "' + $v.FileSystemLabel + '"' } else { '' }) + $used)
-    } else {
-      $what += ('a ' + [string]$p.Type + ' partition')
-    }
-  }
-  if (-not $hasData -and $parts.Count -eq 0) {
-    # Initialised but empty. That is not data, and refusing it would strand a
-    # LUN that a previous adoption initialised and did not finish.
-    $hasData = $false
-  }
-}
-if ($hasData -and -not $wipe -and -not $ours) {
-  Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) already contains ' + ($what -join ' and ') + '. Adopting it formats it, so Ballast will not do that to a disk with contents. If this is the right LUN and its contents are finished with, use "Wipe and adopt"; otherwise correct the serial or present a different LUN.')
 }
 
 # ---- already adopted? ------------------------------------------------------
@@ -164,12 +167,93 @@ if ($csv -and -not $witness) {
   # a volume adopted before Ballast knew to name the mount point kept
   # C:\ClusterStorage\VolumeN for ever, and the declared name never became the
   # path the operator was told to expect.
-  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
+  # Not a bare return: "already a CSV" was reported for a CSV sitting Offline,
+  # which is present but unusable. Being in the cluster is not the same as being
+  # available, and only one of those is what was asked for.
+  $started = Ensure-ResourceOnline $csv
+  [pscustomobject]@{ changed = $started; serial = ([string]$disk.SerialNumber).Trim(); note = $(if ($started) { 'brought the CSV online' } else { 'already a CSV' }) } | ConvertTo-Json -Compress
   return
 }
 if ($clusDisk -and $witness) {
-  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a clustered disk' } | ConvertTo-Json -Compress
+  $started = Ensure-ResourceOnline $clusDisk
+  [pscustomobject]@{ changed = $started; serial = ([string]$disk.SerialNumber).Trim(); note = $(if ($started) { 'brought the witness disk online' } else { 'already a clustered disk' }) } | ConvertTo-Json -Compress
   return
+}
+
+# ---- make the disk readable before judging it ------------------------------
+# Both this and the contents check are skipped once the cluster holds the disk.
+# Nothing below formats a clustered disk, so judging its contents can only produce
+# a refusal for a risk that is not there — which is what stranded two LUNs that
+# the cluster was already holding, offline, waiting to be made CSVs.
+if (-not $clusDisk) {
+
+# An OFFLINE disk reports its partitions but not their filesystems: Get-Volume
+# returns nothing, so a volume Ballast itself labelled reads as a bare partition.
+# The contents check below then refuses it as unknown data, and the only remedy it
+# can offer is a wipe — of exactly the volume the cluster was meant to resume.
+#
+# Bringing it online is non-destructive; it is what makes the disk legible. It is
+# done only when the cluster does not already hold the disk, because reaching past
+# the cluster for a disk it is managing is its own fault.
+$wasOffline = $false
+if ($disk.IsOffline) {
+  $wasOffline = $true
+  try {
+    Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop
+    $disk = Get-Disk -Number $disk.Number -ErrorAction Stop
+  } catch {
+    Fail ('disk ' + [string]$disk.Number + ' (serial ' + ([string]$disk.SerialNumber).Trim() + ') is offline and could not be brought online: ' + ([string]$_.Exception.Message).Trim() + '. Its contents cannot be read while it is offline, and Ballast will not adopt a LUN it cannot read.')
+  }
+}
+
+# ---- refuse to destroy data ----------------------------------------------
+# A LUN that already carries a partition or a filesystem is refused unless the
+# operator has explicitly asked to wipe it. Adoption formats the disk, and an
+# array will happily present a LUN that belongs to something else.
+$hasData = $false
+$ours = $false
+$unreadable = $false
+$what = @()
+if ($disk.PartitionStyle -ne 'RAW') {
+  $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' })
+  foreach ($p in $parts) {
+    $hasData = $true
+    $v = Get-Volume -Partition $p -ErrorAction SilentlyContinue
+    if ($v -and $v.FileSystem) {
+      # A volume carrying THIS volume's name is one Ballast formatted for this
+      # very adoption — it labels with the volume name — so a pass that formatted
+      # the disk and then failed before the cluster took it leaves exactly this.
+      # Refusing it makes the adoption unresumable: every retry finds the contents
+      # its own previous attempt wrote and stops. Seen on the rig with iSCSI_DS1
+      # and iSCSI_DS2, both refused for holding a volume of their own name.
+      #
+      # Nothing is destroyed by continuing: an existing filesystem is not
+      # reformatted below, so this resumes the adoption rather than redoing it.
+      if ([string]$v.FileSystemLabel -eq $name) { $ours = $true }
+      $used = ''
+      if ($v.Size -gt 0) { $used = ', ' + [math]::Round(($v.Size - $v.SizeRemaining)/1GB,1) + 'GB used of ' + [math]::Round($v.Size/1GB,1) + 'GB' }
+      $what += ('a ' + [string]$v.FileSystem + ' volume' + $(if ($v.FileSystemLabel) { ' labelled "' + $v.FileSystemLabel + '"' } else { '' }) + $used)
+    } else {
+      # No readable filesystem. Worth distinguishing: a partition whose filesystem
+      # cannot be read is not the same as a partition with nothing on it, and only
+      # the first makes "wipe it" a reckless suggestion.
+      $unreadable = $true
+      $what += ('a ' + [string]$p.Type + ' partition whose filesystem could not be read')
+    }
+  }
+  if (-not $hasData -and $parts.Count -eq 0) {
+    # Initialised but empty. That is not data, and refusing it would strand a
+    # LUN that a previous adoption initialised and did not finish.
+    $hasData = $false
+  }
+}
+if ($hasData -and -not $wipe -and -not $ours -and $unreadable) {
+  Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) holds ' + ($what -join ' and ') + ', so Ballast cannot tell whether it is this volume''s own data or something else''s' + $(if ($wasOffline) { ' (the disk was offline; it has been brought online, so a retry may now read it)' } else { '' }) + '. It will not format a LUN it cannot read. Check the disk is online and healthy on this node, then reconcile again.')
+}
+if ($hasData -and -not $wipe -and -not $ours) {
+  Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) already contains ' + ($what -join ' and ') + '. Adopting it formats it, so Ballast will not do that to a disk with contents. If this is the right LUN and its contents are finished with, use "Wipe and adopt"; otherwise correct the serial or present a different LUN.')
+}
+
 }
 
 # ---- prepare the disk ------------------------------------------------------
@@ -274,7 +358,11 @@ if (-not $witness) {
     $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
     if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
   }
-
+  # Adding a disk does not start it, and the mount point cannot be read until it
+  # is online.
+  Ensure-ResourceOnline $existing | Out-Null
+} else {
+  Ensure-ResourceOnline $clusDisk | Out-Null
 }
 
 [pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress

@@ -28,6 +28,28 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// EditionAsked / EditionKeySeen record what EnsureWindowsEdition was asked for,
+	// so a test can prove the key reached it and was not logged. FailEdition drives
+	// the failure path.
+	EditionAsked   string
+	EditionKeySeen string
+	FailEdition    bool
+
+	// ActivationAsked / ActivationKeySeen / ActivationKMS record what
+	// EnsureWindowsActivation was asked for; AVMAAsked / AVMAKeySeen the same for
+	// the guest. FailActivation / FailAVMA drive the failure paths.
+	ActivationAsked   string
+	ActivationKeySeen string
+	ActivationKMS     string
+	FailActivation    bool
+	AVMAAsked         string
+	AVMAKeySeen       string
+	FailAVMA          bool
+
+	// WindowsLicence overrides the reported edition/activation, so tests can drive
+	// the evaluation and grace-period paths.
+	WindowsLicence *WindowsLicence
+
 	// ISCSIOccupiedSerials names LUNs the stub should treat as already carrying a
 	// filesystem, so the refusal-to-destroy path can be tested.
 	ISCSIOccupiedSerials []string
@@ -78,6 +100,22 @@ type Stub struct {
 	ClusterExists       bool
 	ClusterName         string
 	ClusterMembers      []string
+	// ClusterGroups override the default core group, so a test can model a cluster
+	// whose Cluster Group is PartialOnline — the state that had DRCluster
+	// reporting Ready while its name and IP addresses were offline.
+	ClusterGroups []ClusterGroup
+	// CoreGroupStarted records the recovery being asked for; FailCoreGroupStart
+	// drives the path where the cluster refuses.
+	CoreGroupStarted bool
+	// QuarantineCleared records which node was readmitted; FailClearQuarantine
+	// drives the path where the cluster refuses.
+	// NodeSelfState / NodeSelfService model what this host says about its own
+	// membership, which is answerable when the cluster is not.
+	NodeSelfState       string
+	NodeSelfService     string
+	QuarantineCleared   string
+	FailClearQuarantine bool
+	FailCoreGroupStart  bool
 	FormCalled          bool
 
 	// Witness models the cluster's observed quorum configuration; WitnessCalls
@@ -393,8 +431,62 @@ func (s *Stub) EnableRDP(_ context.Context) error { return nil }
 func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
-		Members: s.ClusterMembers, Witness: s.Witness}, nil
+	st := ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
+		Members: s.ClusterMembers, Witness: s.Witness, Groups: s.ClusterGroups}
+	// A formed cluster always HAS a core group — it is what holds the cluster name
+	// and its IP addresses — so a stub that reported none was modelling a state
+	// that cannot occur, and would have made "no core group" look survivable.
+	if st.Exists && len(st.Groups) == 0 {
+		st.Groups = []ClusterGroup{{Name: "Cluster Group", State: "Online"}}
+	}
+	return st, nil
+}
+
+// StartClusterCoreGroup records the request and brings the stub's core group
+// online, so a test can assert the cluster stops reporting a core-group problem
+// afterwards rather than only that the call was made.
+func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CoreGroupStarted = true
+	if s.FailCoreGroupStart {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: the cluster core group would not come online")
+	}
+	var changed bool
+	for i := range s.ClusterGroups {
+		if strings.EqualFold(s.ClusterGroups[i].Name, "Cluster Group") && s.ClusterGroups[i].State != "Online" {
+			s.ClusterGroups[i].State = "Online"
+			changed = true
+		}
+	}
+	if !changed {
+		return OutcomeUnchanged, "the cluster's resources were already online", nil
+	}
+	return OutcomeUpdated, "the cluster core group", nil
+}
+
+// ClearNodeQuarantine records the node and brings it Up in the stub's node list,
+// so a test can assert the cluster stops reporting it as ejected rather than only
+// that the call was made.
+// TakeTimings reports nothing: the stub does not shell out, so there is no cost
+// to attribute and inventing one would make the slow-pass condition fire in tests
+// that exercise nothing slow.
+func (s *Stub) TakeTimings() []CallTiming { return nil }
+
+func (s *Stub) GetNodeSelf(_ context.Context) (NodeSelf, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return NodeSelf{State: s.NodeSelfState, Service: s.NodeSelfService, Joined: s.ClusterExists}, nil
+}
+
+func (s *Stub) ClearNodeQuarantine(_ context.Context, node string) (Outcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.FailClearQuarantine {
+		return OutcomeUnchanged, "", fmt.Errorf("stub: the cluster would not readmit %s", node)
+	}
+	s.QuarantineCleared = node
+	return OutcomeUpdated, node + " rejoined the cluster", nil
 }
 
 func (s *Stub) EnsureFailoverClusteringFeature(_ context.Context) (Outcome, error) {
@@ -537,6 +629,64 @@ func (s *Stub) EnsureCSVMountPoints(_ context.Context, want map[string]string) (
 		return OutcomeUnchanged, "", fmt.Errorf("stub: forced failure naming CSV mount points")
 	}
 	return OutcomeUnchanged, s.CSVMountNote, nil
+}
+
+// GetWindowsLicence reports an activated Datacenter host, so a stub-backed
+// reconcile does not show a fleet in evaluation. WindowsLicence overrides it.
+func (s *Stub) GetWindowsLicence(_ context.Context) (WindowsLicence, error) {
+	if s.WindowsLicence != nil {
+		return *s.WindowsLicence, nil
+	}
+	return WindowsLicence{
+		Edition: "ServerDatacenter", Description: "Microsoft Windows Server 2025 Datacenter",
+		Status: "Licensed", Channel: "Volume:MAK", PartialProductKey: "ABCDE",
+	}, nil
+}
+
+// EnsureWindowsEdition records the request and reports a staged conversion, so
+// the reconciler's reboot governance can be exercised without a host.
+func (s *Stub) EnsureWindowsEdition(_ context.Context, targetEdition, productKey string) (Outcome, bool, error) {
+	s.EditionAsked, s.EditionKeySeen = targetEdition, productKey
+	if s.FailEdition {
+		return OutcomeUnchanged, false, fmt.Errorf("stub: forced failure converting edition")
+	}
+	cur := "ServerDatacenter"
+	if s.WindowsLicence != nil && s.WindowsLicence.Edition != "" {
+		cur = s.WindowsLicence.Edition
+	}
+	if cur == targetEdition {
+		return OutcomeUnchanged, false, nil
+	}
+	return OutcomeUpdated, true, nil
+}
+
+// EnsureWindowsActivation records what it was asked for. It refuses an
+// evaluation edition, which is the guard worth exercising.
+func (s *Stub) EnsureWindowsActivation(_ context.Context, method, key, kmsServer string) (Outcome, error) {
+	s.ActivationAsked, s.ActivationKeySeen, s.ActivationKMS = method, key, kmsServer
+	if s.FailActivation {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced activation failure")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Evaluation {
+		return OutcomeUnchanged, fmt.Errorf("this host runs an evaluation edition, and no product key can activate one (stub)")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Status == "Licensed" && key == "" {
+		return OutcomeUnchanged, nil
+	}
+	return OutcomeUpdated, nil
+}
+
+// EnsureGuestAVMA records the request and refuses on a host that cannot vouch for
+// a guest, which is the behaviour worth testing.
+func (s *Stub) EnsureGuestAVMA(_ context.Context, vmName, avmaKey, guestUser, guestPass string) (Outcome, error) {
+	s.AVMAAsked, s.AVMAKeySeen = vmName, avmaKey
+	if s.FailAVMA {
+		return OutcomeUnchanged, fmt.Errorf("stub: forced AVMA failure")
+	}
+	if s.WindowsLicence != nil && s.WindowsLicence.Evaluation {
+		return OutcomeUnchanged, fmt.Errorf("this host runs an evaluation edition and cannot vouch for a guest (stub)")
+	}
+	return OutcomeUpdated, nil
 }
 
 func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {

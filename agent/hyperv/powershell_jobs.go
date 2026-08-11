@@ -323,7 +323,6 @@ if ($vm) {
 // disk is identified by its PhysicalDisk DeviceId (as reported in inventory).
 // Idempotent: a disk that is already raw simply ends up raw again.
 func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
-	id := psQuote(deviceID)
 	// Selected by UniqueId when the identifier is one, and AMBIGUITY IS REFUSED.
 	//
 	// DeviceId is unique per bus, not per host: a local SSD and an iSCSI LUN both
@@ -332,30 +331,7 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	// which is falsy — while Clear-Disk took the first Number in the array. A
 	// destructive operation was choosing its target by an identifier that does not
 	// identify. Refusing costs one message; guessing costs the wrong disk.
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$want = %[1]s
-$pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq $want })
-if ($pd.Count -eq 0) {
-  $pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.DeviceId -eq $want })
-}
-if ($pd.Count -eq 0) { throw ('no physical disk with id ' + $want + ' on this host') }
-if ($pd.Count -gt 1) {
-  $seen = @($pd | ForEach-Object { [string]$_.UniqueId + ' (' + [string]$_.BusType + ', ' + [math]::Round($_.Size/1GB,1) + 'GB)' })
-  throw ('id ' + $want + ' matches ' + $pd.Count + ' disks on this host, because a disk id is unique per bus and not per host: ' + ($seen -join '; ') + '. Refusing to erase one of them by guessing — identify the disk by its unique id instead.')
-}
-$pd = $pd[0]
-$disk = @($pd | Get-Disk -ErrorAction SilentlyContinue)
-if ($disk.Count -gt 1) { throw ('id ' + $want + ' resolves to more than one disk; refusing to erase by guessing') }
-if ($disk.Count -eq 1) {
-  $d = $disk[0]
-  if ($d.IsBoot -or $d.IsSystem) { throw 'refusing to format the OS/boot disk' }
-  Set-Disk -Number $d.Number -IsReadOnly $false -ErrorAction SilentlyContinue
-  Set-Disk -Number $d.Number -IsOffline $false -ErrorAction SilentlyContinue
-  if ($d.PartitionStyle -ne 'RAW') { Clear-Disk -Number $d.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue }
-}
-Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
-$after = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId })
-if ($after.Count -gt 0 -and $after[0].CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }`, id)
+	script := formatDiskScript(deviceID)
 	if err := p.run2(ctx, script); err != nil {
 		return fmt.Errorf("format disk %q: %w", deviceID, err)
 	}
@@ -1064,3 +1040,54 @@ Write-Output ('DONE moved ' + $vm + ' storage to ' + $folder)
 	}
 	return result, nil
 }
+
+// formatDiskScriptForTest exposes the disk-wipe script so its refusals can be
+// asserted without a host. The guard it carries — that a disk which cannot be
+// read is refused rather than skipped past — is not reachable any other way.
+func formatDiskScriptForTest() string {
+	return formatDiskScript("__test__")
+}
+
+// formatDiskScript is the script FormatDisk runs, factored out so it has exactly
+// one definition rather than one for the agent and one for a test to drift from.
+func formatDiskScript(id string) string {
+	return fmt.Sprintf(formatDiskTemplate, psQuote(id))
+}
+
+const formatDiskTemplate = `$ErrorActionPreference='Stop'
+$want = %[1]s
+$pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq $want })
+if ($pd.Count -eq 0) {
+  $pd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.DeviceId -eq $want })
+}
+if ($pd.Count -eq 0) { throw ('no physical disk with id ' + $want + ' on this host') }
+if ($pd.Count -gt 1) {
+  $seen = @($pd | ForEach-Object { [string]$_.UniqueId + ' (' + [string]$_.BusType + ', ' + [math]::Round($_.Size/1GB,1) + 'GB)' })
+  throw ('id ' + $want + ' matches ' + $pd.Count + ' disks on this host, because a disk id is unique per bus and not per host: ' + ($seen -join '; ') + '. Refusing to erase one of them by guessing — identify the disk by its unique id instead.')
+}
+$pd = $pd[0]
+$disk = @($pd | Get-Disk -ErrorAction SilentlyContinue)
+if ($disk.Count -gt 1) { throw ('id ' + $want + ' resolves to more than one disk; refusing to erase by guessing') }
+# A FAILED READ IS NOT AN ABSENT DISK.
+#
+# This was "if ($disk.Count -eq 1) { ...guard...; wipe }": when Get-Disk could not
+# answer, Count was 0, the whole block was skipped -- INCLUDING the OS/boot guard
+# -- and the script carried on to Reset-PhysicalDisk. The one check standing
+# between this and erasing a boot disk was disabled by the read that was supposed
+# to feed it, silently, with no error anywhere.
+#
+# So an unreadable disk is refused. A physical disk that resolves to no disk
+# object is not a disk safely skipped past; it is a disk nothing is known about.
+if ($disk.Count -eq 0) {
+  throw ('the physical disk with id ' + $want + ' could not be resolved to a disk on this host, so whether it is the OS or boot disk cannot be established. Refusing to erase a disk that cannot be read.')
+}
+$d = $disk[0]
+if ($d.IsBoot -or $d.IsSystem) { throw 'refusing to format the OS/boot disk' }
+# Stop, not SilentlyContinue: if the disk cannot be brought online or made
+# writable, the wipe below would run against a disk in a state nobody checked.
+Set-Disk -Number $d.Number -IsReadOnly $false -ErrorAction Stop
+Set-Disk -Number $d.Number -IsOffline $false -ErrorAction Stop
+if ($d.PartitionStyle -ne 'RAW') { Clear-Disk -Number $d.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop }
+Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
+$after = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId })
+if ($after.Count -gt 0 -and $after[0].CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }`

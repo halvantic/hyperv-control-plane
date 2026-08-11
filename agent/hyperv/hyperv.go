@@ -333,6 +333,39 @@ type Interface interface {
 	// former-only step could never fix them all.
 	EnsureCSVMountPoints(ctx context.Context, want map[string]string) (Outcome, string, error)
 
+	// GetWindowsLicence observes the host's Windows edition and activation state.
+	// A pure read; it never changes licensing.
+	//
+	// The edition matters as much as the activation: an EVALUATION edition cannot
+	// be activated by any key, so a host reported as unlicensed with a countdown
+	// has no remedy an operator would guess at — it needs converting first.
+	GetWindowsLicence(ctx context.Context) (WindowsLicence, error)
+
+	// EnsureWindowsEdition converts the host to targetEdition when it differs,
+	// returning rebootRequired true when a conversion was staged — the change takes
+	// effect only on restart.
+	//
+	// IRREVERSIBLE, so it refuses anything it is not certain of: it asks Windows
+	// which target editions are valid rather than reasoning about which conversions
+	// are legal, and refuses a domain controller, which Windows cannot convert.
+	EnsureWindowsEdition(ctx context.Context, targetEdition, productKey string) (Outcome, bool, error)
+
+	// EnsureWindowsActivation activates Windows by MAK or against a KMS host.
+	//
+	// Idempotent in the way that matters: a host already licensed, whose key and
+	// KMS server already match, is not activated again — a repeat MAK activation
+	// consumes another seat from the key's pool. An evaluation edition is refused
+	// before anything is attempted, since no key can activate one.
+	EnsureWindowsActivation(ctx context.Context, method, key, kmsServer string) (Outcome, error)
+
+	// EnsureGuestAVMA installs an Automatic Virtual Machine Activation key inside
+	// a guest so it activates against this host.
+	//
+	// Refuses on a host that cannot vouch for a guest — Standard, evaluation, or
+	// not itself activated — BEFORE touching the guest, because that failure is the
+	// host's and an error naming the guest sends an operator to the wrong machine.
+	EnsureGuestAVMA(ctx context.Context, vmName, avmaKey, guestUser, guestPass string) (Outcome, error)
+
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.
@@ -494,6 +527,23 @@ type Interface interface {
 
 	// MoveClusterGroup moves (fails over) a clustered role/group to node. Run
 	// locally on a member. Imperative Job.
+	// StartClusterCoreGroup brings the cluster's core group online, then the
+	// storage stranded behind it. Returns what was started.
+	StartClusterCoreGroup(ctx context.Context) (Outcome, string, error)
+
+	// GetNodeSelf reads this host's OWN cluster membership state. Answerable when
+	// the cluster itself is not, which is the point of it.
+	GetNodeSelf(ctx context.Context) (NodeSelf, error)
+
+	// TakeTimings returns how long each call spent in PowerShell since the last
+	// take, slowest first, and clears the record. Taken rather than read so each
+	// pass reports its own cost rather than an average that hides one slow pass
+	// among fast ones.
+	TakeTimings() []CallTiming
+
+	// ClearNodeQuarantine readmits a quarantined node. Run from another member.
+	ClearNodeQuarantine(ctx context.Context, node string) (Outcome, string, error)
+
 	MoveClusterGroup(ctx context.Context, group, node string) error
 
 	// MoveClusterSharedVolume moves ownership of a CSV to node. Run locally on a
@@ -678,6 +728,12 @@ type ClusterState struct {
 	// When false, Exists is reported true (to avoid a spurious New-Cluster) but the
 	// detail fields are empty, so the reconciler must defer rather than clobber.
 	Known bool
+	// UnknownReason says why the state could not be read, when it could not.
+	// "Unreadable this pass" is equally true of a cluster service still starting
+	// and of a node the cluster has QUARANTINED, and only one of those clears
+	// itself — so the reason travels with the deferral rather than the operator
+	// being left to guess which they are waiting on.
+	UnknownReason string
 	// Name is the cluster's name (empty when Exists is false).
 	Name string
 	// Members are the node names currently in the cluster.

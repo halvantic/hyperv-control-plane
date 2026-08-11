@@ -451,3 +451,32 @@ func TestEnsureReplicaBrokerSelfHealsAndReportsTheReason(t *testing.T) {
 		t.Error("the DNS re-registration must be gated behind the broker actually failing")
 	}
 }
+
+/* Hyper-V reports Health Critical for the whole of a resynchronise and of an
+   initial copy, because until either finishes there is no usable recovery point.
+   That is a true statement about the replica and a false one about the
+   relationship — and thrown as an error it read "ApplyFailed: replication is
+   configured but unhealthy", which invites reconfiguring a relationship that is
+   in the middle of repairing itself. Reconfiguring restarts the copy. */
+
+// The message has to say what to do, and the useful instruction here is "nothing".
+func TestTheResynchroniseMessageSaysToLeaveItAlone(t *testing.T) {
+	err := &ReplicationWorkingError{VM: "Linux", State: "Resynchronizing"}
+	if !strings.Contains(err.Error(), "repairs itself") {
+		t.Errorf("it must say the relationship recovers on its own: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "start the copy again from the beginning") &&
+		!strings.Contains(err.Error(), "from the beginning") {
+		t.Errorf("it must warn that reconfiguring restarts the copy: %q", err.Error())
+	}
+}
+
+// An initial copy is a different situation with the same reported health, and
+// telling somebody their replication is broken during its first sync is worse
+// than useless.
+func TestAnInitialCopyIsDescribedAsItself(t *testing.T) {
+	err := &ReplicationWorkingError{VM: "Linux", State: "InitialReplicationInProgress"}
+	if !strings.Contains(err.Error(), "first full copy") {
+		t.Errorf("an initial replication must be named as one: %q", err.Error())
+	}
+}

@@ -147,6 +147,17 @@ type HostSpec struct {
 	// Storage describes host-local and shared storage intent.
 	Storage HostStorageSpec `json:"storage,omitempty"`
 
+	// WindowsLicence declares the Windows EDITION this host should run.
+	//
+	// Desired state like the domain join and the Hyper-V role: declared once,
+	// applied by the agent, restart governed by RebootPolicy. It does NOT activate
+	// the host — a conversion and an activation are different acts, one consuming
+	// nothing and the other consuming a key, so they are declared separately.
+	//
+	// Nil means Ballast does not manage the edition, which is not the same as
+	// declaring the current one: an absent declaration never converts anything.
+	WindowsLicence *WindowsLicenceSpec `json:"windowsLicence,omitempty"`
+
 	// ClusterMembership, when set, declares which cluster this host should
 	// belong to. Nil means standalone.
 	ClusterMembership *ClusterMembershipSpec `json:"clusterMembership,omitempty"`
@@ -234,6 +245,123 @@ type ISOLibrarySpec struct {
 // library that lists perfectly and cannot boot a VM is the failure this
 // distinction exists to make visible — and it is the normal outcome of a share
 // granted to a user rather than to the machines.
+// WindowsLicenceSpec declares the Windows edition a host should run.
+//
+// Converting is IRREVERSIBLE — there is no way back to an evaluation edition, and
+// no way down from a higher edition — so this is applied only when the declared
+// edition differs from the running one AND Windows itself offers it as a valid
+// target. Ballast asks rather than reasoning about which conversions are legal:
+// the servicing stack knows, and a rule written here would be a guess that ages.
+type WindowsLicenceSpec struct {
+	// Edition is the target edition ID as Windows names it — ServerDatacenter,
+	// ServerStandard. Not the friendly caption, which is localised.
+	Edition string `json:"edition"`
+
+	// ProductKeySecret names a stored secret holding the product key the
+	// conversion needs.
+	//
+	// A reference, never the key. A key inline in the spec would sit in Postgres,
+	// in every spec-history row, and in any diff an operator pastes into a ticket —
+	// and unlike a password it cannot be rotated once it has been used.
+	ProductKeySecret string `json:"productKeySecret"`
+
+	// Activation is how this host activates: MAK, KMS, or empty for neither.
+	//
+	// Separate from the edition because they are different acts on different
+	// schedules: a conversion happens once and consumes nothing, an activation
+	// consumes a seat from a key pool and may be repeated after hardware changes.
+	// A host can also be converted and left unactivated on purpose, during a
+	// staged rollout.
+	Activation string `json:"activation,omitempty"`
+
+	// ActivationKeySecret names the key to activate WITH — a MAK, or the public
+	// GVLK for a KMS client.
+	//
+	// Supplied rather than derived. GVLKs are public and per edition and release,
+	// so Ballast could carry a table of them — and that table would be a rule that
+	// ages every time Microsoft ships a version, which is the same trap as deciding
+	// for ourselves which edition conversions are legal. Empty leaves the key the
+	// host already has, which is right for a host that only needs pointing at a
+	// KMS server.
+	ActivationKeySecret string `json:"activationKeySecret,omitempty"`
+
+	// KMSServer is the KMS host to activate against, optionally with :port. Empty
+	// uses whatever DNS auto-discovery finds, which is how most KMS estates are
+	// meant to work — setting it explicitly is for the ones that are not.
+	KMSServer string `json:"kmsServer,omitempty"`
+
+	// TargetEditions is what THIS installation may convert to, as Windows itself
+	// reports it. Per-installation and not derivable: a Standard Core evaluation
+	// converts only to Datacenter Core, under the name ServerDatacenterCor.
+	//
+	// Empty means NOT REPORTED. It must never be read as "no conversion is
+	// possible" — a list Ballast could not gather is not a refusal, and a console
+	// that offered an empty menu would block a conversion Windows would allow.
+	TargetEditions []string `json:"targetEditions,omitempty"`
+}
+
+// Windows activation methods.
+const (
+	// ActivationMAK is a Multiple Activation Key: one key, a pool of activations,
+	// each host consuming a seat and needing to reach Microsoft once.
+	ActivationMAK = "MAK"
+	// ActivationKMS points the host at a Key Management Service host, which
+	// reactivates it every 180 days and needs no outbound internet.
+	ActivationKMS = "KMS"
+)
+
+// WindowsLicenceStatus is the host's observed Windows edition and activation.
+//
+// Read-only, and deliberately shipped before anything that changes it. An
+// evaluation edition cannot be activated at all — it has to be converted first,
+// irreversibly, with a reboot — so the fleet's real position is worth seeing
+// before Ballast is given the power to alter it. A 120-day clock nobody can see
+// is the failure this prevents.
+type WindowsLicenceStatus struct {
+	// Edition is the installed edition ID (ServerDatacenter, ServerStandard…) as
+	// DISM reports it, and Description is what a person recognises.
+	Edition     string `json:"edition,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Evaluation marks an edition that CANNOT be activated. It is the single most
+	// consequential fact here: an operator who does not know it will try to
+	// activate, fail, and have no idea why — the remedy is a DISM edition change,
+	// not a key.
+	Evaluation bool `json:"evaluation,omitempty"`
+
+	// Status is the SoftwareLicensingProduct LicenseStatus in words — Licensed,
+	// InitialGrace, OutOfTolerance, Notification, Unlicensed. The numeric form is
+	// not carried: nothing downstream should have to know that 1 means licensed.
+	Status string `json:"status,omitempty"`
+
+	// GraceDaysRemaining is how long an unactivated or evaluation host has before
+	// Windows starts objecting. Zero when licensed, and zero when unknown — the
+	// two are told apart by Status, because a countdown is only meaningful
+	// alongside what it is counting down to.
+	GraceDaysRemaining int `json:"graceDaysRemaining,omitempty"`
+
+	// Channel is Retail, Volume:MAK, Volume:GVLK or Evaluation, which is what
+	// decides HOW a host activates. PartialProductKey is the last five characters
+	// Windows exposes: enough to tell two keys apart, and never the key itself.
+	Channel           string `json:"channel,omitempty"`
+	PartialProductKey string `json:"partialProductKey,omitempty"`
+
+	// KMSServer is where a volume-licensed host activates, when it has one.
+	KMSServer string `json:"kmsServer,omitempty"`
+
+	// TargetEditions is what THIS installation may convert to, as Windows itself
+	// reports it. Per-installation and not derivable: a Standard Core evaluation
+	// converts only to Datacenter Core, under the name ServerDatacenterCor.
+	//
+	// Empty means NOT REPORTED. It must never be read as "no conversion is
+	// possible" — a list Ballast could not gather is not a refusal, and a console
+	// that offered an empty menu would block a conversion Windows would allow.
+	TargetEditions []string `json:"targetEditions,omitempty"`
+
+	// Message explains a state the fields cannot, in the operator's terms.
+	Message string `json:"message,omitempty"`
+}
+
 type ISOLibraryStatus struct {
 	// Path echoes the declared share, so a status is readable without the spec.
 	Path string `json:"path,omitempty"`
@@ -341,6 +469,22 @@ type HostStatus struct {
 	ComputerName string `json:"computerName,omitempty"`
 	Domain       string `json:"domain,omitempty"`
 
+	// ClusterNode is this host's OWN membership state, as its cluster sees it:
+	// Up, Paused, Quarantined, Isolated, Down. Empty when the host is not
+	// clustered, or when its cluster service could not answer.
+	//
+	// Reported per host rather than read off the cluster, because the cluster's
+	// node list comes from ONE member and is exactly what is missing when that
+	// member is the broken one. A host can always answer for itself.
+	ClusterNode string `json:"clusterNode,omitempty"`
+
+	// ClusterService is the state of this host's Failover Clustering service
+	// (Running, Stopped, StartPending...). It is what a node can still report when
+	// it cannot answer anything else: quarantine works by STOPPING this service, so
+	// a stopped one is both the reason a node reports no membership and the signal
+	// that it must not be asked to speak for the cluster.
+	ClusterService string `json:"clusterService,omitempty"`
+
 	// RebootRequired is true when spec cannot be fully honoured until reboot
 	// and RebootPolicy forbids the agent doing it autonomously.
 	RebootRequired bool `json:"rebootRequired"`
@@ -358,6 +502,19 @@ type HostStatus struct {
 	// ISOLibrary is what this host actually found at its declared library share,
 	// whether the cluster's or its own. Nil when none is declared.
 	ISOLibrary *ISOLibraryStatus `json:"isoLibrary,omitempty"`
+
+	// WindowsLicence is the host's Windows edition and activation state.
+	//
+	// Named WindowsLicence, never just Licence: centre/license is BALLAST's own
+	// product licensing, a signed vendor token the agent is deliberately never
+	// aware of. These are unrelated concerns that would be a genuine hazard to
+	// confuse — one gates Ballast features, the other is Microsoft's and gates
+	// nothing Ballast does.
+	//
+	// Observed. What is DECLARED lives on HostSpec.WindowsLicence — the edition
+	// the host should run — and the two are compared to decide whether a
+	// conversion is owed.
+	WindowsLicence *WindowsLicenceStatus `json:"windowsLicence,omitempty"`
 
 	// ISCSI is this host's own array connection, for a standalone host that
 	// declares one. Nil for a cluster member — a member's iSCSI state is reported
@@ -753,14 +910,67 @@ type Site struct {
 // VLAN, giving operators a stable abstraction to attach VM NICs to instead of
 // juggling raw switch names and VLAN IDs. It is centre-only metadata; a VM NIC
 // references it by name and the centre resolves it to the NIC's SwitchName and
-// VLANID, which the existing per-VM reconciler applies. The name is globally
-// unique; SwitchName is immutable after creation.
+// VLANID, which the existing per-VM reconciler applies. SwitchName is immutable
+// after creation.
+//
+// SCOPED to the thing that owns the switch — a cluster, or a standalone host —
+// and unique only within it. A name has to mean one switch, and a vSwitch is only
+// real on the hosts that have it: a fleet-wide port would assert that its switch
+// exists everywhere, so authoring a VM on another cluster against it resolves
+// cleanly at the centre and then fails on the host with a switch that was never
+// there. Scoping is what makes the resolution correct; being able to call the
+// port VLAN100 on both clusters is the consequence, not the reason.
+//
+// Never inherited, the same rule as the ISO library and host iSCSI: a cluster
+// member takes its ports from the cluster, never from its own host scope, because
+// two authorities over one VM's networking is how a NIC ends up on a switch
+// nobody declared.
 type Dvport struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+
+	// ClusterName and HostName are the scope, mutually exclusive, mirroring
+	// VMPlacementSpec — which is what the resolution keys off, so the two must not
+	// drift apart.
+	//
+	// Both empty means UNSCOPED: a port authored before scoping existed, whose
+	// scope could not be inferred. It is not a fleet-wide port and does not resolve
+	// — see DvportUnscopedMessage.
+	ClusterName string `json:"clusterName,omitempty"`
+	HostName    string `json:"hostName,omitempty"`
+
 	SwitchName  string `json:"switchName"`
 	VLANID      int    `json:"vlanId"`
 	Description string `json:"description,omitempty"`
 }
+
+// Scope returns the dvport's scope, and whether it has one at all.
+func (d Dvport) Scope() (kind, name string, scoped bool) {
+	switch {
+	case d.ClusterName != "":
+		return "cluster", d.ClusterName, true
+	case d.HostName != "":
+		return "host", d.HostName, true
+	}
+	return "", "", false
+}
+
+// SameScope reports whether two dvports live in the same scope, which is what
+// makes their names collide.
+func (d Dvport) SameScope(o Dvport) bool {
+	return d.ClusterName == o.ClusterName && d.HostName == o.HostName
+}
+
+// DvportUnscopedMessage explains a port that has no scope, in the terms an
+// operator can act on.
+//
+// It refuses to resolve rather than falling back to matching any scope. Resolving
+// it fleet-wide is precisely the behaviour scoping exists to remove, and it would
+// bind a NIC to a switch that may not exist on the target — the failure would then
+// surface on a host, as a switch-not-found, a long way from the cause.
+const DvportUnscopedMessage = "this port has no cluster or host, so Ballast cannot tell which switch it means. " +
+	"It was created before ports were scoped and its scope could not be worked out from the switch name. " +
+	"Set its cluster or host and it will resolve again; VMs already using it are unaffected, " +
+	"because a VM's adapter carries the switch and VLAN it was given at the time."
 
 // SiteLabel is the ObjectMeta label key by which clusters and hosts declare the
 // site they belong to.
@@ -1303,6 +1513,18 @@ type ClusterStatus struct {
 	// action on cluster health must check this is newer than whatever it did
 	// last, not merely that the numbers look good.
 	ObservedAt time.Time `json:"observedAt,omitempty"`
+
+	// StateUnreadable means the reporting member could not read the cluster at all
+	// this pass — its cluster service was stopped, or it has been ejected from
+	// membership — so every observed field below is EMPTY because nothing was
+	// seen, not because nothing is there.
+	//
+	// Every member reports, and a report replaces the last one, so without this a
+	// single blind member overwrites the readings of every healthy one. On the rig
+	// bcluster2's first member was quarantined — which stops its cluster service —
+	// and the whole cluster went dark to the centre: no nodes, no volumes, three
+	// of seven steps, while two healthy members could see it perfectly.
+	StateUnreadable bool `json:"stateUnreadable,omitempty"`
 }
 
 // ClusterNetworkStatus is one cluster network: subnet (CIDR), role
@@ -1536,6 +1758,25 @@ const (
 	// the reconcile loop does on its own.
 	JobClusterUpdateFunctionalLevel = "ClusterUpdateFunctionalLevel" // no params
 
+	// JobClusterStartCoreGroup brings the cluster's own resources back online: the
+	// core group first, then the storage that could not come online behind it.
+	//
+	// A job rather than reconcile state. Whether a cluster resource should be
+	// online is the CLUSTER's decision, made continuously by its own service, and
+	// a reconcile loop asserting it would fight the cluster every pass — including
+	// while it is deliberately moving a group between nodes. This is an operator
+	// saying "try again now", which is what the situation actually calls for.
+	JobClusterStartCoreGroup = "ClusterStartCoreGroup" // no params
+
+	// JobClusterClearQuarantine readmits a node the cluster has quarantined.
+	//
+	// MUST be enqueued on a different member. Quarantine works by stopping the
+	// cluster service on the node it applies to, so that node cannot act for the
+	// cluster — asking it to readmit itself asks the one machine that has been cut
+	// off, which is also how Ballast came to be blind to a whole cluster whose
+	// designated former was the quarantined node.
+	JobClusterClearQuarantine = "ClusterClearQuarantine" // params: node
+
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
@@ -1602,6 +1843,16 @@ const (
 	JobResync = "Resync" // no params — force an immediate full reconcile on this host
 
 	JobFetchISO = "FetchISO" // params: url, dest, name — download an ISO from the centre's library to dest (a CSV's ISOs folder), agent-local
+
+	// JobGuestActivateAVMA installs an Automatic Virtual Machine Activation key
+	// inside a guest so it activates against its Hyper-V host.
+	//
+	// A JOB rather than desired state, for the same reason the guest domain join
+	// is one: it runs INSIDE the guest over PowerShell Direct, so it needs the VM
+	// running and an administrator account within it. As desired state a VM that
+	// is legitimately powered off would report unmet intent for as long as it
+	// stayed off, which is not drift and not something to fix.
+	JobGuestActivateAVMA = "GuestActivateAVMA" // params: vm, avmaKey, guestUser, guestPass
 
 	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
@@ -1701,6 +1952,15 @@ const (
 	// pickers filter by type, and that filtering is what stops a guest account
 	// being offered as a WinRM target.
 	SecretLocalCredential = "LocalCredential"
+
+	// SecretProductKey is a Windows product key, in the key "productKey".
+	//
+	// Its own type because it is not a credential and the pickers filter by type:
+	// offering a domain account where a product key belongs, or the reverse, is a
+	// mistake one wrong selection away. A product key also differs from every
+	// other secret here in that it CANNOT be rotated once used — which is why it
+	// is a stored reference rather than a value in a spec.
+	SecretProductKey = "ProductKey"
 )
 
 // User is an operator account that can sign in to the centre's UI/REST surface.
