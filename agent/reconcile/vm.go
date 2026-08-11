@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
@@ -188,7 +189,21 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	replPending := false
 	if vm.Spec.Replication != nil {
 		rout, rerr := r.hv.EnsureVMReplication(ctx, vm.Meta.Name, *vm.Spec.Replication)
-		res.Conditions = append(res.Conditions, r.condition("VMReplication/"+vm.Meta.Name, rout, rerr))
+		// Replication that is repairing itself holds the VM at Progressing without
+		// reporting a fault. It was reading "ApplyFailed: replication is configured
+		// but unhealthy", which invites reconfiguring a relationship in the middle
+		// of fixing itself — and reconfiguring restarts the copy from the beginning.
+		var working *hyperv.ReplicationWorkingError
+		if errors.As(rerr, &working) {
+			res.Conditions = append(res.Conditions, types.Condition{
+				Type: "VMReplication/" + vm.Meta.Name, Status: false, Reason: "Resynchronising",
+				Message: working.Error(), LastTransitionTime: r.now(),
+			})
+			replPending = true
+			rerr = nil
+		} else {
+			res.Conditions = append(res.Conditions, r.condition("VMReplication/"+vm.Meta.Name, rout, rerr))
+		}
 		if rerr != nil {
 			r.log.Warn("ensure vm replication failed (retries next pass)", "vm", vm.Meta.Name, "err", rerr)
 			replPending = true

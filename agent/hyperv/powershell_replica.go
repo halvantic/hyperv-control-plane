@@ -690,6 +690,19 @@ if (-not $enabled) {
     } elseif ($state -eq 'Error') {
       Resume-VMReplication -VMName $vm -ErrorAction Stop
       $changed = $true
+    } elseif ($state -eq 'Resynchronizing' -or $state -eq 'InitialReplicationInProgress' -or $state -eq 'SyncedReplicationComplete') {
+      # WORKING, not broken. Hyper-V reports Health Critical for the whole of a
+      # resynchronise and of an initial copy, because until it finishes there is no
+      # usable recovery point — which is a true statement about the replica and a
+      # false one about the relationship.
+      #
+      # Thrown as an error it read "ApplyFailed: replication is configured but
+      # unhealthy", which invites an operator to reconfigure replication that is
+      # in the middle of repairing itself. Resynchronising is how it repairs
+      # itself; the correct action is to leave it alone, and the reconcile must
+      # not report settled either.
+      'RESULT=PROGRESSING ' + $state
+      return
     } elseif ($health -eq 'Critical') {
       throw ('replication is configured but unhealthy: state ' + $state + ', health ' + $health + ' - see Get-VMReplication on the primary')
     }
@@ -701,7 +714,34 @@ if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`,
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure vm replication %q: %w", vmName, err)
 	}
+	// Replication that is repairing itself is neither settled nor failed. Reported
+	// as its own outcome so the reconciler can say "working" instead of choosing
+	// between two answers that are both wrong.
+	if i := strings.Index(string(out), "RESULT=PROGRESSING"); i >= 0 {
+		state := strings.TrimSpace(strings.TrimPrefix(string(out)[i:], "RESULT=PROGRESSING"))
+		return OutcomeUnchanged, &ReplicationWorkingError{VM: vmName, State: state}
+	}
 	return resultOutcome(out, "ensure vm replication "+vmName)
+}
+
+// ReplicationWorkingError reports replication that is actively repairing itself.
+//
+// An error type because the call has not achieved the desired state, and the
+// reconciler must not mark the VM settled. NOT a failure: the remedy is to wait,
+// and every other treatment invites somebody to reconfigure a relationship that
+// is in the middle of fixing itself.
+type ReplicationWorkingError struct {
+	VM    string
+	State string
+}
+
+func (e *ReplicationWorkingError) Error() string {
+	switch e.State {
+	case "InitialReplicationInProgress":
+		return "the first full copy of " + e.VM + " is still being sent to the replica server. Hyper-V reports the health as critical until it finishes, because there is no usable recovery point yet — that is expected, and nothing needs doing."
+	default:
+		return "replication for " + e.VM + " is resynchronising after a disruption. Hyper-V reports the health as critical for the whole of a resynchronise, because there is no usable recovery point until it completes. It repairs itself; reconfiguring replication now would start the copy again from the beginning."
+	}
 }
 
 // replicaModeGuard is a PowerShell prelude that loads the VM's replication
