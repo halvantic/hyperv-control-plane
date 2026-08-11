@@ -54,6 +54,35 @@ Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
 function Fail($m) { throw $m }
 
+# Ensure-ResourceOnline starts a cluster resource that is not already Online.
+#
+# A Physical Disk resource, and the CSV built on it, can sit in the cluster
+# Offline: adding a disk does not start it, and a resource that went Offline for
+# any reason stays there. An offline CSV has NO mount path -- C:\ClusterStorage
+# holds nothing for it -- so the volume is in the cluster, named correctly, and
+# unusable, which is how both DR LUNs ended up reported as adopted while the
+# mount-point step said "reported no mount path".
+#
+# Starting a resource is coordination through the cluster's own API, not a quorum
+# decision: the cluster still owns whether it can come online, and says so.
+function Ensure-ResourceOnline {
+  param($res)
+  if (-not $res) { return $false }
+  $r = Get-ClusterResource -Name ([string]$res.Name) -ErrorAction SilentlyContinue
+  if (-not $r) { return $false }
+  if ([string]$r.State -eq 'Online') { return $false }
+  try {
+    Start-ClusterResource -InputObject $r -ErrorAction Stop | Out-Null
+  } catch {
+    Fail ('the cluster holds ' + [string]$r.Name + ' but it is ' + [string]$r.State + ' and would not come online: ' + ([string]$_.Exception.Message).Trim() + '. An offline volume has no mount path, so nothing can be stored on it. Check the LUN is reachable from every member and that it is not held by another cluster.')
+  }
+  $r = Get-ClusterResource -Name ([string]$res.Name) -ErrorAction SilentlyContinue
+  if ($r -and [string]$r.State -ne 'Online') {
+    Fail ('the cluster was asked to bring ' + [string]$r.Name + ' online and it is still ' + [string]$r.State + '. An offline volume has no mount path, so nothing can be stored on it.')
+  }
+  return $true
+}
+
 # ---- locate the LUN -------------------------------------------------------
 $disk = $null
 if ($serial) {
@@ -124,11 +153,16 @@ if ($csv -and -not $witness) {
   # a volume adopted before Ballast knew to name the mount point kept
   # C:\ClusterStorage\VolumeN for ever, and the declared name never became the
   # path the operator was told to expect.
-  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a CSV' } | ConvertTo-Json -Compress
+  # Not a bare return: "already a CSV" was reported for a CSV sitting Offline,
+  # which is present but unusable. Being in the cluster is not the same as being
+  # available, and only one of those is what was asked for.
+  $started = Ensure-ResourceOnline $csv
+  [pscustomobject]@{ changed = $started; serial = ([string]$disk.SerialNumber).Trim(); note = $(if ($started) { 'brought the CSV online' } else { 'already a CSV' }) } | ConvertTo-Json -Compress
   return
 }
 if ($clusDisk -and $witness) {
-  [pscustomobject]@{ changed = $false; serial = ([string]$disk.SerialNumber).Trim(); note = 'already a clustered disk' } | ConvertTo-Json -Compress
+  $started = Ensure-ResourceOnline $clusDisk
+  [pscustomobject]@{ changed = $started; serial = ([string]$disk.SerialNumber).Trim(); note = $(if ($started) { 'brought the witness disk online' } else { 'already a clustered disk' }) } | ConvertTo-Json -Compress
   return
 }
 
@@ -310,7 +344,11 @@ if (-not $witness) {
     $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
     if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
   }
-
+  # Adding a disk does not start it, and the mount point cannot be read until it
+  # is online.
+  Ensure-ResourceOnline $existing | Out-Null
+} else {
+  Ensure-ResourceOnline $clusDisk | Out-Null
 }
 
 [pscustomobject]@{ changed = $true; serial = ([string]$disk.SerialNumber).Trim(); note = '' } | ConvertTo-Json -Compress

@@ -234,3 +234,48 @@ func TestAnUnreadableFilesystemIsReportedAsSuchNotAsBareData(t *testing.T) {
 		t.Error("the refusal for unreadable contents must not offer a wipe as the remedy")
 	}
 }
+
+// Being in the cluster is not the same as being available. Both DR LUNs were
+// adopted, named correctly, and Offline — so C:\ClusterStorage held nothing for
+// them and the mount-point step reported no path, while the adoption itself
+// reported success.
+func TestAnAdoptedDiskIsBroughtOnline(t *testing.T) {
+	if !strings.Contains(adoptScript, "Start-ClusterResource") {
+		t.Fatal("nothing starts the cluster resource: an offline CSV has no mount path, so the volume is present and unusable")
+	}
+}
+
+// The early returns are the ones that mattered: a CSV that already existed but
+// sat offline returned "already a CSV" and was never started.
+func TestTheAlreadyAdoptedPathsStillEnsureOnline(t *testing.T) {
+	// Anchored on the call itself, then on the report following it. Searching for
+	// the report first found the prose in the comment above it.
+	for _, c := range []struct{ call, reports string }{
+		{"$started = Ensure-ResourceOnline $csv", "already a CSV"},
+		{"$started = Ensure-ResourceOnline $clusDisk", "already a clustered disk"},
+	} {
+		i := strings.Index(adoptScript, c.call)
+		if i < 0 {
+			t.Fatalf("no %q call in the script", c.call)
+		}
+		rest := adoptScript[i:]
+		end := strings.Index(rest, "return")
+		if end < 0 {
+			t.Fatalf("%q is not followed by a return", c.call)
+		}
+		if !strings.Contains(rest[:end], c.reports) {
+			t.Errorf("the %q path does not report through the call that ensures it is online", c.reports)
+		}
+	}
+}
+
+// An offline resource that will not start is a real failure with a real remedy,
+// and reporting the adoption as done would hide it.
+func TestAResourceThatWillNotStartIsReported(t *testing.T) {
+	if !strings.Contains(adoptScript, "would not come online") {
+		t.Error("a resource that refuses to start must be reported, not swallowed")
+	}
+	if !strings.Contains(adoptScript, "An offline volume has no mount path") {
+		t.Error("the failure must say why an offline volume matters")
+	}
+}
