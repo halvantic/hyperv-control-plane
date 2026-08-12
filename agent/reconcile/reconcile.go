@@ -154,27 +154,13 @@ type Result struct {
 // at the first failure: it attempts every resource so status reflects the whole
 // host, and reports Honoured == false if any failed.
 func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (res Result, err error) {
-	timer := newPassTimer()
-	// Timings belong to the pass that made them, and this pass has several early
-	// returns — the Hyper-V role not being active is one, and it is the one a host
-	// takes while it is still booting. Draining the accumulator only at the bottom
-	// meant those passes left their calls behind for the NEXT pass to report as its
-	// own: a completed pass would name GetHostRoleState, CollectInventory and
-	// CollectResources "(2 calls)" each, one from itself and one inherited, and an
-	// operator reading the slowest-call list was told about work another pass did.
-	//
-	// Deferred, so it happens on every path. A pass that fails early and slowly now
-	// reports its own cost too, where before it reported nothing at all.
-	defer func() {
-		r.passes++
-		if msg := slowPassMessage(r.hv.TakeTimings(), timer.total(), slowPassThreshold); msg != "" {
-			res.Conditions = append(res.Conditions, types.Condition{
-				Type: "ReconcilePass", Status: false, Reason: "Slow",
-				Message: msg, LastTransitionTime: r.now(),
-			})
-			r.log.Warn("slow reconcile pass", "took", timer.total().String())
-		}
-	}()
+	// Pass timing is NOT done here. It used to be, and the timer covered this
+	// function while the drain also swept up the cluster reconcile the runner runs
+	// afterwards — so one cycle's GetClusterState was reported as the next cycle's
+	// cost. The timer and the drain now sit together at the cycle boundary in the
+	// runner, which is the only place that spans everything a pass does. See
+	// timing.go for the invariant.
+	defer func() { r.passes++ }()
 	var (
 		conds           []types.Condition
 		changed         bool
