@@ -144,6 +144,26 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	}
 
 	ensured, err := r.hv.EnsureVM(ctx, vm)
+	// A VM that cannot be found on a DRAINING host has left, which is what a
+	// drain is for. The cluster live-migrates the roles off; a pass that catches
+	// one mid-move gets "the object was not found. The object might have been
+	// deleted" from Hyper-V, and reporting that as ApplyFailed marks a VM
+	// Degraded for migrating successfully — observed on TestServer2025 while
+	// HVNEW04 drained, ninety seconds before its reboot even began.
+	//
+	// Gated on the host's own drain state rather than on the error text, for the
+	// reason the vmBusy stand-off gives: the reconciler knowing what its own
+	// cluster was asked to do beats teaching it to recognise how each conflict
+	// happens to fail.
+	if err != nil && r.hostDraining {
+		res.Conditions = append(res.Conditions, types.Condition{
+			Type: "VM/" + vm.Meta.Name, Status: false, Reason: "Draining",
+			Message:            "this host is draining, so " + vm.Meta.Name + " is moving to another node — it is not readable here while it goes. Nothing to do; the node that receives it reports it from there.",
+			LastTransitionTime: r.now(),
+		})
+		r.log.Info("vm not readable while host drains", "vm", vm.Meta.Name, "err", err)
+		return res
+	}
 	res.Conditions = append(res.Conditions, r.condition("VM/"+vm.Meta.Name, ensured.Outcome, err))
 	if err != nil {
 		r.log.Error("ensure vm failed", "vm", vm.Meta.Name, "err", err)
