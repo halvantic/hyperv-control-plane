@@ -43,14 +43,39 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 	}
 }
 
-// The consequence is the part an operator cannot see for themselves.
+// The consequence is the part an operator cannot see for themselves — and it
+// changed when the agent gained its keepalive.
+//
+// The message used to say a slow pass makes the host read offline, with its
+// network unknown and its name gone from the agent update list. The keepalive
+// reports on its own interval precisely so that no longer happens, so the
+// sentence had outlived what it described and sent an operator looking for
+// symptoms that cannot occur. What a slow pass costs now is freshness: the pass
+// is how often the host is read, while it goes on reading online throughout.
 func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 	got := slowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
 		105*time.Second, slowPassThreshold)
-	for _, want := range []string{"reads as offline", "agent update list"} {
+	for _, want := range []string{"how often this host is actually read", "still reads online", "Readings taken"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("the message must connect slowness to what it looks like (%q): %q", want, got)
+			t.Errorf("the message must connect slowness to what it costs (%q): %q", want, got)
 		}
+	}
+	// The old chain must not come back: it describes a failure the keepalive
+	// removed, and an operator acting on it would be chasing nothing.
+	for _, gone := range []string{"reads as offline", "agent update list"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("the message still claims %q, which the keepalive made false: %q", gone, got)
+		}
+	}
+}
+
+// Both shapes of the message carry the consequence: a slow pass with nothing to
+// blame costs exactly as much freshness as one with a named culprit, and an
+// operator reading the first should not have to know the second exists.
+func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
+	got := slowPassMessage(nil, 60*time.Second, slowPassThreshold)
+	if !strings.Contains(got, "how often this host is actually read") {
+		t.Errorf("a slow pass with no named call still costs freshness and must say so: %q", got)
 	}
 }
 

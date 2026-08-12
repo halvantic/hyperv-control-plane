@@ -526,11 +526,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	}
 	// What this pass actually cost, reported only when it cost enough to matter.
 	//
-	// A pass longer than the agent's heartbeat stops the host reporting on time,
-	// and a host that reports late reads as OFFLINE — which showed up as unknown
-	// networks, hosts missing from the agent update list, and clusters with no
-	// member to report them. None of those symptoms named the cause, and reasoning
-	// about which step was slow produced two wrong answers in one evening.
+	// A pass longer than the agent's heartbeat is how often this host is really
+	// read, so everything observed in it ages with the pass. It no longer makes
+	// the host read offline — the keepalive reports independently — which is why
+	// the message names freshness rather than the original offline symptoms; see
+	// slowPassMessage.
 	//
 	// Reported on the pass rather than logged on the host: reading it must not
 	// require opening a session on the machine, which is the intervention Ballast
