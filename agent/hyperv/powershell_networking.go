@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -138,15 +139,160 @@ func (p *PowerShell) EnsureSwitch(ctx context.Context, spec types.VirtualSwitchS
 		return OutcomeUnchanged, nil
 	case switchCreate:
 		if err := p.run2(ctx, createSwitchScript(spec)); err != nil {
-			return OutcomeUnchanged, fmt.Errorf("create switch %q: %w", spec.Name, err)
+			return OutcomeUnchanged, fmt.Errorf("create switch %q: %w", spec.Name, p.explainTeamMembers(ctx, spec, err))
 		}
 		return OutcomeCreated, nil
 	default: // switchUpdate
 		if err := p.run2(ctx, updateSwitchScript(spec)); err != nil {
-			return OutcomeUnchanged, fmt.Errorf("update switch %q: %w", spec.Name, err)
+			return OutcomeUnchanged, fmt.Errorf("update switch %q: %w", spec.Name, p.explainTeamMembers(ctx, spec, err))
 		}
 		return OutcomeUpdated, nil
 	}
+}
+
+// adapterPresence is one physical adapter as the host sees it now, and what has
+// claimed it. Enough to decide which NIC a declared team member should become.
+type adapterPresence struct {
+	Name string `json:"name"`
+	MAC  string `json:"mac"`
+	Up   bool   `json:"up"`
+	// InUseBy names the SET switch already teaming this adapter, empty when it is
+	// free. A free NIC is the one an operator can remap onto.
+	InUseBy string `json:"inUseBy"`
+	// IPv4 is a host address on the adapter. A NIC carrying the host's own
+	// address must not be swallowed into a team without care, so it is shown.
+	IPv4 string `json:"ipv4"`
+}
+
+// adaptersPresentScript lists the physical adapters and what owns each one.
+func adaptersPresentScript() string {
+	return `
+$ErrorActionPreference = 'Stop'
+$owned = @{}
+try {
+  foreach ($t in @(Get-VMSwitchTeam -ErrorAction SilentlyContinue)) {
+    foreach ($desc in @($t.NetAdapterInterfaceDescription)) {
+      $na = Get-NetAdapter -InterfaceDescription $desc -ErrorAction SilentlyContinue
+      if ($na) { $owned[[string]$na.Name] = [string]$t.Name }
+    }
+  }
+} catch {}
+$list = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
+  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+  [pscustomobject]@{
+    name    = [string]$_.Name
+    mac     = [string]$_.MacAddress
+    up      = ($_.Status -eq 'Up')
+    inUseBy = [string]$owned[[string]$_.Name]
+    ipv4    = [string]$a.IPAddress
+  }
+})
+ConvertTo-Json -InputObject $list -Depth 4 -Compress
+`
+}
+
+func (p *PowerShell) adaptersPresent(ctx context.Context) ([]adapterPresence, error) {
+	out, err := p.run(ctx, adaptersPresentScript())
+	if err != nil {
+		return nil, err
+	}
+	var list []adapterPresence
+	if err := decodeJSON(out, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// explainTeamMembers turns a failed switch operation into something an operator
+// can act on when the cause is a declared team member the host does not have.
+//
+// Swapping a NIC is ordinary maintenance, and Windows names the replacement
+// something new — 'Ethernet0 2' where the spec says 'Ethernet0'. What Ballast
+// said about it was:
+//
+//	update switch "ConvergedSwitch": powershell: exit status 1:
+//	Set-VMSwitchTeam : Physical network adapter 'Ethernet0 2' not found.
+//
+// which names the cmdlet that failed and nothing an operator can do. The agent
+// is ON the host and can enumerate its adapters, so which NICs exist and which
+// are free is a fact it can establish, not research to hand out as homework.
+//
+// It deliberately does NOT remap anything. The team members are DESIRED state,
+// and picking a replacement NIC is a decision about intent — which fabric a NIC
+// belongs to is not visible from its name. The agent never invents intent; it
+// states what is missing, what is available, and leaves the choice where it
+// belongs. That is also why the adapters are listed with what already claims
+// them: choosing needs that, and guessing cannot be done safely without it.
+//
+// Best effort. If the adapters cannot be read, or nothing is actually missing,
+// the original error stands unchanged — a diagnosis that cannot be made must not
+// displace the evidence that something failed.
+func (p *PowerShell) explainTeamMembers(ctx context.Context, spec types.VirtualSwitchSpec, cause error) error {
+	present, aerr := p.adaptersPresent(ctx)
+	if aerr != nil || len(present) == 0 {
+		return cause
+	}
+	have := make(map[string]bool, len(present))
+	for _, a := range present {
+		have[strings.ToLower(a.Name)] = true
+	}
+	var missing []string
+	for _, m := range spec.TeamMembers {
+		if !have[strings.ToLower(m)] {
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) == 0 {
+		return cause
+	}
+
+	var b strings.Builder
+	b.WriteString("this host has no network adapter named ")
+	b.WriteString(quoteList(missing))
+	b.WriteString(", which the switch declares as a team member. A replaced or re-seated NIC comes back under a new name, so the switch is pointing at hardware that is no longer there. The adapters it does have are: ")
+	for i, a := range present {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(a.Name)
+		var notes []string
+		if a.MAC != "" {
+			notes = append(notes, a.MAC)
+		}
+		if a.Up {
+			notes = append(notes, "up")
+		} else {
+			notes = append(notes, "down")
+		}
+		if a.InUseBy != "" {
+			notes = append(notes, "already teamed in "+a.InUseBy)
+		} else {
+			notes = append(notes, "free")
+		}
+		if a.IPv4 != "" {
+			notes = append(notes, "carries "+a.IPv4)
+		}
+		b.WriteString(" (" + strings.Join(notes, ", ") + ")")
+	}
+	b.WriteString(". Edit the switch and set its team members to the adapters that should carry it. Ballast will not choose for you: which fabric a NIC belongs to is not something its name says, and teaming the wrong one takes the host off the network.")
+	// The cmdlet's own words last, for whoever is reading the log rather than the
+	// console. The cause leads; the evidence follows.
+	return fmt.Errorf("%s (%w)", b.String(), cause)
+}
+
+// quoteList renders names as "a", "b" and "c" — a list a person reads.
+func quoteList(names []string) string {
+	q := make([]string, 0, len(names))
+	for _, n := range names {
+		q = append(q, strconv.Quote(n))
+	}
+	switch len(q) {
+	case 0:
+		return ""
+	case 1:
+		return q[0]
+	}
+	return strings.Join(q[:len(q)-1], ", ") + " or " + q[len(q)-1]
 }
 
 func createSwitchScript(spec types.VirtualSwitchSpec) string {

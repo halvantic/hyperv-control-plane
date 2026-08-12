@@ -294,6 +294,40 @@ type runner struct {
 	// sets it (via requestObserveNudge) so a power change surfaces within a couple
 	// of seconds while an event storm cannot churn the expensive scans.
 	forceObserveVMs atomic.Bool
+
+	// lastPassMessage explains the last COMPLETED cycle, when that cycle was slow
+	// enough to be worth explaining. A cycle can only be measured once it has
+	// ended, and status is reported partway through one, so the message always
+	// travels on the following report — which is why it says "the last completed
+	// pass" rather than "this pass". Empty once a cycle comes in under the
+	// threshold, so the condition clears itself when the host recovers.
+	lastPassMessage string
+
+	// switchWasFailing remembers whether the previous cycle's switch step failed,
+	// so the adapter re-read fires on the transition into failure rather than on
+	// every cycle it persists.
+	switchWasFailing bool
+}
+
+// hasFailedSwitchStep reports whether a virtual switch could not be applied this
+// pass. The console's re-map offer is derived from the adapter inventory, so
+// this is what says that inventory is now the thing worth having fresh.
+func hasFailedSwitchStep(conds []types.Condition) bool {
+	for _, c := range conds {
+		if c.Reason == "ApplyFailed" && strings.HasPrefix(c.Type, "Switch/") {
+			return true
+		}
+	}
+	return false
+}
+
+// notePassTiming records the finished cycle's cost for the next status report.
+// Called from the cycle's own deferred drain, on the cycle goroutine.
+func (r *runner) notePassTiming(msg string) {
+	r.lastPassMessage = msg
+	if msg != "" {
+		r.log.Warn("slow reconcile pass", "detail", msg)
+	}
 }
 
 // requestNudge asks the main loop for an immediate follow-up cycle (non-blocking:
@@ -635,6 +669,17 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		// asks for first, and an agent log nobody can read at its default level
 		// would not have answered the question that prompted it.
 		r.log.Info("cycle complete", append([]any{"total", roundMS(time.Since(cycleStart))}, t.fields()...)...)
+		// Drain the call timings HERE, against the cycle this deferred function
+		// belongs to. The drain claims every call made since the last one, so it
+		// has to be paired with a timer spanning the same window — everything the
+		// cycle did, the collections and both reconciles — or the list describes
+		// work the duration never covered. See reconcile/timing.go.
+		//
+		// Deferred so every path drains, including the early returns above: a cycle
+		// that leaves its calls behind makes the NEXT cycle report them as its own,
+		// which is the same defect from the other end.
+		r.notePassTiming(reconcile.SlowPassMessage(
+			r.hv.TakeTimings(), time.Since(cycleStart), reconcile.SlowPassThreshold))
 	}()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
@@ -821,6 +866,31 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 			r.observedGen = cached.Meta.Generation
 			r.log.Info("generation honoured", "generation", r.observedGen)
 		}
+		// A switch that cannot be built is usually a switch whose team members have
+		// been renamed, and the console explains that by comparing the spec's
+		// adapter names against the INVENTORY. The inventory is refreshed every
+		// eighth cycle, though — minutes on a slow host — so the failure arrived
+		// with an adapter list old enough to still contain the missing names, and
+		// the console had nothing to say until a refresh happened to come round.
+		// The operator saw the raw Set-VMSwitchTeam error for that whole window.
+		//
+		// So a failed switch step refreshes it now, in the same cycle, and the
+		// explanation reaches the centre in the same report as the failure. Only on
+		// the FIRST failing cycle: the state persists until someone re-maps, and
+		// re-reading the hardware every pass afterwards buys nothing.
+		switchFailing := hasFailedSwitchStep(res.Conditions)
+		if switchFailing && !r.switchWasFailing && r.haveInventory {
+			doneInv := t.mark("inventoryAfterSwitchFailure")
+			got, ierr := r.hv.CollectInventory(ctx)
+			doneInv()
+			if ierr != nil {
+				r.log.Warn("re-read adapters after a switch failure", "err", ierr)
+			} else {
+				inv, r.lastInventory = got, got
+				r.log.Info("switch step failed; adapters re-read so the console can name the missing ones")
+			}
+		}
+		r.switchWasFailing = switchFailing
 	}
 
 	// Read before the status is built. Cheap, and it is the one reading that
@@ -1334,6 +1404,15 @@ func (r *runner) observeVMs(ctx context.Context, force bool) []types.ObservedVM 
 // last fully-honoured generation, so the centre can tell when the host is
 // settled even across an autonomy window.
 func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics, resources types.HostResources, autonomous bool, phase types.Phase, conds []types.Condition, hyperVInstalled, rebootRequired, inMaintenance bool) types.HostStatus {
+	// The last completed cycle's cost, carried here rather than raised inside the
+	// host reconcile: it is the CYCLE that is timed, and the cluster reconcile is
+	// part of one without being part of the other.
+	if r.lastPassMessage != "" {
+		conds = append(conds, types.Condition{
+			Type: "ReconcilePass", Status: false, Reason: "Slow",
+			Message: r.lastPassMessage, LastTransitionTime: time.Now().UTC(),
+		})
+	}
 	return types.HostStatus{
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,

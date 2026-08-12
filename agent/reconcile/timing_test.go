@@ -15,8 +15,8 @@ import (
    guessed before anything was measured. */
 
 func TestAQuickPassSaysNothing(t *testing.T) {
-	got := slowPassMessage([]hyperv.CallTiming{{Name: "CollectInventory", Took: time.Second}},
-		2*time.Second, slowPassThreshold)
+	got := SlowPassMessage([]hyperv.CallTiming{{Name: "CollectInventory", Took: time.Second}},
+		2*time.Second, SlowPassThreshold)
 	if got != "" {
 		t.Fatalf("a healthy pass must stay silent, got %q", got)
 	}
@@ -25,11 +25,11 @@ func TestAQuickPassSaysNothing(t *testing.T) {
 // The cadence is tiered on purpose, so a heavy pass is not a slow one. Naming the
 // calls is what tells them apart.
 func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
-	got := slowPassMessage([]hyperv.CallTiming{
+	got := SlowPassMessage([]hyperv.CallTiming{
 		{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1},
 		{Name: "ObserveVMs", Took: 12 * time.Second, Calls: 3},
 		{Name: "CollectMetrics", Took: 20 * time.Millisecond, Calls: 1},
-	}, 105*time.Second, slowPassThreshold)
+	}, 105*time.Second, SlowPassThreshold)
 
 	if !strings.Contains(got, "GetClusterState 1m30s") {
 		t.Errorf("the slowest call must be named with its cost: %q", got)
@@ -53,8 +53,8 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 // symptoms that cannot occur. What a slow pass costs now is freshness: the pass
 // is how often the host is read, while it goes on reading online throughout.
 func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
-	got := slowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
-		105*time.Second, slowPassThreshold)
+	got := SlowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
+		105*time.Second, SlowPassThreshold)
 	for _, want := range []string{"how often this host is actually read", "still reads online", "Readings taken"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the message must connect slowness to what it costs (%q): %q", want, got)
@@ -73,7 +73,7 @@ func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 // blame costs exactly as much freshness as one with a named culprit, and an
 // operator reading the first should not have to know the second exists.
 func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
-	got := slowPassMessage(nil, 60*time.Second, slowPassThreshold)
+	got := SlowPassMessage(nil, 60*time.Second, SlowPassThreshold)
 	if !strings.Contains(got, "how often this host is actually read") {
 		t.Errorf("a slow pass with no named call still costs freshness and must say so: %q", got)
 	}
@@ -82,7 +82,7 @@ func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
 // A slow pass with nothing to blame is still worth reporting: the time went
 // somewhere, and saying so is honest where naming a suspect would not be.
 func TestASlowPassWithNoCulpritStillReports(t *testing.T) {
-	got := slowPassMessage(nil, 60*time.Second, slowPassThreshold)
+	got := SlowPassMessage(nil, 60*time.Second, SlowPassThreshold)
 	if !strings.Contains(got, "no single host call accounts for it") {
 		t.Fatalf("it must still report, without inventing a cause: %q", got)
 	}
