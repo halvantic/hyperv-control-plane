@@ -249,7 +249,7 @@ func TestDiscardSavedStateScript(t *testing.T) {
 // same trap as the cluster cmdlets fixed in d113ecc. Verified against the real
 // cmdlet's syntax on the rig before it ever ran.
 func TestMaintenanceScriptDoesNotMisuseWait(t *testing.T) {
-	s := maintenanceScript("HVNEW03", MaintenanceEnter)
+	s := maintenanceScript("HVNEW03", MaintenanceEnter, true)
 	if strings.Contains(s, "-Wait") {
 		t.Fatal("Suspend-ClusterNode -Wait is a switch, not a timeout; passing it (or a value) blocks the cycle or misbinds -Name")
 	}
@@ -284,7 +284,7 @@ func TestMaintenanceNeverEnablesStorageMaintenance(t *testing.T) {
 		// Against the executable script only. The comments explain at length what
 		// must not be done and name the cmdlet and its flag to do it — matching
 		// prose rather than code is a trap this repo has fallen into before.
-		s := psCode(maintenanceScript("HVNEW03", intent))
+		s := psCode(maintenanceScript("HVNEW03", intent, true))
 		if strings.Contains(s, "Enable-StorageMaintenanceMode") {
 			t.Fatalf("intent %q: enabling storage maintenance strands disks part-way and deadlocks the drain; the node stays up during maintenance and its disks keep serving", intentWord(intent))
 		}
@@ -338,7 +338,7 @@ func psBranch(t *testing.T, script, word string) string {
 // correct state. Clearing it there strips protection the cluster put in place
 // and makes the reconciler fight the cluster on every pass.
 func TestMaintenanceLeavesClusterOwnedStorageAlone(t *testing.T) {
-	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter))
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter, true))
 	enter := psBranch(t, s, "enter")
 
 	if strings.Contains(enter, "Clear-BallastStorageMaintenance") {
@@ -356,7 +356,7 @@ func TestMaintenanceLeavesClusterOwnedStorageAlone(t *testing.T) {
 // releases them on resume, so anything left is wreckage from the old manual
 // enable — and it must be healed, or the node can never be drained again.
 func TestMaintenanceHealsStrandedStorageOnlyOnceBackInService(t *testing.T) {
-	s := psCode(maintenanceScript("HVNEW03", MaintenanceExit))
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceExit, true))
 	exit := psBranch(t, s, "exit")
 
 	if !strings.Contains(exit, "Clear-BallastStorageMaintenance") {
@@ -382,7 +382,7 @@ func TestMaintenanceHealsStrandedStorageOnlyOnceBackInService(t *testing.T) {
 		t.Fatal("stranded disks are found by their own operational status, not the scale unit's")
 	}
 	// Observe never acts.
-	observe := psCode(maintenanceScript("HVNEW03", MaintenanceObserve))
+	observe := psCode(maintenanceScript("HVNEW03", MaintenanceObserve, true))
 	rest := strings.Replace(strings.Replace(observe, psBranch(t, observe, "enter"), "", 1), psBranch(t, observe, "exit"), "", 1)
 	if strings.Contains(rest, "Clear-BallastStorageMaintenance 'HVNEW03'") {
 		t.Fatal("clearing must be gated on an explicit intent; an observe pass changes nothing")
@@ -392,7 +392,7 @@ func TestMaintenanceHealsStrandedStorageOnlyOnceBackInService(t *testing.T) {
 // A paused node with its disks out is the normal drained state. Reporting that
 // as a fault would raise a false alarm on every single drain.
 func TestMaintenanceDoesNotReportDrainedStorageAsAFault(t *testing.T) {
-	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter))
+	s := psCode(maintenanceScript("HVNEW03", MaintenanceEnter, true))
 
 	if !strings.Contains(s, "$intent -eq 'exit' -and (-not $paused) -and $storageOut") {
 		t.Fatal("storage may only be reported as a problem for a node that is back in service; a paused node's disks being out is normal")
@@ -402,5 +402,56 @@ func TestMaintenanceDoesNotReportDrainedStorageAsAFault(t *testing.T) {
 	}
 	if !strings.Contains(s, "storageOut=$storageOut") || !strings.Contains(s, "storageError=$storageErr") {
 		t.Fatal("the storage state, and a failure to clear it, must still reach the centre")
+	}
+}
+
+// The storage half of the maintenance check is a CLUSTER-WIDE read —
+// Get-PhysicalDisk in an S2D cluster returns every disk in the cluster — and it
+// ran unconditionally, before the script had even looked at the intent. Measured
+// on HVNEW02 after a reboot it was 3m53s of a 4m27s pass, spent asking whether a
+// node that was Up, not draining and under no declared maintenance still had its
+// disks out of the pool. It cannot have.
+//
+// So it is gated. The gate must let it through in every case where the answer is
+// live, or the saving would be bought by acting on a stale one.
+func TestMaintenanceScriptGatesTheClusterWideStorageRead(t *testing.T) {
+	shallow := psCode(maintenanceScript("HVNEW03", MaintenanceExit, false))
+
+	// The expensive calls must sit behind the gate, not before it.
+	gate := strings.Index(shallow, "if ($deep -or $paused -or $intent -eq 'enter') { $storageOut =")
+	if gate < 0 {
+		t.Fatal("the storage read must be gated on the cases where its answer can matter")
+	}
+	if i := strings.Index(shallow, "$storageOut = Get-BallastStorageOut"); i >= 0 && i < gate {
+		t.Fatal("an ungated storage read before the gate defeats it entirely")
+	}
+	// The node's own cluster state is cheap and always needed: skipping it would
+	// leave the pass with no idea whether the node is even a member.
+	if !strings.Contains(shallow, "Get-ClusterNode -Name") {
+		t.Fatal("the node's cluster state must still be read every pass")
+	}
+
+	// Entering maintenance is about to act on storage, so it always reads it.
+	if !strings.Contains(shallow, "$intent -eq 'enter'") {
+		t.Fatal("entering maintenance must always read storage: it is about to change it")
+	}
+	// A paused node's disks being out IS the state under report.
+	if !strings.Contains(shallow, "$paused") {
+		t.Fatal("a paused node must always read storage: its disks being out is the state being reported")
+	}
+	// And a pass that changed something re-reads regardless, so no outcome is ever
+	// reported from a skipped answer.
+	if !strings.Contains(shallow, "if ($changed) {") {
+		t.Fatal("a pass that changed the node must re-read rather than report the pre-change answer")
+	}
+
+	// The deep pass is the caller's slow cadence, and is what still finds wreckage
+	// on a node that resumed long ago.
+	deep := psCode(maintenanceScript("HVNEW03", MaintenanceExit, true))
+	if !strings.Contains(deep, "$deep = $true") {
+		t.Fatal("a deep pass must tell the script to do the full read")
+	}
+	if !strings.Contains(shallow, "$deep = $false") {
+		t.Fatal("a shallow pass must tell the script to skip it")
 	}
 }

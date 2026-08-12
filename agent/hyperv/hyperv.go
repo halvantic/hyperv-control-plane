@@ -514,7 +514,13 @@ type Interface interface {
 	//
 	// This is the declarative counterpart to the Drain/Resume jobs below: the jobs
 	// act once, this keeps the intent true across reboots and rejoins.
-	EnsureNodeMaintenance(ctx context.Context, node string, intent MaintenanceIntent) (Outcome, NodeMaintenanceState, error)
+	// deepStorage asks for the STORAGE half as well: whether this node's disks are
+	// still marked out of the pool. That read is cluster-wide (Get-PhysicalDisk in
+	// an S2D cluster returns every disk in the cluster) and was measured at 3m53s
+	// of a 4m27s pass, so the caller asks for it when it can matter rather than on
+	// every heartbeat. The node's own cluster state is always read; a paused node
+	// and a pass that changes anything read storage regardless of this flag.
+	EnsureNodeMaintenance(ctx context.Context, node string, intent MaintenanceIntent, deepStorage bool) (Outcome, NodeMaintenanceState, error)
 
 	// ResumeNode brings a paused cluster node back into service. Imperative Job.
 	ResumeNode(ctx context.Context, node string) error

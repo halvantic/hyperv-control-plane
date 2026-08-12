@@ -66,7 +66,37 @@ type Reconciler struct {
 	// cycle is when deferred configuration changes actually land, so a change
 	// here is the signal to look again.
 	vmFullPower map[string]types.VMPowerState
+
+	// passes counts completed reconcile passes, so an observation that is
+	// expensive and rarely changes can run on a slow cadence instead of every
+	// cycle. See maintenanceDeepEvery.
+	passes uint64
+
+	// hostDraining is what the last host pass observed about this node: the
+	// cluster is moving its roles off. VMs are reconciled in a separate call, and
+	// a VM that has already left is not readable here — which is the drain
+	// working, not a fault. See the drain branch in reconcileVM.
+	hostDraining bool
 }
+
+// maintenanceDeepEvery is how often the node-maintenance check does its full
+// STORAGE read rather than only reading the node's cluster state.
+//
+// The storage half asks whether this node's physical disks are still marked out
+// of the pool, and answering it means Get-StorageFaultDomain plus Get-PhysicalDisk
+// — which in an S2D cluster enumerates every disk in the CLUSTER, not this host's.
+// It ran on every pass, for every member, at the heartbeat. Measured on HVNEW02
+// after a reboot it was 3m53s of a 4m27s pass: 87% of the pass spent asking a
+// question whose answer had not changed and, for an unpaused node with no
+// maintenance declared, could not have.
+//
+// It is not dropped, because it is how wreckage from the old manual
+// Enable-StorageMaintenanceMode is found on a node that resumed long ago. It is
+// simply asked at a rate that matches how often it can change. The cases where the
+// answer is live — entering maintenance, a paused node, or a pass that just
+// resumed one — still read it every time, so nothing that acts on storage acts on
+// a cached answer.
+const maintenanceDeepEvery = 40
 
 // SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
 // reconciler behaves as before and reconciles everything.
@@ -123,8 +153,28 @@ type Result struct {
 // are ensured before the management vNICs that depend on them. It does not stop
 // at the first failure: it attempts every resource so status reflects the whole
 // host, and reports Honoured == false if any failed.
-func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets map[string]types.Secret) (res Result, err error) {
 	timer := newPassTimer()
+	// Timings belong to the pass that made them, and this pass has several early
+	// returns — the Hyper-V role not being active is one, and it is the one a host
+	// takes while it is still booting. Draining the accumulator only at the bottom
+	// meant those passes left their calls behind for the NEXT pass to report as its
+	// own: a completed pass would name GetHostRoleState, CollectInventory and
+	// CollectResources "(2 calls)" each, one from itself and one inherited, and an
+	// operator reading the slowest-call list was told about work another pass did.
+	//
+	// Deferred, so it happens on every path. A pass that fails early and slowly now
+	// reports its own cost too, where before it reported nothing at all.
+	defer func() {
+		r.passes++
+		if msg := slowPassMessage(r.hv.TakeTimings(), timer.total(), slowPassThreshold); msg != "" {
+			res.Conditions = append(res.Conditions, types.Condition{
+				Type: "ReconcilePass", Status: false, Reason: "Slow",
+				Message: msg, LastTransitionTime: r.now(),
+			})
+			r.log.Warn("slow reconcile pass", "took", timer.total().String())
+		}
+	}()
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -467,7 +517,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		intent = hyperv.MaintenanceEnter
 	}
 	{
-		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent)
+		// The storage half of this check is a cluster-wide read; ask for it when it
+		// can matter. Entering maintenance always reads it (the script needs the
+		// truth before it acts), a paused node is read inside the script regardless,
+		// and otherwise it runs on the slow cadence — see maintenanceDeepEvery.
+		deep := wantMaintenance || r.passes%maintenanceDeepEvery == 0
+		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent, deep)
 		// Only report when something actually happened or is wrong. Exit runs every
 		// cycle on every host and is a no-op almost always; a condition each time
 		// would be pure noise.
@@ -522,27 +577,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			inMaintenance = (!ms.IsMember && wantMaintenance) ||
 				(ms.Paused && !ms.Draining && (ms.StorageOut || !wantMaintenance))
 			draining = ms.Draining
+			// VMs reconcile in a separate call, after this one, and need to know
+			// their roles are being moved off — a VM that has already gone is not
+			// a VM that failed.
+			r.hostDraining = ms.Draining
 		}
 	}
 	// What this pass actually cost, reported only when it cost enough to matter.
 	//
-	// A pass longer than the agent's heartbeat is how often this host is really
-	// read, so everything observed in it ages with the pass. It no longer makes
-	// the host read offline — the keepalive reports independently — which is why
-	// the message names freshness rather than the original offline symptoms; see
-	// slowPassMessage.
-	//
-	// Reported on the pass rather than logged on the host: reading it must not
-	// require opening a session on the machine, which is the intervention Ballast
-	// exists to remove.
-	if msg := slowPassMessage(r.hv.TakeTimings(), timer.total(), slowPassThreshold); msg != "" {
-		conds = append(conds, types.Condition{
-			Type: "ReconcilePass", Status: false, Reason: "Slow",
-			Message: msg, LastTransitionTime: r.now(),
-		})
-		r.log.Warn("slow reconcile pass", "took", timer.total().String())
-	}
-	res := Result{
+	// The pass's own cost is appended by the deferred timer at the top, so it is
+	// recorded on every return path rather than only this one. See there for why.
+	res = Result{
 		InMaintenance:   inMaintenance,
 		Draining:        draining,
 		Conditions:      conds,
