@@ -521,7 +521,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// can matter. Entering maintenance always reads it (the script needs the
 		// truth before it acts), a paused node is read inside the script regardless,
 		// and otherwise it runs on the slow cadence — see maintenanceDeepEvery.
-		deep := wantMaintenance || r.passes%maintenanceDeepEvery == 0
+		// Never on pass 0. A rebooted host is a fresh agent process, so pass 0 is
+		// the FIRST pass after boot — the one moment the cluster's storage is
+		// busiest and the one pass an operator is waiting on. Measured on HVNEW02:
+		// 1m43s of a 3m54s first pass, spent on the read this gate exists to
+		// avoid. Wreckage detection is looking for damage left days ago; it can
+		// wait for pass 40.
+		deep := wantMaintenance || (r.passes > 0 && r.passes%maintenanceDeepEvery == 0)
 		out, ms, err := r.hv.EnsureNodeMaintenance(ctx, desired.Meta.Name, intent, deep)
 		// Only report when something actually happened or is wrong. Exit runs every
 		// cycle on every host and is a no-op almost always; a condition each time
