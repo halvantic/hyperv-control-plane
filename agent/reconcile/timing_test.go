@@ -87,3 +87,44 @@ func TestASlowPassWithNoCulpritStillReports(t *testing.T) {
 		t.Fatalf("it must still report, without inventing a cause: %q", got)
 	}
 }
+
+/* The list is capped at four, so a pass whose cost is spread thin reads exactly
+   like one with a culprit — and those are opposite diagnoses. HVNEW02 reported
+   "took 3m30s — slowest: EnsureCSV 33.9s (2 calls), EnsureMigrationDelegation
+   25.7s, CollectInventory 20.8s, GetWindowsLicence 16.3s": four calls totalling
+   1m37s, under half the pass, presented as the explanation for all of it. */
+
+func TestAPassThatIsNotExplainedByItsListSaysSo(t *testing.T) {
+	got := SlowPassMessage([]hyperv.CallTiming{
+		{Name: "EnsureCSV", Took: 34 * time.Second, Calls: 2},
+		{Name: "EnsureMigrationDelegation", Took: 26 * time.Second, Calls: 1},
+		{Name: "CollectInventory", Took: 21 * time.Second, Calls: 1},
+		{Name: "GetWindowsLicence", Took: 16 * time.Second, Calls: 1},
+		{Name: "querySwitch", Took: 3 * time.Second, Calls: 1},
+		{Name: "GetNodeSelf", Took: 2 * time.Second, Calls: 1},
+	}, 210*time.Second, SlowPassThreshold)
+
+	if !strings.Contains(got, "Those are 1m37s of it") {
+		t.Errorf("the message must say how much of the pass its list actually accounts for: %q", got)
+	}
+	if !strings.Contains(got, "2 host calls account for 5s") {
+		t.Errorf("the calls below the cut are part of the answer and must be counted: %q", got)
+	}
+	if !strings.Contains(got, "not spent in a host call") {
+		t.Errorf("time outside any host call is the remainder and must be owned: %q", got)
+	}
+}
+
+// When the named calls DO explain the pass, the extra clause is noise — the
+// point of it is to stop a diffuse pass reading as a culprit, not to qualify
+// every message.
+func TestAPassWithARealCulpritIsNotQualified(t *testing.T) {
+	got := SlowPassMessage([]hyperv.CallTiming{
+		{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1},
+		{Name: "CollectInventory", Took: 27 * time.Second, Calls: 1},
+	}, 5*time.Minute, SlowPassThreshold)
+
+	if strings.Contains(got, "Those are") {
+		t.Errorf("one call at 77%% of the pass IS the explanation: %q", got)
+	}
+}

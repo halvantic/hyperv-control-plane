@@ -77,7 +77,51 @@ type Reconciler struct {
 	// a VM that has already left is not readable here — which is the drain
 	// working, not a fault. See the drain branch in reconcileVM.
 	hostDraining bool
+
+	// replicaSettled is set once EnsureReplicaServer has reported a pass with
+	// nothing to change. While it holds, the step runs on replicaServerEvery
+	// instead of every pass; anything that could make it wrong clears it. See
+	// the call site.
+	replicaSettled bool
+	// replicaCond is the last condition the step produced, replayed on the
+	// passes it is skipped. A step that stops reporting because it was skipped
+	// would read as a step that vanished, and absent is not the same as settled.
+	replicaCond types.Condition
+	// replicaGen is the host generation the last real run honoured, so an
+	// operator edit puts the step back on every pass.
+	replicaGen int64
+
+	// roleInstalled caches that the Hyper-V role is present, so the expensive
+	// feature read is not repeated every pass to re-learn a fact that cannot
+	// change on its own. See hostRoleEvery.
+	roleInstalled bool
 }
+
+// hostRoleEvery is how often an already-installed Hyper-V role is re-checked.
+// Deliberately the same slow cadence as the maintenance storage read: both
+// answer a question that only changes when something deliberate happens, and
+// both cost a great deal to ask.
+const hostRoleEvery = 40
+
+// replicaServerEvery is how often a SETTLED replica-server configuration is
+// re-checked.
+//
+// The step is a write path that almost always writes nothing, and finding that
+// out is expensive: on a cluster member it runs Get-Service ClusSvc, then
+// Get-ClusterResource to find the Replica Broker, then Get-VMReplicationServer,
+// then a Get-ClusterSharedVolume scan when the storage path is on a CSV. Cluster
+// cmdlets are the slow kind. Measured across the rig it was 4.4-8.3s of every
+// pass on every host, and 2m44s of a 4m13s pass on a member whose cluster was
+// busy — two thirds of a pass, against a five-minute cycle cap, on the one class
+// of host whose readings the whole cluster view depends on.
+//
+// It is NOT a plain cadence, because the comment this replaces is load-bearing:
+// on a member waiting for its cluster's Replica Broker, retrying every pass IS
+// the convergence mechanism. So the cadence applies only once the step has
+// reported that it changed nothing. An error, a change, or an edit puts it back
+// on every pass immediately, which is exactly where the every-pass retry was
+// earning its cost.
+const replicaServerEvery = 8
 
 // maintenanceDeepEvery is how often the node-maintenance check does its full
 // STORAGE read rather than only reading the node's cluster state.
@@ -299,13 +343,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// provisioning), so it surfaces on the condition and retries each pass
 	// without degrading the host.
 	if rs := desired.Spec.ReplicaServer; rs != nil {
-		out, err := r.hv.EnsureReplicaServer(ctx, *rs)
-		conds = append(conds, r.condition("ReplicaServer", out, err))
-		if err != nil {
-			r.log.Warn("configure replica server failed (retries next pass)", "err", err)
-		} else if out != hyperv.OutcomeUnchanged {
-			changed = true
-			r.log.Info("replica server reconciled", "outcome", out)
+		// An operator edit can change what this step must write, so a new
+		// generation always reads for real.
+		if desired.Meta.Generation != r.replicaGen {
+			r.replicaSettled = false
+		}
+		if r.replicaSettled && r.passes%replicaServerEvery != 0 {
+			// Skipped, not silent: replay the last condition so the step keeps its
+			// place and its state in the console. A step that disappears on the
+			// passes it was skipped reads as a step that stopped being reconciled.
+			conds = append(conds, r.replicaCond)
+		} else {
+			out, err := r.hv.EnsureReplicaServer(ctx, *rs)
+			c := r.condition("ReplicaServer", out, err)
+			conds = append(conds, c)
+			r.replicaCond, r.replicaGen = c, desired.Meta.Generation
+			// Settled only on a clean pass that changed nothing. A wait for the
+			// cluster's Replica Broker is an error here, and that is exactly the case
+			// the every-pass retry exists for — so it stays on every pass until it
+			// stops failing.
+			r.replicaSettled = err == nil && out == hyperv.OutcomeUnchanged
+			if err != nil {
+				r.log.Warn("configure replica server failed (retries next pass)", "err", err)
+			} else if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("replica server reconciled", "outcome", out)
+			}
 		}
 	}
 
@@ -706,11 +769,26 @@ func (r *Reconciler) rebootResult(ctx context.Context, policy types.RebootPolicy
 // reboot, or an error occurred. done == false means the role is installed and
 // active and networking reconciliation may proceed.
 func (r *Reconciler) reconcileHostRole(ctx context.Context, desired types.Host) (Result, bool, error) {
+	// An installed Hyper-V role stays installed. Nothing in Ballast uninstalls it,
+	// and the read that answers the question is Get-WindowsFeature, which loads
+	// ServerManager and walks the component store: measured at 1m4s on a host
+	// after a reboot and 2m6s on a busy one, against a five-minute cycle cap. It
+	// was doing that every pass to re-learn a boolean that had not changed since
+	// the host was built, and to collect RebootPending, which nothing reads.
+	//
+	// So it is cached once true and re-read on a slow cadence — the same rule as
+	// maintenanceDeepEvery, and for the same reason. While the role is NOT
+	// installed the read happens every pass: that is the converging case, where
+	// the answer is live and the whole reconcile is waiting on it.
+	if r.roleInstalled && r.passes%hostRoleEvery != 0 {
+		return Result{HyperVInstalled: true}, false, nil
+	}
 	state, err := r.hv.GetHostRoleState(ctx)
 	if err != nil {
 		c := r.condition("HyperVRole", hyperv.OutcomeUnchanged, err)
 		return Result{Phase: types.PhaseDegraded, Conditions: []types.Condition{c}}, true, err
 	}
+	r.roleInstalled = state.HyperVInstalled
 
 	if state.HyperVInstalled {
 		// Already active; let networking proceed.
