@@ -3071,10 +3071,17 @@ type PhysicalDisk struct {
 	DriveLetter string                 `protobuf:"bytes,6,opt,name=drive_letter,json=driveLetter,proto3" json:"drive_letter,omitempty"`
 	// unique_id identifies the disk without ambiguity; device_id is unique per bus
 	// only, so a destructive operation must select on this.
-	UniqueId      string `protobuf:"bytes,7,opt,name=unique_id,json=uniqueId,proto3" json:"unique_id,omitempty"`
-	BusType       string `protobuf:"bytes,8,opt,name=bus_type,json=busType,proto3" json:"bus_type,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	UniqueId string `protobuf:"bytes,7,opt,name=unique_id,json=uniqueId,proto3" json:"unique_id,omitempty"`
+	BusType  string `protobuf:"bytes,8,opt,name=bus_type,json=busType,proto3" json:"bus_type,omitempty"`
+	// pool_name is the storage pool holding this disk, empty when it is in none.
+	// Without it the console could only infer pool membership from can_pool, which
+	// is false for a dozen unrelated reasons.
+	PoolName string `protobuf:"bytes,9,opt,name=pool_name,json=poolName,proto3" json:"pool_name,omitempty"`
+	// cannot_pool_reason is Windows' own reason the disk cannot join a pool ("In a
+	// Pool", "Insufficient Capacity", "Removable Media", …). Empty when it can.
+	CannotPoolReason string `protobuf:"bytes,10,opt,name=cannot_pool_reason,json=cannotPoolReason,proto3" json:"cannot_pool_reason,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PhysicalDisk) Reset() {
@@ -3159,6 +3166,20 @@ func (x *PhysicalDisk) GetUniqueId() string {
 func (x *PhysicalDisk) GetBusType() string {
 	if x != nil {
 		return x.BusType
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetPoolName() string {
+	if x != nil {
+		return x.PoolName
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetCannotPoolReason() string {
+	if x != nil {
+		return x.CannotPoolReason
 	}
 	return ""
 }
@@ -6498,7 +6519,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
 	"\agateway\x18\t \x01(\tR\agateway\x12#\n" +
 	"\rprefix_length\x18\n" +
-	" \x01(\x05R\fprefixLength\"\xfd\x01\n" +
+	" \x01(\x05R\fprefixLength\"\xc8\x02\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -6510,7 +6531,10 @@ const file_ballast_proto_rawDesc = "" +
 	"is_os_disk\x18\x05 \x01(\bR\bisOsDisk\x12!\n" +
 	"\fdrive_letter\x18\x06 \x01(\tR\vdriveLetter\x12\x1b\n" +
 	"\tunique_id\x18\a \x01(\tR\buniqueId\x12\x19\n" +
-	"\bbus_type\x18\b \x01(\tR\abusType\"\xfb\x01\n" +
+	"\bbus_type\x18\b \x01(\tR\abusType\x12\x1b\n" +
+	"\tpool_name\x18\t \x01(\tR\bpoolName\x12,\n" +
+	"\x12cannot_pool_reason\x18\n" +
+	" \x01(\tR\x10cannotPoolReason\"\xfb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +

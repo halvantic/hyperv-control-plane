@@ -436,6 +436,13 @@ message PhysicalDisk {
   // only, so a destructive operation must select on this.
   string unique_id = 7;
   string bus_type = 8;
+  // pool_name is the storage pool holding this disk, empty when it is in none.
+  // Without it the console could only infer pool membership from can_pool, which
+  // is false for a dozen unrelated reasons.
+  string pool_name = 9;
+  // cannot_pool_reason is Windows' own reason the disk cannot join a pool ("In a
+  // Pool", "Insufficient Capacity", "Removable Media", …). Empty when it can.
+  string cannot_pool_reason = 10;
 }
 
 // ---------------------------------------------------------------------------

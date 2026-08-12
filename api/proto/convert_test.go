@@ -62,11 +62,25 @@ func sampleHost() types.Host {
 			Autonomous:         true,
 			LastContact:        ts.Add(2 * time.Hour),
 			Inventory: types.HostInventory{
+				// Every field of both is set, including combinations no real host
+				// would report (a disk that is both poolable and in a pool). These
+				// prove the WIRE carries each field; the guard at the bottom of
+				// TestHostRoundTripCarriesEveryField fails if one is left zero,
+				// because a field the proto drops round-trips perfectly as zero.
 				PhysicalAdapters: []types.PhysicalAdapter{
-					{Name: "NIC1", MAC: "00:15:5D:00:00:01", LinkSpeedBps: 25_000_000_000, Up: true},
+					{
+						Name: "NIC1", MAC: "00:15:5D:00:00:01", LinkSpeedBps: 25_000_000_000, Up: true,
+						IsManagement: true, IPv4: "192.168.1.50", PrefixLength: 24,
+						DNSServers: []string{"192.168.1.168"}, RegistersDNS: true, Gateway: "192.168.1.1",
+					},
 				},
 				PhysicalDisks: []types.PhysicalDisk{
-					{DeviceID: "0", SizeBytes: 1_920_383_410_176, MediaType: "SSD", CanPool: true},
+					{
+						DeviceID: "0", UniqueID: "60022480", BusType: "SAS",
+						SizeBytes: 1_920_383_410_176, MediaType: "SSD", CanPool: true,
+						IsOSDisk: true, DriveLetter: "E",
+						PoolName: "S2D on hv-cl01", CannotPoolReason: "In a Pool",
+					},
 				},
 				TotalMemoryBytes: 137_438_953_472,
 				LogicalCPUs:      32,
@@ -361,4 +375,11 @@ func TestHostRoundTripCarriesEveryField(t *testing.T) {
 		}
 	}
 	check("MaintenanceSpec", reflect.ValueOf(*h.Spec.Maintenance))
+
+	// And the inventory the console reads a host's disks from. PoolName and
+	// CannotPoolReason were added because the console could otherwise only infer
+	// what claims a disk from CanPool — the sample above sets every field so a
+	// later addition cannot ride the round trip as a silent zero value.
+	check("PhysicalDisk", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalDisks[0]))
+	check("PhysicalAdapter", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalAdapters[0]))
 }

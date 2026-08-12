@@ -725,6 +725,18 @@ type PhysicalDisk struct {
 	// DriveLetter is the Windows drive letter assigned to this disk's primary
 	// partition (e.g. "E"), empty when the disk is raw or pooled.
 	DriveLetter string `json:"driveLetter,omitempty"`
+	// PoolName is the storage pool that holds this disk, empty when it is in
+	// none. What a disk is CLAIMED BY is the question an operator is asking when
+	// they look at a host's disks, and CanPool cannot answer it: it is false for
+	// a disk in a pool, a disk holding a volume, one that is offline, removable
+	// or too small alike. Reporting "in use" from that alone told an operator a
+	// disk was in S2D on hosts with no S2D at all.
+	PoolName string `json:"poolName,omitempty"`
+	// CannotPoolReason is Windows' own reason the disk cannot join a pool ("In a
+	// Pool", "Insufficient Capacity", "Removable Media", …). Empty when it can be
+	// pooled, and empty from an agent too old to report it — which is why the
+	// console still needs a fallback for a disk that says nothing.
+	CannotPoolReason string `json:"cannotPoolReason,omitempty"`
 }
 
 // MaintenanceSpec declares that a host is out of service for planned work.

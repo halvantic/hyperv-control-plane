@@ -414,6 +414,19 @@ try {
     }
   }
 } catch {}
+# Map UniqueId → the storage pool holding the disk. CanPool alone cannot say what
+# claims a disk: it is false for a pooled disk, a disk holding a volume, one that
+# is offline, removable or too small, all alike. Reporting "in use" from it told
+# an operator a disk was in S2D on hosts that have no S2D at all. The primordial
+# pool is every disk in the machine and is not a claim on anything, so skip it.
+$diskToPool = @{}
+try {
+  foreach ($sp in @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })) {
+    foreach ($pd in @($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+      $diskToPool[[string]$pd.UniqueId] = [string]$sp.FriendlyName
+    }
+  }
+} catch {}
 # In an S2D cluster Get-PhysicalDisk returns the whole cluster pool, so a host
 # would report every node's disks. Keep only the disks whose physically-connected
 # storage node is this host (mapping per disk, since the node->disk direction
@@ -429,7 +442,12 @@ $disks = $pdisks | ForEach-Object {
   $id = [string]$_.DeviceId
   $uid = [string]$_.UniqueId
   $letter = if ($diskToLetter.ContainsKey($uid)) { $diskToLetter[$uid] } else { '' }
-  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType }
+  $pool = if ($diskToPool.ContainsKey($uid)) { $diskToPool[$uid] } else { '' }
+  # CannotPoolReason is an array of enum values; join rather than stringify, or a
+  # disk with two reasons reports one unreadable token.
+  $why = ''
+  try { if (-not $_.CanPool) { $why = (@($_.CannotPoolReason) | Where-Object { $_ } | ForEach-Object { [string]$_ }) -join ', ' } } catch {}
+  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType; poolName = $pool; cannotPoolReason = $why }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem
