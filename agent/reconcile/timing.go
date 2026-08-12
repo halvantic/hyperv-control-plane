@@ -85,6 +85,10 @@ func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) 
 		return ""
 	}
 	var parts []string
+	var named, all time.Duration
+	for _, c := range calls {
+		all += c.Took
+	}
 	for _, c := range calls {
 		if len(parts) >= 4 || c.Took < 500*time.Millisecond {
 			break
@@ -94,6 +98,20 @@ func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) 
 			part += fmt.Sprintf(" (%d calls)", c.Calls)
 		}
 		parts = append(parts, part)
+		named += c.Took
+	}
+	// When the named calls are not most of the pass, say so. The list is capped at
+	// four, so a pass whose cost is spread thin reads exactly like one with a
+	// culprit — and those are opposite diagnoses. A pass of 3m30s whose four
+	// slowest calls total 1m37s has no single thing to fix, and an operator sent
+	// hunting for one is being sent by the message rather than by the evidence.
+	remainder := ""
+	if len(parts) > 0 && named*2 < total {
+		remainder = " Those are " + round(named) + " of it"
+		if rest := all - named; rest > time.Second {
+			remainder += fmt.Sprintf(", a further %d host calls account for %s", len(calls)-len(parts), round(rest))
+		}
+		remainder += ", and the rest was not spent in a host call."
 	}
 	// One consequence sentence, shared, so the two shapes cannot drift apart.
 	const cost = " A pass is how often this host is actually read, so everything on it — metrics, inventory, VM and cluster state — is up to that old, and a change to desired state waits that long to be applied. The agent keeps reporting between passes, so the host still reads online; \"Readings taken\" on its card is the age of what is shown."
@@ -104,7 +122,7 @@ func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) 
 	if len(parts) == 0 {
 		return "the last completed pass took " + round(total) + ", and no single host call accounts for it." + cost
 	}
-	return "the last completed pass took " + round(total) + " — slowest: " + strings.Join(parts, ", ") + "." + cost
+	return "the last completed pass took " + round(total) + " — slowest: " + strings.Join(parts, ", ") + "." + remainder + cost
 }
 
 // round trims the precision to something an operator reads rather than parses.
