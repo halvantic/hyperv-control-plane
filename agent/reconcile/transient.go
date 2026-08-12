@@ -77,6 +77,28 @@ func transientSignature(err error) string {
 	// never starts is a genuine fault and nothing may wait for ever in silence.
 	case strings.Contains(m, "failed to enable replication"):
 		return "the replica target is not ready to accept the relationship yet"
+	// A cluster-level operation needs every member reachable, and on a two-node
+	// cluster rebooting one takes half of it away. Add-ClusterServerRole then
+	// answers "The cluster service is not running. Make sure that the service is
+	// running on all nodes in the cluster. There are no more endpoints available
+	// from the endpoint mapper" — three sentences describing RPC failing to reach
+	// a node that Ballast itself rebooted a minute ago.
+	//
+	// Observed on bcluster2 while HVNEW02 restarted: the replica broker and a CSV
+	// both failed this way, and both came back on their own when the node did.
+	// Nothing here is a fault to fix; the operation is simply not possible until
+	// the member returns, which is what the window then holds it to.
+	case strings.Contains(m, "cluster service is not running") ||
+		strings.Contains(m, "endpoint mapper") ||
+		strings.Contains(m, "no such host is known") && strings.Contains(m, "cluster"):
+		return "a cluster member is not reachable — it is restarting or its cluster service is still coming up"
+
+	// The same reboot seen from storage. A node that is away takes its disks with
+	// it, so the pool can read as having nothing poolable; the message already
+	// knew to say "retries next pass", which is exactly a transient admitting it
+	// is one while still being reported as an error.
+	case strings.Contains(m, "no s2d pool exists yet") || strings.Contains(m, "poolable disk"):
+		return "the storage pool has no disks visible yet — a member is away or its disks have not come back"
 	}
 	return ""
 }

@@ -53,3 +53,26 @@ func TestEveryPassDrainsItsOwnTimings(t *testing.T) {
 		}
 	}
 }
+
+// The deep storage read must never land on pass 0.
+//
+// A rebooted host is a fresh agent process, so pass 0 is the first pass after
+// boot: the moment the cluster's storage is busiest and the one pass an operator
+// is actually waiting on. Measured on HVNEW02 it was 1m43s of a 3m54s first pass,
+// spent on the read the gate exists to avoid. Wreckage detection is looking for
+// damage left days ago and can wait.
+func TestTheDeepStorageReadSkipsTheFirstPassAfterAStart(t *testing.T) {
+	deep := func(passes uint64, wantMaintenance bool) bool {
+		return wantMaintenance || (passes > 0 && passes%maintenanceDeepEvery == 0)
+	}
+	if deep(0, false) {
+		t.Error("pass 0 is the first pass after a reboot and must not pay the cluster-wide read")
+	}
+	if !deep(maintenanceDeepEvery, false) {
+		t.Error("the slow cadence must still come round, or wreckage on a resumed node is never found")
+	}
+	// Declared maintenance always reads it: the script is about to act on storage.
+	if !deep(0, true) {
+		t.Error("entering maintenance must read storage even on the first pass")
+	}
+}

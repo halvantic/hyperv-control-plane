@@ -158,3 +158,32 @@ func TestARealPermissionFailureIsNotSoftened(t *testing.T) {
 		t.Fatalf("an access-denied on an online volume is a real fault, got softened as %q", what)
 	}
 }
+
+// Rebooting one node of a two-node cluster takes half of it away, and every
+// cluster-level operation then fails until it returns. On bcluster2 the replica
+// broker and a CSV both failed while HVNEW02 restarted, and both came back on
+// their own when it did — so neither was a fault, and neither should have read
+// as one for the minute it took.
+func TestAClusterMemberRestartingIsTransient(t *testing.T) {
+	for _, raw := range []string{
+		"ensure replica broker \"bcluster2-Brk\": powershell: exit status 1: Add-ClusterServerRole : The cluster service is not running. Make sure that the service is running on all nodes in the cluster. There are no more endpoints available from the endpoint mapper",
+		"ensure CSV \"ReplDS\": powershell: exit status 1: no S2D pool exists yet (0 poolable disk(s) visible). S2D was likely enabled while no disks were eligible; the pool is bootstrapped automatically once poolable disks appear - retries next pass.",
+	} {
+		got := transientSignature(errors.New(raw))
+		if got == "" {
+			t.Errorf("a cluster operation failing because a member is away is settling, not failed: %q", raw)
+			continue
+		}
+		if strings.Contains(got, "powershell") || strings.Contains(got, "Add-Cluster") {
+			t.Errorf("the explanation must replace the cmdlet error, not repeat it: %q", got)
+		}
+	}
+}
+
+// The gate is a member being away, not "anything mentioning a cluster". An
+// unrecognised cluster error is still a failure.
+func TestAnUnknownClusterErrorIsStillAFailure(t *testing.T) {
+	if got := transientSignature(errors.New("ensure CSV: the volume name is already in use")); got != "" {
+		t.Errorf("an unrecognised error must never be softened, got %q", got)
+	}
+}
