@@ -514,6 +514,11 @@ func (r *runner) keepalive(ctx context.Context, client ballastpb.AgentServiceCli
 				HostName: r.cfg.hostName,
 				Uid:      r.uid,
 				Status:   ballastpb.StatusToProto(*st),
+				// Marked as a replay, not a fresh look. The payload is byte-for-byte
+				// the last real report, so the centre would otherwise re-date every
+				// reading in it once every 25s and a wedged reconcile would keep
+				// looking current for as long as the process stayed up.
+				Keepalive: true,
 			}); err != nil {
 				r.log.Debug("keepalive report failed", "err", err)
 			}

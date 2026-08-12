@@ -535,6 +535,23 @@ type HostStatus struct {
 	// LastContact is when the agent last reached the control plane.
 	LastContact time.Time `json:"lastContact"`
 
+	// ObservedAt is when the host was last actually LOOKED AT — the end of a
+	// reconcile pass that read it — as distinct from LastContact, which is only
+	// when its agent last spoke.
+	//
+	// The two came apart when the agent gained a keepalive: it resends the last
+	// built status every 25s so a slow pass cannot make a working host read
+	// offline, which means LastContact refreshes while the metrics, inventory,
+	// network profile and licence inside are exactly as old as the last completed
+	// pass. A host whose reconcile has wedged on slow WMI goes on reporting every
+	// 25s, stays green, and holds its readings frozen with nothing saying so.
+	//
+	// Stamped by the CENTRE, and only on a report that was not a keepalive, for
+	// the same reason as ClusterStatus.ObservedAt: one clock decides freshness,
+	// so a host with a skewed clock cannot make a stale reading look current.
+	// Not carried on the wire and an agent cannot set it.
+	ObservedAt time.Time `json:"observedAt,omitempty"`
+
 	// Inventory is observed hardware the control plane uses for placement
 	// decisions (physical adapters, disks, memory, CPU).
 	Inventory HostInventory `json:"inventory,omitempty"`
