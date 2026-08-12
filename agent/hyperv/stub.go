@@ -838,7 +838,7 @@ func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error      { ret
 // EnsureNodeMaintenance models pausing/resuming this node. A stub not in a
 // cluster reports no membership, mirroring a standalone host where maintenance
 // has nothing to enforce locally.
-func (s *Stub) EnsureNodeMaintenance(_ context.Context, _ string, intent MaintenanceIntent) (Outcome, NodeMaintenanceState, error) {
+func (s *Stub) EnsureNodeMaintenance(_ context.Context, _ string, intent MaintenanceIntent, _ bool) (Outcome, NodeMaintenanceState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ClusterExists {

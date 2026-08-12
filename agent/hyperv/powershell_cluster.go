@@ -903,9 +903,14 @@ func intentWord(i MaintenanceIntent) string {
 // than wrong, because 0 then binds positionally to -Name, a StringCollection —
 // the same trap as the cluster cmdlets fixed in d113ecc. Checked against the
 // cmdlet's real syntax on a live cluster before it ever ran.
-func maintenanceScript(node string, intent MaintenanceIntent) string {
+func maintenanceScript(node string, intent MaintenanceIntent, deepStorage bool) string {
+	deep := "$false"
+	if deepStorage {
+		deep = "$true"
+	}
 	return fmt.Sprintf(`$ErrorActionPreference='Stop'
 $intent = %[2]s
+$deep = %[3]s
 # Get-ClusterNode is absent on a host with no FailoverClusters module, and
 # returns nothing for a host that is not a member. Both mean "not a cluster
 # node", which is not an error — maintenance on a standalone host is a
@@ -988,7 +993,23 @@ function Get-BallastStorageOut($nodeName) {
     return ((Get-BallastMaintDisks $nodeName).Count -gt 0)
   } catch { return $false }
 }
-$storageOut = Get-BallastStorageOut %[1]s
+# The storage read is CLUSTER-WIDE: Get-PhysicalDisk in an S2D cluster returns
+# every disk in the cluster, not this host's, and Get-StorageFaultDomain is no
+# cheaper. Measured at 3m53s of a 4m27s pass on a node that had just rebooted —
+# spent answering "are my disks still out of the pool?" for a node that was Up,
+# not draining, and had no maintenance declared, where the answer cannot change.
+#
+# So it is asked when it can matter and skipped when it cannot:
+#   - entering maintenance: the script is about to act on storage
+#   - a paused node: its disks being out IS the state being reported
+#   - $deep: the caller's slow cadence, which is what still finds wreckage left
+#     on a node that resumed long ago
+# Anything that CHANGES re-reads it below regardless, so no decision is ever made
+# on a skipped answer — a skipped read reports $false, and the one consumer of
+# that (the stuck-disks warning) requires an unpaused node, which is exactly the
+# case the deep cadence covers.
+$storageOut = $false
+if ($deep -or $paused -or $intent -eq 'enter') { $storageOut = Get-BallastStorageOut %[1]s }
 $storageErr = ''
 # Entering is the drain and nothing else. The cluster takes the node's disks
 # out as part of it, so there is no storage half to run, in either order.
@@ -1063,13 +1084,13 @@ if ($intent -eq 'exit' -and (-not $paused) -and $storageOut) {
   $storageErr = "This node is back in service but its disks are still marked In Maintenance Mode in the storage pool, which holds every virtual disk degraded. Ballast tried to clear it and could not."
 }
 [pscustomobject]@{ member=$true; paused=$paused; draining=($drain -eq 'InProgress'); storageOut=$storageOut; storageError=$storageErr; blocked=$blocked; changed=$changed } | ConvertTo-Json -Compress`,
-		psQuote(node), psQuote(intentWord(intent)))
+		psQuote(node), psQuote(intentWord(intent)), deep)
 }
 
 // EnsureNodeMaintenance reads a cluster node's availability and, when the intent
 // says so, drives it. Idempotent: a paused node asked to pause is unchanged.
-func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, intent MaintenanceIntent) (Outcome, NodeMaintenanceState, error) {
-	out, err := p.run(ctx, maintenanceScript(node, intent))
+func (p *PowerShell) EnsureNodeMaintenance(ctx context.Context, node string, intent MaintenanceIntent, deepStorage bool) (Outcome, NodeMaintenanceState, error) {
+	out, err := p.run(ctx, maintenanceScript(node, intent, deepStorage))
 	if err != nil {
 		return OutcomeUnchanged, NodeMaintenanceState{}, fmt.Errorf("ensure node maintenance on %q: %w", node, err)
 	}
