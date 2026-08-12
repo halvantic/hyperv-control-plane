@@ -1012,7 +1012,13 @@ type ReportStatusRequest struct {
 	ClusterStatus *ClusterStatus `protobuf:"bytes,5,opt,name=cluster_status,json=clusterStatus,proto3" json:"cluster_status,omitempty"`
 	// vm_statuses reports the observed state of the VMs this host owns. Each
 	// entry is keyed by VM name. Empty when the host owns no VMs.
-	VmStatuses    []*VMStatusReport `protobuf:"bytes,6,rep,name=vm_statuses,json=vmStatuses,proto3" json:"vm_statuses,omitempty"`
+	VmStatuses []*VMStatusReport `protobuf:"bytes,6,rep,name=vm_statuses,json=vmStatuses,proto3" json:"vm_statuses,omitempty"`
+	// keepalive marks a report the agent RESENT between reconcile passes to hold
+	// its contact time open, rather than one built from a fresh look at the host.
+	// The payload is identical to the last real report, so without this flag the
+	// centre cannot tell the two apart and every replay re-dates readings that
+	// nobody took. It refreshes LastContact and nothing else.
+	Keepalive     bool `protobuf:"varint,7,opt,name=keepalive,proto3" json:"keepalive,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1087,6 +1093,13 @@ func (x *ReportStatusRequest) GetVmStatuses() []*VMStatusReport {
 		return x.VmStatuses
 	}
 	return nil
+}
+
+func (x *ReportStatusRequest) GetKeepalive() bool {
+	if x != nil {
+		return x.Keepalive
+	}
+	return false
 }
 
 // VMStatusReport pairs a VM's name with its reported status, so one host can
@@ -6320,7 +6333,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04data\x18\x03 \x03(\v2\x1c.ballast.v1.Secret.DataEntryR\x04data\x1a7\n" +
 	"\tDataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x96\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb4\x02\n" +
 	"\x13ReportStatusRequest\x12\x1b\n" +
 	"\thost_name\x18\x01 \x01(\tR\bhostName\x12\x10\n" +
 	"\x03uid\x18\x02 \x01(\tR\x03uid\x12.\n" +
@@ -6328,7 +6341,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\fcluster_name\x18\x04 \x01(\tR\vclusterName\x12@\n" +
 	"\x0ecluster_status\x18\x05 \x01(\v2\x19.ballast.v1.ClusterStatusR\rclusterStatus\x12;\n" +
 	"\vvm_statuses\x18\x06 \x03(\v2\x1a.ballast.v1.VMStatusReportR\n" +
-	"vmStatuses\"R\n" +
+	"vmStatuses\x12\x1c\n" +
+	"\tkeepalive\x18\a \x01(\bR\tkeepalive\"R\n" +
 	"\x0eVMStatusReport\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x06status\x18\x02 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"2\n" +

@@ -129,6 +129,12 @@ message ReportStatusRequest {
   // vm_statuses reports the observed state of the VMs this host owns. Each
   // entry is keyed by VM name. Empty when the host owns no VMs.
   repeated VMStatusReport vm_statuses = 6;
+  // keepalive marks a report the agent RESENT between reconcile passes to hold
+  // its contact time open, rather than one built from a fresh look at the host.
+  // The payload is identical to the last real report, so without this flag the
+  // centre cannot tell the two apart and every replay re-dates readings that
+  // nobody took. It refreshes LastContact and nothing else.
+  bool keepalive = 7;
 }
 
 // VMStatusReport pairs a VM's name with its reported status, so one host can
