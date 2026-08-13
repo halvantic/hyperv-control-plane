@@ -97,8 +97,10 @@ type PhaseTiming struct {
 // actually looked at, so everything observed in it ages with it, while the
 // keepalive holds the host online regardless. That is the gap HostStatus.
 // ObservedAt exists to show, and pointing at it beats describing it.
-func SlowPassMessage(calls []hyperv.CallTiming, phases []PhaseTiming, total, threshold time.Duration) string {
-	if total < threshold {
+func SlowPassMessage(calls []hyperv.CallTiming, phases []PhaseTiming, total, threshold time.Duration, cutOff bool) string {
+	// A cut-off pass is always worth reporting, however long it ran: it did not
+	// finish, so everything after the stall never happened at all.
+	if total < threshold && !cutOff {
 		return ""
 	}
 	var parts []string
@@ -144,10 +146,17 @@ func SlowPassMessage(calls []hyperv.CallTiming, phases []PhaseTiming, total, thr
 	// cycle ends, so the message travels on the NEXT status report. Calling it
 	// "this" would put a finished pass's cost against the one now running, which
 	// is a smaller version of the mistake this whole file is about.
-	if len(parts) == 0 {
-		return "the last completed pass took " + round(total) + ", and no single host call accounts for it." + cost
+	// "Cut off", not "took": a cycle killed at its cap did not complete, and
+	// calling it completed hides the fact that the steps after the stall never
+	// ran — which is what NotAttempted conditions elsewhere are trying to say.
+	lead := "the last completed pass took " + round(total)
+	if cutOff {
+		lead = "the last pass was CUT OFF after " + round(total) + " — it hit the cycle limit and did not finish, so anything after the slow step never ran"
 	}
-	return "the last completed pass took " + round(total) + " — slowest: " + strings.Join(parts, ", ") + "." + remainder + cost
+	if len(parts) == 0 {
+		return lead + ", and no single host call accounts for it." + cost
+	}
+	return lead + " — slowest: " + strings.Join(parts, ", ") + "." + remainder + cost
 }
 
 // topPhases renders the costliest stages of the cycle, biggest first.

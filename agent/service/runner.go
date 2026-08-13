@@ -336,10 +336,46 @@ func hasFailedSwitchStep(conds []types.Condition) bool {
 	return false
 }
 
+// passConditions puts the pass-timing condition into a condition set, replacing
+// any it already carries. One function so the freshly built status and the
+// keepalive's replay cannot describe the pass differently — and so a replay
+// carrying a NEWER message than the status it rides on still ends up with one
+// ReconcilePass condition rather than two.
+func passConditions(conds []types.Condition, msg string) []types.Condition {
+	out := conds[:0:0]
+	for _, c := range conds {
+		if c.Type != "ReconcilePass" {
+			out = append(out, c)
+		}
+	}
+	if msg == "" {
+		return out
+	}
+	return append(out, types.Condition{
+		Type: "ReconcilePass", Status: false, Reason: "Slow",
+		Message: msg, LastTransitionTime: time.Now().UTC(),
+	})
+}
+
+// withPassMessage returns st with its pass-timing condition replaced. Used by
+// the keepalive, whose payload is otherwise a byte-for-byte replay.
+func withPassMessage(st types.HostStatus, msg string) types.HostStatus {
+	if msg == "" {
+		return st
+	}
+	st.Conditions = passConditions(st.Conditions, msg)
+	return st
+}
+
 // notePassTiming records the finished cycle's cost for the next status report.
 // Called from the cycle's own deferred drain, on the cycle goroutine.
 func (r *runner) notePassTiming(msg string) {
+	// Under statusMu: the keepalive goroutine reads this to carry the newest
+	// timing on a replayed status, which is the only route out for a cycle that
+	// wedges before it can build one.
+	r.statusMu.Lock()
 	r.lastPassMessage = msg
+	r.statusMu.Unlock()
 	if msg != "" {
 		r.log.Warn("slow reconcile pass", "detail", msg)
 	}
@@ -555,14 +591,30 @@ func (r *runner) keepalive(ctx context.Context, client ballastpb.AgentServiceCli
 		case <-t.C:
 			r.statusMu.Lock()
 			st := r.lastStatus
+			msg := r.lastPassMessage
 			r.statusMu.Unlock()
 			if st == nil || r.uid == "" {
 				continue
 			}
+			// Carry the newest pass timing even though the rest is a replay.
+			//
+			// A status is only BUILT partway through a cycle, so a cycle that runs
+			// out of its budget before reaching that point never builds one — and
+			// the keepalive goes on resending the last good status for as long as
+			// the wedge lasts. The pass message is the one thing that says WHY, it
+			// is recorded when the cycle ends (including when it is cancelled), and
+			// attaching it here is the only way it gets out.
+			//
+			// HVNEW02, 2026-08-14: readings eleven minutes old, conditions frozen
+			// at "HyperVRole not attempted — something earlier in the pass is slow",
+			// and the phase breakdown that names the slow phase sat on the host
+			// where nobody could see it. The diagnosis was stuck behind exactly the
+			// fault it diagnoses.
+			replay := withPassMessage(*st, msg)
 			if _, err := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
 				HostName: r.cfg.hostName,
 				Uid:      r.uid,
-				Status:   ballastpb.StatusToProto(*st),
+				Status:   ballastpb.StatusToProto(replay),
 				// Marked as a replay, not a fresh look. The payload is byte-for-byte
 				// the last real report, so the centre would otherwise re-date every
 				// reading in it once every 25s and a wedged reconcile would keep
@@ -695,8 +747,14 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		// Deferred so every path drains, including the early returns above: a cycle
 		// that leaves its calls behind makes the NEXT cycle report them as its own,
 		// which is the same defect from the other end.
+		// ctx.Err() distinguishes a cycle that ENDED from one that was cut off at
+		// the cap. They read identically as a duration — HVNEW03 reported "5m0s"
+		// three times running and only the round number gave it away — and they
+		// mean opposite things: one is a slow pass that did all its work, the
+		// other did not finish and everything after the stall never ran.
 		r.notePassTiming(reconcile.SlowPassMessage(
-			r.hv.TakeTimings(), t.timings(), time.Since(cycleStart), reconcile.SlowPassThreshold))
+			r.hv.TakeTimings(), t.timings(), time.Since(cycleStart), reconcile.SlowPassThreshold,
+			ctx.Err() != nil))
 	}()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
@@ -1424,12 +1482,10 @@ func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics,
 	// The last completed cycle's cost, carried here rather than raised inside the
 	// host reconcile: it is the CYCLE that is timed, and the cluster reconcile is
 	// part of one without being part of the other.
-	if r.lastPassMessage != "" {
-		conds = append(conds, types.Condition{
-			Type: "ReconcilePass", Status: false, Reason: "Slow",
-			Message: r.lastPassMessage, LastTransitionTime: time.Now().UTC(),
-		})
-	}
+	r.statusMu.Lock()
+	msg := r.lastPassMessage
+	r.statusMu.Unlock()
+	conds = passConditions(conds, msg)
 	return types.HostStatus{
 		Phase:              phase,
 		ObservedGeneration: r.observedGen,
