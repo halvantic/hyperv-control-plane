@@ -13,6 +13,10 @@ type clusterOwnedObs struct {
 	Owner     string `json:"owner"`
 	State     string `json:"state"`
 	GroupType string `json:"groupType,omitempty"`
+	// StatusInformation is populated for NODES only: what the cluster says about
+	// the state, which is the difference between a node that is off and a node
+	// the cluster is holding out. Groups and roles do not carry it.
+	StatusInformation string `json:"statusInformation,omitempty"`
 }
 
 // clusterCSVObs is a CSV plus the health of the virtual disk behind it, which is
@@ -139,8 +143,12 @@ if (-not $c) {
   }
   [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return
 }
+# StatusInformation, not just State: a QUARANTINED node reports State=Down,
+# identically to a node that is switched off, and the two need opposite
+# responses — one is a machine to go and fix, the other is the cluster refusing
+# to readmit a node that flapped, cleared with Start-ClusterNode -ClearQuarantine.
 $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
-  [pscustomobject]@{ name = [string]$_.Name; state = [string]$_.State } })
+  [pscustomobject]@{ name = [string]$_.Name; state = [string]$_.State; statusInformation = [string]$_.StatusInformation } })
 $nodes = @($nodeObjs | ForEach-Object { $_.name })
 $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State; groupType = [string]$_.GroupType } })
@@ -502,7 +510,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	}
 	nodes := make([]ClusterNodeState, 0, len(obs.Nodes))
 	for _, n := range obs.Nodes {
-		nodes = append(nodes, ClusterNodeState{Name: n.Name, State: n.State})
+		nodes = append(nodes, ClusterNodeState{Name: n.Name, State: n.State, StatusInformation: n.StatusInformation})
 	}
 	var pool *ClusterPool
 	if obs.Pool != nil {

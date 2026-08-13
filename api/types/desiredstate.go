@@ -1643,6 +1643,43 @@ type ClusterPoolStatus struct {
 type ClusterNodeStatus struct {
 	Name  string `json:"name"`
 	State string `json:"state,omitempty"`
+
+	// StatusInformation is what Failover Clustering says ABOUT that state, from
+	// Get-ClusterNode .StatusInformation — "Quarantined", "Isolated", "Normal",
+	// or empty.
+	//
+	// It exists because State alone cannot tell the two most important cases
+	// apart. A QUARANTINED node reports State=Down, exactly like a node that is
+	// switched off, and quarantine is not an outage: it is the cluster refusing
+	// to readmit a node that left and rejoined three times in an hour, it stops
+	// the cluster service deliberately, and it clears with
+	// Start-ClusterNode -ClearQuarantine rather than by fixing anything on the
+	// node. An operator shown "Down" goes looking for a dead machine.
+	//
+	// Found on the rig 2026-08-13. bcluster2's guests flapped ~13 times each —
+	// the hypervisor beneath them was starved — and HVNEW01 and HVNEW02 ended
+	// with their cluster service stopped and State=Down. Ballast could not say
+	// why, while shipping a ClusterClearQuarantine job whose precondition it had
+	// no way to observe: the console offered a remedy it could not tell you was
+	// the right one.
+	StatusInformation string `json:"statusInformation,omitempty"`
+}
+
+// NodeQuarantined reports whether a node is quarantined — held out of the
+// cluster by Failover Clustering rather than absent. Kept here beside the field
+// so every consumer asks the same question the same way; Windows has used more
+// than one spelling of the word across builds, so matching on a prefix is
+// deliberate.
+func (n ClusterNodeStatus) NodeQuarantined() bool {
+	return strings.HasPrefix(strings.ToLower(n.StatusInformation), "quarantine")
+}
+
+// NodeIsolated reports whether a node is isolated: still a member, but out of
+// communication with the cluster. Unlike quarantine this usually resolves
+// itself when communication returns, so it is a different thing to show and a
+// different thing to act on.
+func (n ClusterNodeStatus) NodeIsolated() bool {
+	return strings.EqualFold(strings.TrimSpace(n.StatusInformation), "isolated")
 }
 
 // ClusterVMStatus is one highly-available VM role observed on the cluster and its

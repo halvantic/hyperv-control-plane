@@ -1087,7 +1087,7 @@ func clusterPoolFromProto(p *ClusterPool) *types.ClusterPoolStatus {
 func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {
 	out := make([]*ClusterNode, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, &ClusterNode{Name: n.Name, State: n.State})
+		out = append(out, &ClusterNode{Name: n.Name, State: n.State, StatusInformation: n.StatusInformation})
 	}
 	return out
 }
@@ -1095,7 +1095,7 @@ func clusterNodesToProto(ns []types.ClusterNodeStatus) []*ClusterNode {
 func clusterNodesFromProto(ns []*ClusterNode) []types.ClusterNodeStatus {
 	out := make([]types.ClusterNodeStatus, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, types.ClusterNodeStatus{Name: n.GetName(), State: n.GetState()})
+		out = append(out, types.ClusterNodeStatus{Name: n.GetName(), State: n.GetState(), StatusInformation: n.GetStatusInformation()})
 	}
 	return out
 }
