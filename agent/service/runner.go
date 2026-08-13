@@ -65,7 +65,39 @@ const (
 	// collectTimeout caps a single best-effort read (e.g. a console screen capture)
 	// so a wedged capture cannot eat the cycle budget.
 	collectTimeout = 45 * time.Second
+	// observeBudget caps each of the CACHED observations — metrics, inventory,
+	// resources — for the same reason, one tier up.
+	//
+	// These are best-effort reads whose values are already carried forward
+	// between refreshes, so the cost of abandoning one is a stale reading. They
+	// were handed the whole cycle context, so the cost of NOT abandoning one was
+	// the entire pass: on bcluster2 2026-08-14, with the cluster's Health Service
+	// down and the pool degraded, CollectInventory took 4m58s of a 5m0s cycle on
+	// HVNEW02 and 2m44s on HVNEW01. Those cycles were killed at the cap before
+	// reaching reportStatus, so the hosts' readings froze at fifteen minutes old
+	// and every reconcile step after the stall reported NotAttempted. One sick
+	// subsystem blinded the centre to three whole hosts.
+	//
+	// It looks host-local and is not: CollectInventory runs Get-PhysicalDisk,
+	// which on an S2D node enumerates every disk in the CLUSTER, and
+	// Get-ClusterResource for the cluster IPs. Both go through the clustered
+	// storage subsystem, which is exactly what fails when a cluster is sick.
+	//
+	// 90s rather than collectTimeout's 45s: a legitimately slow S2D inventory on
+	// a busy node is not a fault, and three of these plus a reconcile still fit
+	// inside the cycle with room to report.
+	observeBudget = 90 * time.Second
 )
+
+// bounded runs a cached observation under its own deadline, so one that hangs
+// costs a stale reading rather than the pass. Returns the zero value and the
+// context error when the budget expires; every caller keeps its cached value on
+// error, which is what makes abandoning it safe.
+func bounded[T any](ctx context.Context, budget time.Duration, f func(context.Context) (T, error)) (T, error) {
+	c, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return f(c)
+}
 
 // Observation refresh cadences, tiered by how often each class of state actually
 // changes so a 15s cycle is not dominated by rescanning things that rarely move.
@@ -272,6 +304,10 @@ type runner struct {
 	haveResources  bool
 	lastInventory  types.HostInventory
 	haveInventory  bool
+	// lastMetrics is carried forward when a collection fails or times out, so a
+	// host whose storage is hanging reports its last real CPU and memory rather
+	// than zeros. See the collect site.
+	lastMetrics types.HostMetrics
 	lastIdentity   hyperv.HostIdentity
 	haveIdentity   bool
 
@@ -765,10 +801,18 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 
 	// Metrics (CPU/memory/uptime) are live and cheap — collect every cycle.
 	doneMetrics := t.mark("metrics")
-	metrics, merr := r.hv.CollectMetrics(ctx)
+	metrics, merr := bounded(ctx, observeBudget, r.hv.CollectMetrics)
 	doneMetrics()
 	if merr != nil {
-		r.log.Error("collect metrics failed", "err", merr)
+		// The last real reading, not zeros. A failed collection is a reading
+		// nobody took, and reporting 0% CPU and 0 bytes of memory in use states
+		// the opposite of what is known — on a host whose storage subsystem is
+		// hanging, which is exactly when someone is looking at those numbers.
+		// Absent is not zero.
+		r.log.Error("collect metrics failed (keeping last known)", "err", merr)
+		metrics = r.lastMetrics
+	} else {
+		r.lastMetrics = metrics
 	}
 	// Physical hardware inventory does not change without a reboot, so refresh it
 	// on a slow cadence — but always collect it before we are registered, since
@@ -776,7 +820,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	inv := r.lastInventory
 	if !r.haveInventory || force || !r.registered || r.cycles%inventoryRefreshEvery == 0 {
 		doneInv := t.mark("inventory")
-		got, ierr := r.hv.CollectInventory(ctx)
+		got, ierr := bounded(ctx, observeBudget, r.hv.CollectInventory)
 		doneInv()
 		if ierr != nil {
 			r.log.Error("collect inventory failed", "err", ierr)
@@ -791,7 +835,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	resources := r.lastResources
 	if force || !r.haveResources || r.cycles%resourceRefreshEvery == 0 {
 		doneRes := t.mark("resources")
-		res, resErr := r.hv.CollectResources(ctx)
+		res, resErr := bounded(ctx, observeBudget, r.hv.CollectResources)
 		doneRes()
 		if resErr != nil {
 			r.log.Error("collect resources failed", "err", resErr)
@@ -956,7 +1000,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		switchFailing := hasFailedSwitchStep(res.Conditions)
 		if switchFailing && !r.switchWasFailing && r.haveInventory {
 			doneInv := t.mark("inventoryAfterSwitchFailure")
-			got, ierr := r.hv.CollectInventory(ctx)
+			got, ierr := bounded(ctx, observeBudget, r.hv.CollectInventory)
 			doneInv()
 			if ierr != nil {
 				r.log.Warn("re-read adapters after a switch failure", "err", ierr)
