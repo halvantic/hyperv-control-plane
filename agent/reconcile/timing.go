@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +61,22 @@ import (
 // keepalive ended that; see SlowPassMessage.
 const SlowPassThreshold = 30 * time.Second
 
+// PhaseTiming is one stage of a cycle and what it cost — metrics, inventory,
+// hostReconcile, journal, deliver, clusterReconcile.
+//
+// It exists because the CALL list cannot explain every slow pass. Host calls are
+// timed at the PowerShell boundary, so anything that is not a cmdlet is invisible
+// to them: a local journal fsync on a busy disk, a round trip to the centre, a
+// process descheduled under memory pressure. HVNEW04 — a healthy host — spent
+// more than half of a 1m49s pass outside any host call, and the slowest-call list
+// could only name 7% of it while looking like an explanation.
+//
+// The phases cover the whole cycle, so between them they always account for it.
+type PhaseTiming struct {
+	Name string
+	Took time.Duration
+}
+
 // SlowPassMessage names the calls that account for a slow pass.
 //
 // The agent's reconcile cadence is deliberately tiered — some observations run
@@ -80,7 +97,7 @@ const SlowPassThreshold = 30 * time.Second
 // actually looked at, so everything observed in it ages with it, while the
 // keepalive holds the host online regardless. That is the gap HostStatus.
 // ObservedAt exists to show, and pointing at it beats describing it.
-func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) string {
+func SlowPassMessage(calls []hyperv.CallTiming, phases []PhaseTiming, total, threshold time.Duration) string {
 	if total < threshold {
 		return ""
 	}
@@ -112,6 +129,14 @@ func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) 
 			remainder += fmt.Sprintf(", a further %d host calls account for %s", len(calls)-len(parts), round(rest))
 		}
 		remainder += ", and the rest was not spent in a host call."
+		// Which is only half an answer without saying where it WAS spent. The
+		// phases cover the whole cycle including the parts no cmdlet touches, so
+		// they turn "not in a host call" from an intriguing fact into an
+		// actionable one — and save someone reading the agent's log on the host to
+		// find out, which is the thing CLAUDE.md calls a defect.
+		if p := topPhases(phases, total); p != "" {
+			remainder += " Where it went: " + p + "."
+		}
 	}
 	// One consequence sentence, shared, so the two shapes cannot drift apart.
 	const cost = " A pass is how often this host is actually read, so everything on it — metrics, inventory, VM and cluster state — is up to that old, and a change to desired state waits that long to be applied. The agent keeps reporting between passes, so the host still reads online; \"Readings taken\" on its card is the age of what is shown."
@@ -123,6 +148,39 @@ func SlowPassMessage(calls []hyperv.CallTiming, total, threshold time.Duration) 
 		return "the last completed pass took " + round(total) + ", and no single host call accounts for it." + cost
 	}
 	return "the last completed pass took " + round(total) + " — slowest: " + strings.Join(parts, ", ") + "." + remainder + cost
+}
+
+// topPhases renders the costliest stages of the cycle, biggest first.
+//
+// Phases that are ENTIRELY host calls are dropped: naming "metrics 9s" beside
+// "CollectMetrics 9s" says the same thing twice and pushes the useful line off
+// the end. What earns its place is a phase the call list cannot see into —
+// journal, deliver — or one large enough that the calls inside it do not add up.
+//
+// Sized against the PASS, not against a fixed floor: a phase worth naming is one
+// that is a real share of what took so long. Three seconds is trivia in a
+// two-minute pass and most of the story in a thirty-second one, and a list that
+// includes both stops being read.
+func topPhases(phases []PhaseTiming, total time.Duration) string {
+	floor := total / 20 // 5% of the pass
+	if floor < time.Second {
+		floor = time.Second
+	}
+	sorted := make([]PhaseTiming, 0, len(phases))
+	for _, p := range phases {
+		if p.Took >= floor {
+			sorted = append(sorted, p)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Took > sorted[j].Took })
+	var out []string
+	for _, p := range sorted {
+		if len(out) >= 4 {
+			break
+		}
+		out = append(out, p.Name+" "+round(p.Took))
+	}
+	return strings.Join(out, ", ")
 }
 
 // round trims the precision to something an operator reads rather than parses.
