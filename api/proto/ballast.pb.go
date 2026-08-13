@@ -4960,11 +4960,16 @@ func (x *ClusterNetwork) GetMetric() int32 {
 }
 
 type ClusterNode struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	State         string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	State string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	// status_information is what Failover Clustering says about the state
+	// ("Quarantined", "Isolated", "Normal"). A quarantined node reports
+	// state=Down exactly like a switched-off one, and the two need opposite
+	// responses — see ClusterNodeStatus in api/types.
+	StatusInformation string `protobuf:"bytes,3,opt,name=status_information,json=statusInformation,proto3" json:"status_information,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ClusterNode) Reset() {
@@ -5007,6 +5012,13 @@ func (x *ClusterNode) GetName() string {
 func (x *ClusterNode) GetState() string {
 	if x != nil {
 		return x.State
+	}
+	return ""
+}
+
+func (x *ClusterNode) GetStatusInformation() string {
+	if x != nil {
+		return x.StatusInformation
 	}
 	return ""
 }
@@ -6705,10 +6717,11 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x12\x12\n" +
 	"\x04role\x18\x03 \x01(\tR\x04role\x12\x14\n" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x16\n" +
-	"\x06metric\x18\x05 \x01(\x05R\x06metric\"7\n" +
+	"\x06metric\x18\x05 \x01(\x05R\x06metric\"f\n" +
 	"\vClusterNode\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\xb7\x03\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12-\n" +
+	"\x12status_information\x18\x03 \x01(\tR\x11statusInformation\"\xb7\x03\n" +
 	"\vClusterPool\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\traw_bytes\x18\x02 \x01(\x04R\brawBytes\x12'\n" +

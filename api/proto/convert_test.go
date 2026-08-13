@@ -229,7 +229,12 @@ func sampleClusterStatus() types.ClusterStatus {
 		StateUnreadable:    true,
 		FormedMembers:      []string{"n1", "n2"},
 		S2DEnabled:         true,
-		Nodes:              []types.ClusterNodeStatus{{Name: "n1", State: "Up"}},
+		Nodes: []types.ClusterNodeStatus{
+			{Name: "n1", State: "Up", StatusInformation: "Normal"},
+			// A quarantined node reports State=Down like a switched-off one, so the
+			// distinguishing field is the one that most needs to survive the wire.
+			{Name: "n2", State: "Down", StatusInformation: "Quarantined"},
+		},
 		Groups:             []types.ClusterGroupStatus{{Name: "Cluster Group", OwnerNode: "n1", State: "Online", GroupType: "Cluster"}},
 		VMs:                []types.ClusterVMStatus{{Name: "Web01", OwnerNode: "n2", State: "Online"}},
 		CSVs: []types.CSVStatus{{

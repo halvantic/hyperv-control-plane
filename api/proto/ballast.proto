@@ -764,6 +764,11 @@ message ClusterNetwork {
 message ClusterNode {
   string name = 1;
   string state = 2;
+  // status_information is what Failover Clustering says about the state
+  // ("Quarantined", "Isolated", "Normal"). A quarantined node reports
+  // state=Down exactly like a switched-off one, and the two need opposite
+  // responses — see ClusterNodeStatus in api/types.
+  string status_information = 3;
 }
 
 message ClusterPool {

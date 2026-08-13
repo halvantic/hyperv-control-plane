@@ -348,7 +348,7 @@ func clusterPoolToStatus(p *hyperv.ClusterPool) *types.ClusterPoolStatus {
 func clusterNodesToStatus(ns []hyperv.ClusterNodeState) []types.ClusterNodeStatus {
 	out := make([]types.ClusterNodeStatus, 0, len(ns))
 	for _, n := range ns {
-		out = append(out, types.ClusterNodeStatus{Name: n.Name, State: n.State})
+		out = append(out, types.ClusterNodeStatus{Name: n.Name, State: n.State, StatusInformation: n.StatusInformation})
 	}
 	return out
 }

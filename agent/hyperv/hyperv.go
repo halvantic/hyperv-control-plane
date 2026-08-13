@@ -859,6 +859,11 @@ type ClusterGroup struct {
 type ClusterNodeState struct {
 	Name  string
 	State string
+	// StatusInformation is Get-ClusterNode .StatusInformation — "Quarantined",
+	// "Isolated", "Normal". A quarantined node reports State=Down exactly like a
+	// switched-off one, so State alone cannot tell an outage from the cluster
+	// deliberately holding a node out. See types.ClusterNodeStatus.
+	StatusInformation string
 }
 
 // ClusterCSV is one Cluster Shared Volume and its current owner.
