@@ -95,7 +95,35 @@ type Reconciler struct {
 	// feature read is not repeated every pass to re-learn a fact that cannot
 	// change on its own. See hostRoleEvery.
 	roleInstalled bool
+
+	// vnicsSettled, vnicConds and vnicGen throttle the management vNIC step once
+	// every declared vNIC is already right. Same rule as the replica server: the
+	// cadence applies only to a step that reported nothing to change.
+	vnicsSettled bool
+	vnicConds    []types.Condition
+	vnicGen      int64
 }
+
+// mgmtVNICEvery is how often a SETTLED set of management vNICs is re-observed.
+//
+// Observing them is the single largest consistent cost in the fleet: 7.3-8.6s of
+// every pass on every host, measured 2026-08-13, which is about a quarter of a
+// 32s pass. It is already batched into one PowerShell invocation — that work is
+// done and the comments on vnicsBatchScript record it — and the residue is not
+// the loop. Cold-versus-warm in one process was Get-ClusterResource 1976ms then
+// 31ms, Get-NetIPAddress 654ms then 24ms: what costs is the FIRST call into each
+// module (Hyper-V, NetTCPIP, DnsClient, FailoverClusters), and one invocation
+// already pays that exactly once. Hoisting the four remaining per-vNIC cmdlets
+// out of the loop would save roughly 24ms x 3 vNICs x 4 calls — a third of a
+// second out of seven.
+//
+// So the lever is not making the observation cheaper, it is not making it as
+// often. A management vNIC's switch, VLAN and IP change when an operator edits
+// them or when something drifts, and an edit bumps the generation, which resets
+// this. What remains is drift caught within ~4 minutes instead of ~30s, on a
+// fleet where every other rarely-changing observation is already tiered the same
+// way.
+const mgmtVNICEvery = 8
 
 // hostRoleEvery is how often an already-installed Hyper-V role is re-checked.
 // Deliberately the same slow cadence as the maintenance storage read: both
@@ -428,22 +456,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		vnics = append(vnics, v)
 	}
 	if len(vnics) > 0 {
-		outs, errs := r.hv.EnsureMgmtVNICs(ctx, vnics)
-		for i, v := range vnics {
-			out, err := outs[i], errs[i]
-			conds = append(conds, r.condition("ManagementVNIC/"+v.Name, out, err))
-			if err != nil {
-				failures++
-				if firstErr == nil {
-					firstErr = fmt.Errorf("ensure vNIC %q: %w", v.Name, err)
+		if desired.Meta.Generation != r.vnicGen {
+			r.vnicsSettled = false
+		}
+		if r.vnicsSettled && r.passes%mgmtVNICEvery != 0 {
+			// Settled: replay the last conditions rather than dropping the steps.
+			conds = append(conds, r.vnicConds...)
+		} else {
+			outs, errs := r.hv.EnsureMgmtVNICs(ctx, vnics)
+			settled := true
+			r.vnicConds = r.vnicConds[:0]
+			for i, v := range vnics {
+				out, err := outs[i], errs[i]
+				c := r.condition("ManagementVNIC/"+v.Name, out, err)
+				conds = append(conds, c)
+				r.vnicConds = append(r.vnicConds, c)
+				if err != nil {
+					settled = false
+					failures++
+					if firstErr == nil {
+						firstErr = fmt.Errorf("ensure vNIC %q: %w", v.Name, err)
+					}
+					r.log.Error("ensure management vNIC failed", "vnic", v.Name, "err", err)
+					continue
 				}
-				r.log.Error("ensure management vNIC failed", "vnic", v.Name, "err", err)
-				continue
+				if out != hyperv.OutcomeUnchanged {
+					settled = false
+					changed = true
+					r.log.Info("management vNIC reconciled", "vnic", v.Name, "outcome", out)
+				}
 			}
-			if out != hyperv.OutcomeUnchanged {
-				changed = true
-				r.log.Info("management vNIC reconciled", "vnic", v.Name, "outcome", out)
-			}
+			// Settled only when EVERY vNIC was already right. One that still needs
+			// work keeps the whole set on every pass — they are observed together,
+			// so there is nothing to gain from throttling part of it.
+			r.vnicsSettled, r.vnicGen = settled, desired.Meta.Generation
 		}
 	}
 
