@@ -307,6 +307,21 @@ type runner struct {
 	// so the adapter re-read fires on the transition into failure rather than on
 	// every cycle it persists.
 	switchWasFailing bool
+
+	// cyclePhases is the running cycle's phase timer, so work done deeper in the
+	// call stack can be attributed without threading a timer through every
+	// signature. Set at the top of a cycle and cleared at the end; only ever
+	// touched from the cycle goroutine.
+	cyclePhases *phaseTimer
+}
+
+// phase records a span against the running cycle, or does nothing when called
+// outside one (the keepalive goroutine, a test).
+func (r *runner) phase(name string) func() {
+	if r.cyclePhases == nil {
+		return func() {}
+	}
+	return r.cyclePhases.mark(name)
 }
 
 // hasFailedSwitchStep reports whether a virtual switch could not be applied this
@@ -659,6 +674,8 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// nodes, and "the console feels slow" needs to resolve to a phase.
 	cycleStart := time.Now()
 	var t phaseTimer
+	r.cyclePhases = &t
+	defer func() { r.cyclePhases = nil }()
 	// Bound the whole cycle: if any operation hangs, the deadline cancels it (and
 	// kills the underlying powershell.exe) so the loop always regains control and
 	// the next cycle retries — the cycle can never wedge the agent.
@@ -679,7 +696,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		// that leaves its calls behind makes the NEXT cycle report them as its own,
 		// which is the same defect from the other end.
 		r.notePassTiming(reconcile.SlowPassMessage(
-			r.hv.TakeTimings(), time.Since(cycleStart), reconcile.SlowPassThreshold))
+			r.hv.TakeTimings(), t.timings(), time.Since(cycleStart), reconcile.SlowPassThreshold))
 	}()
 	// A finished job asks (via requestNudge) for a fresh scan of the throttled
 	// observations so its effect shows up now; read-and-clear it once for the
@@ -1434,7 +1451,16 @@ func (r *runner) buildStatus(inv types.HostInventory, metrics types.HostMetrics,
 // reportStatus journals status locally first (so nothing is lost if the centre
 // is down), then attempts delivery and replays any previously queued entries.
 func (r *runner) reportStatus(ctx context.Context, client ballastpb.AgentServiceClient, st types.HostStatus) {
+	// Journalling and delivering are timed apart because they fail for opposite
+	// reasons and the fix for each is somewhere else entirely: the journal is a
+	// local fsync, so it is slow when this host's DISK is busy, while delivery is
+	// a round trip to the centre. Measured together they answer neither question.
+	// On HVNEW04 — a healthy host, and a Hyper-V Replica target with a constantly
+	// busy datastore — more than half of a 1m49s pass was outside any host call
+	// at all, and this is one of the two places it can be.
+	doneJournal := r.phase("journal")
 	entry, err := r.st.AppendStatus(st, false)
+	doneJournal()
 	if err != nil {
 		r.log.Error("journal status failed", "err", err)
 		return
@@ -1451,6 +1477,9 @@ func (r *runner) reportStatus(ctx context.Context, client ballastpb.AgentService
 		r.log.Error("read journal failed", "err", err)
 		queued = []store.JournalEntry{entry}
 	}
+	// The other half: the round trip to the centre, timed apart from the local
+	// write above so a slow pass says which of the two it was.
+	defer r.phase("deliver")()
 	for _, e := range queued {
 		resp, derr := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
 			HostName: r.cfg.hostName,

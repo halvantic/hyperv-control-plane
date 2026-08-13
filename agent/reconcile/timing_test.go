@@ -16,7 +16,7 @@ import (
 
 func TestAQuickPassSaysNothing(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "CollectInventory", Took: time.Second}},
-		2*time.Second, SlowPassThreshold)
+nil, 2*time.Second, SlowPassThreshold)
 	if got != "" {
 		t.Fatalf("a healthy pass must stay silent, got %q", got)
 	}
@@ -29,7 +29,8 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 		{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1},
 		{Name: "ObserveVMs", Took: 12 * time.Second, Calls: 3},
 		{Name: "CollectMetrics", Took: 20 * time.Millisecond, Calls: 1},
-	}, 105*time.Second, SlowPassThreshold)
+	},
+nil, 105*time.Second, SlowPassThreshold)
 
 	if !strings.Contains(got, "GetClusterState 1m30s") {
 		t.Errorf("the slowest call must be named with its cost: %q", got)
@@ -54,7 +55,7 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 // is how often the host is read, while it goes on reading online throughout.
 func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
-		105*time.Second, SlowPassThreshold)
+nil, 105*time.Second, SlowPassThreshold)
 	for _, want := range []string{"how often this host is actually read", "still reads online", "Readings taken"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the message must connect slowness to what it costs (%q): %q", want, got)
@@ -73,7 +74,7 @@ func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 // blame costs exactly as much freshness as one with a named culprit, and an
 // operator reading the first should not have to know the second exists.
 func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
-	got := SlowPassMessage(nil, 60*time.Second, SlowPassThreshold)
+	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold)
 	if !strings.Contains(got, "how often this host is actually read") {
 		t.Errorf("a slow pass with no named call still costs freshness and must say so: %q", got)
 	}
@@ -82,7 +83,7 @@ func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
 // A slow pass with nothing to blame is still worth reporting: the time went
 // somewhere, and saying so is honest where naming a suspect would not be.
 func TestASlowPassWithNoCulpritStillReports(t *testing.T) {
-	got := SlowPassMessage(nil, 60*time.Second, SlowPassThreshold)
+	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold)
 	if !strings.Contains(got, "no single host call accounts for it") {
 		t.Fatalf("it must still report, without inventing a cause: %q", got)
 	}
@@ -102,7 +103,8 @@ func TestAPassThatIsNotExplainedByItsListSaysSo(t *testing.T) {
 		{Name: "GetWindowsLicence", Took: 16 * time.Second, Calls: 1},
 		{Name: "querySwitch", Took: 3 * time.Second, Calls: 1},
 		{Name: "GetNodeSelf", Took: 2 * time.Second, Calls: 1},
-	}, 210*time.Second, SlowPassThreshold)
+	},
+nil, 210*time.Second, SlowPassThreshold)
 
 	if !strings.Contains(got, "Those are 1m37s of it") {
 		t.Errorf("the message must say how much of the pass its list actually accounts for: %q", got)
@@ -122,9 +124,64 @@ func TestAPassWithARealCulpritIsNotQualified(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{
 		{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1},
 		{Name: "CollectInventory", Took: 27 * time.Second, Calls: 1},
-	}, 5*time.Minute, SlowPassThreshold)
+	},
+nil, 5*time.Minute, SlowPassThreshold)
 
 	if strings.Contains(got, "Those are") {
 		t.Errorf("one call at 77%% of the pass IS the explanation: %q", got)
+	}
+}
+
+/* HVNEW04's pass, 2026-08-13, and the reason phases exist:
+
+     took 1m49s — slowest: queryVNICsBatch 7.2s, ListObservedVMs 6.3s,
+     CheckISOLibrary 4.9s, EnsureVM 4.3s. Those are 22.7s of it, a further 15
+     host calls account for 29.6s, and the rest was not spent in a host call.
+
+   52 of those 109 seconds were outside any cmdlet, on a HEALTHY host — so the
+   call list could name 7% of the problem while reading like the explanation.
+   Host calls are timed at the PowerShell boundary and cannot see a journal
+   fsync, a round trip to the centre, or a process descheduled under memory
+   pressure. The phases cover the whole cycle, so they can. */
+
+func TestWhenCallsCannotExplainThePassThePhasesDo(t *testing.T) {
+	got := SlowPassMessage(
+		[]hyperv.CallTiming{
+			{Name: "queryVNICsBatch", Took: 7200 * time.Millisecond, Calls: 1},
+			{Name: "ListObservedVMs", Took: 6300 * time.Millisecond, Calls: 1},
+		},
+		[]PhaseTiming{
+			{Name: "metrics", Took: 2 * time.Second},
+			{Name: "hostReconcile", Took: 20 * time.Second},
+			{Name: "journal", Took: 47 * time.Second},
+			{Name: "deliver", Took: 3 * time.Second},
+		},
+		109*time.Second, SlowPassThreshold)
+
+	if !strings.Contains(got, "Where it went:") {
+		t.Fatalf("time outside the host calls must be attributed, not merely noted: %q", got)
+	}
+	// Biggest first: the journal fsync is the answer here, and it is the one the
+	// call list can never show.
+	if !strings.Contains(got, "Where it went: journal 47s, hostReconcile 20s") {
+		t.Errorf("phases must be ordered by cost so the answer leads: %q", got)
+	}
+	// Trivia is left out; four is the cap and a 2s phase does not earn a place
+	// over the ones that do.
+	if strings.Contains(got, "metrics 2s") && strings.Contains(got, "deliver 3s") {
+		t.Errorf("the list must stay short enough to read: %q", got)
+	}
+}
+
+// A pass its own call list explains needs no phase breakdown — adding one to
+// every message is how the useful case stops standing out.
+func TestAPassExplainedByItsCallsGetsNoPhaseBreakdown(t *testing.T) {
+	got := SlowPassMessage(
+		[]hyperv.CallTiming{{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1}},
+		[]PhaseTiming{{Name: "hostReconcile", Took: 4 * time.Minute}},
+		5*time.Minute, SlowPassThreshold)
+
+	if strings.Contains(got, "Where it went:") {
+		t.Errorf("one call at 77%% of the pass is the explanation; the phases add nothing: %q", got)
 	}
 }

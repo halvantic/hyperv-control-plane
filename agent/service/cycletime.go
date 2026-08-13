@@ -2,6 +2,8 @@ package main
 
 import (
 	"time"
+
+	"github.com/joshua-fourie/ballast/agent/reconcile"
 )
 
 // phaseTimer accumulates how long each part of a cycle took, so "the cycle is
@@ -49,4 +51,16 @@ func (t *phaseTimer) fields() []any {
 // scan for the number that matters.
 func roundMS(d time.Duration) time.Duration {
 	return d.Round(time.Millisecond)
+}
+
+// timings renders the recorded phases for the status report, in the order they
+// first ran; SlowPassMessage sorts and trims. Unlike fields() this is for the
+// centre rather than the log — a slow pass has to be explainable without anyone
+// logging on to the host that had it.
+func (t *phaseTimer) timings() []reconcile.PhaseTiming {
+	out := make([]reconcile.PhaseTiming, 0, len(t.names))
+	for _, n := range t.names {
+		out = append(out, reconcile.PhaseTiming{Name: n, Took: t.took[n]})
+	}
+	return out
 }

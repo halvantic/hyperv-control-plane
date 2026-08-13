@@ -81,7 +81,7 @@ func TestTheFinishedPassIsReportedOnTheNextStatus(t *testing.T) {
 
 	r.notePassTiming(reconcile.SlowPassMessage(
 		[]hyperv.CallTiming{{Name: "GetClusterState", Took: 4*time.Minute + 5*time.Second, Calls: 1}},
-		5*time.Minute, reconcile.SlowPassThreshold))
+		nil, 5*time.Minute, reconcile.SlowPassThreshold))
 
 	st := r.buildStatus(types.HostInventory{}, types.HostMetrics{}, types.HostResources{},
 		false, types.PhaseReady, nil, true, false, false)
@@ -108,7 +108,7 @@ func TestTheFinishedPassIsReportedOnTheNextStatus(t *testing.T) {
 func TestARecoveredHostStopsReportingASlowPass(t *testing.T) {
 	r, _ := newDrainCountingRunner(t)
 	r.notePassTiming("the last completed pass took 5m0s.")
-	r.notePassTiming(reconcile.SlowPassMessage(nil, time.Second, reconcile.SlowPassThreshold))
+	r.notePassTiming(reconcile.SlowPassMessage(nil, nil, time.Second, reconcile.SlowPassThreshold))
 
 	st := r.buildStatus(types.HostInventory{}, types.HostMetrics{}, types.HostResources{},
 		false, types.PhaseReady, nil, true, false, false)
