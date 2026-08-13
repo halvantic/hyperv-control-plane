@@ -16,7 +16,7 @@ import (
 
 func TestAQuickPassSaysNothing(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "CollectInventory", Took: time.Second}},
-nil, 2*time.Second, SlowPassThreshold)
+nil, 2*time.Second, SlowPassThreshold, false)
 	if got != "" {
 		t.Fatalf("a healthy pass must stay silent, got %q", got)
 	}
@@ -30,7 +30,7 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 		{Name: "ObserveVMs", Took: 12 * time.Second, Calls: 3},
 		{Name: "CollectMetrics", Took: 20 * time.Millisecond, Calls: 1},
 	},
-nil, 105*time.Second, SlowPassThreshold)
+nil, 105*time.Second, SlowPassThreshold, false)
 
 	if !strings.Contains(got, "GetClusterState 1m30s") {
 		t.Errorf("the slowest call must be named with its cost: %q", got)
@@ -55,7 +55,7 @@ nil, 105*time.Second, SlowPassThreshold)
 // is how often the host is read, while it goes on reading online throughout.
 func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
-nil, 105*time.Second, SlowPassThreshold)
+nil, 105*time.Second, SlowPassThreshold, false)
 	for _, want := range []string{"how often this host is actually read", "still reads online", "Readings taken"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the message must connect slowness to what it costs (%q): %q", want, got)
@@ -74,7 +74,7 @@ nil, 105*time.Second, SlowPassThreshold)
 // blame costs exactly as much freshness as one with a named culprit, and an
 // operator reading the first should not have to know the second exists.
 func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
-	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold)
+	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold, false)
 	if !strings.Contains(got, "how often this host is actually read") {
 		t.Errorf("a slow pass with no named call still costs freshness and must say so: %q", got)
 	}
@@ -83,7 +83,7 @@ func TestTheConsequenceIsStatedEvenWithNoCulprit(t *testing.T) {
 // A slow pass with nothing to blame is still worth reporting: the time went
 // somewhere, and saying so is honest where naming a suspect would not be.
 func TestASlowPassWithNoCulpritStillReports(t *testing.T) {
-	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold)
+	got := SlowPassMessage(nil, nil, 60*time.Second, SlowPassThreshold, false)
 	if !strings.Contains(got, "no single host call accounts for it") {
 		t.Fatalf("it must still report, without inventing a cause: %q", got)
 	}
@@ -104,7 +104,7 @@ func TestAPassThatIsNotExplainedByItsListSaysSo(t *testing.T) {
 		{Name: "querySwitch", Took: 3 * time.Second, Calls: 1},
 		{Name: "GetNodeSelf", Took: 2 * time.Second, Calls: 1},
 	},
-nil, 210*time.Second, SlowPassThreshold)
+nil, 210*time.Second, SlowPassThreshold, false)
 
 	if !strings.Contains(got, "Those are 1m37s of it") {
 		t.Errorf("the message must say how much of the pass its list actually accounts for: %q", got)
@@ -125,7 +125,7 @@ func TestAPassWithARealCulpritIsNotQualified(t *testing.T) {
 		{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1},
 		{Name: "CollectInventory", Took: 27 * time.Second, Calls: 1},
 	},
-nil, 5*time.Minute, SlowPassThreshold)
+nil, 5*time.Minute, SlowPassThreshold, false)
 
 	if strings.Contains(got, "Those are") {
 		t.Errorf("one call at 77%% of the pass IS the explanation: %q", got)
@@ -156,7 +156,7 @@ func TestWhenCallsCannotExplainThePassThePhasesDo(t *testing.T) {
 			{Name: "journal", Took: 47 * time.Second},
 			{Name: "deliver", Took: 3 * time.Second},
 		},
-		109*time.Second, SlowPassThreshold)
+		109*time.Second, SlowPassThreshold, false)
 
 	if !strings.Contains(got, "Where it went:") {
 		t.Fatalf("time outside the host calls must be attributed, not merely noted: %q", got)
@@ -179,7 +179,7 @@ func TestAPassExplainedByItsCallsGetsNoPhaseBreakdown(t *testing.T) {
 	got := SlowPassMessage(
 		[]hyperv.CallTiming{{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1}},
 		[]PhaseTiming{{Name: "hostReconcile", Took: 4 * time.Minute}},
-		5*time.Minute, SlowPassThreshold)
+		5*time.Minute, SlowPassThreshold, false)
 
 	if strings.Contains(got, "Where it went:") {
 		t.Errorf("one call at 77%% of the pass is the explanation; the phases add nothing: %q", got)
