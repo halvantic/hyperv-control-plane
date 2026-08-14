@@ -3093,8 +3093,13 @@ type PhysicalDisk struct {
 	// cannot_pool_reason is Windows' own reason the disk cannot join a pool ("In a
 	// Pool", "Insufficient Capacity", "Removable Media", …). Empty when it can.
 	CannotPoolReason string `protobuf:"bytes,10,opt,name=cannot_pool_reason,json=cannotPoolReason,proto3" json:"cannot_pool_reason,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// usage is PhysicalDisk.Usage — "Auto-Select", "Retired", "Journal", "Hot
+	// Spare". Independent of health: a RETIRED disk reports Healthy and
+	// contributes nothing, which is why a pool of healthy disks can be unable to
+	// create a volume. See PhysicalDisk in api/types.
+	Usage         string `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PhysicalDisk) Reset() {
@@ -3193,6 +3198,13 @@ func (x *PhysicalDisk) GetPoolName() string {
 func (x *PhysicalDisk) GetCannotPoolReason() string {
 	if x != nil {
 		return x.CannotPoolReason
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetUsage() string {
+	if x != nil {
+		return x.Usage
 	}
 	return ""
 }
@@ -6545,7 +6557,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
 	"\agateway\x18\t \x01(\tR\agateway\x12#\n" +
 	"\rprefix_length\x18\n" +
-	" \x01(\x05R\fprefixLength\"\xc8\x02\n" +
+	" \x01(\x05R\fprefixLength\"\xde\x02\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -6560,7 +6572,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\bbus_type\x18\b \x01(\tR\abusType\x12\x1b\n" +
 	"\tpool_name\x18\t \x01(\tR\bpoolName\x12,\n" +
 	"\x12cannot_pool_reason\x18\n" +
-	" \x01(\tR\x10cannotPoolReason\"\xfb\x01\n" +
+	" \x01(\tR\x10cannotPoolReason\x12\x14\n" +
+	"\x05usage\x18\v \x01(\tR\x05usage\"\xfb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +

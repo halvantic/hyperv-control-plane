@@ -235,6 +235,7 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			DriveLetter:      d.DriveLetter,
 			PoolName:         d.PoolName,
 			CannotPoolReason: d.CannotPoolReason,
+			Usage:            d.Usage,
 		})
 	}
 	out.UsedDriveLetters = inv.UsedDriveLetters
@@ -276,6 +277,7 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			DriveLetter:      d.GetDriveLetter(),
 			PoolName:         d.GetPoolName(),
 			CannotPoolReason: d.GetCannotPoolReason(),
+			Usage:            d.GetUsage(),
 		})
 	}
 	out.UsedDriveLetters = inv.GetUsedDriveLetters()
