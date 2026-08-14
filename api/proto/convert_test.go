@@ -80,6 +80,10 @@ func sampleHost() types.Host {
 						SizeBytes: 1_920_383_410_176, MediaType: "SSD", CanPool: true,
 						IsOSDisk: true, DriveLetter: "E",
 						PoolName: "S2D on hv-cl01", CannotPoolReason: "In a Pool",
+						// Retired is the value that matters: it reports Healthy and
+						// contributes nothing, so it must survive the wire or the
+						// console cannot explain a pool that will not allocate.
+						Usage: "Retired",
 					},
 				},
 				TotalMemoryBytes: 137_438_953_472,

@@ -1079,6 +1079,20 @@ if ($disk.Count -gt 1) { throw ('id ' + $want + ' resolves to more than one disk
 # So an unreadable disk is refused. A physical disk that resolves to no disk
 # object is not a disk safely skipped past; it is a disk nothing is known about.
 if ($disk.Count -eq 0) {
+  # A POOLED disk has no Disk object BY DESIGN — Storage Spaces owns it, so there
+  # is no partition or volume layer for Windows to present. That is the common
+  # case here and it is not a read failure: saying "cannot be read" sent an
+  # operator looking for a broken disk when the answer was "it is in a pool, take
+  # it out first". The pool name is already known, so name it and name the step.
+  $inPool = ''
+  try {
+    foreach ($sp in @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })) {
+      if (@($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId }).Count -gt 0) { $inPool = [string]$sp.FriendlyName; break }
+    }
+  } catch {}
+  if ($inPool) {
+    throw ('the disk with id ' + $want + ' is a member of storage pool "' + $inPool + '", so Windows presents no disk object for it and it cannot be formatted while the pool holds it. Remove it from the pool first (or rebuild the pool) - a pooled disk is owned by Storage Spaces, not by the host.')
+  }
   throw ('the physical disk with id ' + $want + ' could not be resolved to a disk on this host, so whether it is the OS or boot disk cannot be established. Refusing to erase a disk that cannot be read.')
 }
 $d = $disk[0]

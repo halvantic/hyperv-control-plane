@@ -754,6 +754,35 @@ type PhysicalDisk struct {
 	// pooled, and empty from an agent too old to report it — which is why the
 	// console still needs a fallback for a disk that says nothing.
 	CannotPoolReason string `json:"cannotPoolReason,omitempty"`
+
+	// Usage is what the pool will DO with this disk — Windows' own
+	// PhysicalDisk.Usage: "Auto-Select", "Retired", "Journal", "Hot Spare",
+	// "Manual-Select".
+	//
+	// It is independent of health, and that is the whole point. A RETIRED disk
+	// reports HealthStatus Healthy and sits in the pool contributing nothing:
+	// Storage Spaces will place no new data on it and will not repair onto it.
+	// Health answers "is this disk all right"; this answers "will the pool use
+	// it", and only the second one explains a pool that cannot create a volume.
+	//
+	// Found on bcluster2 2026-08-14 at the end of a two-day incident. Four of
+	// twelve disks were retired — one node's worth — after their VMware serials
+	// changed and Storage Spaces could no longer identify them. They came back
+	// healthy on a power cycle and STAYED retired, which left the pool two
+	// allocatable fault domains instead of three, so a three-way mirror could not
+	// be created and New-Volume said only "Not Supported". Ballast reported the
+	// pool as "Healthy / OK, 12 disks, 0 unhealthy" throughout, because it
+	// collected health and never collected this. Every number it showed was true
+	// and the one that mattered was missing.
+	Usage string `json:"usage,omitempty"`
+}
+
+// DiskRetired reports a disk the pool will not allocate to. Kept beside the
+// field so every consumer asks the same question the same way; Windows has
+// spelled it both "Retired" and "Auto-Select" with and without the hyphen
+// across builds, so the comparison is deliberately loose.
+func (d PhysicalDisk) DiskRetired() bool {
+	return strings.EqualFold(strings.ReplaceAll(strings.TrimSpace(d.Usage), "-", ""), "retired")
 }
 
 // MaintenanceSpec declares that a host is out of service for planned work.

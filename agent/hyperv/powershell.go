@@ -447,7 +447,13 @@ $disks = $pdisks | ForEach-Object {
   # disk with two reasons reports one unreadable token.
   $why = ''
   try { if (-not $_.CanPool) { $why = (@($_.CannotPoolReason) | Where-Object { $_ } | ForEach-Object { [string]$_ }) -join ', ' } } catch {}
-  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType; poolName = $pool; cannotPoolReason = $why }
+  # Usage, not just health. A RETIRED disk reports Healthy and contributes
+  # nothing: the pool places no new data on it and will not repair onto it. Four
+  # retired disks on bcluster2 left a three-way mirror uncreatable while every
+  # health figure Ballast showed said the pool was fine.
+  $usage = ''
+  try { $usage = [string]$_.Usage } catch {}
+  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType; poolName = $pool; cannotPoolReason = $why; usage = $usage }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem

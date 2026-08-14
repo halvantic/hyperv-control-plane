@@ -129,67 +129,7 @@ func (p *PowerShell) EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome,
 	if resiliency == "" {
 		resiliency = "Mirror"
 	}
-	script := fmt.Sprintf(`
-$ErrorActionPreference = 'Stop'
-$name = %[1]s
-function Rename-CsvMount($n) {
-  # Failover Clustering auto-mounts a CSV at C:\ClusterStorage\VolumeN. Rename it to
-  # the friendly name so it lands at a predictable path (where the host's default
-  # VM/VHD path points). Best-effort.
-  # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
-  # abort the whole script (exit 0, truncated output) after cluster cmdlets.
-  $csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $n + '*') })[0]
-  if ($csv) {
-    $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
-    $wantPath = 'C:\ClusterStorage\' + $n
-    if ($cur -and $cur -ne $wantPath -and -not (Test-Path $wantPath)) { try { Rename-Item -Path $cur -NewName $n -ErrorAction Stop } catch {} }
-  }
-}
-$existing = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
-if ($existing) {
-  Rename-CsvMount $name
-  # A volume can be present but still materialising on S2D (allocation/resync). Only
-  # call it ready when Healthy; otherwise report provisioning so the reconcile shows
-  # progress rather than a spurious failure.
-  if ($existing.HealthStatus -eq 'Healthy') { [pscustomobject]@{ status = 'ready' } | ConvertTo-Json -Compress; return }
-  [pscustomobject]@{ status = 'provisioning'; detail = ('volume materialising (' + [string]$existing.HealthStatus + '/' + (@($existing.OperationalStatus) -join ',') + ')') } | ConvertTo-Json -Compress; return
-}
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-if (-not $sp) {
-  $n = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue).Count
-  throw ('no S2D pool exists yet (' + $n + ' poolable disk(s) visible). S2D was likely enabled while no disks were eligible; the pool is bootstrapped automatically once poolable disks appear - retries next pass.')
-}
-# A resilient volume cannot be created on a pool that is not Healthy; New-Volume
-# would otherwise fail with an opaque "Not Supported". Surface the real cause.
-$bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
-if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
-  throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
-}
-# Capacity pre-check: a mirror volume needs roughly 2-3x its logical size of free
-# pool space. Refuse early with a clear message rather than New-Volume's opaque
-# "Not Supported" when the pool plainly cannot hold it.
-$want = [int64]%[2]d
-$free = [int64]($sp.Size - $sp.AllocatedSize)
-if ($want -gt 0 -and $free -lt $want) {
-  throw ('insufficient pool capacity for CSV "' + $name + '": ' + [math]::Round($free/1GB,1) + ' GB free, volume needs ' + [math]::Round($want/1GB,1) + ' GB (more with mirror resiliency). Free space or add disks, then retry.')
-}
-try {
-  New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName $name -FileSystem CSVFS_ReFS -Size $want -ResiliencySettingName %[3]s -ErrorAction Stop | Out-Null
-} catch {
-  # S2D volume creation is slow; a retry can race an in-flight creation and fail
-  # opaquely while the volume is actually appearing — treat that as provisioning,
-  # not a failure. Otherwise surface the real cause with the pool's current free
-  # space, which is usually the true constraint behind "Not Supported".
-  $now = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
-  if ($now) { [pscustomobject]@{ status = 'provisioning'; detail = 'creation in progress' } | ConvertTo-Json -Compress; return }
-  $sp2 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
-  $free2 = if ($sp2) { [int64]($sp2.Size - $sp2.AllocatedSize) } else { [int64]0 }
-  throw ('create CSV "' + $name + '" failed: ' + $_.Exception.Message + ' (pool free ' + [math]::Round($free2/1GB,1) + ' GB; a mirror volume needs about 2-3x its size free)')
-}
-Rename-CsvMount $name
-[pscustomobject]@{ status = 'created' } | ConvertTo-Json -Compress
-`, psQuote(spec.Name), spec.SizeBytes, psQuote(resiliency))
-
+	script := csvScript(spec.Name, spec.SizeBytes, resiliency)
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("ensure CSV %q: %w", spec.Name, err)
@@ -314,3 +254,104 @@ $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsP
 	}
 	return msg, nil
 }
+
+// csvScript is the CSV-provisioning script, built by a pure function so its
+// guards are pinned by tests without a cluster — the same reason the maintenance
+// and vNIC scripts are. The guards are the point of it: every one of them exists
+// because New-Volume's own failure said nothing an operator could act on.
+func csvScript(name string, sizeBytes uint64, resiliency string) string {
+	return fmt.Sprintf(csvTemplate, psQuote(name), sizeBytes, psQuote(resiliency))
+}
+
+// csvScriptForTest exposes a representative script so the guards can be asserted.
+func csvScriptForTest() string { return csvScript("Vol1", 214748364800, "Mirror") }
+
+const csvTemplate = `
+$ErrorActionPreference = 'Stop'
+$name = %[1]s
+function Rename-CsvMount($n) {
+  # Failover Clustering auto-mounts a CSV at C:\ClusterStorage\VolumeN. Rename it to
+  # the friendly name so it lands at a predictable path (where the host's default
+  # VM/VHD path points). Best-effort.
+  # @(...)[0], NOT "| Select-Object -First 1": the -First pipeline stop can
+  # abort the whole script (exit 0, truncated output) after cluster cmdlets.
+  $csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('*' + $n + '*') })[0]
+  if ($csv) {
+    $cur = $csv.SharedVolumeInfo.FriendlyVolumeName
+    $wantPath = 'C:\ClusterStorage\' + $n
+    if ($cur -and $cur -ne $wantPath -and -not (Test-Path $wantPath)) { try { Rename-Item -Path $cur -NewName $n -ErrorAction Stop } catch {} }
+  }
+}
+$existing = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
+if ($existing) {
+  Rename-CsvMount $name
+  # A volume can be present but still materialising on S2D (allocation/resync). Only
+  # call it ready when Healthy; otherwise report provisioning so the reconcile shows
+  # progress rather than a spurious failure.
+  if ($existing.HealthStatus -eq 'Healthy') { [pscustomobject]@{ status = 'ready' } | ConvertTo-Json -Compress; return }
+  [pscustomobject]@{ status = 'provisioning'; detail = ('volume materialising (' + [string]$existing.HealthStatus + '/' + (@($existing.OperationalStatus) -join ',') + ')') } | ConvertTo-Json -Compress; return
+}
+$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+if (-not $sp) {
+  $n = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue).Count
+  throw ('no S2D pool exists yet (' + $n + ' poolable disk(s) visible). S2D was likely enabled while no disks were eligible; the pool is bootstrapped automatically once poolable disks appear - retries next pass.')
+}
+# A resilient volume cannot be created on a pool that is not Healthy; New-Volume
+# would otherwise fail with an opaque "Not Supported". Surface the real cause.
+$bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
+if ($sp.HealthStatus -ne 'Healthy' -or $bad.Count -gt 0) {
+  throw ('S2D pool "' + $sp.FriendlyName + '" is ' + $sp.HealthStatus + '/' + ($sp.OperationalStatus -join ',') + ' with ' + $bad.Count + ' unhealthy disk(s); a CSV cannot be created until the pool is Healthy. Retire/replace the unhealthy disks (Repair pool) and retry.')
+}
+# Capacity pre-check, against the FOOTPRINT rather than the logical size.
+#
+# This compared free space to the logical size and let anything smaller through,
+# which is the arithmetic a mirror does not do: a two-way mirror writes two
+# copies and a three-way writes three, so a 200GB three-way volume consumes
+# 600GB of pool. The guard therefore passed volumes the pool could not hold and
+# handed the operator New-Volume's "Not Supported" -- the exact message it exists
+# to prevent. Its own comment admitted the gap ("more with mirror resiliency")
+# without acting on it.
+#
+# The copy count comes from the pool's own resiliency setting, not a guess: ask
+# for NumberOfDataCopies and fall back to the fault-domain count capped at 3,
+# which is what S2D chooses for Mirror on a 3+ node cluster.
+$want = [int64]%[2]d
+$free = [int64]($sp.Size - $sp.AllocatedSize)
+$copies = 1
+try {
+  $rs = Get-ResiliencySetting -StoragePool $sp -Name %[3]s -ErrorAction SilentlyContinue
+  if ($rs -and $rs.NumberOfDataCopiesDefault -gt 0) { $copies = [int]$rs.NumberOfDataCopiesDefault }
+} catch {}
+if ($copies -le 1 -and %[3]s -eq 'Mirror') {
+  $fd = @(Get-StorageFaultDomain -Type StorageScaleUnit -ErrorAction SilentlyContinue).Count
+  if ($fd -ge 3) { $copies = 3 } elseif ($fd -ge 2) { $copies = 2 } else { $copies = 1 }
+}
+$need = [int64]($want * $copies)
+if ($want -gt 0 -and $free -lt $need) {
+  throw ('insufficient pool capacity for CSV "' + $name + '": ' + [math]::Round($free/1GB,1) + ' GB free, but a ' + [math]::Round($want/1GB,1) + ' GB volume at ' + $copies + '-copy ' + %[3]s + ' resiliency needs ' + [math]::Round($need/1GB,1) + ' GB of pool. Ask for a smaller volume, free space, or add disks.')
+}
+# Allocatable is not the same as free. A RETIRED disk is healthy, counted in the
+# pool's size, and will take no new data - so a pool can report ample free space
+# and still refuse a mirror for want of a third fault domain to put a copy in.
+# That is the exact shape of "Not Supported", and it is worth saying before the
+# cmdlet says nothing.
+$retired = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { [string]$_.Usage -replace '-','' -eq 'Retired' })
+if ($retired.Count -gt 0) {
+  throw ('CSV "' + $name + '" cannot be created while ' + $retired.Count + ' disk(s) in pool "' + $sp.FriendlyName + '" are RETIRED. A retired disk is healthy but takes no new data, so the pool has fewer usable fault domains than it appears to and a mirror cannot be placed. Return them with: Get-PhysicalDisk | Where-Object Usage -eq Retired | Set-PhysicalDisk -Usage AutoSelect')
+}
+try {
+  New-Volume -StoragePoolFriendlyName $sp.FriendlyName -FriendlyName $name -FileSystem CSVFS_ReFS -Size $want -ResiliencySettingName %[3]s -ErrorAction Stop | Out-Null
+} catch {
+  # S2D volume creation is slow; a retry can race an in-flight creation and fail
+  # opaquely while the volume is actually appearing — treat that as provisioning,
+  # not a failure. Otherwise surface the real cause with the pool's current free
+  # space, which is usually the true constraint behind "Not Supported".
+  $now = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
+  if ($now) { [pscustomobject]@{ status = 'provisioning'; detail = 'creation in progress' } | ConvertTo-Json -Compress; return }
+  $sp2 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+  $free2 = if ($sp2) { [int64]($sp2.Size - $sp2.AllocatedSize) } else { [int64]0 }
+  throw ('create CSV "' + $name + '" failed: ' + $_.Exception.Message + ' (pool free ' + [math]::Round($free2/1GB,1) + ' GB; a mirror volume needs about 2-3x its size free)')
+}
+Rename-CsvMount $name
+[pscustomobject]@{ status = 'created' } | ConvertTo-Json -Compress
+`

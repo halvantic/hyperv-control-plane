@@ -449,6 +449,11 @@ message PhysicalDisk {
   // cannot_pool_reason is Windows' own reason the disk cannot join a pool ("In a
   // Pool", "Insufficient Capacity", "Removable Media", …). Empty when it can.
   string cannot_pool_reason = 10;
+  // usage is PhysicalDisk.Usage — "Auto-Select", "Retired", "Journal", "Hot
+  // Spare". Independent of health: a RETIRED disk reports Healthy and
+  // contributes nothing, which is why a pool of healthy disks can be unable to
+  // create a volume. See PhysicalDisk in api/types.
+  string usage = 11;
 }
 
 // ---------------------------------------------------------------------------
