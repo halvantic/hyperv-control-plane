@@ -485,6 +485,21 @@ type HostStatus struct {
 	// that it must not be asked to speak for the cluster.
 	ClusterService string `json:"clusterService,omitempty"`
 
+	// ClusterNodeOf is WHICH cluster this host is a member of, as the host itself
+	// reports it — the question ClusterNode and ClusterService both leave unsaid.
+	//
+	// They answer "how is its membership" and never "of what", so a host still
+	// joined to a cluster somebody believed they had removed reports Up, Running
+	// and healthy, and nothing in Ballast disagrees. Compared against the cluster
+	// the centre has AUTHORED for it, this is the difference between "joined to
+	// what I asked for" and "joined to something else entirely" — which no other
+	// field could tell apart.
+	//
+	// Seen 2026-08-16: three wiped hosts authored into a new cluster reported
+	// clusterNode=Up with no failing conditions while the authored cluster never
+	// formed. Every reading was true and about a different cluster.
+	ClusterNodeOf string `json:"clusterNodeOf,omitempty"`
+
 	// RebootRequired is true when spec cannot be fully honoured until reboot
 	// and RebootPolicy forbids the agent doing it autonomously.
 	RebootRequired bool `json:"rebootRequired"`
@@ -1914,6 +1929,14 @@ const (
 
 	JobRepairHostDNS  = "RepairHostDNS"  // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 	JobResetPoolDisks = "ResetPoolDisks" // no params — wipe local non-OS, non-pooled disks so S2D can claim them (adding a node's capacity)
+
+	// JobReleasePoolDisks is the inverse of ResetPoolDisks: it releases disks a
+	// storage pool still CLAIMS, on a host that is no longer a cluster member.
+	// ResetPoolDisks deliberately skips pool members, so a torn-down cluster left
+	// every data disk stuck "In a Pool" with no way back short of a PowerShell
+	// session on the host. params: deviceId — one disk by unique id (or device id);
+	// omit it to release every non-OS local disk. Destructive.
+	JobReleasePoolDisks = "ReleasePoolDisks"
 
 	JobRepairNetworkProfile = "RepairNetworkProfile" // no params — set any host NIC on the Public network profile to Private (Public breaks WinRM/clustering); Domain NICs are left as-is
 

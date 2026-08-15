@@ -395,6 +395,88 @@ foreach ($pd in $local) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ReleasePoolDisks releases disks that a storage pool still claims on a host
+// that is no longer a cluster member, returning them to CanPool.
+//
+// This is the inverse of ResetPoolDisks, which skips pool members by design — so
+// after a cluster is torn down (or a teardown fails part-way) every data disk
+// sits "In a Pool", claimed by a pool with no cluster behind it, and nothing in
+// Ballast could release it. Clearing partitions does not help: pool membership
+// lives in the disk's metadata, so Clear-Disk leaves CanPool false. The claim is
+// only released by removing the pool that holds it and resetting the disk.
+//
+// deviceID names a single disk by UniqueId (preferred) or DeviceId; empty
+// releases every non-OS disk physically connected to this node.
+//
+// Refused outright on a cluster member: there the pool is live and owned by S2D,
+// and releasing a disk out from under it is damage, not recovery.
+func (p *PowerShell) ReleasePoolDisks(ctx context.Context, deviceID string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$target = %s
+# A live cluster member's pool belongs to S2D. Releasing a disk from under it is
+# not a recovery, so refuse rather than let the console offer a destructive act
+# that looks like a repair.
+$cl = $null
+try { Import-Module FailoverClusters -ErrorAction SilentlyContinue; $cl = Get-Cluster -ErrorAction SilentlyContinue } catch {}
+if ($cl) { throw ('refusing to release pool disks: this host is a member of cluster ' + $cl.Name + ', where the pool is owned by Storage Spaces Direct. Evict the node first, or use the cluster''s own pool actions.') }
+
+# Only disks physically connected to THIS node. Get-PhysicalDisk is cluster-wide
+# in a Spaces context, and a fallback to that set could wipe shared storage.
+$local = @()
+try {
+  $sn = Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') } | Select-Object -First 1
+  if ($sn) { $local = @($sn | Get-PhysicalDisk -PhysicallyConnected -ErrorAction SilentlyContinue) }
+} catch {}
+if (-not $local -or $local.Count -eq 0) { $local = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -ne 'Spaces' -and $_.BusType -ne 'File Backed Virtual' }) }
+if (-not $local -or $local.Count -eq 0) { throw 'could not resolve this host''s local physical disks, so nothing was touched' }
+
+if ($target) { $local = @($local | Where-Object { $_.UniqueId -eq $target -or [string]$_.DeviceId -eq $target }) }
+if ($target -and $local.Count -eq 0) { throw ('no local physical disk matches ' + $target) }
+if ($target -and $local.Count -gt 1) { throw ('the id ' + $target + ' matches ' + $local.Count + ' local disks; identify the disk by its unique id instead') }
+
+# Drop the pools holding the claims. Read-only is how an orphaned pool comes up
+# once its cluster is gone, and a read-only pool refuses every removal.
+$pools = 0; $poolErrs = @()
+foreach ($sp in @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })) {
+  try {
+    Set-StoragePool -InputObject $sp -IsReadOnly $false -ErrorAction SilentlyContinue
+    $sp | Get-VirtualDisk -ErrorAction SilentlyContinue | Remove-VirtualDisk -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-StoragePool -InputObject $sp -Confirm:$false -ErrorAction Stop
+    $pools++
+  } catch { $poolErrs += ($sp.FriendlyName + ': ' + $_.Exception.Message) }
+}
+
+$released = 0; $poolable = 0; $skipped = 0; $errs = @()
+foreach ($pd in $local) {
+  $disk = $pd | Get-Disk -ErrorAction SilentlyContinue
+  if ($disk -and ($disk.IsBoot -or $disk.IsSystem)) { $skipped++; continue }
+  if ($pd.BusType -eq 'Spaces' -or $pd.BusType -eq 'File Backed Virtual') { $skipped++; continue }
+  try {
+    Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
+    if ($disk) {
+      Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue
+      Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue
+      if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue }
+    }
+    $released++
+    $after = Get-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
+    if ($after -and $after.CanPool) { $poolable++ }
+  } catch { $errs += ($pd.UniqueId + ': ' + $_.Exception.Message) }
+}
+# Say how many actually came back poolable, not just how many were acted on: a
+# disk that is still claimed after this is the whole point of the report.
+$msg = 'RESULT released=' + $released + ' nowPoolable=' + $poolable + ' skipped=' + $skipped + ' poolsRemoved=' + $pools
+if ($released -gt 0 -and $poolable -lt $released) { $msg += ' :: ' + ($released - $poolable) + ' disk(s) are still claimed — a reboot rescans the storage bus and clears ghost pool entries' }
+if ($poolErrs) { $msg += ' :: pool removal: ' + ($poolErrs -join '; ') }
+if ($errs) { $msg += ' :: ' + ($errs -join '; ') }
+$msg`, psQuote(deviceID))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("release pool disks: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // FormatDiskDrive initialises a physical disk to GPT, creates a single
 // max-size partition, formats it NTFS and assigns a drive letter. Refuses the
 // OS/boot disk. Idempotent: if the disk already has a partition with the

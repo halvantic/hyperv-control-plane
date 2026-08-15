@@ -54,6 +54,43 @@ type ClusterResult struct {
 // the agent does not re-form or second-guess it, and cluster survival does not
 // depend on the centre. So this runs only when the centre delivered a current
 // assignment; it never tries to form a cluster autonomously.
+// clusterReadBudget caps a cluster STATE READ — not the cluster operations.
+//
+// The distinction is the whole point. New-Cluster, Enable-ClusterS2D and volume
+// creation legitimately take minutes, and cutting one off mid-sequence is the
+// harm cycleTimeout's own comment warns about. A state READ that hangs tells us
+// nothing, and failing it costs a deferred pass, which the caller already
+// handles safely.
+//
+// Cluster cmdlets do not fail fast against a member the cluster considers Down:
+// they hang until RPC gives up. Measured on the rig 2026-08-16, GetClusterState
+// took 2m6s on HVNEW02 while that node was Down, and 4m31s on HVNEW03 during the
+// August incident — against a five-minute cycle. Everything after it in the pass
+// never ran, so a node falling out of its cluster cost every reading that host
+// had, not just its cluster reading. A healthy read is seconds (6.4s on HVNEW05).
+//
+// Shorter than observeBudget because the failure is cheaper and the healthy cost
+// is far lower: this defers one pass, where an abandoned inventory leaves a
+// stale reading standing.
+const clusterReadBudget = 60 * time.Second
+
+// clusterState reads the cluster under its own deadline, and says what a timeout
+// MEANS rather than surfacing a bare context error. "deadline exceeded" names
+// the mechanism; a member being away is the thing to go and look at.
+func (r *Reconciler) clusterState(ctx context.Context) (hyperv.ClusterState, error) {
+	budget := r.clusterReadBudget
+	if budget <= 0 {
+		budget = clusterReadBudget
+	}
+	c, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	st, err := r.hv.GetClusterState(c)
+	if err != nil && c.Err() != nil && ctx.Err() == nil {
+		return st, fmt.Errorf("the cluster did not answer within %s. Cluster queries do not fail fast against a member the cluster considers Down — they hang until RPC gives up — so this usually means a member is away or its cluster service is not responding. Check Get-ClusterNode from a member that is Up; this pass is deferred and will retry", budget)
+	}
+	return st, err
+}
+
 func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, secrets map[string]types.Secret) (ClusterResult, error) {
 	if !a.IsMember {
 		return ClusterResult{Phase: types.PhaseReady, Honoured: true}, nil
@@ -85,7 +122,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	}
 
 	// 2. Observe whether this node is already in the cluster.
-	state, err := r.hv.GetClusterState(ctx)
+	state, err := r.clusterState(ctx)
 	if err != nil {
 		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, err))
 		return ClusterResult{Phase: types.PhaseDegraded, Changed: changed, Conditions: conds}, fmt.Errorf("get cluster state: %w", err)
@@ -160,7 +197,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		}
 		changed = true
 		// Re-observe so the reported members reflect reality.
-		state, err = r.hv.GetClusterState(ctx)
+		state, err = r.clusterState(ctx)
 		if err != nil {
 			return ClusterResult{Phase: types.PhaseProgressing, Changed: true}, fmt.Errorf("re-observe cluster: %w", err)
 		}
@@ -253,7 +290,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 				"path", a.Cluster.Spec.Witness.FileSharePath, "outcome", wOut)
 			// Re-observe: the witness we just set is what should be reported, not
 			// the state read before the change.
-			if st2, serr := r.hv.GetClusterState(ctx); serr == nil && st2.Known {
+			if st2, serr := r.clusterState(ctx); serr == nil && st2.Known {
 				state.Witness = st2.Witness
 			}
 		}
