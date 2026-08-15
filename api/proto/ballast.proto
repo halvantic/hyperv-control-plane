@@ -386,6 +386,11 @@ message ManagementVNICInfo {
   repeated string dns_servers = 4;
   string profile = 5;
   repeated VNICAddress addresses = 6;
+  // gateway is the IPv4 default-route next hop on this vNIC, empty when it has
+  // none. Having a gateway is what makes a management vNIC routable, as opposed
+  // to an isolated storage/live-migration one, so anything reconstructing a spec
+  // from observation needs it. See ManagementVNICInfo in api/types.
+  string gateway = 7;
 }
 
 message VNICAddress {

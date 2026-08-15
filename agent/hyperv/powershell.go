@@ -580,7 +580,13 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
     [pscustomobject]@{ address = ([string]$_.IPAddress + '/' + [string]$_.PrefixLength); kind = $k }
   })
   $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs) }
+  # Default-route next hop on this vNIC. Without it the observation cannot tell a
+  # routable management vNIC from an isolated fabric one, and anything rebuilding
+  # a spec from what is observed writes a management vNIC with no gateway — which
+  # is the edit that stranded the members off-subnet on 2026-08-05. An isolated
+  # vNIC correctly reports none, and that absence is the fact worth carrying.
+  $gw = [string]((Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
+  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw }
 })
 [pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos); managementVNICs = @($mgmtVnics) } | ConvertTo-Json -Depth 5 -Compress
 `

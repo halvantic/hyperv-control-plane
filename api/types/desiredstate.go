@@ -641,6 +641,12 @@ type ManagementVNICInfo struct {
 	// DomainAuthenticated).
 	Profile   string        `json:"profile,omitempty"`
 	Addresses []VNICAddress `json:"addresses,omitempty"`
+	// Gateway is the IPv4 default-route next hop on this vNIC, empty when it has
+	// none. The presence of a gateway is what separates a routable management
+	// vNIC from an isolated fabric one (storage, live migration), so anything
+	// reconstructing intent from observation needs it: a management vNIC written
+	// without its gateway loses the host's default route.
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // VNICAddress is one IPv4 address on a vNIC with its classification.
