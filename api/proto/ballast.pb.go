@@ -2608,13 +2608,18 @@ func (x *HostResources) GetManagementVnics() []*ManagementVNICInfo {
 }
 
 type ManagementVNICInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	SwitchName    string                 `protobuf:"bytes,2,opt,name=switch_name,json=switchName,proto3" json:"switch_name,omitempty"`
-	VlanId        int32                  `protobuf:"varint,3,opt,name=vlan_id,json=vlanId,proto3" json:"vlan_id,omitempty"`
-	DnsServers    []string               `protobuf:"bytes,4,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
-	Profile       string                 `protobuf:"bytes,5,opt,name=profile,proto3" json:"profile,omitempty"`
-	Addresses     []*VNICAddress         `protobuf:"bytes,6,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	SwitchName string                 `protobuf:"bytes,2,opt,name=switch_name,json=switchName,proto3" json:"switch_name,omitempty"`
+	VlanId     int32                  `protobuf:"varint,3,opt,name=vlan_id,json=vlanId,proto3" json:"vlan_id,omitempty"`
+	DnsServers []string               `protobuf:"bytes,4,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	Profile    string                 `protobuf:"bytes,5,opt,name=profile,proto3" json:"profile,omitempty"`
+	Addresses  []*VNICAddress         `protobuf:"bytes,6,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	// gateway is the IPv4 default-route next hop on this vNIC, empty when it has
+	// none. Having a gateway is what makes a management vNIC routable, as opposed
+	// to an isolated storage/live-migration one, so anything reconstructing a spec
+	// from observation needs it. See ManagementVNICInfo in api/types.
+	Gateway       string `protobuf:"bytes,7,opt,name=gateway,proto3" json:"gateway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2689,6 +2694,13 @@ func (x *ManagementVNICInfo) GetAddresses() []*VNICAddress {
 		return x.Addresses
 	}
 	return nil
+}
+
+func (x *ManagementVNICInfo) GetGateway() string {
+	if x != nil {
+		return x.Gateway
+	}
+	return ""
 }
 
 type VNICAddress struct {
@@ -6527,7 +6539,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\avolumes\x18\x02 \x03(\v2\x19.ballast.v1.StorageVolumeR\avolumes\x12\x12\n" +
 	"\x04isos\x18\x03 \x03(\tR\x04isos\x12D\n" +
 	"\x0eswitch_details\x18\x04 \x03(\v2\x1d.ballast.v1.VirtualSwitchInfoR\rswitchDetails\x12I\n" +
-	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\xd4\x01\n" +
+	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\xee\x01\n" +
 	"\x12ManagementVNICInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vswitch_name\x18\x02 \x01(\tR\n" +
@@ -6536,7 +6548,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdns_servers\x18\x04 \x03(\tR\n" +
 	"dnsServers\x12\x18\n" +
 	"\aprofile\x18\x05 \x01(\tR\aprofile\x125\n" +
-	"\taddresses\x18\x06 \x03(\v2\x17.ballast.v1.VNICAddressR\taddresses\";\n" +
+	"\taddresses\x18\x06 \x03(\v2\x17.ballast.v1.VNICAddressR\taddresses\x12\x18\n" +
+	"\agateway\x18\a \x01(\tR\agateway\";\n" +
 	"\vVNICAddress\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x93\x01\n" +
