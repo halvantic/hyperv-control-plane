@@ -732,18 +732,73 @@ func (p *PowerShell) EnsureFailoverClusteringFeature(ctx context.Context) (Outco
 // Destructive and idempotent — a no-op when no cluster exists. Runs agent-local
 // (cluster cmdlets cannot run over a remote WinRM double-hop).
 func (p *PowerShell) DestroyCluster(ctx context.Context) error {
-	script := "$ErrorActionPreference='Stop'; Import-Module FailoverClusters; " +
-		"if (-not (Get-Cluster -ErrorAction SilentlyContinue)) { 'no cluster'; return }; " +
-		"Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object { " +
-		"Stop-ClusterGroup -Name $_.Name -ErrorAction SilentlyContinue | Out-Null; " +
-		"Remove-ClusterGroup -Name $_.Name -RemoveResources -Force -ErrorAction SilentlyContinue }; " +
-		"Disable-ClusterStorageSpacesDirect -Confirm:$false -ErrorAction SilentlyContinue; " +
-		"Remove-Cluster -Force -CleanupAD; 'destroyed'"
-	if err := p.run2(ctx, script); err != nil {
+	if err := p.run2(ctx, destroyClusterScript); err != nil {
 		return fmt.Errorf("destroy cluster: %w", err)
 	}
 	return nil
 }
+
+// destroyClusterScript tears the cluster down in the order Remove-Cluster needs,
+// and — when it still refuses — says what is holding it up.
+//
+// Two faults made the old version fail opaquely on the rig (2026-08-15,
+// NewCluster on HVNEW03). It removed only groups of GroupType 'VirtualMachine',
+// so a broker, a file-server role or a clustered disk left online blocked the
+// removal; and it disabled S2D with -ErrorAction SilentlyContinue, so when that
+// failed the script carried on to Remove-Cluster and discarded the reason. What
+// reached the operator was "The group or resource is not in the correct state to
+// perform the requested operation" — the cmdlet's opinion, naming neither the
+// resource in the way nor anything to do about it.
+//
+// So the failure path now reports the node, group and resource states it
+// observed. Guessing which resource it was after the fact is not possible; the
+// script is the only thing standing there when it happens, so it has to look.
+const destroyClusterScript = `$ErrorActionPreference='Stop'
+Import-Module FailoverClusters
+if (-not (Get-Cluster -ErrorAction SilentlyContinue)) { 'no cluster'; return }
+
+# 1. Every hosted role, not just VM ones. AvailableStorage and the core 'Cluster'
+#    group are left for the later steps: removing them here strands their disks.
+foreach ($g in @(Get-ClusterGroup -ErrorAction SilentlyContinue |
+        Where-Object { $_.GroupType -ne 'Cluster' -and $_.GroupType -ne 'AvailableStorage' })) {
+  Stop-ClusterGroup -Name $g.Name -ErrorAction SilentlyContinue | Out-Null
+  Remove-ClusterGroup -Name $g.Name -RemoveResources -Force -ErrorAction SilentlyContinue
+}
+
+# 2. CSVs, so their disks fall back to Available Storage and can be released.
+foreach ($v in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
+  Remove-ClusterSharedVolume -Name $v.Name -ErrorAction SilentlyContinue | Out-Null
+}
+
+# 3. S2D. Its failure used to be swallowed, and a pool resource left online is one
+#    of the states Remove-Cluster refuses on — so keep the reason for the report.
+$s2dErr = ''
+try { Disable-ClusterStorageSpacesDirect -Confirm:$false -ErrorAction Stop | Out-Null }
+catch { $s2dErr = $_.Exception.Message }
+
+# 4. Any clustered disk still held (Available Storage, witness disk).
+foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue |
+        Where-Object { $_.ResourceType -eq 'Physical Disk' })) {
+  Remove-ClusterResource -Name $r.Name -Force -ErrorAction SilentlyContinue
+}
+
+try { Remove-Cluster -Force -CleanupAD; 'destroyed' }
+catch {
+  $detail = "Remove-Cluster refused: $($_.Exception.Message)"
+  $nodes = @(Get-ClusterNode -ErrorAction SilentlyContinue |
+      ForEach-Object { "$($_.Name)=$($_.State)" }) -join ', '
+  $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue |
+      ForEach-Object { "$($_.Name)[$($_.GroupType)]=$($_.State)" }) -join ', '
+  $online = @(Get-ClusterResource -ErrorAction SilentlyContinue |
+      Where-Object { $_.State -ne 'Offline' } |
+      ForEach-Object { "$($_.Name)($($_.ResourceType))=$($_.State)" }) -join ', '
+  if ($nodes)   { $detail += " | nodes: $nodes" }
+  if ($groups)  { $detail += " | groups remaining: $groups" }
+  if ($online)  { $detail += " | resources still online: $online" }
+  if ($s2dErr)  { $detail += " | disabling Storage Spaces Direct had already failed: $s2dErr" }
+  if (-not $nodes -and -not $groups) { $detail += " | the cluster service did not answer for the detail, so it is likely down on this node" }
+  throw $detail
+}`
 
 func (p *PowerShell) FormCluster(ctx context.Context, f ClusterFormation) error {
 	var b strings.Builder

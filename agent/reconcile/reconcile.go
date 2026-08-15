@@ -91,6 +91,11 @@ type Reconciler struct {
 	// operator edit puts the step back on every pass.
 	replicaGen int64
 
+	// clusterReadBudget overrides how long a cluster STATE read may take before
+	// it is abandoned. Zero uses the package default; tests shorten it so they do
+	// not wait a real minute to prove a hang is given up on.
+	clusterReadBudget time.Duration
+
 	// roleInstalled caches that the Hyper-V role is present, so the expensive
 	// feature read is not repeated every pass to re-learn a fact that cannot
 	// change on its own. See hostRoleEvery.

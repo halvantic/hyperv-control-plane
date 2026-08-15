@@ -372,6 +372,16 @@ func TestHostRoundTripCarriesEveryField(t *testing.T) {
 		t.Fatal("HostStatus.InMaintenance did not survive the round trip — the centre could never tell asked-to-drain from drained")
 	}
 
+	// WHICH cluster a host is in. ClusterNode and ClusterService say how its
+	// membership is and never of what, so a host still joined to a cluster
+	// somebody thought they had removed reports Up, Running and healthy. Dropped
+	// on the wire it would read as "in no cluster", which is the same wrong
+	// answer by a different route.
+	member := types.HostStatus{Phase: types.PhaseReady, ClusterNode: "Up", ClusterService: "Running", ClusterNodeOf: "NewCluster"}
+	if got := StatusFromProto(StatusToProto(member)); got.ClusterNodeOf != "NewCluster" {
+		t.Fatalf("HostStatus.ClusterNodeOf did not survive the round trip (%q) — the centre could not tell a host joined to the authored cluster from one joined to something else", got.ClusterNodeOf)
+	}
+
 	// Every field of MaintenanceSpec must be exercised above, or a future one is
 	// added and silently dropped exactly as these were.
 	check := func(name string, v reflect.Value) {

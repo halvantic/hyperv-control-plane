@@ -2040,8 +2040,15 @@ type HostStatus struct {
 	// This host's own membership state and cluster service state. Reported per
 	// host because the cluster's node list comes from one member, and that member
 	// is exactly what is missing when it is the broken one.
-	ClusterNode        string                 `protobuf:"bytes,70,opt,name=cluster_node,json=clusterNode,proto3" json:"cluster_node,omitempty"`
-	ClusterService     string                 `protobuf:"bytes,71,opt,name=cluster_service,json=clusterService,proto3" json:"cluster_service,omitempty"`
+	ClusterNode    string `protobuf:"bytes,70,opt,name=cluster_node,json=clusterNode,proto3" json:"cluster_node,omitempty"`
+	ClusterService string `protobuf:"bytes,71,opt,name=cluster_service,json=clusterService,proto3" json:"cluster_service,omitempty"`
+	// cluster_node_of is WHICH cluster the host is in. cluster_node and
+	// cluster_service say how its membership is, never of what — so a host still
+	// joined to a cluster somebody thought they had removed reports Up and
+	// healthy. Compared against the authored cluster, this separates "joined to
+	// what I asked for" from "joined to something else". See HostStatus in
+	// api/types.
+	ClusterNodeOf      string                 `protobuf:"bytes,72,opt,name=cluster_node_of,json=clusterNodeOf,proto3" json:"cluster_node_of,omitempty"`
 	Phase              Phase                  `protobuf:"varint,1,opt,name=phase,proto3,enum=ballast.v1.Phase" json:"phase,omitempty"`
 	ObservedGeneration int64                  `protobuf:"varint,2,opt,name=observed_generation,json=observedGeneration,proto3" json:"observed_generation,omitempty"`
 	HypervInstalled    bool                   `protobuf:"varint,3,opt,name=hyperv_installed,json=hypervInstalled,proto3" json:"hyperv_installed,omitempty"`
@@ -2121,6 +2128,13 @@ func (x *HostStatus) GetClusterNode() string {
 func (x *HostStatus) GetClusterService() string {
 	if x != nil {
 		return x.ClusterService
+	}
+	return ""
+}
+
+func (x *HostStatus) GetClusterNodeOf() string {
+	if x != nil {
+		return x.ClusterNodeOf
 	}
 	return ""
 }
@@ -6449,11 +6463,12 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x17\n" +
 	"\aou_path\x18\x02 \x01(\tR\x06ouPath\x12+\n" +
-	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xd8\a\n" +
+	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\x80\b\n" +
 	"\n" +
 	"HostStatus\x12!\n" +
 	"\fcluster_node\x18F \x01(\tR\vclusterNode\x12'\n" +
-	"\x0fcluster_service\x18G \x01(\tR\x0eclusterService\x12'\n" +
+	"\x0fcluster_service\x18G \x01(\tR\x0eclusterService\x12&\n" +
+	"\x0fcluster_node_of\x18H \x01(\tR\rclusterNodeOf\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x12)\n" +
 	"\x10hyperv_installed\x18\x03 \x01(\bR\x0fhypervInstalled\x12'\n" +

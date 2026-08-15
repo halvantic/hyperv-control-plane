@@ -292,6 +292,13 @@ message HostStatus {
   // is exactly what is missing when it is the broken one.
   string cluster_node = 70;
   string cluster_service = 71;
+  // cluster_node_of is WHICH cluster the host is in. cluster_node and
+  // cluster_service say how its membership is, never of what — so a host still
+  // joined to a cluster somebody thought they had removed reports Up and
+  // healthy. Compared against the authored cluster, this separates "joined to
+  // what I asked for" from "joined to something else". See HostStatus in
+  // api/types.
+  string cluster_node_of = 72;
 
   Phase phase = 1;
   int64 observed_generation = 2;

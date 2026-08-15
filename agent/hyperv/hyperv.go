@@ -240,6 +240,14 @@ type Interface interface {
 	// used to add a node's storage to the pool. Safe on an existing member (no-op).
 	ResetPoolDisks(ctx context.Context) (string, error)
 
+	// ReleasePoolDisks releases disks a storage pool still claims on a host that
+	// is NOT a cluster member: it destroys the leftover pool and resets pool
+	// membership so the disks return to CanPool. deviceID names one disk (unique
+	// id preferred, device id accepted); empty releases every non-OS local disk.
+	// Refuses on a clustered host — there the pool is live and owned by S2D.
+	// Returns a per-disk summary. Destructive.
+	ReleasePoolDisks(ctx context.Context, deviceID string) (string, error)
+
 	// ConvergedNetworkReady reports whether the named SET switches exist and the
 	// host's management IP is on a switch vNIC — the former gates cluster formation
 	// on this so it never forms over pre-switch networking. True when no switches.
