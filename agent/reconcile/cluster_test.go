@@ -112,6 +112,11 @@ func TestReconcileClusterStorageIdempotent(t *testing.T) {
 		ClusteringInstalled: true, ClusterFirewallOpen: true, ClusterExists: true,
 		ClusterName: "bcluster", ClusterMembers: []string{"HV01", "HV02", "HV03"},
 		S2DEnabled: true, CSVs: []string{"Vol01", "Vol02"},
+		// Converged includes the cluster's own address. Leaving this unset made the
+		// fixture describe a cluster whose declared address was not the one it had,
+		// which is a cluster with work outstanding — not the settled one this test
+		// is about.
+		ClusterIP: "192.168.1.200",
 	}
 	res, err := testReconciler(stub).ReconcileCluster(context.Background(), clusterAssignmentWithS2D(true), nil)
 	if err != nil {

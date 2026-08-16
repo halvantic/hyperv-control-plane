@@ -388,6 +388,114 @@ try { $nodeBuild = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Sile
 [pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker; functionalLevel = $flevel; nodeBuild = $nodeBuild; coreResources = @($coreRes) } | ConvertTo-Json -Compress -Depth 4
 `
 
+// clusterIPScript drives the cluster's core IP Address resource to a declared
+// address.
+//
+// ManagementIP was consumed in exactly one place — New-Cluster -StaticAddress at
+// formation. Editing it afterwards was stored by the centre, produced a new
+// generation, and changed nothing on the cluster, with no condition anywhere
+// reporting that the setting was not honoured. Re-addressing a cluster is
+// exactly what an operator needs when its address turns out to be taken, which
+// is the state S2DCluster reached on the rig (2026-08-16): .40 was in use, the
+// core group could not come online, and the only route to fixing it was a
+// PowerShell session on a node.
+//
+// Deliberately narrow and targeted rather than folded into the full cluster
+// state read: that read is the thing that hangs when the core group is down, and
+// a repair that only runs when the cluster is already healthy is no repair.
+//
+// The subnet mask is taken from the cluster network that covers the address, not
+// invented. An address on a subnet no cluster network holds is refused with that
+// as the reason — it is the other common cause of an IP resource that will not
+// come online, and guessing a mask would produce a resource that fails silently.
+const clusterIPScript = `
+$ErrorActionPreference = 'Stop'
+Import-Module FailoverClusters -ErrorAction SilentlyContinue
+$want = %[1]s
+
+$ips = @(Get-ClusterResource -ErrorAction Stop | Where-Object {
+  [string]$_.OwnerGroup -eq 'Cluster Group' -and [string]$_.ResourceType -eq 'IP Address' })
+if ($ips.Count -eq 0) {
+  throw 'this cluster has no IP Address resource in its core group, so its address cannot be set. A cluster created without a static address obtains one by DHCP and is re-addressed on the DHCP server, not here.'
+}
+
+# Already correct on any of them is a no-op — nothing goes offline.
+foreach ($r in $ips) {
+  $cur = ''
+  try { $cur = [string]($r | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value } catch {}
+  if ($cur -eq $want) { 'RESULT=NOOP'; return }
+}
+
+function ConvertTo-UInt32([string]$ip) {
+  $b = ([System.Net.IPAddress]::Parse($ip)).GetAddressBytes()
+  [array]::Reverse($b)
+  return [System.BitConverter]::ToUInt32($b, 0)
+}
+
+# The cluster network that covers the wanted address decides the mask.
+$wantN = ConvertTo-UInt32 $want
+$net = $null
+foreach ($n in @(Get-ClusterNetwork -ErrorAction SilentlyContinue)) {
+  $na = [string]$n.Address; $nm = [string]$n.AddressMask
+  if (-not $na -or -not $nm) { continue }
+  try {
+    $m = ConvertTo-UInt32 $nm
+    if ((ConvertTo-UInt32 $na) -eq ($wantN -band $m)) { $net = $n; break }
+  } catch {}
+}
+if (-not $net) {
+  $known = @(Get-ClusterNetwork -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Address + '/' + [string]$_.AddressMask }) -join ', '
+  throw ('no cluster network covers ' + $want + ', so no member has an adapter on that subnet and the address could never come online. The cluster''s networks are: ' + $known + '. Give the members an adapter on the target subnet first, or choose an address on one of these.')
+}
+
+# Prefer the resource already on that network; otherwise the only one there is.
+$res = @($ips | Where-Object {
+  $rn = ''
+  try { $rn = [string]($_ | Get-ClusterParameter -Name Network -ErrorAction SilentlyContinue).Value } catch {}
+  $rn -eq [string]$net.Name })[0]
+if (-not $res) {
+  if ($ips.Count -ne 1) {
+    throw ('this cluster has ' + $ips.Count + ' IP address resources and none is on ' + [string]$net.Name + ', so which one to re-address is ambiguous. Remove the addresses that no longer apply, or set this one from Failover Cluster Manager.')
+  }
+  $res = $ips[0]
+}
+
+# The resource has to be offline to take a new address. The cluster name depends
+# on it, so the core group is brought back up afterwards and reported on.
+Stop-ClusterResource -InputObject $res -ErrorAction SilentlyContinue | Out-Null
+$res | Set-ClusterParameter -Multiple @{ Address = $want; SubnetMask = [string]$net.AddressMask; Network = [string]$net.Name } -ErrorAction Stop
+try {
+  Start-ClusterResource -InputObject $res -ErrorAction Stop | Out-Null
+} catch {
+  throw ('the address was set to ' + $want + ' but the resource would not come online: ' + ([string]$_.Exception.Message).Trim() + '. If that address is also in use, choose another.')
+}
+Start-ClusterGroup -Name 'Cluster Group' -ErrorAction SilentlyContinue | Out-Null
+$after = ''
+try { $after = [string](Get-ClusterGroup -Name 'Cluster Group' -ErrorAction SilentlyContinue).State } catch {}
+'RESULT=UPDATED set to ' + $want + ' on ' + [string]$net.Name + '; core group is ' + $after
+`
+
+// EnsureClusterIP drives the cluster's core IP Address resource to ip.
+func (p *PowerShell) EnsureClusterIP(ctx context.Context, ip string) (Outcome, string, error) {
+	if strings.TrimSpace(ip) == "" {
+		return OutcomeUnchanged, "", nil
+	}
+	out, err := p.run(ctx, fmt.Sprintf(clusterIPScript, psQuote(strings.TrimSpace(ip))))
+	if err != nil {
+		return OutcomeUnchanged, "", fmt.Errorf("set cluster IP to %s: %w", ip, err)
+	}
+	s := strings.TrimSpace(string(out))
+	if strings.Contains(s, "RESULT=NOOP") {
+		return OutcomeUnchanged, "", nil
+	}
+	if i := strings.Index(s, "RESULT=UPDATED"); i >= 0 {
+		return OutcomeUpdated, strings.TrimSpace(strings.TrimPrefix(s[i:], "RESULT=UPDATED")), nil
+	}
+	// No marker means the script stopped part-way without raising. Reporting
+	// success would claim a re-address that may not have happened.
+	return OutcomeUnchanged, "", fmt.Errorf("set cluster IP to %s: ended without a result, so whether the address changed is unknown", ip)
+}
+
 // witnessScript applies a file-share witness, and only when it differs from
 // what is already configured.
 //

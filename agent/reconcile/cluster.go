@@ -121,6 +121,34 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		changed = changed || fwOut != hyperv.OutcomeUnchanged
 	}
 
+	// 1c. The cluster's own address, when one is declared.
+	//
+	// Placed BEFORE the state read on purpose. That read is precisely what hangs
+	// when the core group cannot come online, and its failure returns from this
+	// function — so a re-address placed after it would only ever run on a cluster
+	// that was already healthy, which is the one case it is not needed for. The
+	// cluster whose address is wrong is the cluster that cannot be read.
+	//
+	// Former only: one node changes a cluster-wide resource. Empty means not
+	// declared and is left alone, the same convention the rest of the spec uses —
+	// a cluster on DHCP is not one to quietly pin.
+	if a.IsFormer && a.Cluster.Spec.ManagementIP != "" {
+		ipOut, note, ipErr := r.hv.EnsureClusterIP(ctx, a.Cluster.Spec.ManagementIP)
+		c := r.condition("ClusterIP", ipOut, ipErr)
+		if ipErr == nil && note != "" {
+			c.Message = note
+		}
+		conds = append(conds, c)
+		if ipErr != nil {
+			// Reported, not fatal: the rest of the pass still has value, and the
+			// address may be refused for a reason the operator has to act on.
+			r.log.Error("ensure cluster IP failed", "want", a.Cluster.Spec.ManagementIP, "err", ipErr)
+		} else if ipOut != hyperv.OutcomeUnchanged {
+			changed = true
+			r.log.Info("cluster IP reconciled", "want", a.Cluster.Spec.ManagementIP, "note", note)
+		}
+	}
+
 	// 2. Observe whether this node is already in the cluster.
 	state, err := r.clusterState(ctx)
 	if err != nil {
