@@ -208,7 +208,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 
 	// 4. Storage Spaces Direct + Cluster Shared Volumes — the former provisions
 	// cluster-wide storage once the cluster exists. Non-formers do not touch it.
-	s2dEnabled, storageConds, storageChanged, storageErr := r.reconcileStorage(ctx, a)
+	s2dEnabled, storageConds, storageChanged, storageErr := r.reconcileStorage(ctx, a, state.Groups)
 	conds = append(conds, storageConds...)
 	changed = changed || storageChanged
 
@@ -427,9 +427,33 @@ func clusterCSVsToStatus(vs []hyperv.ClusterCSV) []types.CSVStatus {
 // provisioning storage for every cluster converted to the new field — the
 // reconciler would simply return, with every condition it would have raised
 // absent rather than failing.
-func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment) (s2dEnabled bool, conds []types.Condition, changed bool, firstErr error) {
+func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment, groups []hyperv.ClusterGroup) (s2dEnabled bool, conds []types.Condition, changed bool, firstErr error) {
 	if !a.IsFormer || a.Cluster.Spec.StorageKind() != types.StorageKindS2D {
 		return false, nil, false, nil
+	}
+
+	// Storage is downstream of the cluster having an identity, and the core-group
+	// condition has always said so ("Fix this first — the rest is downstream of
+	// it"). Nothing acted on it: storage ran first and never consulted it.
+	//
+	// Enable-ClusterStorageSpacesDirect cannot succeed while the cluster name and
+	// its IP are offline, and failing is not cheap. On the rig (S2DCluster,
+	// 2026-08-16) EnsureS2DPoolDisks took 3m57s per attempt — it cycles S2D when
+	// it finds no pool — and the pass was cut off at the 5-minute cycle limit
+	// before it reached the cluster state read. So every pass spent four minutes
+	// on an operation that could not work, and the centre was left with no cluster
+	// status at all: the one condition naming the actual fault never arrived, and
+	// the console showed an empty cluster page.
+	//
+	// Skipping is what makes the advice true. The pass then completes, the core
+	// group is read and reported, and the operator is told the thing to fix.
+	if c := coreGroupProblem(groups); c != nil {
+		return false, []types.Condition{{
+			Type: "S2DEnabled", Status: false, Reason: "AwaitingCoreGroup",
+			Message: "not attempted: the cluster's core group is not online, so the cluster has no identity on the network and Storage Spaces Direct cannot be enabled or repaired. " +
+				"Bring the core group online first (the cluster name and its IP addresses) — see the ClusterCoreGroup condition. Storage is retried automatically once it is.",
+			LastTransitionTime: r.now(),
+		}}, false, nil
 	}
 
 	state, err := r.hv.GetStorageState(ctx)
