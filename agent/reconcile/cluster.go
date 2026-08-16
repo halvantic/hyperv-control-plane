@@ -429,7 +429,11 @@ func clusterVMsToStatus(vs []hyperv.ClusterVM) []types.ClusterVMStatus {
 func clusterGroupsToStatus(gs []hyperv.ClusterGroup) []types.ClusterGroupStatus {
 	out := make([]types.ClusterGroupStatus, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, types.ClusterGroupStatus{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType})
+		var res []types.ClusterResourceStatus
+		for _, r := range g.Resources {
+			res = append(res, types.ClusterResourceStatus{Name: r.Name, Type: r.Type, State: r.State})
+		}
+		out = append(out, types.ClusterGroupStatus{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType, Resources: res})
 	}
 	return out
 }

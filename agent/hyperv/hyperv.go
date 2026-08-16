@@ -875,6 +875,20 @@ type ClusterGroup struct {
 	OwnerNode string
 	State     string
 	GroupType string
+	// Resources are the group's own resources, carried only when the group is
+	// neither Online nor Offline. A group state names the group and not the
+	// fault; see types.ClusterGroupStatus.Resources.
+	Resources []ClusterGroupResource
+}
+
+// ClusterGroupResource is one resource inside a cluster group. Distinct from
+// ClusterCoreResource, which carries the agent's DIAGNOSIS of a core-group
+// resource; this is the plain reading, collected for any group that is not
+// resting.
+type ClusterGroupResource struct {
+	Name  string
+	Type  string
+	State string
 }
 
 // ClusterCoreResource is one resource in the cluster's core group, with the

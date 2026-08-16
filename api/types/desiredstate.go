@@ -1752,6 +1752,34 @@ type ClusterGroupStatus struct {
 	// AvailableStorage, CoreSddc, ClusterStoragePool, ...). The UI uses it to
 	// separate user roles from the cluster's own infrastructure groups.
 	GroupType string `json:"groupType,omitempty"`
+
+	// Resources are the group's own resources, collected when the group is not
+	// Online. A group state names the group and not the fault: "SDDC Group is
+	// PartialOnline" says some of it came up and some did not, and which is the
+	// whole question.
+	//
+	// Seen on S2DCluster 2026-08-16. The console reported PartialOnline with no
+	// detail, and the group is one Failover Cluster Manager does not display at
+	// all — so the operator was sent to look in a GUI that never shows it. The
+	// answer took one Get-ClusterResource: of three resources the Health Service
+	// and the performance-history disk were Online and only SDDC Management was
+	// Offline, which is a management resource in neither the storage nor the VM
+	// data path. That is a fact the agent can establish every pass.
+	//
+	// Empty for a group that is Online, where there is nothing to explain.
+	Resources []ClusterResourceStatus `json:"resources,omitempty"`
+}
+
+// ClusterResourceStatus is one resource inside a cluster group, reported so a
+// group that is not Online can name what is holding it down rather than leaving
+// the operator to go and look.
+type ClusterResourceStatus struct {
+	Name string `json:"name"`
+	// Type is the cluster resource type as Windows names it, e.g. "IP Address",
+	// "Physical Disk", "SDDC Management". It is what distinguishes a resource
+	// that carries data from one that only manages.
+	Type  string `json:"type,omitempty"`
+	State string `json:"state,omitempty"`
 }
 
 // CSVStatus is one Cluster Shared Volume and its current owner node.

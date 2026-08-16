@@ -825,6 +825,18 @@ message ClusterGroup {
   string owner_node = 2;
   string state = 3;
   string group_type = 4;
+  // The group's resources, collected only when the group is not Online. A group
+  // state names the group and not the fault: which resource is down is the whole
+  // question, and for a group Failover Cluster Manager does not display there is
+  // nowhere else for the operator to read it.
+  repeated ClusterResource resources = 5;
+}
+
+// ClusterResource is one resource inside a cluster group.
+message ClusterResource {
+  string name = 1;
+  string type = 2;
+  string state = 3;
 }
 
 // ClusterCSV is one Cluster Shared Volume as observed by the cluster.

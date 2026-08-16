@@ -239,8 +239,17 @@ func sampleClusterStatus() types.ClusterStatus {
 			// distinguishing field is the one that most needs to survive the wire.
 			{Name: "n2", State: "Down", StatusInformation: "Quarantined"},
 		},
-		Groups:             []types.ClusterGroupStatus{{Name: "Cluster Group", OwnerNode: "n1", State: "Online", GroupType: "Cluster"}},
-		VMs:                []types.ClusterVMStatus{{Name: "Web01", OwnerNode: "n2", State: "Online"}},
+		// A group carrying its resources: the case the field exists for is a group
+		// that is not Online, where the group state names the group and not the
+		// fault. Two resources up and one down is the shape seen on the rig.
+		Groups: []types.ClusterGroupStatus{{
+			Name: "SDDC Group", OwnerNode: "n1", State: "PartialOnline", GroupType: "CoreSddc",
+			Resources: []types.ClusterResourceStatus{
+				{Name: "Health", Type: "Health Service", State: "Online"},
+				{Name: "SDDC Management", Type: "SDDC Management", State: "Offline"},
+			},
+		}},
+		VMs: []types.ClusterVMStatus{{Name: "Web01", OwnerNode: "n2", State: "Online"}},
 		CSVs: []types.CSVStatus{{
 			Name: "Cluster Virtual Disk (Vol01)", OwnerNode: "n1", State: "Online",
 			Health: "Warning", Operational: "Degraded", DetachedReason: "By Policy",
@@ -329,6 +338,7 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 	check("ClusterNetworkStatus", reflect.ValueOf(st.Networks[0]))
 	check("ClusterNodeStatus", reflect.ValueOf(st.Nodes[0]))
 	check("ClusterGroupStatus", reflect.ValueOf(st.Groups[0]))
+	check("ClusterResourceStatus", reflect.ValueOf(st.Groups[0].Resources[0]))
 	check("ClusterWitnessStatus", reflect.ValueOf(*st.Witness))
 	check("ClusterReplicaBrokerStatus", reflect.ValueOf(*st.ReplicaBroker))
 	check("ISCSIStatus", reflect.ValueOf(st.ISCSI[0]))
