@@ -187,6 +187,16 @@ type Interface interface {
 	// a no-op when no cluster exists.
 	DestroyCluster(ctx context.Context) error
 
+	// EnsureClusterIP drives the cluster's own IP Address resource to the declared
+	// address. ManagementIP used to be read only by New-Cluster at formation, so
+	// changing it on a formed cluster was stored, generated a new generation, and
+	// did nothing — with no condition anywhere saying it had not been honoured.
+	//
+	// Idempotent: an address that already matches is a no-op and nothing is taken
+	// offline. Returns a short note describing what it did. Empty ip is not
+	// declared and must not reach here.
+	EnsureClusterIP(ctx context.Context, ip string) (Outcome, string, error)
+
 	// GetHostRoleState observes whether the Hyper-V role is installed and active
 	// and whether a reboot is pending. It is a pure read.
 	GetHostRoleState(ctx context.Context) (HostRoleState, error)

@@ -28,6 +28,11 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// ClusterIP is the cluster's current core address, and ClusterIPErr drives the
+	// failure path for re-addressing it.
+	ClusterIP    string
+	ClusterIPErr error
+
 	// EditionAsked / EditionKeySeen record what EnsureWindowsEdition was asked for,
 	// so a test can prove the key reached it and was not logged. FailEdition drives
 	// the failure path.
@@ -377,6 +382,21 @@ func (s *Stub) RemoveVM(_ context.Context, _ string) error           { return ni
 func (s *Stub) FormatDisk(_ context.Context, _ string) error         { return nil }
 func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error { return nil }
 func (s *Stub) DestroyCluster(_ context.Context) error               { return nil }
+
+// ClusterIP is the stub's current cluster address, so a test can assert the
+// re-address happened rather than only that the call was made.
+func (s *Stub) EnsureClusterIP(_ context.Context, ip string) (Outcome, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ClusterIPErr != nil {
+		return OutcomeUnchanged, "", s.ClusterIPErr
+	}
+	if ip == "" || s.ClusterIP == ip {
+		return OutcomeUnchanged, "", nil
+	}
+	s.ClusterIP = ip
+	return OutcomeUpdated, "set to " + ip, nil
+}
 
 func (s *Stub) EnsureLiveMigration(_ context.Context, spec types.LiveMigrationSpec) (Outcome, error) {
 	s.mu.Lock()
