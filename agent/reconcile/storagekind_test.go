@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
@@ -24,10 +25,93 @@ func formerOf(spec types.ClusterSpec) ClusterAssignment {
 	}
 }
 
+// onlineCore is a cluster whose name and IP addresses are up, which is the
+// precondition for any storage work at all.
+func onlineCore() []hyperv.ClusterGroup {
+	return []hyperv.ClusterGroup{{Name: "Cluster Group", State: "Online"}}
+}
+
+func s2dCluster() ClusterAssignment {
+	return formerOf(types.ClusterSpec{Storage: &types.ClusterStorageSpec{Kind: types.StorageKindS2D}})
+}
+
+/* Storage must not be attempted while the cluster has no identity.
+
+   Enable-ClusterStorageSpacesDirect cannot succeed with the cluster name and IP
+   offline, and failing is expensive: on the rig (S2DCluster, 2026-08-16)
+   EnsureS2DPoolDisks took 3m57s a go because it cycles S2D when it finds no
+   pool, and the pass was cut off at the five-minute cycle limit before it
+   reached the cluster state read. Every pass burned four minutes on something
+   that could not work, and the centre received no cluster status at all — so the
+   ClusterCoreGroup condition naming the real fault never arrived and the console
+   showed an empty cluster page.
+
+   The core-group condition already told operators to fix that first. These
+   tests are what make the reconciler agree with it. */
+func TestStorageIsNotAttemptedWhileTheCoreGroupIsDown(t *testing.T) {
+	for _, state := range []string{"Pending", "Offline", "PartialOnline", "Failed"} {
+		t.Run(state, func(t *testing.T) {
+			stub := &hyperv.Stub{}
+			r := testReconciler(stub)
+			groups := []hyperv.ClusterGroup{{Name: "Cluster Group", State: state}}
+
+			s2d, conds, changed, err := r.reconcileStorage(context.Background(), s2dCluster(), groups)
+
+			if err != nil || changed || s2d {
+				t.Fatalf("a down core group must be a clean skip: s2d=%v changed=%v err=%v", s2d, changed, err)
+			}
+			if stub.S2DEnabled {
+				t.Fatal("S2D was enabled while the cluster had no identity on the network")
+			}
+			if len(conds) != 1 || conds[0].Status || conds[0].Reason != "AwaitingCoreGroup" {
+				t.Fatalf("the skip must be reported with its reason, got %+v", conds)
+			}
+			// Silence would read as healthy, and a bare "failed" would send the
+			// operator to the storage that is downstream of the actual fault.
+			if !strings.Contains(conds[0].Message, "core group") {
+				t.Fatalf("the condition must name the core group as the thing to fix, got %q", conds[0].Message)
+			}
+		})
+	}
+}
+
+// A core group that was never reported is not an online one. Treating absence as
+// permission is how the expensive retry loop started in the first place.
+func TestStorageIsNotAttemptedWhenTheCoreGroupIsUnreported(t *testing.T) {
+	stub := &hyperv.Stub{}
+	r := testReconciler(stub)
+
+	_, conds, _, err := r.reconcileStorage(context.Background(), s2dCluster(), nil)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.S2DEnabled {
+		t.Fatal("S2D was enabled on a cluster whose core group could not be read")
+	}
+	if len(conds) != 1 || conds[0].Reason != "AwaitingCoreGroup" {
+		t.Fatalf("an unread core group must skip storage and say so, got %+v", conds)
+	}
+}
+
+// And it must resume by itself once the cluster comes up — the skip is a wait,
+// not a latch an operator has to clear.
+func TestStorageResumesOnceTheCoreGroupIsOnline(t *testing.T) {
+	stub := &hyperv.Stub{}
+	r := testReconciler(stub)
+
+	if _, _, _, err := r.reconcileStorage(context.Background(), s2dCluster(), onlineCore()); err != nil {
+		t.Fatal(err)
+	}
+	if !stub.S2DEnabled {
+		t.Fatal("with the core group online, storage must be reconciled as before")
+	}
+}
+
 func TestS2DStillRunsForAClusterAuthoredBeforeTheStorageKind(t *testing.T) {
 	stub := &hyperv.Stub{}
 	r := testReconciler(stub)
-	_, conds, _, err := r.reconcileStorage(context.Background(), formerOf(types.ClusterSpec{EnableS2D: true}))
+	_, conds, _, err := r.reconcileStorage(context.Background(), formerOf(types.ClusterSpec{EnableS2D: true}), onlineCore())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +125,7 @@ func TestS2DRunsForAnExplicitS2DKind(t *testing.T) {
 	r := testReconciler(stub)
 	_, conds, _, err := r.reconcileStorage(context.Background(), formerOf(types.ClusterSpec{
 		Storage: &types.ClusterStorageSpec{Kind: types.StorageKindS2D},
-	}))
+	}), onlineCore())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +145,7 @@ func TestS2DNeverRunsForAnISCSICluster(t *testing.T) {
 		// and honouring it here is precisely the failure to avoid.
 		EnableS2D: true,
 		Storage:   &types.ClusterStorageSpec{Kind: types.StorageKindISCSI},
-	}))
+	}), onlineCore())
 	if err != nil || changed || s2d || len(conds) != 0 {
 		t.Fatalf("S2D must not touch an iSCSI cluster: s2d=%v changed=%v conds=%d err=%v", s2d, changed, len(conds), err)
 	}
@@ -74,7 +158,7 @@ func TestS2DNeverRunsForAnISCSICluster(t *testing.T) {
 func TestNoStorageDeclaredIsANoOp(t *testing.T) {
 	stub := &hyperv.Stub{}
 	r := testReconciler(stub)
-	_, conds, changed, err := r.reconcileStorage(context.Background(), formerOf(types.ClusterSpec{}))
+	_, conds, changed, err := r.reconcileStorage(context.Background(), formerOf(types.ClusterSpec{}), onlineCore())
 	if err != nil || changed || len(conds) != 0 {
 		t.Fatalf("no storage declared must be a no-op: changed=%v conds=%d err=%v", changed, len(conds), err)
 	}
@@ -87,8 +171,9 @@ func TestOnlyTheFormerReconcilesStorage(t *testing.T) {
 	r := testReconciler(stub)
 	a := formerOf(types.ClusterSpec{Storage: &types.ClusterStorageSpec{Kind: types.StorageKindS2D}})
 	a.IsFormer = false
-	_, conds, changed, err := r.reconcileStorage(context.Background(), a)
+	_, conds, changed, err := r.reconcileStorage(context.Background(), a, onlineCore())
 	if err != nil || changed || len(conds) != 0 {
 		t.Fatalf("a non-former must not provision: changed=%v conds=%d err=%v", changed, len(conds), err)
 	}
 }
+
