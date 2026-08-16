@@ -48,6 +48,17 @@ type clusterObservation struct {
 	Broker     *clusterBrokerObs   `json:"replicaBroker"`
 	FuncLevel  int                 `json:"functionalLevel"`
 	NodeBuild  int                 `json:"nodeBuild"`
+	CoreRes    []clusterCoreResObs `json:"coreResources"`
+}
+
+// clusterCoreResObs is one resource of the cluster's own core group, with the
+// agent's reading of why it is not online where it can establish one.
+type clusterCoreResObs struct {
+	Name         string `json:"name"`
+	ResourceType string `json:"resourceType"`
+	State        string `json:"state"`
+	Address      string `json:"address"`
+	Note         string `json:"note"`
 }
 
 type clusterBrokerObs struct {
@@ -152,6 +163,39 @@ $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
 $nodes = @($nodeObjs | ForEach-Object { $_.name })
 $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State; groupType = [string]$_.GroupType } })
+# The core group's own resources. "Cluster Group is Pending" names the group and
+# not the fault: the group holds the cluster name and one IP address resource per
+# subnet, and which of them is down — and why — is the whole question. Collected
+# on every pass so the ANSWER is observed rather than only produced when an
+# operator runs the recovery action.
+$coreRes = @(Get-ClusterResource -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.OwnerGroup -eq 'Cluster Group' } | ForEach-Object {
+  $r = $_
+  $addr = ''
+  $note = ''
+  if ([string]$r.ResourceType -eq 'IP Address') {
+    try { $addr = [string]($r | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value } catch {}
+    # An address that answers while its own cluster resource is OFFLINE is held
+    # by something else on the network — the commonest reason the core group will
+    # not come up, and one the operator cannot see from "Pending".
+    #
+    # Only a REPLY is evidence. Plenty of hosts do not answer ping, so silence
+    # says nothing and is reported as nothing: claiming the address is free on
+    # the strength of no reply would be the same absent-is-not-zero mistake in a
+    # new place.
+    if ($addr -and [string]$r.State -ne 'Online') {
+      try {
+        if (Test-Connection -ComputerName $addr -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+          $note = 'the address answers on the network while this resource is offline, so it is in use by another device'
+        }
+      } catch {}
+    }
+  }
+  if ([string]$r.ResourceType -eq 'Network Name' -and [string]$r.State -ne 'Online') {
+    $note = 'the cluster name object could not come online — usually its computer object in Active Directory, or its DNS registration'
+  }
+  [pscustomobject]@{ name = [string]$r.Name; resourceType = [string]$r.ResourceType; state = [string]$r.State; address = $addr; note = $note }
+})
 # Volume health is observed separately from pool health: the two fail
 # independently, and attributing a volume's problem to the pool sends the
 # operator to repair storage that is fine. A CSV is named "Cluster Virtual Disk
@@ -341,7 +385,7 @@ $flevel = 0
 try { $flevel = [int]$c.ClusterFunctionalLevel } catch {}
 $nodeBuild = 0
 try { $nodeBuild = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).BuildNumber } catch {}
-[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker; functionalLevel = $flevel; nodeBuild = $nodeBuild } | ConvertTo-Json -Compress -Depth 4
+[pscustomobject]@{ exists = $true; known = $true; name = [string]$c.Name; members = @($nodes); nodes = @($nodeObjs); groups = @($groups); csvs = @($csvs); clustervms = @($cvms); pool = $pool; networks = @($nets); witness = $witness; replicaBroker = $broker; functionalLevel = $flevel; nodeBuild = $nodeBuild; coreResources = @($coreRes) } | ConvertTo-Json -Compress -Depth 4
 `
 
 // witnessScript applies a file-share witness, and only when it differs from
@@ -498,6 +542,10 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, g := range obs.Groups {
 		groups = append(groups, ClusterGroup{Name: g.Name, OwnerNode: g.Owner, State: g.State, GroupType: g.GroupType})
 	}
+	coreRes := make([]ClusterCoreResource, 0, len(obs.CoreRes))
+	for _, r := range obs.CoreRes {
+		coreRes = append(coreRes, ClusterCoreResource{Name: r.Name, Type: r.ResourceType, State: r.State, Address: r.Address, Note: r.Note})
+	}
 	csvs := make([]ClusterCSV, 0, len(obs.CSVs))
 	for _, v := range obs.CSVs {
 		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State,
@@ -534,7 +582,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 		broker = &ClusterReplicaBroker{Name: obs.Broker.Name, State: obs.Broker.State,
 			StorageLocation: obs.Broker.StorageLocation}
 	}
-	return ClusterState{Exists: obs.Exists, Known: obs.Known, UnknownReason: obs.Reason, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker,
+	return ClusterState{Exists: obs.Exists, Known: obs.Known, UnknownReason: obs.Reason, Name: obs.Name, Members: obs.Members, Nodes: nodes, Groups: groups, CoreResources: coreRes, CSVs: csvs, VMs: cvms, Pool: pool, Networks: netw, Witness: witness, ReplicaBroker: broker,
 		FunctionalLevel: obs.FuncLevel, NodeOSBuild: obs.NodeBuild}, nil
 }
 
