@@ -17,11 +17,99 @@ import (
 
    The state was observed the whole time and thrown away. */
 
+/* Naming the group is not naming the fault.
+
+   "Cluster Group is Pending" was all an operator got. The group holds the
+   cluster name and one IP address resource per subnet, and the next question is
+   always which of them and why — both of which the agent can read. Leaving it
+   unsaid is a diagnosis Ballast could make and did not, which CLAUDE.md counts
+   as the same defect as passing a raw error through. */
+
+func pendingCore() []hyperv.ClusterGroup {
+	return []hyperv.ClusterGroup{{Name: "Cluster Group", State: "Pending"}}
+}
+
+func TestTheOfflineCoreResourceIsNamedWithItsAddress(t *testing.T) {
+	got := coreGroupProblem(pendingCore(), []hyperv.ClusterCoreResource{
+		{Name: "Cluster Name", Type: "Network Name", State: "Online"},
+		{Name: "Cluster IP Address", Type: "IP Address", State: "Failed", Address: "192.168.1.40"},
+	})
+	if got == nil {
+		t.Fatal("a pending core group must still be reported")
+	}
+	if !strings.Contains(got.Message, "192.168.1.40") {
+		t.Fatalf("the message must name the address that will not come online, got %q", got.Message)
+	}
+	// The resource that IS online is not the operator's problem and must not be
+	// listed as though it were.
+	if strings.Contains(got.Message, "Cluster Name is") {
+		t.Fatalf("an online resource must not be listed as holding the group down, got %q", got.Message)
+	}
+}
+
+// The case this exists for: an address answering while its own resource is
+// offline is held by something else on the network.
+func TestADuplicateAddressIsNamedAsTheCause(t *testing.T) {
+	got := coreGroupProblem(pendingCore(), []hyperv.ClusterCoreResource{{
+		Name: "Cluster IP Address", Type: "IP Address", State: "Failed", Address: "192.168.1.40",
+		Note: "the address answers on the network while this resource is offline, so it is in use by another device",
+	}})
+	if !strings.Contains(got.Message, "in use by another device") {
+		t.Fatalf("the established cause must reach the operator, got %q", got.Message)
+	}
+}
+
+// A resource with no reading is still worth naming. Naming it helps; inventing
+// a cause for it does not.
+func TestAResourceWithNoDiagnosisIsStillNamed(t *testing.T) {
+	got := coreGroupProblem(pendingCore(), []hyperv.ClusterCoreResource{
+		{Name: "Cluster IP Address", Type: "IP Address", State: "Offline", Address: "10.0.0.5"},
+	})
+	if !strings.Contains(got.Message, "Cluster IP Address") || !strings.Contains(got.Message, "10.0.0.5") {
+		t.Fatalf("the resource must be named even with no cause established, got %q", got.Message)
+	}
+	// Only the detail clause is under test — the standing advice above it has an
+	// em-dash of its own, and asserting against the whole message would pass or
+	// fail on that instead.
+	_, detail, found := strings.Cut(got.Message, "holding it down: ")
+	if !found {
+		t.Fatalf("the resource detail must be present, got %q", got.Message)
+	}
+	if strings.Contains(detail, "—") {
+		t.Fatalf("no cause was established, so none may be implied, got detail %q", detail)
+	}
+}
+
+// With nothing read about the resources, the message is exactly what it was
+// before — no worse, and no invented detail.
+func TestNoCoreResourcesLeavesTheMessageUnchanged(t *testing.T) {
+	got := coreGroupProblem(pendingCore(), nil)
+	if strings.Contains(got.Message, "holding it down") {
+		t.Fatalf("with no resources read, nothing may be claimed about them, got %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "Fix this first") {
+		t.Fatalf("the ordering advice must survive, got %q", got.Message)
+	}
+}
+
+func TestSeveralOfflineResourcesAreAllNamed(t *testing.T) {
+	got := coreGroupProblem(pendingCore(), []hyperv.ClusterCoreResource{
+		{Name: "Cluster IP Address", Type: "IP Address", State: "Failed", Address: "192.168.1.40"},
+		{Name: "Cluster IP Address 2", Type: "IP Address", State: "Failed", Address: "10.0.1.40"},
+	})
+	if !strings.Contains(got.Message, "resources holding it down") {
+		t.Fatalf("more than one must read as plural, got %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "10.0.1.40") {
+		t.Fatalf("every offline resource must be named, got %q", got.Message)
+	}
+}
+
 func TestAFullyOnlineCoreGroupIsNoProblem(t *testing.T) {
 	got := coreGroupProblem([]hyperv.ClusterGroup{
 		{Name: "Cluster Group", State: "Online"},
 		{Name: "Available Storage", State: "Offline"},
-	})
+	}, nil)
 	if got != nil {
 		t.Fatalf("an online core group must raise nothing, got %+v", got)
 	}
@@ -30,7 +118,7 @@ func TestAFullyOnlineCoreGroupIsNoProblem(t *testing.T) {
 // PartialOnline reads like a half-success and is not one: the cluster name being
 // offline is total, whatever else in the group is up.
 func TestPartialOnlineIsAProblem(t *testing.T) {
-	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Cluster Group", State: "PartialOnline"}})
+	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Cluster Group", State: "PartialOnline"}}, nil)
 	if got == nil {
 		t.Fatal("PartialOnline must not read as healthy")
 	}
@@ -45,7 +133,7 @@ func TestPartialOnlineIsAProblem(t *testing.T) {
 // The point of naming it first: an operator who starts at the CSV works backwards
 // through three unrelated-looking faults.
 func TestTheMessageSaysTheRestIsDownstream(t *testing.T) {
-	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Cluster Group", State: "Offline"}})
+	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Cluster Group", State: "Offline"}}, nil)
 	if got == nil {
 		t.Fatal("an offline core group must be reported")
 	}
@@ -59,7 +147,7 @@ func TestTheMessageSaysTheRestIsDownstream(t *testing.T) {
 // Absent is not online. A pass that could not read the core group must not report
 // the cluster as healthy — the same absent-versus-unknown rule as everywhere else.
 func TestAnUnreportedCoreGroupIsNotTreatedAsOnline(t *testing.T) {
-	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Available Storage", State: "Online"}})
+	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "Available Storage", State: "Online"}}, nil)
 	if got == nil {
 		t.Fatal("a cluster that reported no core group must not read as healthy")
 	}
@@ -69,7 +157,7 @@ func TestAnUnreportedCoreGroupIsNotTreatedAsOnline(t *testing.T) {
 }
 
 func TestAnEmptyGroupListIsNotOnline(t *testing.T) {
-	if coreGroupProblem(nil) == nil {
+	if coreGroupProblem(nil, nil) == nil {
 		t.Fatal("no groups at all must not read as healthy")
 	}
 }
@@ -77,7 +165,7 @@ func TestAnEmptyGroupListIsNotOnline(t *testing.T) {
 // The group is matched case-insensitively: it is Windows' own name for it, and a
 // case difference must not silently mean "not reported".
 func TestTheCoreGroupIsMatchedCaseInsensitively(t *testing.T) {
-	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "cluster group", State: "Online"}})
+	got := coreGroupProblem([]hyperv.ClusterGroup{{Name: "cluster group", State: "Online"}}, nil)
 	if got != nil {
 		t.Fatalf("case must not decide whether the core group was found: %+v", got)
 	}
@@ -212,3 +300,4 @@ func TestTheScriptRefusesANodeThatIsNotQuarantined(t *testing.T) {
 		t.Error("running it on the quarantined node itself must be explained, not just fail")
 	}
 }
+

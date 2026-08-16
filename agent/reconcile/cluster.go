@@ -321,7 +321,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	// Group PartialOnline -- its Cluster Name and both Cluster IP Address
 	// resources offline -- so every diagnosis went to the storage that had failed
 	// downstream of it, and the console said the cluster was fine throughout.
-	if c := coreGroupProblem(state.Groups); c != nil {
+	if c := coreGroupProblem(state.Groups, state.CoreResources); c != nil {
 		conds = append(conds, *c)
 		phase, honoured = types.PhaseDegraded, false
 	}
@@ -447,7 +447,7 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment, 
 	//
 	// Skipping is what makes the advice true. The pass then completes, the core
 	// group is read and reported, and the operator is told the thing to fix.
-	if c := coreGroupProblem(groups); c != nil {
+	if !coreGroupOnline(groups) {
 		return false, []types.Condition{{
 			Type: "S2DEnabled", Status: false, Reason: "AwaitingCoreGroup",
 			Message: "not attempted: the cluster's core group is not online, so the cluster has no identity on the network and Storage Spaces Direct cannot be enabled or repaired. " +
@@ -533,7 +533,7 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment, 
 // PartialOnline is included deliberately. It means some resources in the group
 // are online and some are not, which reads like a half-success and is not one:
 // the cluster name being offline is total, whatever else in the group is up.
-func coreGroupProblem(groups []hyperv.ClusterGroup) *types.Condition {
+func coreGroupProblem(groups []hyperv.ClusterGroup, coreRes []hyperv.ClusterCoreResource) *types.Condition {
 	for _, g := range groups {
 		if !strings.EqualFold(g.Name, "Cluster Group") {
 			continue
@@ -549,6 +549,9 @@ func coreGroupProblem(groups []hyperv.ClusterGroup) *types.Condition {
 		if g.State == "" {
 			msg = "the cluster's core group did not report a state, so whether the cluster name and its IP addresses are online is unknown."
 		}
+		if d := coreResourceDetail(coreRes); d != "" {
+			msg += " " + d
+		}
 		return &types.Condition{
 			Type: "ClusterCoreGroup", Status: false, Reason: "NotOnline",
 			Message: msg, LastTransitionTime: time.Now().UTC(),
@@ -561,4 +564,60 @@ func coreGroupProblem(groups []hyperv.ClusterGroup) *types.Condition {
 		Message:            "this cluster reported no core group, so whether its name and IP addresses are online could not be established.",
 		LastTransitionTime: time.Now().UTC(),
 	}
+}
+
+// coreResourceDetail names the resources actually holding the core group down,
+// and the reason where the agent could establish one.
+//
+// "Cluster Group is Pending" names the group, not the fault. The group holds the
+// cluster name and one IP address resource per subnet, and an operator's next
+// question is always which of them, and why. The agent can read both — so
+// leaving it at the group name is a diagnosis Ballast could make and did not,
+// which CLAUDE.md counts as the same defect as passing a raw error through.
+//
+// Resources the agent has no reading for are still listed by name and state.
+// Naming the resource is useful even without a cause; inventing a cause is not.
+// coreGroupOnline is the plain question the storage gate asks: may work that
+// depends on the cluster having an identity be attempted at all? An unreported
+// core group answers no — absence is not permission.
+func coreGroupOnline(groups []hyperv.ClusterGroup) bool {
+	for _, g := range groups {
+		if strings.EqualFold(g.Name, "Cluster Group") {
+			return strings.EqualFold(g.State, "Online")
+		}
+	}
+	return false
+}
+
+func coreResourceDetail(coreRes []hyperv.ClusterCoreResource) string {
+	var parts []string
+	for _, r := range coreRes {
+		if strings.EqualFold(r.State, "Online") {
+			continue
+		}
+		what := r.Name
+		if r.Address != "" {
+			what += " (" + r.Address + ")"
+		}
+		line := what + " is " + strings.ToLower(stateOrUnknown(r.State))
+		if r.Note != "" {
+			line += " — " + r.Note
+		}
+		parts = append(parts, line)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	head := "The resource holding it down: "
+	if len(parts) > 1 {
+		head = "The resources holding it down: "
+	}
+	return head + strings.Join(parts, "; ") + "."
+}
+
+func stateOrUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "in an unreported state"
+	}
+	return s
 }

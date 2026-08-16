@@ -756,6 +756,11 @@ type ClusterState struct {
 	Nodes []ClusterNodeState
 	// Groups are the clustered roles/groups and their current owner node.
 	Groups []ClusterGroup
+	// CoreResources are the resources of the cluster's own core group — the
+	// cluster name and one IP address per subnet. "Cluster Group is Pending"
+	// names the group and not the fault, and which resource is down (and why) is
+	// what an operator actually needs.
+	CoreResources []ClusterCoreResource
 	// CSVs are the Cluster Shared Volumes and their current owner node.
 	CSVs []ClusterCSV
 	// VMs are the highly-available VM roles and their current owner node.
@@ -860,6 +865,24 @@ type ClusterGroup struct {
 	OwnerNode string
 	State     string
 	GroupType string
+}
+
+// ClusterCoreResource is one resource in the cluster's core group, with the
+// agent's reading of why it is not online where one can be established.
+//
+// The diagnosis is deliberately conservative. A duplicate address is asserted
+// only when something ANSWERS at it while the resource is offline; silence is
+// reported as nothing at all, because plenty of devices do not answer ping and
+// "no reply" is not evidence the address is free.
+type ClusterCoreResource struct {
+	Name string
+	// Type is the cluster resource type, e.g. "IP Address", "Network Name".
+	Type  string
+	State string
+	// Address is the configured address for an IP Address resource.
+	Address string
+	// Note is the agent's diagnosis, empty when it could not establish one.
+	Note string
 }
 
 // ClusterNodeState is a cluster node and its current state (Up, Paused — i.e.
