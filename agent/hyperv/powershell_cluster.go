@@ -13,10 +13,21 @@ type clusterOwnedObs struct {
 	Owner     string `json:"owner"`
 	State     string `json:"state"`
 	GroupType string `json:"groupType,omitempty"`
+	// Resources is populated for GROUPS only, and only for a group that is
+	// neither Online nor Offline — the states where the group's own name is not
+	// an answer. See the script's comment on $resByGroup.
+	Resources []clusterResourceObs `json:"resources,omitempty"`
 	// StatusInformation is populated for NODES only: what the cluster says about
 	// the state, which is the difference between a node that is off and a node
 	// the cluster is holding out. Groups and roles do not carry it.
 	StatusInformation string `json:"statusInformation,omitempty"`
+}
+
+// clusterResourceObs is one resource inside a cluster group.
+type clusterResourceObs struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	State string `json:"state"`
 }
 
 // clusterCSVObs is a CSV plus the health of the virtual disk behind it, which is
@@ -161,14 +172,41 @@ if (-not $c) {
 $nodeObjs = @(Get-ClusterNode -ErrorAction SilentlyContinue | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; state = [string]$_.State; statusInformation = [string]$_.StatusInformation } })
 $nodes = @($nodeObjs | ForEach-Object { $_.name })
+# Every cluster resource, read ONCE. Both the core-group diagnosis below and the
+# per-group detail need them, and Get-ClusterResource is not cheap enough to ask
+# for twice in a pass.
+$allRes = @(Get-ClusterResource -ErrorAction SilentlyContinue)
+$resByGroup = @{}
+foreach ($r in $allRes) {
+  $og = [string]$r.OwnerGroup
+  if (-not $resByGroup.ContainsKey($og)) { $resByGroup[$og] = @() }
+  $resByGroup[$og] += [pscustomobject]@{ name = [string]$r.Name; type = [string]$r.ResourceType; state = [string]$r.State }
+}
+# A group's resources travel with it only when the group is neither Online nor
+# Offline — exactly the states the console flags as attention. A group state
+# names the group and not the fault: "SDDC Group is PartialOnline" says some of
+# it came up and some did not, and which is the whole question. That group is one
+# Failover Cluster Manager does not display at all, so without this there is
+# nowhere for an operator to read the answer.
+#
+# Offline is excluded deliberately. Available Storage rests Offline with every
+# spare disk in it and a stopped VM role is Offline by an operator's choice, so
+# collecting there would send the resting state of a healthy cluster over the
+# wire every pass and call it evidence.
 $groups = @(Get-ClusterGroup -ErrorAction SilentlyContinue | ForEach-Object {
-  [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State; groupType = [string]$_.GroupType } })
+  $gname = [string]$_.Name
+  $gstate = [string]$_.State
+  $res = @()
+  if ($gstate -ne 'Online' -and $gstate -ne 'Offline' -and $resByGroup.ContainsKey($gname)) {
+    $res = @($resByGroup[$gname])
+  }
+  [pscustomobject]@{ name = $gname; owner = [string]$_.OwnerNode; state = $gstate; groupType = [string]$_.GroupType; resources = $res } })
 # The core group's own resources. "Cluster Group is Pending" names the group and
 # not the fault: the group holds the cluster name and one IP address resource per
 # subnet, and which of them is down — and why — is the whole question. Collected
 # on every pass so the ANSWER is observed rather than only produced when an
 # operator runs the recovery action.
-$coreRes = @(Get-ClusterResource -ErrorAction SilentlyContinue |
+$coreRes = @($allRes |
     Where-Object { [string]$_.OwnerGroup -eq 'Cluster Group' } | ForEach-Object {
   $r = $_
   $addr = ''
@@ -350,7 +388,7 @@ if ($q) {
 # replica has nowhere to go" visible before a relationship fails — the rig's
 # entry pointed at C:\ClusterStorage\DS1\Replica long after that volume existed.
 $broker = $null
-$br = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
+$br = @($allRes | Where-Object { $_.ResourceType -eq 'Virtual Machine Replication Broker' })[0]
 if ($br) {
   # The operator-facing name is the client access point (the Network Name in the
   # broker's group), not the resource's own name, because that is what a primary
@@ -358,7 +396,7 @@ if ($br) {
   $bname = ''
   try {
     $bg = [string]$br.OwnerGroup
-    $nn = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'Network Name' -and [string]$_.OwnerGroup -eq $bg })[0]
+    $nn = @($allRes | Where-Object { $_.ResourceType -eq 'Network Name' -and [string]$_.OwnerGroup -eq $bg })[0]
     if ($nn) { $bname = [string]($nn | Get-ClusterParameter -Name DnsName -ErrorAction SilentlyContinue).Value }
     if (-not $bname) { $bname = $bg }
   } catch {}
@@ -648,7 +686,14 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	}
 	groups := make([]ClusterGroup, 0, len(obs.Groups))
 	for _, g := range obs.Groups {
-		groups = append(groups, ClusterGroup{Name: g.Name, OwnerNode: g.Owner, State: g.State, GroupType: g.GroupType})
+		res := make([]ClusterGroupResource, 0, len(g.Resources))
+		for _, r := range g.Resources {
+			res = append(res, ClusterGroupResource{Name: r.Name, Type: r.Type, State: r.State})
+		}
+		if len(res) == 0 {
+			res = nil
+		}
+		groups = append(groups, ClusterGroup{Name: g.Name, OwnerNode: g.Owner, State: g.State, GroupType: g.GroupType, Resources: res})
 	}
 	coreRes := make([]ClusterCoreResource, 0, len(obs.CoreRes))
 	for _, r := range obs.CoreRes {

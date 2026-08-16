@@ -46,3 +46,65 @@ func TestClusterStateScriptDoesNotTrustAServiceMountedHiveAlone(t *testing.T) {
 		t.Error("the certain not-clustered verdict is reachable before the membership evidence is weighed")
 	}
 }
+
+// A group state names the group and not the fault. "SDDC Group is PartialOnline"
+// says some of it came up and some did not, and which is the whole question —
+// and that group is one Failover Cluster Manager does not display, so there is
+// nowhere else for an operator to read the answer.
+//
+// Seen on S2DCluster 2026-08-16: the console reported PartialOnline with no
+// detail and the operator went looking in a GUI that never shows the group. One
+// Get-ClusterResource named it — of three resources only SDDC Management was
+// Offline, a management resource in neither the storage nor the VM data path.
+func TestClusterStateScriptCollectsGroupResources(t *testing.T) {
+	s := clusterStateScript
+
+	// Read once. Both the core-group diagnosis and the per-group detail need the
+	// resources, and this runs on every pass on every member.
+	if n := strings.Count(s, "Get-ClusterResource -ErrorAction SilentlyContinue"); n != 1 {
+		t.Fatalf("cluster resources must be enumerated exactly once per pass, found %d calls", n)
+	}
+	if !strings.Contains(s, "$allRes = @(Get-ClusterResource") {
+		t.Error("the single enumeration should be bound once and reused")
+	}
+	if !strings.Contains(s, "$resByGroup") {
+		t.Error("resources must be indexed by owning group so each group can carry its own")
+	}
+
+	// Gated on state. A group resting Online or Offline has nothing to explain,
+	// and Available Storage rests Offline holding every spare disk — collecting
+	// there would send a healthy cluster's resting state over the wire each pass.
+	if !strings.Contains(s, `$gstate -ne 'Online' -and $gstate -ne 'Offline'`) {
+		t.Error("resources must be attached only to groups that are neither Online nor Offline")
+	}
+}
+
+// The wire shape has to survive decoding, or the agent collects the answer and
+// drops it before anything can report it.
+func TestClusterObservationCarriesGroupResources(t *testing.T) {
+	const payload = `{"exists":true,"known":true,"groups":[
+	  {"name":"Cluster Group","owner":"n1","state":"Online","groupType":"Cluster"},
+	  {"name":"SDDC Group","owner":"n2","state":"PartialOnline","groupType":"CoreSddc","resources":[
+	    {"name":"Health","type":"Health Service","state":"Online"},
+	    {"name":"SDDC Management","type":"SDDC Management","state":"Offline"}]}]}`
+
+	var obs clusterObservation
+	if err := decodeJSON([]byte(payload), &obs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(obs.Groups) != 2 {
+		t.Fatalf("want 2 groups, got %d", len(obs.Groups))
+	}
+	if len(obs.Groups[0].Resources) != 0 {
+		t.Errorf("an Online group carries no resources, got %d", len(obs.Groups[0].Resources))
+	}
+	sddc := obs.Groups[1]
+	if len(sddc.Resources) != 2 {
+		t.Fatalf("want 2 resources on the partial group, got %d", len(sddc.Resources))
+	}
+	// The type is what separates a resource that carries data from one that only
+	// manages, so it must survive as well as the name.
+	if sddc.Resources[1].Name != "SDDC Management" || sddc.Resources[1].Type != "SDDC Management" || sddc.Resources[1].State != "Offline" {
+		t.Errorf("the down resource lost detail in transit: %+v", sddc.Resources[1])
+	}
+}

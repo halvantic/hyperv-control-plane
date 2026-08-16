@@ -1123,7 +1123,19 @@ func clusterVMsFromProto(vs []*ClusterVM) []types.ClusterVMStatus {
 func clusterGroupsToProto(gs []types.ClusterGroupStatus) []*ClusterGroup {
 	out := make([]*ClusterGroup, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, &ClusterGroup{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType})
+		out = append(out, &ClusterGroup{Name: g.Name, OwnerNode: g.OwnerNode, State: g.State, GroupType: g.GroupType,
+			Resources: clusterResourcesToProto(g.Resources)})
+	}
+	return out
+}
+
+func clusterResourcesToProto(rs []types.ClusterResourceStatus) []*ClusterResource {
+	if len(rs) == 0 {
+		return nil
+	}
+	out := make([]*ClusterResource, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, &ClusterResource{Name: r.Name, Type: r.Type, State: r.State})
 	}
 	return out
 }
@@ -1167,7 +1179,19 @@ func ClusterStatusFromProto(s *ClusterStatus) types.ClusterStatus {
 func clusterGroupsFromProto(gs []*ClusterGroup) []types.ClusterGroupStatus {
 	out := make([]types.ClusterGroupStatus, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, types.ClusterGroupStatus{Name: g.GetName(), OwnerNode: g.GetOwnerNode(), State: g.GetState(), GroupType: g.GetGroupType()})
+		out = append(out, types.ClusterGroupStatus{Name: g.GetName(), OwnerNode: g.GetOwnerNode(), State: g.GetState(), GroupType: g.GetGroupType(),
+			Resources: clusterResourcesFromProto(g.GetResources())})
+	}
+	return out
+}
+
+func clusterResourcesFromProto(rs []*ClusterResource) []types.ClusterResourceStatus {
+	if len(rs) == 0 {
+		return nil
+	}
+	out := make([]types.ClusterResourceStatus, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, types.ClusterResourceStatus{Name: r.GetName(), Type: r.GetType(), State: r.GetState()})
 	}
 	return out
 }
