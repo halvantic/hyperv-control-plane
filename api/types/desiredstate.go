@@ -985,6 +985,52 @@ type Site struct {
 	Description string `json:"description,omitempty"`
 }
 
+// VMFolder is a named grouping of VMs for the console's inventory tree.
+//
+// A folder used to be nothing but the "folder" label on the VMs inside it, so it
+// existed only while at least one VM carried it. That makes two ordinary things
+// impossible: creating the structure BEFORE the VMs that go in it, and having a
+// folder survive its last VM being moved or deleted. An operator who emptied a
+// folder to refill it watched it disappear.
+//
+// So a folder is now declared. A folder EXISTS if it is declared here OR any VM
+// in its scope still carries its label — the union, which is what lets every
+// folder that predates this record keep working with no migration behind it.
+// Membership is still the label: this record says the folder exists, not who is
+// in it.
+//
+// Centre-only, like Dvport and the ISO library: no agent has any use for how an
+// operator files their VMs, so it never reaches one and carries no generation.
+type VMFolder struct {
+	Name string `json:"name"`
+
+	// ClusterName and HostName are the scope, mutually exclusive, exactly as
+	// Dvport scopes a port. A folder groups VMs WITHIN one cluster or standalone
+	// host, so the same name may be used in both without collision — and a
+	// folder cannot span them, because the tree it draws does not.
+	ClusterName string `json:"clusterName,omitempty"`
+	HostName    string `json:"hostName,omitempty"`
+}
+
+// Scope returns the folder's scope, and whether it has one at all. A folder with
+// no scope belongs to no tree and is not resolvable; the REST layer refuses to
+// store one rather than leaving it to be puzzled over later.
+func (f VMFolder) Scope() (kind, name string, scoped bool) {
+	switch {
+	case f.ClusterName != "":
+		return "cluster", f.ClusterName, true
+	case f.HostName != "":
+		return "host", f.HostName, true
+	}
+	return "", "", false
+}
+
+// SameScope reports whether two folders live in the same scope, which is what
+// makes their names collide.
+func (f VMFolder) SameScope(o VMFolder) bool {
+	return f.ClusterName == o.ClusterName && f.HostName == o.HostName
+}
+
 // Dvport is a distributed virtual port: a user-named pairing of a vSwitch and a
 // VLAN, giving operators a stable abstraction to attach VM NICs to instead of
 // juggling raw switch names and VLAN IDs. It is centre-only metadata; a VM NIC
