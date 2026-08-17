@@ -90,7 +90,7 @@ $ErrorActionPreference = 'Stop'
 # them, because Get-VMSwitch -Name errors for a missing switch too.
 try { $all = @(Get-VMSwitch -ErrorAction Stop) }
 catch { [pscustomobject]@{ exists = $false; known = $false } | ConvertTo-Json -Compress; return }
-$sw = $all | Where-Object { $_.Name -eq %[1]s } | Select-Object -First 1
+$sw = @($all | Where-Object { $_.Name -eq %[1]s })[0]
 if (-not $sw) { [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return }
 $members = @()
 $team = Get-VMSwitchTeam -Name %[1]s -ErrorAction SilentlyContinue
@@ -178,7 +178,7 @@ try {
   }
 } catch {}
 $list = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+  $a = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' })[0]
   [pscustomobject]@{
     name    = [string]$_.Name
     mac     = [string]$_.MacAddress
@@ -380,7 +380,7 @@ $ErrorActionPreference = 'Stop'
 # did not answer" (throws). See ErrHyperVUnavailable.
 try { $all = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction Stop) }
 catch { [pscustomobject]@{ exists = $false; known = $false } | ConvertTo-Json -Compress; return }
-$a = $all | Where-Object { $_.Name -eq %[1]s } | Select-Object -First 1
+$a = @($all | Where-Object { $_.Name -eq %[1]s })[0]
 if (-not $a) { [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-Json -Compress; return }
 $vid = 0
 $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName %[1]s -ErrorAction SilentlyContinue
@@ -623,7 +623,7 @@ $adapters = @{}
 $ips = @{}
 foreach ($n in $names) {
   $key = $n.ToLower()
-  $a = $allAdapters | Where-Object { $_.Name -eq $n } | Select-Object -First 1
+  $a = @($allAdapters | Where-Object { $_.Name -eq $n })[0]
   if ($a) {
     $vid = 0
     $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $n -ErrorAction SilentlyContinue
@@ -631,8 +631,8 @@ foreach ($n in $names) {
     $adapters[$key] = [pscustomobject]@{ exists = $true; known = $true; switchName = [string]$a.SwitchName; vlanID = $vid }
   }
   $alias = 'vEthernet (' + $n + ')'
-  $ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
-  $gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+  $ip = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })[0]
+  $gw = @(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop
   $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
   $reg = [bool](Get-DnsClient -InterfaceAlias $alias -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   $ips[$key] = [pscustomobject]@{
@@ -651,8 +651,8 @@ func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservatio
 $ErrorActionPreference = 'Stop'
 $alias = 'vEthernet (%[1]s)'
 $clusterIps = @(); try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
-$ip = Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
-$gw = (Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop
+$ip = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })[0]
+$gw = @(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop
 $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
 $reg = [bool](Get-DnsClient -InterfaceAlias $alias -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
 [pscustomobject]@{

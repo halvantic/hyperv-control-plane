@@ -39,7 +39,7 @@ Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $e
     throw "domain locator failed: cannot resolve $srvName via DNS server(s) [$dnsServers]. " +
           "The guest's DNS server must be an AD DNS server for '$dom' and the guest must have an L2 path to it. ($($_.Exception.Message))"
   }
-  $dcHost = ($srv | Where-Object { $_.Type -eq 'SRV' -and $_.NameTarget } | Select-Object -First 1).NameTarget
+  $dcHost = @($srv | Where-Object { $_.Type -eq 'SRV' -and $_.NameTarget })[0].NameTarget
   if (-not $dcHost) { throw "domain locator failed: no SRV target returned for $srvName via DNS server(s) [$dnsServers]." }
   if (-not (Test-NetConnection -ComputerName $dcHost -Port 389 -InformationLevel Quiet)) {
     throw "domain controller $dcHost resolved but is unreachable on LDAP/389 from the guest (check VLAN/firewall between the guest's dvport and the DC)."
@@ -79,7 +79,7 @@ Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $e
   $parts = $addr.Split('/')
   $ip = $parts[0]
   $prefix = [int]$parts[1]
-  if (-not $iface) { $iface = (Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).Name }
+  if (-not $iface) { $iface = @(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' })[0].Name }
   if (-not $iface) { throw 'no connected network adapter found in guest' }
   Get-NetIPAddress -InterfaceAlias $iface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
   Remove-NetRoute -InterfaceAlias $iface -DestinationPrefix ('0.0.0.0/' + '0') -Confirm:$false -ErrorAction SilentlyContinue
