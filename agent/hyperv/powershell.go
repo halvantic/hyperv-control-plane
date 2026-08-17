@@ -373,7 +373,7 @@ try {
   $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -eq 'IP Address' } | ForEach-Object { ($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value })
 } catch {}
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-  $a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) } | Select-Object -First 1
+  $a = @(Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })[0]
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''; $plen = 0
   if ($static) { $ip = [string]$a.IPAddress; $plen = [int]$a.PrefixLength }
@@ -381,7 +381,7 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   # Default-route next hop on this NIC, so a re-homed management IP can keep the
   # host's default route on the converged switch's vNIC.
-  $gw = [string]((Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
+  $gw = [string](@(Get-NetRoute -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop)
   # A static IP alone does not make a NIC the management NIC: storage and
   # live-migration NICs are static too, on isolated fabric subnets with no
   # default route. The gateway is what separates the routable, domain-facing
@@ -527,7 +527,7 @@ $switchDetails = @(Get-VMSwitch | ForEach-Object {
   $vlan = 0
   $mgmt = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue | Where-Object { $_.SwitchName -eq $sw.Name })
   if ($mgmt.Count -gt 0) {
-    $v = $mgmt | Get-VMNetworkAdapterVlan -ErrorAction SilentlyContinue | Where-Object { $_.OperationMode -eq 'Access' } | Select-Object -First 1
+    $v = @($mgmt | Get-VMNetworkAdapterVlan -ErrorAction SilentlyContinue | Where-Object { $_.OperationMode -eq 'Access' })[0]
     if ($v) { $vlan = [int]$v.AccessVlanId }
   }
   [pscustomobject]@{ name = [string]$sw.Name; netAdapters = @($nics); allowManagementOS = [bool]$sw.AllowManagementOS; vlanId = [int]$vlan }
@@ -585,7 +585,7 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
   # a spec from what is observed writes a management vNIC with no gateway — which
   # is the edit that stranded the members off-subnet on 2026-08-05. An isolated
   # vNIC correctly reports none, and that absence is the fact worth carrying.
-  $gw = [string]((Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1).NextHop)
+  $gw = [string](@(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop)
   [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw }
 })
 [pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos); managementVNICs = @($mgmtVnics) } | ConvertTo-Json -Depth 5 -Compress

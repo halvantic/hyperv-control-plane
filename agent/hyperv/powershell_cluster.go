@@ -268,7 +268,7 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
   [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr; sizeBytes = $sz; freeBytes = $free } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 $pool = if ($sp) {
   $pd = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue)
   # Disks the cluster has taken into storage maintenance mode are counted

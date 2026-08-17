@@ -91,7 +91,7 @@ if ($svc) {
 # returns nothing without it. The registry holds it either way, so fall back
 # there rather than reporting nothing: this is the value an operator needs
 # BEFORE anything can work, so it must survive the case where nothing works yet.
-try { $out.initiatorIQN = [string](Get-InitiatorPort -ErrorAction Stop | Where-Object { $_.ConnectionType -eq 'iSCSI' } | Select-Object -First 1).NodeAddress } catch {}
+try { $out.initiatorIQN = [string]@(Get-InitiatorPort -ErrorAction Stop | Where-Object { $_.ConnectionType -eq 'iSCSI' })[0].NodeAddress } catch {}
 if (-not $out.initiatorIQN) {
   try { $out.initiatorIQN = [string](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\iSCSI' -ErrorAction Stop).NodeName } catch {}
 }
@@ -351,7 +351,7 @@ $out.sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue | Group-Object 
   [pscustomobject]@{
     targetIQN  = [string]$_.Name
     connected  = $true
-    persistent = [bool]($_.Group | Where-Object { $_.IsPersistent } | Select-Object -First 1)
+    persistent = [bool]@($_.Group | Where-Object { $_.IsPersistent })[0]
     paths      = [int]($_.Group | Measure-Object).Count
   }
 })

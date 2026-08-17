@@ -100,8 +100,8 @@ function Ensure-ResourceOnline {
 # ---- locate the LUN -------------------------------------------------------
 $disk = $null
 if ($serial) {
-  $disk = Get-Disk -ErrorAction SilentlyContinue | Where-Object {
-    $_.SerialNumber -and ([string]$_.SerialNumber).Trim() -eq $serial } | Select-Object -First 1
+  $disk = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object {
+    $_.SerialNumber -and ([string]$_.SerialNumber).Trim() -eq $serial })[0]
 }
 if (-not $disk -and $target) {
   # Fall back to the target, for a volume authored before the array presented the
@@ -160,7 +160,7 @@ foreach ($res in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Obj
   }
   if ($clusDisk) { break }
 }
-$csv = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name } | Select-Object -First 1
+$csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]
 if ($csv -and -not $witness) {
   # An adopted volume still has its mount point checked. Returning here without
   # doing so meant the rename only ever ran on the pass that created the CSV — so
@@ -269,7 +269,7 @@ if ($wipe -and $hasData) { Clear-Disk -Number $disk.Number -RemoveData -RemoveOE
 $disk = Get-Disk -Number $disk.Number -ErrorAction Stop
 if ($disk.PartitionStyle -eq 'RAW') { Initialize-Disk -Number $disk.Number -PartitionStyle GPT -ErrorAction Stop | Out-Null }
 
-$part = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' }) | Select-Object -First 1
+$part = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' })[0]
 if (-not $part) {
   $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -ErrorAction Stop
 }
@@ -352,10 +352,10 @@ if (-not $witness) {
   # Already a CSV under this resource's name is success, not a failure to re-add:
   # Add-ClusterSharedVolume throws for a disk that is already shared, and a
   # resumed adoption would otherwise fail on the step it had already completed.
-  $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
+  $existing = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name })[0]
   if (-not $existing) {
     Add-ClusterSharedVolume -InputObject $clusDisk -ErrorAction Stop | Out-Null
-    $existing = Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name } | Select-Object -First 1
+    $existing = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$clusDisk.Name })[0]
     if (-not $existing) { Fail ('the disk joined the cluster but did not become a Cluster Shared Volume.') }
   }
   # Adding a disk does not start it, and the mount point cannot be read until it
@@ -431,8 +431,8 @@ Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
 $disk = $null
 if ($serial) {
-  $disk = Get-Disk -ErrorAction SilentlyContinue | Where-Object {
-    $_.SerialNumber -and ([string]$_.SerialNumber).Trim() -eq $serial } | Select-Object -First 1
+  $disk = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object {
+    $_.SerialNumber -and ([string]$_.SerialNumber).Trim() -eq $serial })[0]
 }
 if (-not $disk) { throw ('the witness disk (serial ' + $serial + ') is not visible on this node, so quorum cannot be pointed at it. Adopt the witness LUN first.') }
 

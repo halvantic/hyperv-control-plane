@@ -351,13 +351,13 @@ func (p *PowerShell) ResetPoolDisks(ctx context.Context) (string, error) {
 # Safeguard: never wipe disks while the pool is unhealthy or a repair/regeneration
 # is running. Adding disk churn to a degraded pool is exactly what cascades into a
 # heartbeat/repair storm — make the operator resolve pool health first.
-$sp0 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp0 = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 if ($sp0 -and $sp0.HealthStatus -ne 'Healthy') { throw ('refusing to reset disks: the S2D pool is ' + $sp0.HealthStatus + '/' + ($sp0.OperationalStatus -join ',') + '. Resolve pool health first (a repair may be in progress).') }
 $rj = @(Get-StorageJob -ErrorAction SilentlyContinue | Where-Object { $_.JobState -eq 'Running' -and $_.Name -match 'Repair|Regeneration|Rebalance' })
 if ($rj.Count -gt 0) { throw ('refusing to reset disks: a storage ' + ($rj[0].Name) + ' job is in progress — wait for it to finish before adding disks.') }
 # Physical disks that are members of the S2D pool — never touch these.
 $members = @()
-try { $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1; if ($sp) { $members = @(($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue).UniqueId) } } catch {}
+try { $sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]; if ($sp) { $members = @(($sp | Get-PhysicalDisk -ErrorAction SilentlyContinue).UniqueId) } } catch {}
 # Enumerate ONLY disks physically connected to THIS node via its StorageNode. This
 # is critical: in an S2D cluster Get-Disk/Get-PhysicalDisk return cluster-wide
 # objects (including the Spaces virtual disks that back the CSVs), so iterating
@@ -365,7 +365,7 @@ try { $sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not 
 # disks cannot be resolved, do NOTHING rather than fall back to a cluster-wide set.
 $local = @()
 try {
-  $sn = Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') } | Select-Object -First 1
+  $sn = @(Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') })[0]
   if ($sn) { $local = @($sn | Get-PhysicalDisk -PhysicallyConnected -ErrorAction SilentlyContinue) }
 } catch {}
 if (-not $local -or $local.Count -eq 0) { 'RESULT wiped=0 nowPoolable=0 skipped=0 (could not resolve this node''s local disks — no action)'; return }
@@ -424,7 +424,7 @@ if ($cl) { throw ('refusing to release pool disks: this host is a member of clus
 # in a Spaces context, and a fallback to that set could wipe shared storage.
 $local = @()
 try {
-  $sn = Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') } | Select-Object -First 1
+  $sn = @(Get-StorageNode -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ($env:COMPUTERNAME + '*') })[0]
   if ($sn) { $local = @($sn | Get-PhysicalDisk -PhysicallyConnected -ErrorAction SilentlyContinue) }
 } catch {}
 if (-not $local -or $local.Count -eq 0) { $local = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -ne 'Spaces' -and $_.BusType -ne 'File Backed Virtual' }) }
@@ -599,7 +599,7 @@ $mt = 'Quick'; if ($v -and $v.State -eq 'Running') { $mt = 'Live' }
 $job = Start-Job -ScriptBlock { param($vm,$tn,$mt) Import-Module FailoverClusters -ErrorAction SilentlyContinue; Move-ClusterVirtualMachineRole -Name $vm -Node $tn -MigrationType $mt } -ArgumentList $vm,$tn,$mt
 $last = -1
 while ($job.State -eq 'Running') {
-  $mj = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending | Select-Object -First 1
+  $mj = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending)[0]
   if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
   Start-Sleep -Seconds 2
 }
@@ -682,7 +682,7 @@ func migrateWithProgress(moveCmd string) string {
 	return `$job = Start-Job -ScriptBlock { param($vm,$dest,$node,$path,$mt) Import-Module Hyper-V -ErrorAction SilentlyContinue; Import-Module FailoverClusters -ErrorAction SilentlyContinue; ` + moveCmd + ` } -ArgumentList $vm,$dest,$node,$path,$mt
 $last = -1
 while ($job.State -eq 'Running') {
-  $mj = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending | Select-Object -First 1
+  $mj = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending)[0]
   if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
   Start-Sleep -Seconds 2
 }
@@ -1052,7 +1052,7 @@ $dir = Join-Path $env:TEMP ('blog_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dir -Force | Out-Null
 try {
   Get-ClusterLog -Node $env:COMPUTERNAME -TimeSpan %[1]d -Destination $dir -ErrorAction Stop | Out-Null
-  $f = Get-ChildItem -Path $dir -Filter *.log -ErrorAction SilentlyContinue | Select-Object -First 1
+  $f = @(Get-ChildItem -Path $dir -Filter *.log -ErrorAction SilentlyContinue)[0]
   if (-not $f) { 'no cluster log generated'; return }
   $pat = 'migrat|live migration|0x8007|0x800|fail|error|warn|rejected|denied|listen|kerberos|21111|20406|22038'
   $flt = %[2]s

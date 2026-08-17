@@ -261,8 +261,8 @@ if ([string]$res.State -ne 'Online') {
   foreach ($ch in @('Microsoft-Windows-Hyper-V-VMMS-Admin','Microsoft-Windows-FailoverClustering/Operational')) {
     try {
       $evs = @(Get-WinEvent -FilterHashtable @{ LogName = $ch; Level = 1,2,3; StartTime = (Get-Date).AddMinutes(-20) } -ErrorAction Stop |
-        Where-Object { $_.Message -match 'Replica|Broker|listener' } |
-        Select-Object -First 2)
+        Where-Object { $_.Message -match 'Replica|Broker|listener' })
+      if ($evs.Count -gt 2) { $evs = $evs[0..1] }
       foreach ($e in $evs) { $why += (($e.Message -split '\r?\n')[0].Trim()) }
     } catch {}
   }
@@ -587,6 +587,12 @@ if (-not $enabled) {
           $left = @()
           try {
             $rroot = '\\' + (($probe -split '\.')[0]) + '\' + ($loc -replace '^([A-Za-z]):', '$1$')
+            # -First 5 is kept here on purpose, unlike the single-item lookups
+            # this file used to spell "| Select-Object -First 1". This walks a
+            # REMOTE share three levels deep, so stopping the pipeline early is
+            # the point; draining it to index the array would cost the whole
+            # recursion for five names. Get-ChildItem handles the stop cleanly —
+            # it is the FailoverClusters cmdlets that abort the script.
             $left = @(Get-ChildItem -LiteralPath $rroot -Recurse -Depth 3 -ErrorAction SilentlyContinue |
               Where-Object { $_.Name -like ('*' + $vm + '*') } |
               Select-Object -First 5 | ForEach-Object {
@@ -933,8 +939,8 @@ try {
   # PrimaryServer/ReplicaServer has flipped after the failover.
   $reason = $_.Exception.Message
   $local = $env:COMPUTERNAME
-  $target = @([string]$r.PrimaryServer, [string]$r.ReplicaServer) |
-    Where-Object { $_ -and (($_ -split '\.')[0] -ne $local) } | Select-Object -First 1
+  $target = @(@([string]$r.PrimaryServer, [string]$r.ReplicaServer) |
+    Where-Object { $_ -and (($_ -split '\.')[0] -ne $local) })[0]
   $port = 0; try { $port = [int]$r.ReplicaServerPort } catch {}
   if ($port -le 0) { $port = 80 }
   $hint = ''

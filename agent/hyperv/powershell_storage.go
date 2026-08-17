@@ -68,7 +68,7 @@ func (p *PowerShell) EnableS2D(ctx context.Context) (Outcome, error) {
 func (p *PowerShell) EnsureS2DPoolDisks(ctx context.Context) (Outcome, error) {
 	script := `
 $ErrorActionPreference = 'Stop'
-$pool = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$pool = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 $claim = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue)
 if (-not $pool) {
   # The caller only runs this when S2D is enabled, so no pool means Enable ran
@@ -179,7 +179,7 @@ $vd | Remove-VirtualDisk -Confirm:$false
 func (p *PowerShell) RepairStoragePool(ctx context.Context) (string, error) {
 	script := `
 $ErrorActionPreference = 'Stop'
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
 $bad = @(Get-PhysicalDisk -StoragePool $sp -ErrorAction SilentlyContinue | Where-Object { $_.HealthStatus -ne 'Healthy' })
 if ($bad.Count -eq 0) { 'RESULT=NOOP pool ' + $sp.FriendlyName + ' is ' + $sp.HealthStatus; return }
@@ -223,7 +223,7 @@ func (p *PowerShell) RebuildStoragePool(ctx context.Context) (string, error) {
 	script := `
 $ErrorActionPreference = 'Continue'
 $log = @()
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 if (-not $sp) { throw 'no Storage Spaces Direct pool found' }
 # 1. Destroy every virtual disk / CSV so nothing pins the pool's resiliency.
 foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
@@ -241,7 +241,7 @@ foreach ($d in $bad) {
 # 3. Rename the pool to match the current cluster (it was left over from another).
 $cn = (Get-Cluster -ErrorAction SilentlyContinue).Name
 if ($cn) { $want = 'S2D on ' + $cn; if ($sp.FriendlyName -ne $want) { try { Set-StoragePool -FriendlyName $sp.FriendlyName -NewFriendlyName $want -ErrorAction Stop; $log += ('renamed-' + $want) } catch { $log += ('rename-err-' + $_.Exception.Message) } } }
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 'RESULT=REBUILT ' + $sp.FriendlyName + ' ' + $sp.HealthStatus + ' removed=' + $removed + '/' + $bad.Count + ' :: ' + ($log -join ' | ')
 `
 	out, err := p.run(ctx, script)
@@ -291,7 +291,7 @@ if ($existing) {
   if ($existing.HealthStatus -eq 'Healthy') { [pscustomobject]@{ status = 'ready' } | ConvertTo-Json -Compress; return }
   [pscustomobject]@{ status = 'provisioning'; detail = ('volume materialising (' + [string]$existing.HealthStatus + '/' + (@($existing.OperationalStatus) -join ',') + ')') } | ConvertTo-Json -Compress; return
 }
-$sp = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+$sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
 if (-not $sp) {
   $n = @(Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue).Count
   throw ('no S2D pool exists yet (' + $n + ' poolable disk(s) visible). S2D was likely enabled while no disks were eligible; the pool is bootstrapped automatically once poolable disks appear - retries next pass.')
@@ -348,7 +348,7 @@ try {
   # space, which is usually the true constraint behind "Not Supported".
   $now = Get-VirtualDisk -FriendlyName $name -ErrorAction SilentlyContinue
   if ($now) { [pscustomobject]@{ status = 'provisioning'; detail = 'creation in progress' } | ConvertTo-Json -Compress; return }
-  $sp2 = Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial } | Select-Object -First 1
+  $sp2 = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
   $free2 = if ($sp2) { [int64]($sp2.Size - $sp2.AllocatedSize) } else { [int64]0 }
   throw ('create CSV "' + $name + '" failed: ' + $_.Exception.Message + ' (pool free ' + [math]::Round($free2/1GB,1) + ' GB; a mirror volume needs about 2-3x its size free)')
 }
