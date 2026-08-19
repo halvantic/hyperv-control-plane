@@ -776,7 +776,10 @@ if ($cur -and $cur.State -ne 'Off') { $running = $true }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads
 // current state first so a no-op returns OutcomeUnchanged.
-func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error) {
+// vmPowerScript builds the power script. Split out from SetVMPowerState so the
+// ordering it encodes can be tested without a host, the same way ensureVMScript
+// is.
+func (p *PowerShell) vmPowerScript(name string, desired types.VMPowerState) string {
 	var verb string
 	switch desired {
 	case types.VMPowerRunning:
@@ -784,8 +787,9 @@ func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired t
 	case types.VMPowerOff:
 		verb = fmt.Sprintf("Stop-VM -Name %s -Force", psQuote(name))
 	default:
-		// Paused/Saved are observed, never requested; treat as no-op.
-		return OutcomeUnchanged, nil
+		// Paused/Saved are observed, never requested; the caller treats an empty
+		// script as a no-op.
+		return ""
 	}
 
 	target := "Running"
@@ -800,7 +804,7 @@ func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired t
 	if desired == types.VMPowerOff {
 		clusterVerb = "Stop-ClusterGroup"
 	}
-	script := fmt.Sprintf(`
+	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 $grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
 if ($grp) {
@@ -811,7 +815,41 @@ if ($grp) {
   if ([string]$vm.State -eq '%[2]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 }
 try {
-  if ($grp) { %[5]s -Name %[1]s -ErrorAction Stop | Out-Null }
+  if ($grp) {
+    # Shut the GUEST down first when stopping a clustered VM.
+    #
+    # Stop-ClusterGroup obeys the Virtual Machine resource's OfflineAction, which
+    # Windows defaults to Save. So "stop" on a clustered VM saved its memory image
+    # while the identical button on a standalone VM shut the guest down cleanly —
+    # one action with two meanings, and the surprising one is the default.
+    #
+    # It is not merely inconsistent. A saved image cannot be restored on a node
+    # with a different CPU feature set, which is precisely the failure the catch
+    # block below exists to diagnose (Hyper-V event 24000) and whose only remedy
+    # is destructive. Saving on every stop manufactures that condition across a
+    # mixed cluster.
+    #
+    # With the guest already Off, taking the group offline has nothing to save.
+    if ('%[2]s' -eq 'Off') {
+      $lv = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+      if ($lv -and [string]$lv.State -eq 'Running') {
+        # Best effort on purpose. A guest with no integration services cannot be
+        # asked to shut down, and refusing to stop it would be worse than the
+        # save this is avoiding — so a failure here falls through to the old
+        # behaviour rather than leaving the operator unable to stop a VM.
+        try {
+          Stop-VM -Name %[1]s -Force -ErrorAction Stop | Out-Null
+        } catch {}
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline) {
+          $cur = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
+          if (-not $cur -or [string]$cur.State -eq 'Off') { break }
+          Start-Sleep -Seconds 2
+        }
+      }
+    }
+    %[5]s -Name %[1]s -ErrorAction Stop | Out-Null
+  }
   else { %[3]s | Out-Null }
 } catch {
   # A start that fails against a SAVED state is worth diagnosing rather than
@@ -840,6 +878,14 @@ try {
 }
 [pscustomobject]@{ changed = $true } | ConvertTo-Json -Compress
 `, psQuote(name), target, verb, clusterGroupState(desired), clusterVerb)
+}
+
+func (p *PowerShell) SetVMPowerState(ctx context.Context, name string, desired types.VMPowerState) (Outcome, error) {
+	script := p.vmPowerScript(name, desired)
+	if script == "" {
+		// Paused/Saved are observed, never requested; treat as no-op.
+		return OutcomeUnchanged, nil
+	}
 
 	out, err := p.run(ctx, script)
 	if err != nil {
