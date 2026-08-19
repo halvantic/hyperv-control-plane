@@ -74,7 +74,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		}
 		return "activated " + p["vm"] + " against this host", nil
 	case types.JobGuestJoinDomain:
-		return done(r.hv.GuestJoinDomain(ctx, p["vm"], p["domain"], p["ou"], p["guestUser"], p["guestPass"], p["domainUser"], p["domainPass"]),
+		return done(r.hv.GuestJoinDomain(ctx, p["vm"], p["domain"], p["ou"], p["newName"], p["guestUser"], p["guestPass"], p["domainUser"], p["domainPass"]),
 			"joined "+p["vm"]+" to "+p["domain"]+" (guest rebooting)")
 	case types.JobGuestSetIP:
 		return done(r.hv.GuestSetIP(ctx, p["vm"], p["interface"], p["address"], p["gateway"], p["dns"], p["guestUser"], p["guestPass"]),

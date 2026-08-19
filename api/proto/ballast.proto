@@ -913,6 +913,8 @@ message VMSpec {
   // preferred first: "Drive", "DVD", "Network", and "Floppy" on Gen 1. Empty
   // leaves the boot order unmanaged.
   repeated string boot_order = 13;
+  // computer_name is the guest OS hostname, which is not the VM's name.
+  string computer_name = 14;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the

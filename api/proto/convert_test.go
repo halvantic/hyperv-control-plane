@@ -157,6 +157,7 @@ func sampleVM() types.VM {
 			AutomaticStartAction: types.VMStartIfWasRunning,
 			ISOPath:              `C:\ClusterStorage\Volume1\ISOs\boot.iso`,
 			SecureBoot:           "linux",
+			ComputerName:         "WEB01-GUEST",
 			BootOrder:            []string{"DVD", "Drive", "Network"},
 			Replication: &types.VMReplicationSpec{
 				Enabled:            true,

@@ -885,7 +885,7 @@ func (s *Stub) MoveVMStorage(_ context.Context, vm, folder string, _ ProgressFun
 	return "moved " + vm + " storage to " + folder, nil
 }
 func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)             { return "", nil }
-func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _ string) error { return nil }
+func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _, _ string) error { return nil }
 func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
 func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error              { return nil }
 func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error             { return nil }

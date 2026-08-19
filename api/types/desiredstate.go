@@ -2052,7 +2052,7 @@ const (
 	// stayed off, which is not drift and not something to fix.
 	JobGuestActivateAVMA = "GuestActivateAVMA" // params: vm, avmaKey, guestUser, guestPass
 
-	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct (reboots the guest)
+	JobGuestJoinDomain = "GuestJoinDomain" // params: vm, domain, ou, newName (optional), guestUser, guestPass, domainUser, domainPass — join the guest OS to the domain via PowerShell Direct, renaming it in the same reboot when newName is set (reboots the guest)
 	JobGuestSetIP      = "GuestSetIP"      // params: vm, interface, address (CIDR), gateway, dns, guestUser, guestPass — set a static IP in the guest via PowerShell Direct
 
 	// VM templates. Both are pure disk work: capture copies a VM's VHDX into the
@@ -2229,6 +2229,22 @@ type VMSpec struct {
 	// "off" disables Secure Boot. Ignored for Gen 1. A firmware change needs the VM
 	// stopped, so it settles on the next power-off (like processor/memory).
 	SecureBoot string `json:"secureBoot,omitempty"`
+
+	// ComputerName is the guest OS hostname this VM should have. It is NOT the
+	// VM's name: the Hyper-V object and the operating system inside it are named
+	// separately, they drift the moment anyone renames either, and the one that
+	// appears in DNS, in AD and in a support call is this one. Mirrors
+	// HostSpec.ComputerName.
+	//
+	// Applied where a name can be set without disrupting a running workload: the
+	// unattend at deploy (before the guest can register a wrong name anywhere)
+	// and the domain-join job, which renames and joins in a single reboot.
+	// Unlike a host, a running guest is NOT renamed to match — that is a reboot
+	// of somebody's workload, and there is no guest RebootPolicy to govern it.
+	// A difference is reported as drift and renamed by an explicit job.
+	//
+	// Empty means the name is unmanaged and no drift is reported.
+	ComputerName string `json:"computerName,omitempty"`
 
 	// BootOrder is the firmware boot priority, most-preferred first, expressed as
 	// device categories rather than specific devices so it stays stable as disks
