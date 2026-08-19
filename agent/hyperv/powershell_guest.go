@@ -17,13 +17,20 @@ import (
 // GuestJoinDomain joins the VM's guest OS to domain, then reboots the guest. The
 // guest credential authenticates PowerShell Direct; the domain credential
 // authorises the join. ouPath is optional.
-func (p *PowerShell) GuestJoinDomain(ctx context.Context, vmName, domain, ouPath, guestUser, guestPass, domainUser, domainPass string) error {
+//
+// newName, when set, renames the guest AS PART OF THE JOIN rather than after it.
+// Add-Computer -NewName creates the AD computer object under the new name in a
+// single reboot. Renaming afterwards instead means the guest first registers the
+// image's baked-in name in AD and DNS, then needs a second reboot to change it,
+// leaving a stale computer object and stale records behind — and a guest that
+// deployed with the wrong name could otherwise only be fixed from inside it.
+func (p *PowerShell) GuestJoinDomain(ctx context.Context, vmName, domain, ouPath, newName, guestUser, guestPass, domainUser, domainPass string) error {
 	script := `
 $ErrorActionPreference = 'Stop'
 $gsec = ConvertTo-SecureString $env:BALLAST_GUEST_PW -AsPlainText -Force
 $gcred = New-Object System.Management.Automation.PSCredential($env:BALLAST_GUEST_USER, $gsec)
-Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $env:BALLAST_DOM_USER,$env:BALLAST_DOM_PW,$env:BALLAST_GUEST_DOMAIN,$env:BALLAST_GUEST_OU -ScriptBlock {
-  param($du, $dp, $dom, $ou)
+Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $env:BALLAST_DOM_USER,$env:BALLAST_DOM_PW,$env:BALLAST_GUEST_DOMAIN,$env:BALLAST_GUEST_OU,$env:BALLAST_GUEST_NEWNAME -ScriptBlock {
+  param($du, $dp, $dom, $ou, $newName)
   $ds = ConvertTo-SecureString $dp -AsPlainText -Force
   $dc = New-Object System.Management.Automation.PSCredential($du, $ds)
 
@@ -45,8 +52,15 @@ Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $e
     throw "domain controller $dcHost resolved but is unreachable on LDAP/389 from the guest (check VLAN/firewall between the guest's dvport and the DC)."
   }
 
-  if ($ou) { Add-Computer -DomainName $dom -Credential $dc -OUPath $ou -Force }
-  else { Add-Computer -DomainName $dom -Credential $dc -Force }
+  # Built as a hashtable so the optional arguments are added rather than the
+  # call being written out four times for every combination of OU and rename.
+  $joinArgs = @{ DomainName = $dom; Credential = $dc; Force = $true }
+  if ($ou) { $joinArgs['OUPath'] = $ou }
+  # Skip the rename when the guest already carries the name: Add-Computer -NewName
+  # fails outright if the new name equals the current one, so passing it blindly
+  # would turn a re-run of an idempotent job into an error.
+  if ($newName -and $newName -ne $env:COMPUTERNAME) { $joinArgs['NewName'] = $newName }
+  Add-Computer @joinArgs
   Restart-Computer -Force
 }
 `
@@ -58,6 +72,7 @@ Invoke-Command -VMName $env:BALLAST_GUEST_VM -Credential $gcred -ArgumentList $e
 		"BALLAST_DOM_PW=" + domainPass,
 		"BALLAST_GUEST_DOMAIN=" + domain,
 		"BALLAST_GUEST_OU=" + ouPath,
+		"BALLAST_GUEST_NEWNAME=" + newName,
 	}
 	if err := p.runWithEnv(ctx, script, env); err != nil {
 		return fmt.Errorf("guest join domain %q on %q: %w", domain, vmName, err)

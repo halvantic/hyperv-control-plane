@@ -499,7 +499,7 @@ type Interface interface {
 	// GuestJoinDomain joins the VM's guest OS to domain (then reboots the guest)
 	// via PowerShell Direct. guestUser/guestPass authenticate into the guest;
 	// domainUser/domainPass authorise the join. Credentials must never be logged.
-	GuestJoinDomain(ctx context.Context, vmName, domain, ouPath, guestUser, guestPass, domainUser, domainPass string) error
+	GuestJoinDomain(ctx context.Context, vmName, domain, ouPath, newName, guestUser, guestPass, domainUser, domainPass string) error
 
 	// GuestSetIP sets a static IPv4 (addr in CIDR) on the guest's adapter via
 	// PowerShell Direct. iface empty picks the first connected adapter; gateway

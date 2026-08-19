@@ -1298,6 +1298,7 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		IsoPath:              s.ISOPath,
 		SecureBoot:           s.SecureBoot,
 		BootOrder:            append([]string(nil), s.BootOrder...),
+		ComputerName:         s.ComputerName,
 	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
@@ -1348,6 +1349,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		ISOPath:              s.GetIsoPath(),
 		SecureBoot:           s.GetSecureBoot(),
 		BootOrder:            append([]string(nil), s.GetBootOrder()...),
+		ComputerName:         s.GetComputerName(),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{

@@ -5603,7 +5603,9 @@ type VMSpec struct {
 	// boot_order is the firmware boot priority as device categories, most
 	// preferred first: "Drive", "DVD", "Network", and "Floppy" on Gen 1. Empty
 	// leaves the boot order unmanaged.
-	BootOrder     []string `protobuf:"bytes,13,rep,name=boot_order,json=bootOrder,proto3" json:"boot_order,omitempty"`
+	BootOrder []string `protobuf:"bytes,13,rep,name=boot_order,json=bootOrder,proto3" json:"boot_order,omitempty"`
+	// computer_name is the guest OS hostname, which is not the VM's name.
+	ComputerName  string `protobuf:"bytes,14,opt,name=computer_name,json=computerName,proto3" json:"computer_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5727,6 +5729,13 @@ func (x *VMSpec) GetBootOrder() []string {
 		return x.BootOrder
 	}
 	return nil
+}
+
+func (x *VMSpec) GetComputerName() string {
+	if x != nil {
+		return x.ComputerName
+	}
+	return ""
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the
@@ -6885,7 +6894,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x02VM\x12*\n" +
 	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12&\n" +
 	"\x04spec\x18\x02 \x01(\v2\x12.ballast.v1.VMSpecR\x04spec\x12,\n" +
-	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xc3\x05\n" +
+	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xe8\x05\n" +
 	"\x06VMSpec\x129\n" +
 	"\tplacement\x18\x01 \x01(\v2\x1b.ballast.v1.VMPlacementSpecR\tplacement\x12+\n" +
 	"\x11hyperv_generation\x18\x02 \x01(\x05R\x10hypervGeneration\x12'\n" +
@@ -6902,7 +6911,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\vsecure_boot\x18\f \x01(\tR\n" +
 	"secureBoot\x12\x1d\n" +
 	"\n" +
-	"boot_order\x18\r \x03(\tR\tbootOrder\"\x8e\x02\n" +
+	"boot_order\x18\r \x03(\tR\tbootOrder\x12#\n" +
+	"\rcomputer_name\x18\x0e \x01(\tR\fcomputerName\"\x8e\x02\n" +
 	"\x11VMReplicationSpec\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vtarget_host\x18\x02 \x01(\tR\n" +
