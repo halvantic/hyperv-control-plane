@@ -209,3 +209,53 @@ func TestEnsureVMScriptWillNotCreateADiskOnAnUnreadableVolume(t *testing.T) {
 		t.Error("New-VHD must not run on a Test-Path miss alone; an unreadable volume looks identical to a missing file")
 	}
 }
+
+// Stopping a CLUSTERED VM must shut the guest down before the group goes
+// offline. Stop-ClusterGroup obeys the Virtual Machine resource's OfflineAction,
+// which Windows defaults to Save — so the same "stop" that cleanly shut down a
+// standalone VM saved a clustered one's memory image instead.
+//
+// That is not just inconsistent. A saved image cannot be restored on a node with
+// a different CPU feature set, which is exactly the failure this file already
+// goes to lengths to diagnose (event 24000) and whose only remedy is
+// destructive. Saving on every stop manufactures it across a mixed cluster.
+//
+// The script is searched with COMMENTS STRIPPED. The first version of this test
+// matched the prose above the commands — both mention the cmdlets by name — and
+// reported the ordering backwards while the code was correct.
+func TestClusteredStopShutsTheGuestDownBeforeGoingOffline(t *testing.T) {
+	p := &PowerShell{}
+	nl := string(rune(10))
+	commandsOnly := func(script string) string {
+		var out []string
+		for _, ln := range strings.Split(script, nl) {
+			if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+				continue
+			}
+			out = append(out, ln)
+		}
+		return strings.Join(out, nl)
+	}
+
+	stop := commandsOnly(p.vmPowerScript("testVM", types.VMPowerOff))
+	stopVM := strings.Index(stop, "Stop-VM")
+	stopGroup := strings.Index(stop, "Stop-ClusterGroup")
+	if stopVM < 0 || stopGroup < 0 {
+		t.Fatalf("expected both Stop-VM and Stop-ClusterGroup in the stop script")
+	}
+	if stopVM > stopGroup {
+		t.Error("Stop-ClusterGroup runs before Stop-VM, so taking the group offline still saves the VM's memory image")
+	}
+	// Bounded: a guest that will not shut down must not hold the job open.
+	if !strings.Contains(stop, "AddSeconds(120)") {
+		t.Error("the wait for the guest to stop is unbounded")
+	}
+	// The shutdown is gated on the requested state, so a start never runs it.
+	start := commandsOnly(p.vmPowerScript("testVM", types.VMPowerRunning))
+	if !strings.Contains(start, "Start-ClusterGroup") {
+		t.Error("the start script does not use Start-ClusterGroup")
+	}
+	if !strings.Contains(start, "'Running' -eq 'Off'") {
+		t.Error("the guest-shutdown block is not gated to the Off request, so a start could run it")
+	}
+}
