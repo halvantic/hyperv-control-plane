@@ -922,11 +922,13 @@ $ErrorActionPreference = 'Stop'
 $ns = 'root\virtualization\v2'
 $q = [char]39
 $vm = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter ('ElementName=' + $q + %[1]s + $q)
-if (-not $vm -or $vm.EnabledState -ne 2) { return }  # 2 = Enabled (running)
+if (-not $vm) { return '!no-vm' }
+if ($vm.EnabledState -ne 2) { return ('!not-running:' + $vm.EnabledState) }  # 2 = Enabled (running)
 $vmms = Get-CimInstance -Namespace $ns -ClassName Msvm_VirtualSystemManagementService
 $sd = Get-CimAssociatedInstance -InputObject $vm -ResultClassName Msvm_VirtualSystemSettingData -Association Msvm_SettingsDefineState
 $res = Invoke-CimMethod -InputObject $vmms -MethodName GetVirtualSystemThumbnailImage -Arguments @{ TargetSystem = $sd; WidthPixels = [uint16]%[2]d; HeightPixels = [uint16]%[3]d }
-if ($res.ReturnValue -ne 0 -or -not $res.ImageData) { return }
+if ($res.ReturnValue -ne 0) { return ('!thumbnail-failed:' + $res.ReturnValue) }
+if (-not $res.ImageData) { return '!no-image-data' }
 Add-Type -AssemblyName System.Drawing
 $w = %[2]d; $h = %[3]d
 $bmp = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format16bppRgb565)
@@ -945,8 +947,17 @@ $bmp.Dispose()
 		return nil, fmt.Errorf("get vm screen %q: %w", name, err)
 	}
 	b64 := strings.TrimSpace(string(out))
+	// A capture that produced nothing used to return (nil, nil), which the caller
+	// could not tell from success — so it assigned an empty screen and logged
+	// nothing at all. The console then showed a VM it knew was RUNNING with no
+	// preview and no reason, at either end. Each case now names itself.
+	//
+	// "!" cannot begin base64, so a marker can never be mistaken for an image.
+	if strings.HasPrefix(b64, "!") {
+		return nil, fmt.Errorf("get vm screen %q: %s", name, strings.TrimPrefix(b64, "!"))
+	}
 	if b64 == "" {
-		return nil, nil // no screen (VM off or no image)
+		return nil, fmt.Errorf("get vm screen %q: the thumbnail script returned nothing", name)
 	}
 	png, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
