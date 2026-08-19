@@ -980,6 +980,12 @@ message VMStatus {
   // verdict ("OK"/"Low"/"Warning").
   uint64 memory_demand_bytes = 16;
   string memory_status = 17;
+  // heartbeat is the integration layer's verdict on the guest (Ok*, Lost,
+  // NoContact, Error). Empty is unknown, not healthy.
+  string heartbeat = 18;
+  // screen_blank means the captured thumbnail is one flat colour: the display
+  // is powered down. It does NOT mean the session is locked.
+  bool screen_blank = 19;
 }
 
 // VMReplicationStatus is a VM's observed Hyper-V Replica state.

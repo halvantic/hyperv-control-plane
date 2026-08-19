@@ -1297,6 +1297,11 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 				r.log.Warn("vm screen capture failed", "vm", res.Name, "err", serr)
 			} else {
 				st.ScreenPNG = png
+				// A thumbnail of one flat colour means Windows has powered the
+				// display down. Established HERE, where the pixels already are,
+				// rather than left for the console to infer from a black rectangle
+				// that looks exactly like a working session showing a dark desktop.
+				st.ScreenBlank = screenIsBlank(png)
 			}
 		}
 		reports = append(reports, &ballastpb.VMStatusReport{
