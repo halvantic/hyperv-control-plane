@@ -43,6 +43,7 @@ type vmObservation struct {
 	AssignedMemoryBytes uint64            `json:"assignedMemoryBytes"`
 	MemoryDemandBytes   uint64            `json:"memoryDemandBytes"`
 	MemoryStatus        string            `json:"memoryStatus"`
+	Heartbeat           string            `json:"heartbeat"`
 	CPUUsagePercent     int               `json:"cpuUsagePercent"`
 	UptimeSeconds       int64             `json:"uptimeSeconds"`
 	GuestOS             string            `json:"guestOS"`
@@ -153,6 +154,13 @@ try {
   # usage. MemoryStatus ("OK"/"Low"/"Warning") is the host's own verdict.
   memoryDemandBytes   = [uint64]$vm.MemoryDemand
   memoryStatus        = [string]$vm.MemoryStatus
+  # The integration layer's own verdict on the guest, which nothing else here
+  # reports. "OkApplicationsHealthy"/"OkApplicationsUnknown" mean the heartbeat is
+  # arriving; "Lost", "NoContact" and "Error" mean it is not. Without it, a guest
+  # whose display is blank and whose console will not respond is indistinguishable
+  # from one that is merely locked — and the difference decides what an operator
+  # should do next. Empty on a VM that is off or has no integration services.
+  heartbeat           = [string]$vm.Heartbeat
   cpuUsagePercent     = [int]$vm.CPUUsage
   uptimeSeconds       = [int64]$vm.Uptime.TotalSeconds
   guestOS             = [string]$os
@@ -859,6 +867,13 @@ try {
   # The only way out is to discard the image and cold boot, which is
   # destructive — so the agent identifies the cause and NEVER acts on it.
   $why = [string]$_.Exception.Message
+  # 0x800704F7 is ERROR_MACHINE_LOCKED: a user session on the guest is LOCKED, and
+  # Windows refuses a clean shutdown while it is. That is a known failure with a
+  # known remedy, so it is named rather than passed through as a hex code — and the
+  # remedy is spelled out because forcing past a lock closes somebody's session.
+  if ($why -like '*0x800704F7*' -or $why -like '*locked and cannot be shut down*') {
+    throw ('a user session on ' + %[1]s + ' is LOCKED, so Windows refused a clean shutdown. The guest is healthy - this is not a fault. Sign in and shut it down, or force it, which closes that session and loses anything unsaved in it.')
+  }
   $now = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
   if ('%[2]s' -eq 'Running' -and $now -and [string]$now.State -eq 'Saved') {
     $incompat = $false

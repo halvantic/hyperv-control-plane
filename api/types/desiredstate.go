@@ -2496,6 +2496,31 @@ type VMStatus struct {
 	// "OK", "Low" (the guest wants more than it has) or "Warning".
 	MemoryStatus string `json:"memoryStatus,omitempty"`
 
+	// Heartbeat is the integration layer's own verdict on the guest, straight from
+	// Hyper-V: "OkApplicationsHealthy" and "OkApplicationsUnknown" both mean the
+	// heartbeat is arriving (the second simply means nothing inside is publishing
+	// application health, which is the normal case for a server); "Lost",
+	// "NoContact" and "Error" mean it is not.
+	//
+	// It exists because "the VM says Running" answers a question nobody was
+	// asking. A guest can be Running, reporting memory demand, and completely
+	// unreachable at its console — and without this the console has no way to say
+	// whether the integration layer is healthy, so an operator is left inferring it
+	// from indirect signals. Empty when the VM is off or has no integration
+	// services, which is unknown, not a fault.
+	Heartbeat string `json:"heartbeat,omitempty"`
+
+	// ScreenBlank reports that the captured console thumbnail is entirely one
+	// colour — in practice, that Windows has powered the display down on its
+	// inactivity timer.
+	//
+	// It says the DISPLAY IS BLANK and nothing more. A blanked display looks
+	// identical whether the session beneath it is signed in, locked, or at the
+	// logon screen, so anything that claims to know which is inventing it. Waking
+	// the console is what distinguishes them, and that is an operator's action to
+	// take, never a background one.
+	ScreenBlank bool `json:"screenBlank,omitempty"`
+
 	// CPUUsagePercent is the VM's host-CPU load. Best effort; zero when not
 	// observed.
 	CPUUsagePercent int `json:"cpuUsagePercent,omitempty"`

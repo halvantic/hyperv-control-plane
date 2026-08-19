@@ -175,6 +175,8 @@ func sampleVM() types.VM {
 			PowerState:          types.VMPowerRunning,
 			AssignedMemoryBytes: 4_294_967_296,
 			CPUUsagePercent:     12,
+			Heartbeat:           "OkApplicationsUnknown",
+			ScreenBlank:         true,
 			UptimeSeconds:       3600,
 			Conditions: []types.Condition{{
 				Type:               "VMConfigured",

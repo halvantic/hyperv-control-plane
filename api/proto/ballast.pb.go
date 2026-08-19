@@ -6093,8 +6093,14 @@ type VMStatus struct {
 	// verdict ("OK"/"Low"/"Warning").
 	MemoryDemandBytes uint64 `protobuf:"varint,16,opt,name=memory_demand_bytes,json=memoryDemandBytes,proto3" json:"memory_demand_bytes,omitempty"`
 	MemoryStatus      string `protobuf:"bytes,17,opt,name=memory_status,json=memoryStatus,proto3" json:"memory_status,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// heartbeat is the integration layer's verdict on the guest (Ok*, Lost,
+	// NoContact, Error). Empty is unknown, not healthy.
+	Heartbeat string `protobuf:"bytes,18,opt,name=heartbeat,proto3" json:"heartbeat,omitempty"`
+	// screen_blank means the captured thumbnail is one flat colour: the display
+	// is powered down. It does NOT mean the session is locked.
+	ScreenBlank   bool `protobuf:"varint,19,opt,name=screen_blank,json=screenBlank,proto3" json:"screen_blank,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VMStatus) Reset() {
@@ -6244,6 +6250,20 @@ func (x *VMStatus) GetMemoryStatus() string {
 		return x.MemoryStatus
 	}
 	return ""
+}
+
+func (x *VMStatus) GetHeartbeat() string {
+	if x != nil {
+		return x.Heartbeat
+	}
+	return ""
+}
+
+func (x *VMStatus) GetScreenBlank() bool {
+	if x != nil {
+		return x.ScreenBlank
+	}
+	return false
 }
 
 // VMReplicationStatus is a VM's observed Hyper-V Replica state.
@@ -6940,7 +6960,7 @@ const file_ballast_proto_rawDesc = "" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x12\x1f\n" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
-	"macAddress\"\xe3\x05\n" +
+	"macAddress\"\xa4\x06\n" +
 	"\bVMStatus\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
 	"\x13observed_generation\x18\x02 \x01(\x03R\x12observedGeneration\x129\n" +
@@ -6965,7 +6985,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\robserved_json\x18\x0e \x01(\tR\fobservedJson\x12A\n" +
 	"\vreplication\x18\x0f \x01(\v2\x1f.ballast.v1.VMReplicationStatusR\vreplication\x12.\n" +
 	"\x13memory_demand_bytes\x18\x10 \x01(\x04R\x11memoryDemandBytes\x12#\n" +
-	"\rmemory_status\x18\x11 \x01(\tR\fmemoryStatus\"\x86\x02\n" +
+	"\rmemory_status\x18\x11 \x01(\tR\fmemoryStatus\x12\x1c\n" +
+	"\theartbeat\x18\x12 \x01(\tR\theartbeat\x12!\n" +
+	"\fscreen_blank\x18\x13 \x01(\bR\vscreenBlank\"\x86\x02\n" +
 	"\x13VMReplicationStatus\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x16\n" +
