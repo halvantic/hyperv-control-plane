@@ -42,6 +42,28 @@ $dest = $env:BALLAST_CAP_DEST
 }
 $gsec = ConvertTo-SecureString $env:BALLAST_CAP_PW -AsPlainText -Force
 $gcred = New-Object System.Management.Automation.PSCredential($env:BALLAST_CAP_USER, $gsec)
+
+# PROVE THE CREDENTIAL FIRST, with a command that does nothing.
+#
+# Without this the first use of the credential is launching sysprep, and a
+# rejection there surfaced as the raw text "The credential is invalid." at a line
+# number — which says a credential failed but not WHICH one, not that it must be
+# an account inside the GUEST, and not what to try instead. The capture failed
+# having changed nothing and the operator was left reading a cmdlet error.
+# Failing here costs a second and can say all of it.
+try {
+  Invoke-Command -VMName $vm -Credential $gcred -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop | Out-Null
+} catch {
+  $why = [string]$_.Exception.Message
+  if ($why -like '*credential*' -or $why -like '*logon*' -or $why -like '*password*' -or $why -like '*denied*') {
+    throw ('the guest credential was rejected by ' + $vm + '. Sysprep runs INSIDE the guest over PowerShell Direct, so this must be an account that exists in the guest operating system and is a local administrator there - not the host credential, and not a domain account the guest does not trust. A domain-joined guest wants DOMAIN\user; a workgroup guest wants the local account name. (' + $why + ')')
+  }
+  if ($why -like '*not in a state*' -or $why -like '*Integration*' -or $why -like '*Guest Service*') {
+    throw ('PowerShell Direct could not reach ' + $vm + '. The guest must be Running with Integration Services enabled and its operating system fully booted - a guest still starting, or sitting at a boot menu, cannot be generalised. (' + $why + ')')
+  }
+  throw ('could not run commands inside ' + $vm + ' to generalise it: ' + $why)
+}
+
 # Sysprep shuts the guest down itself, which tears down the PowerShell Direct
 # session carrying the command. Waiting on it inside the guest would therefore
 # surface a broken session rather than a finished sysprep, so start it detached

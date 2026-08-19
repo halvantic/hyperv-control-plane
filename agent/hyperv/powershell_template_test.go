@@ -455,3 +455,64 @@ func TestMaintenanceScriptGatesTheClusterWideStorageRead(t *testing.T) {
 		t.Fatal("a shallow pass must tell the script to skip it")
 	}
 }
+
+// The credential must be proven BEFORE sysprep is launched, and the refusal must
+// be Ballast's own, not a cmdlet's.
+//
+// Seen for real on the rig: a capture failed with
+//
+//	powershell: exit status 1: The credential is invalid.
+//	At line:42 char:1 + Invoke-Command -VMName $vm -Creden
+//
+// which tells an operator that a credential failed, but not WHICH of the several
+// a capture involves, not that it must exist inside the guest, and not what to
+// try instead. Sysprep never ran; the capture changed nothing and explained
+// nothing. That is the "raw error passed through to the operator" defect named in
+// CLAUDE.md, in the exact shape it uses as its example.
+func TestGeneraliseProvesTheGuestCredentialBeforeRunningSysprep(t *testing.T) {
+	s := captureTemplateScript(true, false)
+
+	probe := strings.Index(s, "$env:COMPUTERNAME")
+	sysprep := strings.Index(s, "sysprep.exe")
+	if probe < 0 {
+		t.Fatal("the capture script does not test the guest credential before generalising")
+	}
+	if sysprep < 0 {
+		t.Fatal("the capture script does not run sysprep")
+	}
+	if probe > sysprep {
+		t.Error("the credential is first used to launch sysprep, so a rejection is reported as a cmdlet error instead of a cause")
+	}
+
+	// The refusal has to name what to do, not merely what failed.
+	for _, want := range []string{
+		"guest credential was rejected",
+		"local administrator",
+		"PowerShell Direct",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the credential refusal does not mention %q, so it cannot be acted on", want)
+		}
+	}
+
+	// Order of the whole operation: sysprep, then wait for it to shut down, then
+	// read the disks. Capturing a disk before the guest has stopped copies a file
+	// being written to.
+	shutdownWait := strings.Index(s, "to shut down after sysprep")
+	disks := strings.Index(s, "Get-VMHardDiskDrive")
+	if shutdownWait < 0 || disks < 0 {
+		t.Fatal("expected a shutdown wait and a disk read in the generalise script")
+	}
+	if !(sysprep < shutdownWait && shutdownWait < disks) {
+		t.Error("the script does not run sysprep, then wait for shutdown, then capture, in that order")
+	}
+}
+
+// A capture that does NOT generalise must not demand a guest credential at all —
+// it never enters the guest.
+func TestCaptureWithoutGeneraliseDoesNotTouchTheGuest(t *testing.T) {
+	s := captureTemplateScript(false, false)
+	if strings.Contains(s, "sysprep.exe") || strings.Contains(s, "$env:COMPUTERNAME") {
+		t.Error("a non-generalising capture runs commands inside the guest")
+	}
+}
