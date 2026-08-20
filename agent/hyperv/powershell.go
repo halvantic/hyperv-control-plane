@@ -37,9 +37,10 @@ func (f ProgressFunc) emit(note string) {
 // pure Go (see plan* functions) so it is unit-tested without a host; the
 // scripts themselves require a real Hyper-V host to validate.
 type PowerShell struct {
-	run       runFunc
-	runStream runStreamFunc
-	log       *slog.Logger
+	run          runFunc
+	runStream    runStreamFunc
+	runStreamEnv runStreamEnvFunc
+	log          *slog.Logger
 	// timings records how long each exported method spent in PowerShell, so a
 	// slow pass can name its own slowest call instead of being guessed at.
 	timings *callTimings
@@ -53,6 +54,10 @@ type runFunc func(ctx context.Context, script string) ([]byte, error)
 // arrives (so long-running scripts can report progress mid-flight), returning
 // the exit error. Injectable so tests can drive canned progress lines.
 type runStreamFunc func(ctx context.Context, script string, onLine func(string)) error
+
+// runStreamEnvFunc streams stdout AND carries extra environment, for scripts that
+// take a credential through the environment and still have progress to report.
+type runStreamEnvFunc func(ctx context.Context, script string, env []string, onLine func(string)) error
 
 // NewPowerShell returns a host implementation backed by powershell.exe.
 func NewPowerShell(log *slog.Logger) *PowerShell {
@@ -70,6 +75,10 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 	ps.runStream = func(ctx context.Context, script string, onLine func(string)) error {
 		defer ps.timed(time.Now())
 		return execPowerShellStream(ctx, script, onLine)
+	}
+	ps.runStreamEnv = func(ctx context.Context, script string, env []string, onLine func(string)) error {
+		defer ps.timed(time.Now())
+		return execPowerShellStreamEnv(ctx, script, env, onLine)
 	}
 	return ps
 }
@@ -260,8 +269,21 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 // lines) can report mid-flight. stderr is captured and folded into the exit
 // error, as with execPowerShell.
 func execPowerShellStream(ctx context.Context, script string, onLine func(string)) error {
+	return execPowerShellStreamEnv(ctx, script, nil, onLine)
+}
+
+// execPowerShellStreamEnv is execPowerShellStream with extra environment.
+//
+// Streaming and environment were separate capabilities: a script could report
+// progress as it ran, or take its operands through the environment, but not
+// both. Anything carrying a credential therefore had to run silently to
+// completion — which is exactly the long copy an operator most wants to watch.
+func execPowerShellStreamEnv(ctx context.Context, script string, extraEnv []string, onLine func(string)) error {
 	cmd := exec.CommandContext(ctx, "powershell.exe",
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("powershell stdout pipe: %w", err)

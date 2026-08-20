@@ -852,11 +852,11 @@ func (s *Stub) CreateVMCheckpoint(_ context.Context, _, _ string) error { return
 func (s *Stub) ExportVM(_ context.Context, _, _ string) error           { return nil }
 func (s *Stub) CloneVM(_ context.Context, _, _, _ string) error         { return nil }
 
-func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _, _ bool, _, _ string) (uint64, error) {
+func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _, _ bool, _, _ string, _ ProgressFunc) (uint64, error) {
 	return 0, nil
 }
 
-func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string) error { return nil }
+func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string, _ ProgressFunc) error { return nil }
 func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error      { return nil }
 
 // EnsureNodeMaintenance models pausing/resuming this node. A stub not in a

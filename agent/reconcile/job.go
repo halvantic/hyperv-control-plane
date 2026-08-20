@@ -51,12 +51,12 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		}
 		return "discarded the saved state of " + p["vm"] + " and started it", nil
 	case types.JobVMCaptureTemplate:
-		n, err := r.hv.CaptureTemplate(ctx, p["vm"], p["dest"], p["generalise"] == "true", p["discardSaved"] == "true", p["guestUser"], p["guestPass"])
+		n, err := r.hv.CaptureTemplate(ctx, p["vm"], p["dest"], p["generalise"] == "true", p["discardSaved"] == "true", p["guestUser"], p["guestPass"], onProgress)
 		// The size travels back inside the message; types owns that format, and
 		// the centre records it on the template. See types.FormatCaptureResult.
 		return done(err, types.FormatCaptureResult(p["template"], p["dest"], n))
 	case types.JobVMDeployFromTemplate:
-		return done(r.hv.DeployFromTemplate(ctx, p["source"], p["dest"], p["unattend"]), "deployed "+p["vm"]+"'s disk from template "+p["template"])
+		return done(r.hv.DeployFromTemplate(ctx, p["source"], p["dest"], p["unattend"], onProgress), "deployed "+p["vm"]+"'s disk from template "+p["template"])
 	case types.JobFetchISO:
 		note, err := r.hv.FetchISO(ctx, p["url"], p["dest"])
 		msg := "downloaded ISO " + p["name"]
