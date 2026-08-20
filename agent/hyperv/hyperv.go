@@ -464,7 +464,7 @@ type Interface interface {
 	// usable machine. Otherwise the VM must already be Off. Imperative Job.
 	// discardSaved throws away a saved VM's memory image first, so it becomes Off
 	// and can be copied. Ignored unless the VM is Saved.
-	CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string) (uint64, error)
+	CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string, onProgress ProgressFunc) (uint64, error)
 
 	// MoveVMStorage relocates a VM's files into folder without moving the VM —
 	// Hyper-V storage migration, which runs live. Every destination path is
@@ -483,7 +483,7 @@ type Interface interface {
 	// \Windows\Panther\Unattend.xml so the guest customises itself on first boot.
 	// It does NOT create the VM: the centre authors the VM's desired state when
 	// this job succeeds and the reconcile loop builds it. Imperative Job.
-	DeployFromTemplate(ctx context.Context, src, dest, unattend string) error
+	DeployFromTemplate(ctx context.Context, src, dest, unattend string, onProgress ProgressFunc) error
 
 	// FetchISO downloads an ISO from url (the centre's ISO library over HTTP) to
 	// dest on this host, creating dest's parent folder. Used to place an uploaded

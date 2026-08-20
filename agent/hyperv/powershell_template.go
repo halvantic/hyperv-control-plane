@@ -22,6 +22,69 @@ import (
 // than the command line: an unattend.xml carries the guest's administrator
 // password, and a sysprep needs a guest credential.
 
+// progressLines turns streamed output into progress notes while keeping every
+// line for the marker parsing that decides the result.
+//
+// Both halves matter. Dropping the lines would break RESULT=OK and BYTES=, which
+// are what prove the copy finished; dropping the PROGRESS lines would leave an
+// operator watching "Running" for twenty minutes with no way to tell a working
+// copy from a stalled one.
+func progressLines(onProgress ProgressFunc, sink *strings.Builder, what string) func(string) {
+	return func(line string) {
+		sink.WriteString(line)
+		sink.WriteString("\n")
+		if onProgress == nil {
+			return
+		}
+		if pc, ok := strings.CutPrefix(strings.TrimSpace(line), "PROGRESS "); ok {
+			onProgress(what + " " + strings.TrimSpace(pc) + "%")
+		}
+	}
+}
+
+// copyWithProgress copies one file and reports how far it has got.
+//
+// Copy-Item has no progress of its own, and a template image is tens of
+// gigabytes: an operator watching "Running" for twenty minutes cannot tell a
+// working copy from a stalled one, which is the difference that matters. So the
+// copy runs as a background job and the DESTINATION FILE IS MEASURED against the
+// source size — the file being written is the honest measure of progress, and it
+// needs nothing from Copy-Item.
+//
+// Emits the same PROGRESS <n> protocol live migration uses, so the existing line
+// handler, job plumbing and console percentage all work unchanged.
+//
+// The percentage is CLAMPED below 100 while the job runs. A destination that has
+// reached the source's size is not a finished copy — buffers may still be
+// flushing — and reporting 100% before completion is the kind of green signal
+// this product keeps getting wrong.
+func copyWithProgress(srcVar, dstVar string) string {
+	return `
+$__srcLen = (Get-Item -LiteralPath ` + srcVar + `).Length
+$__cj = Start-Job -ScriptBlock { param($a,$b) Copy-Item -LiteralPath $a -Destination $b -Force } -ArgumentList ` + srcVar + `,` + dstVar + `
+$__last = -1
+while ($__cj.State -eq 'Running') {
+  Start-Sleep -Seconds 2
+  $__n = 0
+  try { $__n = (Get-Item -LiteralPath ` + dstVar + ` -ErrorAction Stop).Length } catch { $__n = 0 }
+  if ($__srcLen -gt 0) {
+    $__pc = [int](($__n / $__srcLen) * 100)
+    if ($__pc -gt 99) { $__pc = 99 }
+    if ($__pc -ne $__last) { Write-Output ('PROGRESS ' + $__pc); $__last = $__pc }
+  }
+}
+Receive-Job $__cj -ErrorAction SilentlyContinue | Out-Null
+if ($__cj.State -eq 'Failed') {
+  $__why = ''
+  try { $__why = [string]$__cj.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
+  Remove-Job $__cj -Force -ErrorAction SilentlyContinue
+  throw ('copying the image failed: ' + $__why)
+}
+Remove-Job $__cj -Force -ErrorAction SilentlyContinue
+Write-Output 'PROGRESS 100'
+`
+}
+
 // captureTemplateScript builds the capture script. generalise selects whether
 // sysprep runs in the guest first.
 func captureTemplateScript(generalise, discardSaved bool) string {
@@ -148,7 +211,7 @@ if (Test-Path -LiteralPath $tmp) {
   try { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop }
   catch { throw ('a capture to ' + $dest + ' is already in progress on this host (' + $tmp + ' is open in another process); wait for it to finish, or delete that file if it was abandoned') }
 }
-Copy-Item -LiteralPath $src -Destination $tmp -Force
+` + copyWithProgress("$src", "$tmp") + `
 Move-Item -LiteralPath $tmp -Destination $dest -Force
 'BYTES=' + [string]((Get-Item -LiteralPath $dest).Length)
 'RESULT=OK'
@@ -162,14 +225,18 @@ Move-Item -LiteralPath $tmp -Destination $dest -Force
 // credential and leaves the source VM generalised — it is no longer a usable
 // machine, which is what generalising means). It returns the captured image's
 // size in bytes.
-func (p *PowerShell) CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string) (uint64, error) {
+func (p *PowerShell) CaptureTemplate(ctx context.Context, vmName, dest string, generalise, discardSaved bool, guestUser, guestPass string, onProgress ProgressFunc) (uint64, error) {
 	env := []string{
 		"BALLAST_CAP_VM=" + vmName,
 		"BALLAST_CAP_DEST=" + dest,
 		"BALLAST_CAP_USER=" + guestUser,
 		"BALLAST_CAP_PW=" + guestPass,
 	}
-	out, err := p.runWithEnvOut(ctx, captureTemplateScript(generalise, discardSaved), env)
+	// Streamed rather than collected, so the copy can report how far it has got.
+	// The marker lines the result depends on are gathered from the same stream.
+	var sb strings.Builder
+	err := p.runStreamEnv(ctx, captureTemplateScript(generalise, discardSaved), env, progressLines(onProgress, &sb, "copying image"))
+	out := []byte(sb.String())
 	if err != nil {
 		return 0, fmt.Errorf("capture template from %q: %w", vmName, err)
 	}
@@ -203,7 +270,7 @@ if (Test-Path -LiteralPath $tmp) {
   try { Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop }
   catch { throw ('a deploy to ' + $dest + ' is already in progress on this host (' + $tmp + ' is open in another process)') }
 }
-Copy-Item -LiteralPath $src -Destination $tmp -Force
+` + copyWithProgress("$src", "$tmp") + `
 `)
 	if withUnattend {
 		b.WriteString(`# Write the unattend into the copy before it is ever attached to a VM, so the
@@ -245,13 +312,15 @@ try {
 // non-empty, injects it into the copy so the guest customises itself on first
 // boot. It deliberately does not create the VM: the centre authors the VM's
 // desired state when this job succeeds and the reconcile loop builds it.
-func (p *PowerShell) DeployFromTemplate(ctx context.Context, src, dest, unattend string) error {
+func (p *PowerShell) DeployFromTemplate(ctx context.Context, src, dest, unattend string, onProgress ProgressFunc) error {
 	env := []string{
 		"BALLAST_DEP_SRC=" + src,
 		"BALLAST_DEP_DEST=" + dest,
 		"BALLAST_DEP_UNATTEND=" + unattend,
 	}
-	out, err := p.runWithEnvOut(ctx, deployFromTemplateScript(unattend != ""), env)
+	var sb strings.Builder
+	err := p.runStreamEnv(ctx, deployFromTemplateScript(unattend != ""), env, progressLines(onProgress, &sb, "copying image"))
+	out := []byte(sb.String())
 	if err != nil {
 		return fmt.Errorf("deploy template image to %q: %w", dest, err)
 	}

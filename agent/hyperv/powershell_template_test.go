@@ -516,3 +516,49 @@ func TestCaptureWithoutGeneraliseDoesNotTouchTheGuest(t *testing.T) {
 		t.Error("a non-generalising capture runs commands inside the guest")
 	}
 }
+
+// A template image is tens of gigabytes. Copy-Item reports nothing, so an
+// operator watched "Running" for twenty minutes with no way to tell a working
+// copy from a stalled one. The copy now runs as a background job while the
+// DESTINATION FILE is measured against the source — the file being written is the
+// honest measure, and it needs nothing from Copy-Item.
+func TestTemplateCopyReportsProgress(t *testing.T) {
+	for name, s := range map[string]string{
+		"capture": captureTemplateScript(false, false),
+		"deploy":  deployFromTemplateScript(false),
+	} {
+		if !strings.Contains(s, "PROGRESS ") {
+			t.Errorf("%s script emits no progress", name)
+		}
+		if strings.Contains(s, "Copy-Item -LiteralPath $src -Destination $tmp -Force\n") {
+			t.Errorf("%s still uses a bare Copy-Item, which cannot report progress", name)
+		}
+		// Never 100% before the job has finished. A destination that has reached
+		// the source's size is not a completed copy — buffers may still be
+		// flushing — and reporting done early is the class of false green this
+		// product keeps paying for.
+		if !strings.Contains(s, "if ($__pc -gt 99) { $__pc = 99 }") {
+			t.Errorf("%s can report 100%% before the copy job has completed", name)
+		}
+	}
+}
+
+// The streamed lines must still be KEPT: RESULT=OK and BYTES= are what prove the
+// copy finished, and progress reporting must not consume them.
+func TestProgressLinesKeepEveryLine(t *testing.T) {
+	var sb strings.Builder
+	var notes []string
+	h := progressLines(func(n string) { notes = append(notes, n) }, &sb, "copying image")
+	for _, l := range []string{"PROGRESS 10", "BYTES=1234", "PROGRESS 99", "RESULT=OK"} {
+		h(l)
+	}
+	got := sb.String()
+	for _, want := range []string{"BYTES=1234", "RESULT=OK", "PROGRESS 10"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the sink lost %q; the result markers are parsed from it", want)
+		}
+	}
+	if len(notes) != 2 || notes[0] != "copying image 10%" {
+		t.Errorf("progress notes = %v, want two notes starting with 'copying image 10%%'", notes)
+	}
+}
