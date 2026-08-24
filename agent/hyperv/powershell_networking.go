@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -337,6 +338,18 @@ type vnicObservation struct {
 	Exists     bool   `json:"exists"`
 	SwitchName string `json:"switchName"`
 	VlanID     int    `json:"vlanID"`
+	// TeamMember is the physical adapter this vNIC is pinned to inside the
+	// switch's SET team, empty when SET is free to place it anywhere. Observed
+	// because an unpinned storage vNIC is indistinguishable from a pinned one
+	// everywhere else — same address, same session, same MPIO — right up to the
+	// point where the one shared cable fails.
+	TeamMember string `json:"teamMember"`
+	// RDMA is whether RDMA is enabled on the vNIC's projected interface.
+	// RDMAKnown is whether the interface exposes RDMA at all: an adapter with no
+	// RDMA capability reports nothing, which is not the same as reporting off,
+	// and treating it as off would make the reconcile try to enable it for ever.
+	RDMA      bool `json:"rdma"`
+	RDMAKnown bool `json:"rdmaKnown"`
 	// Known is false when Hyper-V could not be read at all; see
 	// ErrHyperVUnavailable. Exists is then meaningless.
 	Known bool `json:"known"`
@@ -370,7 +383,36 @@ func planVNIC(spec types.ManagementVNICSpec, obs vnicObservation) vnicPlan {
 	if obs.SwitchName != spec.SwitchName || obs.VlanID != spec.VLANID {
 		return vnicUpdate
 	}
+	// A pin that has drifted — or was never applied — is drift like any other.
+	// Nothing above this layer can see it: the vNIC is up, addressed and
+	// carrying traffic either way, and only a failed cable tells you which.
+	if !strings.EqualFold(obs.TeamMember, spec.TeamMemberAdapter) {
+		return vnicUpdate
+	}
+	// RDMA is compared only where the adapter can answer. An adapter with no
+	// RDMA capability reports nothing; reading that as "off" would make every
+	// pass try to enable it, report Updated, and change nothing — a reconcile
+	// that never settles. That mismatch is reported instead; see rdmaRefused.
+	if spec.RDMA != nil && obs.RDMAKnown && *spec.RDMA != obs.RDMA {
+		return vnicUpdate
+	}
 	return vnicNoop
+}
+
+// rdmaRefused reports a spec that asks for RDMA on an interface that has none.
+//
+// Silence here would be the worse failure: the console would show RDMA declared
+// and settled, and SMB Direct would simply never engage — storage that works,
+// slowly, for reasons nothing on the host explains. It is not fatal to the vNIC,
+// which is otherwise correct, so it is reported after the rest is applied.
+func rdmaRefused(spec types.ManagementVNICSpec, obs vnicObservation) error {
+	if spec.RDMA == nil || !*spec.RDMA || !obs.Exists || obs.RDMAKnown {
+		return nil
+	}
+	return fmt.Errorf("vNIC %q asks for RDMA, but the interface %q reports no RDMA capability — "+
+		"either the physical adapter it lands on does not support it, or its driver has RDMA disabled. "+
+		"SMB Direct will not engage on this path; everything else about the vNIC is configured",
+		spec.Name, "vEthernet ("+spec.Name+")")
 }
 
 func (p *PowerShell) queryVNIC(ctx context.Context, name string) (vnicObservation, error) {
@@ -385,7 +427,17 @@ if (-not $a) { [pscustomobject]@{ exists = $false; known = $true } | ConvertTo-J
 $vid = 0
 $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName %[1]s -ErrorAction SilentlyContinue
 if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
-[pscustomobject]@{ exists = $true; known = $true; switchName = [string]$a.SwitchName; vlanID = $vid } | ConvertTo-Json -Compress
+$map = @(Get-VMNetworkAdapterTeamMapping -ManagementOS -VMNetworkAdapterName %[1]s -ErrorAction SilentlyContinue)[0]
+$rdma = Get-NetAdapterRdma -Name ('vEthernet (' + %[1]s + ')') -ErrorAction SilentlyContinue
+[pscustomobject]@{
+  exists     = $true
+  known      = $true
+  switchName = [string]$a.SwitchName
+  vlanID     = $vid
+  teamMember = [string]$map.NetAdapterName
+  rdma       = [bool]$rdma.Enabled
+  rdmaKnown  = [bool]$rdma
+} | ConvertTo-Json -Compress
 `, psQuote(name))
 
 	out, err := p.run(ctx, script)
@@ -486,6 +538,11 @@ func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.Manageme
 	}
 
 	adapter := OutcomeUnchanged
+	// Whether this pass moves the vNIC to a different switch, which is the one
+	// update that destroys and recreates it. Decided from the observation rather
+	// than from what the script did, because the script is where the guard lives
+	// and this has to agree with it.
+	movedSwitch := obs.Exists && obs.SwitchName != spec.SwitchName
 	switch planVNIC(spec, obs) {
 	case vnicCreate:
 		if err := p.run2(ctx, createVNICScript(spec)); err != nil {
@@ -493,7 +550,7 @@ func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.Manageme
 		}
 		adapter = OutcomeCreated
 	case vnicUpdate:
-		if err := p.run2(ctx, updateVNICScript(spec)); err != nil {
+		if err := p.run2(ctx, updateVNICScript(spec, obs)); err != nil {
 			return OutcomeUnchanged, fmt.Errorf("update vNIC %q: %w", spec.Name, err)
 		}
 		adapter = OutcomeUpdated
@@ -503,7 +560,13 @@ func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.Manageme
 	if spec.IPConfig != nil {
 		// A vNIC just created has no IP yet, and the batched observation was
 		// taken before it existed — re-observe rather than trust it.
-		if adapter == OutcomeCreated {
+		//
+		// The same is true of one that just MOVED switches: that move is a remove
+		// and an add, so the address went with it. Trusting the batch here would
+		// compare the desired address against a reading taken before the vNIC was
+		// destroyed, find it matches, skip the apply, and leave the interface with
+		// no address at all — on the management vNIC, that is the host.
+		if adapter == OutcomeCreated || movedSwitch {
 			observedIP = nil
 		}
 		changed, err := p.reconcileVNICIP(ctx, spec.Name, spec.IPConfig, observedIP)
@@ -513,14 +576,17 @@ func (p *PowerShell) ensureMgmtVNICFrom(ctx context.Context, spec types.Manageme
 		ipChanged = changed
 	}
 
+	outcome := OutcomeUnchanged
 	switch {
 	case adapter == OutcomeCreated:
-		return OutcomeCreated, nil
+		outcome = OutcomeCreated
 	case adapter == OutcomeUpdated || ipChanged:
-		return OutcomeUpdated, nil
-	default:
-		return OutcomeUnchanged, nil
+		outcome = OutcomeUpdated
 	}
+	// Reported last, and without undoing anything: the vNIC is configured, and
+	// the one thing that cannot be honoured is named rather than left to be
+	// discovered by a slow storage fabric.
+	return outcome, rdmaRefused(spec, obs)
 }
 
 // reconcileVNICIP observes the vNIC's current IPv4 config and applies the
@@ -619,6 +685,29 @@ catch { [pscustomobject]@{ known = $false; adapters = @{}; ips = @{} } | Convert
 # reconciled away.
 $clusterIps = @()
 try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
+# Every network adapter, hidden ones included, enumerated ONCE. The per-name
+# helper is deliberately not used here: it asks Hyper-V again for each vNIC, and
+# this batch exists precisely to pay that cost once. Same resolution, hoisted.
+$allNet = @()
+try { $allNet = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue) } catch {}
+function Resolve-BallastAlias($vnicObj, [string]$nm) {
+  # Name first, MAC only to disambiguate. A management OS vNIC on a SET team
+  # shares its MAC with a physical team member, so a MAC-first match resolves to
+  # the physical NIC. See Get-BallastVNICAlias.
+  $cands = @($allNet | Where-Object { $_.Name -eq ('vEthernet (' + $nm + ')') -or $_.Name -like ('vEthernet (' + $nm + ') *') })
+  if ($cands.Count -eq 0) { return 'vEthernet (' + $nm + ')' }
+  if ($cands.Count -eq 1) { return [string]$cands[0].Name }
+  if ($vnicObj) {
+    $mac = ([string]$vnicObj.MacAddress) -replace '[-:]',''
+    if ($mac -and $mac -ne '000000000000') {
+      $hit = @($cands | Where-Object { (([string]$_.MacAddress) -replace '[-:]','') -eq $mac })[0]
+      if ($hit) { return [string]$hit.Name }
+    }
+  }
+  $live = @($cands | Where-Object { [string]$_.Status -ne 'Disconnected' })[0]
+  if ($live) { return [string]$live.Name }
+  return [string]$cands[0].Name
+}
 $adapters = @{}
 $ips = @{}
 foreach ($n in $names) {
@@ -628,9 +717,22 @@ foreach ($n in $names) {
     $vid = 0
     $v = Get-VMNetworkAdapterVlan -ManagementOS -VMNetworkAdapterName $n -ErrorAction SilentlyContinue
     if ($v -and $v.OperationMode -eq 'Access') { $vid = [int]$v.AccessVlanId }
-    $adapters[$key] = [pscustomobject]@{ exists = $true; known = $true; switchName = [string]$a.SwitchName; vlanID = $vid }
+    # Pin and RDMA are read here rather than per vNIC: both cmdlets come from
+    # modules this script has already paid to load, so the marginal cost is the
+    # call itself.
+    $map = @(Get-VMNetworkAdapterTeamMapping -ManagementOS -VMNetworkAdapterName $n -ErrorAction SilentlyContinue)[0]
+    $rdma = Get-NetAdapterRdma -Name (Resolve-BallastAlias $a $n) -ErrorAction SilentlyContinue
+    $adapters[$key] = [pscustomobject]@{
+      exists     = $true
+      known      = $true
+      switchName = [string]$a.SwitchName
+      vlanID     = $vid
+      teamMember = [string]$map.NetAdapterName
+      rdma       = [bool]$rdma.Enabled
+      rdmaKnown  = [bool]$rdma
+    }
   }
-  $alias = 'vEthernet (' + $n + ')'
+  $alias = Resolve-BallastAlias $a $n
   $ip = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })[0]
   $gw = @(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop
   $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
@@ -648,8 +750,10 @@ foreach ($n in $names) {
 
 func (p *PowerShell) queryVNICIP(ctx context.Context, name string) (ipObservation, error) {
 	script := fmt.Sprintf(`
-$ErrorActionPreference = 'Stop'
-$alias = 'vEthernet (%[1]s)'
+$ErrorActionPreference = 'Stop'`+vnicAliasHelper+`
+# Resolved, not constructed — and it must resolve the SAME way the apply does,
+# or the reconcile reads one adapter and writes another and never settles.
+$alias = Get-BallastVNICAlias '%[1]s'
 $clusterIps = @(); try { $clusterIps = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -like 'IP Address*' } | ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address -ErrorAction SilentlyContinue).Value }) } catch {}
 $ip = @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' -and $_.IPAddress -notlike '169.254.*' -and ($clusterIps -notcontains $_.IPAddress) })[0]
 $gw = @(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop
@@ -694,10 +798,13 @@ func ipDiffers(desired *types.IPConfig, obs ipObservation) bool {
 }
 
 func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
-	alias := fmt.Sprintf("vEthernet (%s)", name)
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
-	fmt.Fprintf(&b, "$alias = %s\n", psQuote(alias))
+	// The adapter is RESOLVED, never named by construction. See vnicAliasHelper:
+	// a dead "vEthernet (X)" left behind by a removed vNIC accepts every call in
+	// this script and changes nothing on the interface that matters.
+	b.WriteString(vnicAliasHelper)
+	fmt.Fprintf(&b, "$alias = Get-BallastVNICAlias %s\n", psQuote(name))
 	// Switch off DHCP, then clear any existing address and default route so the
 	// new address applies cleanly and idempotently.
 	b.WriteString("Set-NetIPInterface -InterfaceAlias $alias -Dhcp Disabled -ErrorAction SilentlyContinue\n")
@@ -745,6 +852,46 @@ function Clear-BallastGhostAddress([string]$want) {
   return $freed
 }
 `)
+	// DHCP off AGAIN, immediately before the address is applied and scoped to
+	// IPv4.
+	//
+	// It is already switched off at the top of this script, and that was not
+	// enough: removing the last manual address above lets the interface fall back
+	// to DHCP, so by the time New-NetIPAddress runs the flag is on again and
+	// Windows refuses with "Inconsistent parameters PolicyStore PersistentStore
+	// and Dhcp Enabled" — a persistent static address cannot be added to a DHCP
+	// interface. Observed on HVNEW02 2026-08-24, on the vNIC carrying the host's
+	// management address.
+	//
+	// The earlier call also omitted -AddressFamily, so it targeted IPv6 as well,
+	// where Dhcp is not the mechanism; scoping it here keeps the failure that
+	// matters visible instead of mixed in with one that never applied.
+	//
+	// And it REPORTS ITSELF. Scoping the call to IPv4 was not enough: HVNEW02 on
+	// 0.4.138 — which had that fix — went on failing with the same "Inconsistent
+	// parameters PolicyStore PersistentStore and Dhcp Enabled". The disable runs
+	// with -ErrorAction SilentlyContinue under an $ErrorActionPreference of Stop,
+	// so if it fails, nothing anywhere says so and the operator is handed a
+	// downstream complaint about the ADDRESS instead of the reason.
+	//
+	// So: let it throw, keep the reason, then read the state back rather than
+	// assume the write took. Whatever the cause turns out to be, the next report
+	// names it instead of pointing at New-NetIPAddress.
+	b.WriteString(`$dhcpErr = ''
+try { Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop }
+catch { $dhcpErr = ([string]$_.Exception.Message).Trim() }
+$dhcpState = ''
+try { $dhcpState = [string](Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction Stop).Dhcp } catch {}
+# One retry against the ACTIVE store. A write that lands in PersistentStore only
+# leaves the running interface still on DHCP, which is exactly the state
+# New-NetIPAddress refuses — and the two stores disagreeing is the leading
+# suspect for a disable that reports success and changes nothing.
+if ($dhcpState -eq 'Enabled') {
+  try { Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -Dhcp Disabled -PolicyStore ActiveStore -ErrorAction Stop } catch { $dhcpErr = ($dhcpErr + ' / ActiveStore: ' + ([string]$_.Exception.Message).Trim()).Trim(' /') }
+  try { $dhcpState = [string](Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction Stop).Dhcp } catch {}
+}
+`)
+
 	newIP := fmt.Sprintf("New-NetIPAddress -InterfaceAlias $alias -IPAddress %s -PrefixLength %d", psQuote(ip), prefix)
 	if cfg.Gateway != "" {
 		newIP += " -DefaultGateway " + psQuote(cfg.Gateway)
@@ -753,15 +900,26 @@ function Clear-BallastGhostAddress([string]$want) {
 	// the error TEXT: relying on stderr produced a bare "exit status 1:" with
 	// nothing after it, which told an operator only that something failed.
 	fmt.Fprintf(&b, `
+# What was actually observed about DHCP, carried into whatever fails below. The
+# "Inconsistent parameters PolicyStore PersistentStore and Dhcp Enabled" message
+# describes the ADDRESS call; the cause is here.
+$dhcpNote = ''
+if ($dhcpState -eq 'Enabled') {
+  $dhcpNote = '. DHCP is still enabled on ' + $alias + ' — a persistent static address cannot be added to a DHCP interface'
+  if ($dhcpErr) { $dhcpNote = $dhcpNote + ', and disabling it failed: ' + $dhcpErr }
+  else { $dhcpNote = $dhcpNote + ', and disabling it reported success but did not take' }
+} elseif ($dhcpErr) {
+  $dhcpNote = '. Disabling DHCP on ' + $alias + ' reported: ' + $dhcpErr
+}
 try { %[1]s | Out-Null }
 catch {
   $first = [string]$_.Exception.Message
   $freed = Clear-BallastGhostAddress %[2]s
   if ($freed.Count -gt 0) {
     try { %[1]s | Out-Null }
-    catch { throw ('could not apply ' + %[2]s + ' to ' + $alias + ' even after releasing it from removed adapter(s) ' + ($freed -join ', ') + ': ' + [string]$_.Exception.Message) }
+    catch { throw ('could not apply ' + %[2]s + ' to ' + $alias + ' even after releasing it from removed adapter(s) ' + ($freed -join ', ') + ': ' + [string]$_.Exception.Message + $dhcpNote) }
   } else {
-    throw ('could not apply ' + %[2]s + ' to ' + $alias + ': ' + $first)
+    throw ('could not apply ' + %[2]s + ' to ' + $alias + ': ' + $first + $dhcpNote)
   }
 }
 `, newIP, psQuote(ip))
@@ -813,18 +971,116 @@ func createVNICScript(spec types.ManagementVNICSpec) string {
 		psQuote(spec.Name), psQuote(spec.SwitchName))
 	b.WriteString(vlanCommand(spec))
 	b.WriteString(weightCommand(spec))
+	b.WriteString(affinityCommand(spec))
+	b.WriteString(rdmaCommand(spec))
 	return b.String()
 }
 
-func updateVNICScript(spec types.ManagementVNICSpec) string {
+// updateVNICScript changes ONLY what has drifted.
+//
+// It used to rewrite every setting on every update. That was wasteful before the
+// pin existed and harmful once it did: changing a pin re-applied the VLAN, and
+// Set-VMNetworkAdapterVlan threw "Object reference not set to an instance of an
+// object" on HVNEW02's storage vNICs on 2026-08-24 — a vNIC whose VLAN was
+// already correct, failed by a call that had no reason to run. Making the pin
+// reconcilable is what made that path reachable.
+//
+// Beyond avoiding the fault, it is the right shape anyway: an update that
+// rewrites everything to change one field turns a pin adjustment into a VLAN
+// change and a QoS change on a live interface.
+func updateVNICScript(spec types.ManagementVNICSpec, obs vnicObservation) string {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
-	// A management vNIC cannot be moved between switches in place; reconnect it.
-	fmt.Fprintf(&b, "Connect-VMNetworkAdapter -VMNetworkAdapter (Get-VMNetworkAdapter -ManagementOS -Name %s) -SwitchName %s | Out-Null\n",
-		psQuote(spec.Name), psQuote(spec.SwitchName))
-	b.WriteString(vlanCommand(spec))
+	// Moving a management vNIC between switches, and ONLY when it has to move.
+	//
+	// This used to run unconditionally on every update, and it could not work at
+	// all: Get-VMNetworkAdapter -ManagementOS returns a VMInternalNetworkAdapter,
+	// and Connect-VMNetworkAdapter -VMNetworkAdapter is typed to VMNetworkAdapter,
+	// so the bind failed with "Cannot convert ... VMInternalNetworkAdapter". It
+	// was invisible while the only updates were creates; making the pin and RDMA
+	// reconcilable meant an already-correct vNIC could need an update, and every
+	// one of those failed. Observed on HVNEW02 2026-08-24 for Storage01 and
+	// Storage02, whose switch was right and whose pin was not.
+	//
+	// Two changes. It is guarded on the switch actually differing — reconnecting
+	// a management vNIC drops its network, and doing that to adjust a VLAN or a
+	// pin is damage for nothing. And the move is remove-then-add, which is what
+	// moving a management OS vNIC between switches actually is; the comment here
+	// always said so.
+	//
+	// The guard against stranding the host is the important part: the target
+	// switch must already exist before the vNIC is removed, or a typo takes the
+	// management address away with nothing to put it back on. The IP is
+	// reapplied by the step that follows, which re-observes rather than trusting
+	// the batch taken before the move.
+	fmt.Fprintf(&b, `$a = @(Get-VMNetworkAdapter -ManagementOS -Name %[1]s -ErrorAction SilentlyContinue)[0]
+if ($a -and [string]$a.SwitchName -ne %[2]s) {
+  if (-not (Get-VMSwitch -Name %[2]s -ErrorAction SilentlyContinue)) {
+    throw ('cannot move vNIC ' + %[1]s + ' to switch ' + %[2]s + ': that switch does not exist on this host, and removing the vNIC first would leave nothing to re-add it to')
+  }
+  Remove-VMNetworkAdapter -ManagementOS -Name %[1]s
+  Add-VMNetworkAdapter -ManagementOS -Name %[1]s -SwitchName %[2]s | Out-Null
+}
+`, psQuote(spec.Name), psQuote(spec.SwitchName))
+	if obs.VlanID != spec.VLANID {
+		b.WriteString(vlanCommand(spec))
+	}
+	// The weight is not observed, so it is applied whenever anything else is —
+	// there is no reading to compare against, and claiming it matches would be
+	// the absent-is-not-zero trap in miniature.
 	b.WriteString(weightCommand(spec))
+	if !strings.EqualFold(obs.TeamMember, spec.TeamMemberAdapter) {
+		b.WriteString(affinityCommand(spec))
+	}
+	if spec.RDMA != nil && obs.RDMAKnown && *spec.RDMA != obs.RDMA {
+		b.WriteString(rdmaCommand(spec))
+	}
 	return b.String()
+}
+
+// affinityCommand pins a vNIC to ONE physical adapter in the switch's SET team.
+//
+// This is what makes a second storage path a second path. Without it SET places
+// each vNIC on whichever uplink it likes, so two storage vNICs on two subnets —
+// with MPIO or SMB Multichannel dutifully running across both — can share a
+// single physical port. One cable then takes the lot, and every layer above goes
+// on reporting redundancy. Seen 2026-08-24: three hosts, three declared portals
+// each, one path each, MPIO "in effect" with nothing to fail over to.
+//
+// Idempotent: the mapping is removed and re-added, because Set-VMNetworkAdapter-
+// TeamMapping cannot move an existing mapping to a different adapter and errors
+// if one is already present. Removing a mapping does not disturb traffic — it
+// returns placement to SET's own choice for the moment in between.
+//
+// An empty adapter clears any mapping rather than leaving a stale one: a vNIC
+// whose pin was deliberately removed must actually come unpinned, or the spec
+// and the host disagree for ever.
+func affinityCommand(spec types.ManagementVNICSpec) string {
+	name := psQuote(spec.Name)
+	if spec.TeamMemberAdapter == "" {
+		return fmt.Sprintf("Remove-VMNetworkAdapterTeamMapping -ManagementOS -VMNetworkAdapterName %s -ErrorAction SilentlyContinue | Out-Null\n", name)
+	}
+	return fmt.Sprintf(`Remove-VMNetworkAdapterTeamMapping -ManagementOS -VMNetworkAdapterName %[1]s -ErrorAction SilentlyContinue | Out-Null
+Set-VMNetworkAdapterTeamMapping -ManagementOS -VMNetworkAdapterName %[1]s -PhysicalNetAdapterName %[2]s | Out-Null
+`, name, psQuote(spec.TeamMemberAdapter))
+}
+
+// rdmaCommand turns RDMA on or off for a vNIC.
+//
+// Only when the spec has an opinion. Nil means nobody has decided, and enabling
+// RDMA on adapters that cannot do it — or, for RoCE, without DCB configured on
+// the switches Ballast does not administer — produces a fabric that works until
+// it is loaded and then does not. So it is declared, never inferred.
+func rdmaCommand(spec types.ManagementVNICSpec) string {
+	if spec.RDMA == nil {
+		return ""
+	}
+	// The management OS vNIC appears to the network stack as "vEthernet (name)".
+	iface := psQuote("vEthernet (" + spec.Name + ")")
+	if !*spec.RDMA {
+		return fmt.Sprintf("Disable-NetAdapterRdma -Name %s -ErrorAction SilentlyContinue | Out-Null\n", iface)
+	}
+	return fmt.Sprintf("Enable-NetAdapterRdma -Name %s -ErrorAction SilentlyContinue | Out-Null\n", iface)
 }
 
 func vlanCommand(spec types.ManagementVNICSpec) string {
@@ -895,9 +1151,9 @@ if (-not $hasMgmtIP) { $ready = $false }
 // 'Other' (not 'Manual'), and DHCP leases are 'Dhcp' — a Manual-only test once
 // deleted a vNIC carrying the live cluster IP, killing the cluster IP resource
 // and dropping the node out of the cluster network.
-func (p *PowerShell) PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error) {
+func (p *PowerShell) PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, []string, error) {
 	if len(switches) == 0 {
-		return OutcomeUnchanged, nil
+		return OutcomeUnchanged, nil, nil
 	}
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $switches = %[1]s
@@ -915,16 +1171,59 @@ foreach ($a in $all) {
   if ($hasIP) { continue }
   try { Remove-VMNetworkAdapter -ManagementOS -Name $nm -ErrorAction Stop; $removed += ($nm + '@' + $sw) } catch {}
 }
-if ($removed.Count -gt 0) { 'RESULT=REMOVED ' + ($removed -join ',') } else { 'RESULT=NOOP' }`,
+
+# DUPLICATES of a DECLARED vNIC, which the loop above can never see.
+#
+# Hyper-V allows two management OS vNICs with the same name on one switch. Only
+# the network adapter ALIAS is disambiguated, to "vEthernet (Name) 2" — the vNIC
+# name stays identical. So "$keep -contains $nm" matches the duplicate too and
+# skips it as declared, and every alias this file builds by concatenation
+# addresses the FIRST one, whichever that happens to be.
+#
+# HVNEW02, 2026-08-24: "vEthernet (ConvergedSwitch) 2" on adapter #2 holding a
+# DHCP lease of 192.168.1.177, while the declared vNIC held 192.168.1.72. The
+# cluster used the .177 interface for Cluster Network 1, Ballast reported the
+# host settled, and nothing anywhere mentioned there were two.
+#
+# Reported, never auto-removed. Both carry a real address, and choosing which to
+# delete on a live cluster member is a decision — deleting the one the cluster is
+# actually using takes the node off its heartbeat network.
+$dups = @()
+foreach ($g in @($all | Group-Object { [string]$_.SwitchName + '/' + [string]$_.Name })) {
+  if ($g.Count -le 1) { continue }
+  $first = $g.Group[0]
+  if ($switches -notcontains [string]$first.SwitchName) { continue }
+  # The real adapter aliases, read rather than constructed, so the report names
+  # what an operator will actually find on the host.
+  $aliases = @()
+  foreach ($d in @($g.Group)) {
+    $na = Get-NetAdapter -InterfaceDescription ([string]$d.DeviceId) -ErrorAction SilentlyContinue
+    if (-not $na) { $na = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('vEthernet (' + [string]$d.Name + ')*') }) }
+    foreach ($x in @($na)) {
+      $ip = @(Get-NetIPAddress -InterfaceAlias ([string]$x.Name) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' })[0]
+      $aliases += ([string]$x.Name + (if ($ip) { ' = ' + [string]$ip.IPAddress } else { ' = no address' }))
+    }
+  }
+  $dups += ([string]$first.Name + ' on ' + [string]$first.SwitchName + ': ' + (($aliases | Sort-Object -Unique) -join '; '))
+}
+$res = [ordered]@{ removed = $removed; duplicates = $dups }
+'RESULT=' + ($res | ConvertTo-Json -Compress -Depth 3)`,
 		psStringList(switches), psStringList(keep))
 	out, err := p.run(ctx, script)
 	if err != nil {
-		return OutcomeUnchanged, fmt.Errorf("prune management vNICs: %w", err)
+		return OutcomeUnchanged, nil, fmt.Errorf("prune management vNICs: %w", err)
 	}
-	if strings.Contains(string(out), "RESULT=REMOVED") {
-		return OutcomeUpdated, nil
+	var res struct {
+		Removed    []string `json:"removed"`
+		Duplicates []string `json:"duplicates"`
 	}
-	return OutcomeUnchanged, nil
+	if derr := json.Unmarshal([]byte(resultJSON(string(out))), &res); derr != nil {
+		return OutcomeUnchanged, nil, fmt.Errorf("prune management vNICs: could not read the result: %w", derr)
+	}
+	if len(res.Removed) > 0 {
+		return OutcomeUpdated, res.Duplicates, nil
+	}
+	return OutcomeUnchanged, res.Duplicates, nil
 }
 
 // GetNetworkProfile returns the host's Windows network-location category: the
@@ -1024,3 +1323,56 @@ func dedup(sorted []string) []string {
 	}
 	return out
 }
+
+// vnicAliasHelper is the PowerShell that resolves a management OS vNIC's REAL
+// network adapter name, emitted into every script that needs one.
+//
+// The alias is NOT reliably "vEthernet (<name>)". Windows appends " 2" when a
+// device already holds that name, and a vNIC that was removed and re-added
+// leaves the old device behind — present, Disconnected, and still owning the
+// original alias. Constructing the name then addresses the corpse.
+//
+// HVNEW02, 2026-08-24:
+//
+//	vEthernet (ConvergedSwitch)     Hyper-V Virtual Ethernet Adapter     Disconnected  5
+//	vEthernet (ConvergedSwitch) 2   Hyper-V Virtual Ethernet Adapter #2  Up           24
+//
+// Ballast disabled DHCP on ifIndex 5, read DHCP back from ifIndex 5, and applied
+// the address to ifIndex 5 — all of it on a dead adapter that reported success
+// and changed nothing, while the live vNIC sat on a DHCP lease of 192.168.1.177.
+// The whole "disabling it reported success but did not take" mystery was this.
+//
+// Resolved by MAC, which belongs to the vNIC itself and is unique. The name
+// fallback prefers a connected adapter over a disconnected one, so even without
+// a MAC the dead device is the last thing chosen rather than the first.
+const vnicAliasHelper = `
+function Get-BallastVNICAlias([string]$vnic) {
+  # Candidates come from the NAME, always. The MAC only chooses between them.
+  #
+  # Matching on MAC first was wrong and dangerous: a management OS vNIC on a SET
+  # team shares its MAC with a physical team member, so resolving
+  # "ConvergedSwitch" found Ethernet1 — a teamed physical NIC — and the apply
+  # then tried to remove addresses from it and put the host management address
+  # on it. It failed only because a teamed adapter has no IPv4 interface.
+  # HVNEW02, 2026-08-24.
+  $cands = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -eq ('vEthernet (' + $vnic + ')') -or $_.Name -like ('vEthernet (' + $vnic + ') *')
+  })
+  if ($cands.Count -eq 0) { return 'vEthernet (' + $vnic + ')' }
+  if ($cands.Count -eq 1) { return [string]$cands[0].Name }
+  # More than one: a vNIC removed and re-added leaves the old device present and
+  # Disconnected, still holding the canonical name, while the live one becomes
+  # "vEthernet (<name>) 2". The vNIC's own MAC says which is which.
+  $vn = @(Get-VMNetworkAdapter -ManagementOS -Name $vnic -ErrorAction SilentlyContinue)[0]
+  if ($vn) {
+    $mac = ([string]$vn.MacAddress) -replace '[-:]',''
+    if ($mac -and $mac -ne '000000000000') {
+      $hit = @($cands | Where-Object { (([string]$_.MacAddress) -replace '[-:]','') -eq $mac })[0]
+      if ($hit) { return [string]$hit.Name }
+    }
+  }
+  $live = @($cands | Where-Object { [string]$_.Status -ne 'Disconnected' })[0]
+  if ($live) { return [string]$live.Name }
+  return [string]$cands[0].Name
+}
+`

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -252,6 +253,40 @@ func (s *Store) LoadDesiredVMs() (vms []types.VM, ok bool, err error) {
 		return nil
 	})
 	return vms, ok, err
+}
+
+// DropDesiredVM removes one VM from the last-honoured set, in place.
+//
+// Called when a RemoveVM job has succeeded. Deleting a VM is the centre's
+// intent, delivered as a job rather than as a spec change, and the agent must
+// stop wanting the VM the moment the deletion lands — not when the next pull
+// happens to arrive. Without this the cached set still names a VM that no longer
+// exists, and the very next reconcile pass creates it again (and re-registers
+// its cluster role), which is a VM coming back from the dead minutes after an
+// operator deleted it.
+//
+// This is not the agent inventing intent: the job IS the centre saying the VM
+// should go. Persisting it here is what makes the removal survive the centre
+// then going offline, or the agent restarting, before the next pull can confirm
+// it. A pull that later re-lists the VM re-authors it, as it should.
+//
+// Idempotent: a name that is not in the set, or no set at all, is a no-op.
+func (s *Store) DropDesiredVM(name string) error {
+	vms, ok, err := s.LoadDesiredVMs()
+	if err != nil || !ok {
+		return err
+	}
+	kept := make([]types.VM, 0, len(vms))
+	for _, vm := range vms {
+		if strings.EqualFold(vm.Meta.Name, name) {
+			continue
+		}
+		kept = append(kept, vm)
+	}
+	if len(kept) == len(vms) {
+		return nil
+	}
+	return s.SaveDesiredVMs(kept)
 }
 
 // AppendStatus records a status report in the journal, assigning it the next

@@ -595,7 +595,7 @@ func (s *Stub) UpdateClusterFunctionalLevel(_ context.Context) (string, error) {
 
 // EnsureISCSI reports a connected, single-path array so a stub-backed reconcile
 // exercises the success path without a network.
-func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string, _ bool) (ISCSIState, Outcome, error) {
+func (s *Stub) EnsureISCSI(_ context.Context, spec types.ISCSIStorageSpec, _, _ string, _ bool, _ []string) (ISCSIState, Outcome, error) {
 	st := ISCSIState{
 		InitiatorIQN:   "iqn.1991-05.com.microsoft:stub.lab.local",
 		ServiceRunning: true,
@@ -721,8 +721,8 @@ func (s *Stub) GetNetworkProfile(_ context.Context) (string, error) {
 	return "DomainAuthenticated", nil
 }
 
-func (s *Stub) PruneManagementVNICs(_ context.Context, _, _ []string) (Outcome, error) {
-	return OutcomeUnchanged, nil
+func (s *Stub) PruneManagementVNICs(_ context.Context, _, _ []string) (Outcome, []string, error) {
+	return OutcomeUnchanged, nil, nil
 }
 
 func (s *Stub) RemoveMgmtVNIC(_ context.Context, _ string) error { return nil }
@@ -975,6 +975,44 @@ func (s *Stub) TestFailover(_ context.Context, vm, _ string) (string, error) {
 }
 
 func (s *Stub) StopTestFailover(_ context.Context, _ string) error { return nil }
+
+func (s *Stub) EnsureTestSwitch(_ context.Context, name, switchType string) (string, error) {
+	return "isolated " + switchType + " switch " + name + " in place (stub)", nil
+}
+
+func (s *Stub) DestroyS2D(_ context.Context, wipeDisks bool) (string, error) {
+	s.S2DEnabled = false
+	s.CSVs = nil
+	if wipeDisks {
+		return "destroyed the S2D pool and returned the disks to raw (stub)", nil
+	}
+	return "destroyed the S2D pool (stub)", nil
+}
+
+func (s *Stub) ResetISCSIInitiator(_ context.Context) (string, error) {
+	return "reset the iSCSI initiator: removed 0 sessions, 0 persistent logins and 0 discovery portals (stub)", nil
+}
+
+func (s *Stub) DisconnectISCSITarget(_ context.Context, targetIQN string) (string, error) {
+	return "disconnected 1 session(s) from " + targetIQN + " (stub)", nil
+}
+
+func (s *Stub) RepairISCSIPortals(_ context.Context) (string, error) {
+	return "checked 0 discovery portals; none was pinned to a missing address (stub)", nil
+}
+
+func (s *Stub) PruneISCSIPortals(_ context.Context, _ []string) (string, error) {
+	return "every discovery portal on this host is declared; nothing to prune (stub)", nil
+}
+
+func (s *Stub) RemoveTestSwitch(_ context.Context, _ string) error { return nil }
+
+// HealthProbe always passes on the stub. A gate that could never pass off-host
+// would make every runbook in a development centre time out, and the thing worth
+// exercising there is the ordering, not the probe.
+func (s *Stub) HealthProbe(_ context.Context, vmName, check, address string, port, _ int, _ string) (string, error) {
+	return check + " check on " + probeSubject(vmName, address, port) + " passed (stub)", nil
+}
 
 func (s *Stub) PlannedFailover(_ context.Context, vm, primaryHost, _ string) (string, error) {
 	return "planned failover of " + vm + " from " + primaryHost + " (stub)", nil

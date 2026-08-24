@@ -2,7 +2,9 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -84,5 +86,81 @@ func TestTheDeepStorageReadSkipsTheFirstPassAfterAStart(t *testing.T) {
 	// Declared maintenance always reads it: the script is about to act on storage.
 	if !deep(0, true) {
 		t.Error("entering maintenance must read storage even on the first pass")
+	}
+}
+
+// A phase that is slow has to be able to say WHICH PART of it was slow.
+//
+// From the rig, 2026-08-24: four of five hosts were CUT OFF at the 5-minute cap
+// with clusterReconcile taking 3m20s-3m48s of it, and the host-call list could
+// account for barely 90 seconds. Two and a half minutes a pass, on every host,
+// attributed to nothing — and the message said so honestly ("the rest was not
+// spent in a host call") without being able to say where it went.
+func TestSlowPassDrillsIntoASlowPhase(t *testing.T) {
+	calls := []hyperv.CallTiming{
+		{Name: "CollectResources", Took: 15 * time.Second},
+		{Name: "CollectInventory", Took: 13 * time.Second},
+	}
+	phases := []PhaseTiming{
+		{Name: "hostReconcile", Took: 29 * time.Second},
+		{Name: "clusterReconcile", Took: 3*time.Minute + 44*time.Second},
+		{Name: "clusterReconcile/s2d+csv", Took: 2*time.Minute + 10*time.Second},
+		{Name: "clusterReconcile/witness", Took: 41 * time.Second},
+		{Name: "clusterReconcile/firewall", Took: 2 * time.Second},
+	}
+	msg := SlowPassMessage(calls, phases, 5*time.Minute, SlowPassThreshold, true)
+
+	if !strings.Contains(msg, "clusterReconcile 3m44s (") {
+		t.Fatalf("the slow phase must carry its own breakdown: %s", msg)
+	}
+	if !strings.Contains(msg, "s2d+csv 2m10s") {
+		t.Errorf("the costliest stage inside it must be named: %s", msg)
+	}
+	// Sized against the PARENT: a 2s stage inside a 3m44s phase is noise, and a
+	// line that lists it stops being read.
+	if strings.Contains(msg, "firewall") {
+		t.Errorf("a trivial stage must not be listed: %s", msg)
+	}
+	// The children sum to the parent, so listing both flat would double-count and
+	// fill the top four with one branch of the same number.
+	if strings.Contains(msg, "clusterReconcile/s2d+csv") {
+		t.Errorf("a child must be rendered under its parent, not as a peer: %s", msg)
+	}
+	// And the phases beside it still get their place.
+	if !strings.Contains(msg, "hostReconcile 29s") {
+		t.Errorf("other phases must survive the drill-down: %s", msg)
+	}
+}
+
+// A phase with no children reads exactly as it did before. The drill-down is an
+// addition, not a change to how everything else is reported.
+func TestSlowPassLeavesAFlatPhaseAlone(t *testing.T) {
+	phases := []PhaseTiming{
+		{Name: "clusterReconcile", Took: 2 * time.Minute},
+		{Name: "hostReconcile", Took: 40 * time.Second},
+	}
+	msg := SlowPassMessage(nil, phases, 3*time.Minute, SlowPassThreshold, false)
+	if !strings.Contains(msg, "clusterReconcile 2m0s") {
+		t.Fatalf("the phase must still be named: %s", msg)
+	}
+	if strings.Contains(msg, "clusterReconcile 2m0s (") {
+		t.Fatalf("a phase with no sub-stages must not grow brackets: %s", msg)
+	}
+}
+
+// A pass with no host calls at all is the case where the phases are the ONLY
+// thing that can explain it — and it was the branch that said the least,
+// reporting "no single host call accounts for it" and stopping there.
+func TestSlowPassWithNoHostCallsStillSaysWhereTheTimeWent(t *testing.T) {
+	phases := []PhaseTiming{
+		{Name: "deliver", Took: 2 * time.Minute},
+		{Name: "journal", Took: 30 * time.Second},
+	}
+	msg := SlowPassMessage(nil, phases, 3*time.Minute, SlowPassThreshold, false)
+	if !strings.Contains(msg, "no single host call accounts for it") {
+		t.Fatalf("it must still say the calls do not explain it: %s", msg)
+	}
+	if !strings.Contains(msg, "Where it went: deliver 2m0s") {
+		t.Fatalf("and then say where it DID go: %s", msg)
 	}
 }

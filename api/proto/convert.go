@@ -345,6 +345,14 @@ func mgmtVNICToProto(v types.ManagementVNICSpec) *ManagementVNICSpec {
 		SwitchName:         v.SwitchName,
 		VlanId:             int32(v.VLANID),
 		MinBandwidthWeight: int32(v.MinBandwidthWeight),
+		Purpose:            string(v.Purpose),
+		TeamMemberAdapter:  v.TeamMemberAdapter,
+	}
+	// Carried as optional so "not declared" and "declared off" stay distinct on
+	// the wire. Flattened to a bool, a fleet that cannot do RDMA would be
+	// indistinguishable from one nobody had decided about yet.
+	if v.RDMA != nil {
+		out.Rdma = v.RDMA
 	}
 	if v.IPConfig != nil {
 		out.IpConfig = &IPConfig{
@@ -362,6 +370,12 @@ func mgmtVNICFromProto(v *ManagementVNICSpec) types.ManagementVNICSpec {
 		SwitchName:         v.GetSwitchName(),
 		VLANID:             int(v.GetVlanId()),
 		MinBandwidthWeight: int(v.GetMinBandwidthWeight()),
+		Purpose:            types.VNICPurpose(v.GetPurpose()),
+		TeamMemberAdapter:  v.GetTeamMemberAdapter(),
+	}
+	if v.Rdma != nil {
+		rdma := v.GetRdma()
+		out.RDMA = &rdma
 	}
 	if ip := v.GetIpConfig(); ip != nil {
 		out.IPConfig = &types.IPConfig{

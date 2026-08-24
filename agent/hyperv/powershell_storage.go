@@ -2,7 +2,9 @@ package hyperv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -355,3 +357,181 @@ try {
 Rename-CsvMount $name
 [pscustomobject]@{ status = 'created' } | ConvertTo-Json -Compress
 `
+
+// DestroyS2D tears an S2D pool down for good: removes the cluster shared
+// volumes, destroys the virtual disks, deletes the pool, and disables Storage
+// Spaces Direct on the cluster. wipeDisks additionally resets the pool's
+// physical disks to blank so they are raw and reusable.
+//
+// This is the step that has no undo, and it exists because the alternative was
+// worse. Switching a cluster from S2D to an array leaves the old pool behind:
+// it reports Unknown / Read-only for ever, the console cannot tell it from a
+// failed one, and every disk stays claimed so nothing can reuse the capacity.
+// The only way out was a PowerShell session on a member, which CLAUDE.md counts
+// as a defect rather than a runbook step.
+//
+// It refuses while any volume still holds a VM. "Destroy the pool" and "delete
+// the VMs on it" are not the same intention, and a caller who has not moved the
+// workload off almost certainly means the first without the second.
+func (p *PowerShell) DestroyS2D(ctx context.Context, wipeDisks bool) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Continue'
+$log = @()
+$wipe = $%[1]t
+Import-Module FailoverClusters -ErrorAction SilentlyContinue
+
+$cl = Get-Cluster -ErrorAction SilentlyContinue
+if (-not $cl) { throw 'this host is not a cluster member, so there is no clustered S2D pool to destroy' }
+
+# REFUSE while a VM still lives on the storage. Destroying the pool would take
+# its disks with it, and "destroy the pool" is not "delete the VMs on it".
+$onCSV = @()
+foreach ($vm in @(Get-ClusterGroup -Cluster $cl.Name -ErrorAction SilentlyContinue | Where-Object { [string]$_.GroupType -eq 'VirtualMachine' })) {
+  $onCSV += [string]$vm.Name
+}
+if ($onCSV.Count -gt 0) {
+  throw ('refusing to destroy the pool: ' + $onCSV.Count + ' clustered VM role(s) still exist (' +
+    (($onCSV | Sort-Object -Unique) -join ', ') + '). Move or delete them first - destroying the pool would take their disks with it.')
+}
+
+# 1. Cluster shared volumes come out of the cluster before their virtual disks
+#    can be destroyed; a CSV still in Available Storage pins the disk.
+foreach ($csv in @(Get-ClusterSharedVolume -Cluster $cl.Name -ErrorAction SilentlyContinue)) {
+  try { Remove-ClusterSharedVolume -Cluster $cl.Name -Name ([string]$csv.Name) -ErrorAction Stop; $log += ('csv-' + [string]$csv.Name) }
+  catch { $log += ('csv-err-' + ([string]$_.Exception.Message).Trim()) }
+}
+# The cluster disk resources the CSVs became, AND the pool's own cluster
+# resource.
+#
+# Filtering to 'Physical Disk' missed the second one, and that is what made the
+# removal fail: while the pool is still a clustered resource the cluster owns it,
+# and Remove-StoragePool answers "Invalid Parameter" — an error that names
+# nothing. Seen on the rig 2026-08-24, with the ClusterStoragePool group still
+# Online after a teardown that reported having removed everything.
+foreach ($r in @(Get-ClusterResource -Cluster $cl.Name -ErrorAction SilentlyContinue |
+    Where-Object { [string]$_.ResourceType -eq 'Physical Disk' -or [string]$_.ResourceType -eq 'Storage Pool' })) {
+  try { Remove-ClusterResource -Cluster $cl.Name -Name ([string]$r.Name) -Force -ErrorAction Stop; $log += ('res-' + [string]$r.Name) }
+  catch { $log += ('res-err-' + [string]$r.ResourceType + '-' + ([string]$_.Exception.Message).Trim()) }
+}
+
+# 2. Virtual disks.
+foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
+  try { $vd | Remove-VirtualDisk -Confirm:$false -ErrorAction Stop; $log += ('vdisk-' + [string]$vd.FriendlyName) }
+  catch { $log += ('vdisk-err-' + ([string]$_.Exception.Message).Trim()) }
+}
+
+# 3. The pool itself.
+$pools = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })
+$poolsAtStart = $pools.Count
+foreach ($sp in $pools) {
+  # A READ-ONLY pool refuses to be removed, and says "Invalid Parameter" rather
+  # than "this pool is read-only". S2DCluster's sat at OperationalStatus
+  # Read-only for a day reporting exactly that. Clearing it is not a
+  # modification worth agonising over: the pool is about to be destroyed.
+  if ([bool]$sp.IsReadOnly) {
+    try { Set-StoragePool -InputObject $sp -IsReadOnly $false -ErrorAction Stop; $log += 'pool-writable' }
+    catch { $log += ('pool-writable-err-' + ([string]$_.Exception.Message).Trim()) }
+    $sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { [string]$_.FriendlyName -eq [string]$sp.FriendlyName })[0]
+  }
+  try { Remove-StoragePool -InputObject $sp -Confirm:$false -ErrorAction Stop; $log += ('pool-' + [string]$sp.FriendlyName) }
+  catch { $log += ('pool-err-' + ([string]$_.Exception.Message).Trim()) }
+}
+# Disable-ClusterS2D removes the pool itself on a healthy cluster, so a pool that
+# survived the explicit removal often goes here. Try it before giving up rather
+# than reporting a half-torn cluster the operator then has to finish by hand.
+if (@(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial }).Count -gt 0) {
+  try { Disable-ClusterS2D -Cluster $cl.Name -Confirm:$false -ErrorAction Stop; $log += 'disabled-s2d-to-clear-pool' }
+  catch { $log += ('disable-first-err-' + ([string]$_.Exception.Message).Trim()) }
+}
+
+# 4. Turn S2D off, so nothing reclaims the disks on the next pass. Slow on a
+#    degraded pool, which is why it comes AFTER the pool is already gone.
+try { Disable-ClusterS2D -Cluster $cl.Name -Confirm:$false -ErrorAction Stop; $log += 'disabled-s2d' }
+catch { $log += ('disable-err-' + ([string]$_.Exception.Message).Trim()) }
+
+# 5. Optionally return the disks to raw. Only THIS node's own disks: Get-PhysicalDisk
+#    is cluster-wide in a Spaces context and wiping on that set could reach shared
+#    storage belonging to something else.
+$wiped = 0
+if ($wipe) {
+  $localSerials = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -ne 'iSCSI' -and -not $_.IsBoot -and -not $_.IsSystem } | ForEach-Object { [string]$_.SerialNumber })
+  foreach ($pd in @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $localSerials -contains [string]$_.SerialNumber })) {
+    try {
+      Set-PhysicalDisk -InputObject $pd -Usage AutoSelect -ErrorAction SilentlyContinue
+      Reset-PhysicalDisk -InputObject $pd -ErrorAction SilentlyContinue
+      $d = Get-Disk -ErrorAction SilentlyContinue | Where-Object { [string]$_.SerialNumber -eq [string]$pd.SerialNumber }
+      foreach ($x in @($d)) {
+        if ([string]$x.PartitionStyle -ne 'RAW') { Clear-Disk -Number ([int]$x.Number) -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop }
+        $wiped++
+      }
+    } catch { $log += ('wipe-err-' + ([string]$_.Exception.Message).Trim()) }
+  }
+}
+
+$left = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial }).Count
+'RESULT=' + (@{ poolsAtStart = $poolsAtStart; poolsLeft = $left; wiped = $wiped; log = $log } | ConvertTo-Json -Compress -Depth 3)`, wipeDisks)
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("destroy s2d: %w", err)
+	}
+	var res struct {
+		PoolsAtStart int      `json:"poolsAtStart"`
+		PoolsLeft    int      `json:"poolsLeft"`
+		Wiped        int      `json:"wiped"`
+		Log          []string `json:"log"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON(string(out))), &res); err != nil {
+		return "", fmt.Errorf("destroy s2d: could not read the result: %w", err)
+	}
+	detail := strings.Join(res.Log, " | ")
+
+	// NOTHING WAS THERE TO DESTROY is not success, and must never be reported as
+	// it. A clustered pool is only enumerable from a node that can currently see
+	// it, so running this on the wrong member finds no pool, removes nothing, and
+	// — before this — returned "destroyed the S2D pool and its volumes" having
+	// done absolutely nothing. On the rig 2026-08-23 that is exactly what
+	// happened: two jobs reported success while the cluster went on reporting the
+	// pool, with every step's error swallowed into a log nobody saw.
+	//
+	// A destructive action claiming an outcome it did not produce is the worst
+	// version of this codebase's oldest defect, so it is now an error naming
+	// where to run it instead.
+	if res.PoolsAtStart == 0 {
+		return "", fmt.Errorf("no storage pool is visible from this host, so nothing was destroyed. "+
+			"A clustered pool can only be enumerated from a node that currently sees it — run this on the pool's owner node. "+
+			"What this pass did try: %s", orNone(detail))
+	}
+	if res.PoolsLeft > 0 {
+		return "", fmt.Errorf("the pool is STILL PRESENT after the teardown — treat the cluster as half torn down and look before retrying: %s", orNone(detail))
+	}
+	// Steps whose errors were tolerated still have to be surfaced: the pool going
+	// does not mean every CSV and resource went with it cleanly.
+	if strings.Contains(detail, "-err-") {
+		return "", fmt.Errorf("the pool was removed but parts of the teardown failed, so the cluster may be left half tidy: %s", detail)
+	}
+
+	note := "destroyed the S2D pool and its volumes, and disabled Storage Spaces Direct on the cluster"
+	if wipeDisks {
+		if res.Wiped == 0 {
+			note += "; NO disks were returned to raw — none of this host's local disks were in the pool, so run the wipe on the members that hold them"
+		} else {
+			note += "; " + strconv.Itoa(res.Wiped) + " local disks returned to raw"
+		}
+	} else {
+		note += "; the disks were left claimed — use Reset pool disks on each member to return them to raw"
+	}
+	if detail != "" {
+		note += ". Steps: " + detail
+	}
+	return note, nil
+}
+
+// orNone renders an empty step log as something readable rather than a dangling
+// colon, so a message that explains nothing at least says that it explains
+// nothing.
+func orNone(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "(the pass recorded no steps at all, which means it found nothing to act on)"
+	}
+	return s
+}

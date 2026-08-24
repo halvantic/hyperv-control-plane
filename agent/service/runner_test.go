@@ -183,6 +183,10 @@ func TestJobHoldsVM(t *testing.T) {
 		types.JobVMMoveStorage, types.JobMigrateVM, types.JobClusterMoveVM,
 		types.JobVMClone, types.JobVMCaptureTemplate, types.JobVMExport,
 		types.JobVMDiscardSavedState,
+		// A delete holds the VM for the opposite reason to the rest: it is
+		// destroying the VM, and a pass that reconciles alongside it recreates
+		// exactly what the job has just removed.
+		types.JobRemoveVM,
 	}
 	for _, k := range holds {
 		if !jobHoldsVM(k) {

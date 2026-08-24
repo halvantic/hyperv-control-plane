@@ -25,7 +25,7 @@ func multiPortalSpec() types.ISCSIStorageSpec {
 }
 
 func TestLoginIsRestrictedToOnePathUntilMultipathIsInEffect(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 
 	// Effectiveness is OBSERVED on the host, not derived from what this pass did.
 	// rebootRequired only ever described the current pass, so a pass that installed
@@ -63,7 +63,7 @@ func TestLoginIsRestrictedToOnePathUntilMultipathIsInEffect(t *testing.T) {
 // absent however many times it had been enabled, mpioEffective could never become
 // true, and no restart cleared "restart required". Seen on the rig 2026-08-09.
 func TestTheClaimIsReadFromTheClaimSettings(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 
 	if !strings.Contains(s, "Get-MSDSMAutomaticClaimSettings") {
 		t.Fatal("the claim must be read from the automatic-claim settings")
@@ -89,7 +89,7 @@ func TestTheClaimIsReadFromTheClaimSettings(t *testing.T) {
 // is still unprotected. Not saying so would leave mpioEffective true on a host
 // running single-path — the exact thing the flag exists to prevent.
 func TestEnablingTheClaimAsksForARestart(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 
 	enable := strings.Index(s, "Enable-MSDSMAutomaticClaim")
 	reboot := strings.Index(s[enable:], "$out.rebootRequired = $true")
@@ -102,7 +102,7 @@ func TestEnablingTheClaimAsksForARestart(t *testing.T) {
 // Deferring it costs two restarts where one would do, and the node spends the gap
 // on a single path with its storage unprotected.
 func TestTheClaimIsNotDeferredUntilAfterTheRestart(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 
 	if strings.Contains(s, "if ($out.mpioInstalled -and -not $out.rebootRequired) {") {
 		t.Fatal("the claim is gated on no pending reboot again, which defers it to a second restart")
@@ -120,7 +120,7 @@ func TestASinglePortalIsNotRestricted(t *testing.T) {
 	if required {
 		t.Fatal("one portal is one path; multipath is not required")
 	}
-	s := iscsiScript(spec, false, true)
+	s := iscsiScript(spec, false, true, nil)
 	if !strings.Contains(s, `$restrictPortal = ''`) {
 		t.Fatal("the login path must still be well-defined without the MPIO block")
 	}
@@ -131,7 +131,7 @@ func TestASinglePortalIsNotRestricted(t *testing.T) {
 // is what every extra path hit on the rig, leaving both members on one path with
 // MPIO genuinely in effect and nothing to coalesce.
 func TestASecondPathDeclaresItselfMultipath(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 
 	if !strings.Contains(s, "if ($mpioEffective) { $c['IsMultipathEnabled'] = $true }") {
 		t.Fatal("without IsMultipathEnabled Windows refuses the second session outright, so the extra paths can never be established")
@@ -147,7 +147,7 @@ func TestASecondPathDeclaresItselfMultipath(t *testing.T) {
 // reads must still exist — otherwise it evaluates as absent and the login quietly
 // never declares itself multipath even once MPIO is in effect.
 func TestTheMultipathFlagIsDefinedEvenWithoutTheMPIOBlock(t *testing.T) {
-	s := iscsiScript(types.ISCSIStorageSpec{Portals: []string{"10.0.60.52"}}, false, true)
+	s := iscsiScript(types.ISCSIStorageSpec{Portals: []string{"10.0.60.52"}}, false, true, nil)
 	if !strings.Contains(s, "$mpioEffective = $false") {
 		t.Fatal("the flag must be defined on every path through the script")
 	}
@@ -156,7 +156,7 @@ func TestTheMultipathFlagIsDefinedEvenWithoutTheMPIOBlock(t *testing.T) {
 // An "already logged in" refusal means the path EXISTS. Reporting it as a failure
 // puts a permanent error on a node whose paths are all present.
 func TestAnAlreadyLoggedInPathIsNotAnError(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 	if !strings.Contains(s, "-notmatch 'already been logged in'") {
 		t.Fatal("a path that already exists must not be reported as a login failure")
 	}
@@ -166,7 +166,7 @@ func TestAnAlreadyLoggedInPathIsNotAnError(t *testing.T) {
 // filter on a SessionIdentifier property matched nothing, so every portal looked
 // uncovered and an existing path was retried on every pass.
 func TestCoveredPortalsComeFromTheSessionsAssociation(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 	if !strings.Contains(s, "foreach ($cn in @($s | Get-IscsiConnection -ErrorAction SilentlyContinue))") {
 		t.Fatal("connections must be taken from the session itself, not filtered on a property they do not reliably expose")
 	}
@@ -178,7 +178,7 @@ func TestCoveredPortalsComeFromTheSessionsAssociation(t *testing.T) {
 // prevent — so the cluster does not offer it and Add-ClusterDisk silently has
 // nothing to add. Both DRCluster members reported both LUNs online at once.
 func TestAClusterMemberKeepsNewSharedDisksOffline(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, true)
+	s := iscsiScript(multiPortalSpec(), true, true, nil)
 	if !strings.Contains(s, "Set-StorageSetting -NewDiskPolicy OfflineShared") {
 		t.Fatal("a cluster member must not automount a newly arrived shared LUN")
 	}
@@ -193,7 +193,7 @@ func TestAClusterMemberKeepsNewSharedDisksOffline(t *testing.T) {
 // is provisioned there like any other local disk. Forcing it offline would leave
 // the operator a disk they cannot format.
 func TestAStandaloneHostDoesNotForceItsDisksOffline(t *testing.T) {
-	s := iscsiScript(multiPortalSpec(), true, false)
+	s := iscsiScript(multiPortalSpec(), true, false, nil)
 	if strings.Contains(s, "Set-StorageSetting -NewDiskPolicy OfflineShared") {
 		t.Fatal("a standalone host's LUN must be allowed online; it has nothing to share it with")
 	}
@@ -205,7 +205,7 @@ func TestAStandaloneHostDoesNotForceItsDisksOffline(t *testing.T) {
 func TestCHAPStillReachesTheLogin(t *testing.T) {
 	spec := multiPortalSpec()
 	spec.CredentialSecret = "chap"
-	s := iscsiScript(spec, true, true)
+	s := iscsiScript(spec, true, true, nil)
 
 	for _, want := range []string{
 		"$c['AuthenticationType'] = 'ONEWAYCHAP'",
@@ -227,7 +227,7 @@ func TestMutualCHAPKeepsItsAuthenticationType(t *testing.T) {
 	spec := multiPortalSpec()
 	spec.CredentialSecret = "chap"
 	spec.MutualCHAP = true
-	s := iscsiScript(spec, true, true)
+	s := iscsiScript(spec, true, true, nil)
 
 	if !strings.Contains(s, "$c['AuthenticationType'] = 'MUTUALCHAP'") {
 		t.Fatal("mutual CHAP must reach the login as MUTUALCHAP")

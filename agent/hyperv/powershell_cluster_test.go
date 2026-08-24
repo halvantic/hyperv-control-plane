@@ -108,3 +108,51 @@ func TestClusterObservationCarriesGroupResources(t *testing.T) {
 		t.Errorf("the down resource lost detail in transit: %+v", sddc.Resources[1])
 	}
 }
+
+// Remove-ClusterGroup and Stop-ClusterGroup type -Name as a StringCollection.
+// Binding a plain string to it fails with "Cannot convert ... to the type", so
+// the group is never removed — and under -ErrorAction SilentlyContinue that
+// happens silently, on every teardown.
+//
+// RemoveReplicaBroker learned this against a real cluster and documents it in its
+// own comment. The destroy script was still doing it, and only the failure
+// report exposed it: on the rig 2026-08-24 Remove-Cluster refused with
+// "S2DCluster-Brk[Unknown]=Online" and the broker's whole client access point
+// still standing, after the step that was supposed to have removed it.
+func TestDestroyClusterPipesTheGroupRatherThanNamingIt(t *testing.T) {
+	s := destroyClusterScript
+
+	if strings.Contains(s, "Remove-ClusterGroup -Name") || strings.Contains(s, "Stop-ClusterGroup -Name") {
+		t.Fatal("-Name binds to a StringCollection and silently fails; the group object must be piped")
+	}
+	if !strings.Contains(s, "$g | Remove-ClusterGroup -RemoveResources -Force -ErrorAction Stop") {
+		t.Error("the group must be piped, and the failure must not be swallowed")
+	}
+	// One resource refusing to go offline blocks the whole group — the fallback
+	// that makes a Replica Broker come out at all.
+	if !strings.Contains(s, "$r | Remove-ClusterResource -Force -ErrorAction SilentlyContinue") {
+		t.Error("a group that refuses must have its resources dropped individually, then be retried")
+	}
+	// A disk resource named by string has the same hazard.
+	if strings.Contains(s, "Remove-ClusterResource -Name $r.Name") {
+		t.Error("the disk resource must be piped too")
+	}
+}
+
+// Reporting what survived describes the symptom. WHY each removal refused is the
+// part that was left on the host for somebody to go and find.
+func TestDestroyClusterReportsWhyARemovalFailed(t *testing.T) {
+	s := destroyClusterScript
+	if !strings.Contains(s, "$groupErrs = @()") {
+		t.Fatal("per-step failures must be collected, not discarded")
+	}
+	if !strings.Contains(s, `removals that failed: `) {
+		t.Error("the reasons must reach the operator alongside the leftovers")
+	}
+	// And the existing report must survive: what is left is still worth saying.
+	for _, want := range []string{"groups remaining", "resources still online", "nodes: "} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the existing state report must be kept; missing %q", want)
+		}
+	}
+}

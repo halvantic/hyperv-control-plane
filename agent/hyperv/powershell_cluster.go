@@ -960,10 +960,36 @@ if (-not (Get-Cluster -ErrorAction SilentlyContinue)) { 'no cluster'; return }
 
 # 1. Every hosted role, not just VM ones. AvailableStorage and the core 'Cluster'
 #    group are left for the later steps: removing them here strands their disks.
+#
+# THE GROUP OBJECT IS PIPED, NEVER -Name. Remove-ClusterGroup and
+# Stop-ClusterGroup type -Name as a StringCollection, and binding a plain string
+# to it fails with "Cannot convert ... to the type". RemoveReplicaBroker learned
+# that against a real cluster and says so in its own comment; this script was
+# still doing it, under -ErrorAction SilentlyContinue, so it swallowed the
+# conversion error and removed NOTHING — silently, on every teardown.
+#
+# It only came to light because the failure path reports what is left: on the rig
+# 2026-08-24 Remove-Cluster refused with "S2DCluster-Brk[Unknown]=Online" and the
+# broker's whole client access point still standing, after a step that was
+# supposed to have removed it.
+$groupErrs = @()
 foreach ($g in @(Get-ClusterGroup -ErrorAction SilentlyContinue |
         Where-Object { $_.GroupType -ne 'Cluster' -and $_.GroupType -ne 'AvailableStorage' })) {
-  Stop-ClusterGroup -Name $g.Name -ErrorAction SilentlyContinue | Out-Null
-  Remove-ClusterGroup -Name $g.Name -RemoveResources -Force -ErrorAction SilentlyContinue
+  $g | Stop-ClusterGroup -ErrorAction SilentlyContinue | Out-Null
+  try { $g | Remove-ClusterGroup -RemoveResources -Force -ErrorAction Stop }
+  catch {
+    # One resource refusing to go offline blocks the whole group. Drop the
+    # resources individually and try the group again — the same fallback
+    # RemoveReplicaBroker uses, and the reason a Replica Broker comes out at all.
+    foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.OwnerGroup -eq [string]$g.Name })) {
+      $r | Remove-ClusterResource -Force -ErrorAction SilentlyContinue
+    }
+    $again = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$g.Name })[0]
+    if ($again) {
+      try { $again | Remove-ClusterGroup -Force -ErrorAction Stop }
+      catch { $groupErrs += ([string]$g.Name + ': ' + ([string]$_.Exception.Message).Trim()) }
+    }
+  }
 }
 
 # 2. CSVs, so their disks fall back to Available Storage and can be released.
@@ -980,7 +1006,8 @@ catch { $s2dErr = $_.Exception.Message }
 # 4. Any clustered disk still held (Available Storage, witness disk).
 foreach ($r in @(Get-ClusterResource -ErrorAction SilentlyContinue |
         Where-Object { $_.ResourceType -eq 'Physical Disk' })) {
-  Remove-ClusterResource -Name $r.Name -Force -ErrorAction SilentlyContinue
+  try { $r | Remove-ClusterResource -Force -ErrorAction Stop }
+  catch { $groupErrs += ('disk resource ' + [string]$r.Name + ': ' + ([string]$_.Exception.Message).Trim()) }
 }
 
 try { Remove-Cluster -Force -CleanupAD; 'destroyed' }
@@ -997,6 +1024,9 @@ catch {
   if ($groups)  { $detail += " | groups remaining: $groups" }
   if ($online)  { $detail += " | resources still online: $online" }
   if ($s2dErr)  { $detail += " | disabling Storage Spaces Direct had already failed: $s2dErr" }
+  # WHY each removal refused, not merely what survived. Reporting the leftovers
+  # alone described the symptom and left the cause on the host.
+  if ($groupErrs.Count -gt 0) { $detail += " | removals that failed: " + ($groupErrs -join '; ') }
   if (-not $nodes -and -not $groups) { $detail += " | the cluster service did not answer for the detail, so it is likely down on this node" }
   throw $detail
 }`

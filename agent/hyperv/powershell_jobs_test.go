@@ -151,6 +151,49 @@ func TestRemoveVMDoesNotLetAFailedStopAbortTheRemoval(t *testing.T) {
 	}
 }
 
+// Deleting a clustered VM must not SAVE it on the way out.
+//
+// Stop-ClusterGroup obeys the Virtual Machine resource's OfflineAction, which
+// Windows defaults to Save — the same default that caught the power path. On a
+// delete the memory image is written out in full and then thrown away, and the
+// minutes that takes are what let the reconcile loop's next pass overlap the
+// removal and recreate the VM.
+func TestRemoveVMTurnsAClusteredVMOffRatherThanSavingIt(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("")}}
+	if err := newTestPS(f).RemoveVM(context.Background(), "Tes"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	// Matched on the cmdlet calls, not on the words: the comment above them names
+	// both, in the other order.
+	offlineAction := strings.Index(s, "Set-ClusterParameter")
+	stopGroup := strings.Index(s, "Stop-ClusterGroup -Name")
+	if offlineAction == -1 || !strings.Contains(s, "-Name OfflineAction") {
+		t.Fatal("the VM resource's OfflineAction must be overridden, or the group stop saves the VM")
+	}
+	if stopGroup == -1 {
+		t.Fatal("the cluster group must still be taken offline before it is removed")
+	}
+	if offlineAction > stopGroup {
+		t.Fatal("the offline action must be set BEFORE the stop, or the stop has already saved the VM")
+	}
+	if !strings.Contains(s, "-Value 0") {
+		t.Error("OfflineAction must be set to 0 (turn off); 1 is the Save default this exists to avoid")
+	}
+	// Best effort by design: the resource is deleted moments later, so a failure
+	// to override it must leave the old behaviour rather than abort a delete the
+	// operator asked for.
+	if !strings.Contains(s[offlineAction:stopGroup], "} catch {}") {
+		t.Error("the override must be tolerated failing, not allowed to abort the removal")
+	}
+	// And it must still be scoped to the VM resource — setting OfflineAction on
+	// whatever resource happened to come back first is a different change.
+	if !strings.Contains(s, "'Virtual Machine'") {
+		t.Error("the override must target the Virtual Machine resource specifically")
+	}
+}
+
 // The repair used to refuse outright on a workgroup host, which made it useless
 // on the only host that cannot recover without it: a freshly onboarded host whose
 // DHCP resolver is the firewall fails its domain join with "the specified domain

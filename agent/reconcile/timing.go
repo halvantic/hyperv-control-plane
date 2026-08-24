@@ -154,6 +154,13 @@ func SlowPassMessage(calls []hyperv.CallTiming, phases []PhaseTiming, total, thr
 		lead = "the last pass was CUT OFF after " + round(total) + " — it hit the cycle limit and did not finish, so anything after the slow step never ran"
 	}
 	if len(parts) == 0 {
+		// No host call accounts for it — which is the case where the phases are
+		// the ONLY thing that can, and until now the branch that said the least.
+		// A pass spent entirely outside cmdlets got "no single host call accounts
+		// for it" and nothing else, leaving the one question it raised unanswered.
+		if p := topPhases(phases, total); p != "" {
+			return lead + ", and no single host call accounts for it. Where it went: " + p + "." + cost
+		}
 		return lead + ", and no single host call accounts for it." + cost
 	}
 	return lead + " — slowest: " + strings.Join(parts, ", ") + "." + remainder + cost
@@ -175,19 +182,48 @@ func topPhases(phases []PhaseTiming, total time.Duration) string {
 	if floor < time.Second {
 		floor = time.Second
 	}
-	sorted := make([]PhaseTiming, 0, len(phases))
+
+	// A phase named "parent/child" is a STAGE INSIDE parent. Rendered flat it
+	// double-counts — the children sum to the parent, so both appear and the top
+	// four fill with one branch of the same number. Rendered as a drill-down it
+	// answers the question the flat list only raised: clusterReconcile 3m44s is
+	// where the time went, and its slowest stages are why.
+	kids := map[string][]PhaseTiming{}
+	var tops []PhaseTiming
 	for _, p := range phases {
+		if parent, child, found := strings.Cut(p.Name, "/"); found {
+			kids[parent] = append(kids[parent], PhaseTiming{Name: child, Took: p.Took})
+			continue
+		}
 		if p.Took >= floor {
-			sorted = append(sorted, p)
+			tops = append(tops, p)
 		}
 	}
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Took > sorted[j].Took })
+	sort.SliceStable(tops, func(i, j int) bool { return tops[i].Took > tops[j].Took })
+
 	var out []string
-	for _, p := range sorted {
+	for _, p := range tops {
 		if len(out) >= 4 {
 			break
 		}
-		out = append(out, p.Name+" "+round(p.Took))
+		entry := p.Name + " " + round(p.Took)
+		// The children are sized against the PARENT, not the pass: a stage worth
+		// naming is a real share of the thing it is explaining. Two is enough to
+		// point at the culprit without turning one line into a table.
+		if c := kids[p.Name]; len(c) > 0 {
+			sort.SliceStable(c, func(i, j int) bool { return c[i].Took > c[j].Took })
+			var inner []string
+			for _, k := range c {
+				if len(inner) >= 2 || k.Took < p.Took/10 {
+					break
+				}
+				inner = append(inner, k.Name+" "+round(k.Took))
+			}
+			if len(inner) > 0 {
+				entry += " (" + strings.Join(inner, ", ") + ")"
+			}
+		}
+		out = append(out, entry)
 	}
 	return strings.Join(out, ", ")
 }

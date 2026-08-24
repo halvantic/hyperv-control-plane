@@ -257,11 +257,6 @@ func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) error {
 	return nil
 }
 
-// RemoveVM stops (if running) and deletes a VM from the host. If the VM is a
-// clustered (highly-available) role, its cluster group is removed first so the
-// delete does not leave an orphaned role behind; this makes the job work for a
-// clustered VM regardless of which member it ran on. The VHDX files are left on
-// disk. Idempotent: absent VM/role is a no-op.
 // RemoveMgmtVNIC removes a management-OS vNIC by name. Idempotent: a no-op when
 // no such vNIC exists. Used to clean up stray/leftover management vNICs.
 func (p *PowerShell) RemoveMgmtVNIC(ctx context.Context, name string) error {
@@ -272,11 +267,37 @@ func (p *PowerShell) RemoveMgmtVNIC(ctx context.Context, name string) error {
 	return nil
 }
 
+// RemoveVM stops (if running) and deletes a VM from the host. If the VM is a
+// clustered (highly-available) role, its cluster group is removed first so the
+// delete does not leave an orphaned role behind; this makes the job work for a
+// clustered VM regardless of which member it ran on. The VHDX files are left on
+// disk. Idempotent: absent VM/role is a no-op.
 func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
 	q := psQuote(name)
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
 if ($g) {
+  # Take the group offline by TURNING THE VM OFF, not by saving it.
+  #
+  # Stop-ClusterGroup obeys the Virtual Machine resource's OfflineAction, which
+  # Windows defaults to Save (1). So deleting a clustered VM wrote its entire
+  # memory image to disk and then threw that image away — the same default that
+  # caught the power path (see vmPowerScript, which shuts the guest down first).
+  #
+  # The cost is not only the wasted write. The removal has to finish before the
+  # reconcile loop's next pass reaches this VM, or the pass recreates the VM the
+  # job has just deleted; a save of several GB is exactly what makes those two
+  # overlap. It is why 'Tes' came back into the cluster minutes after it was
+  # deleted (2026-08-20).
+  #
+  # Best effort by design: the resource is deleted moments later, so overriding
+  # its offline action changes nothing that outlives this script, and a failure
+  # here simply leaves the old, slower behaviour.
+  try {
+    foreach ($res in @($g | Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'Virtual Machine' })) {
+      Set-ClusterParameter -InputObject $res -Name OfflineAction -Value 0 -ErrorAction Stop
+    }
+  } catch {}
   Stop-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue | Out-Null
   Remove-ClusterGroup -Name %[1]s -RemoveResources -Force -ErrorAction SilentlyContinue
 }
