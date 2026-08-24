@@ -2,7 +2,10 @@ package hyperv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -67,11 +70,12 @@ type ISCSIDiskState struct {
 // node reboots and then simply does not come back, which on a cluster member
 // means its disks do not arrive and the roles it owned fail over — with nothing
 // anywhere saying why.
-func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO, shared bool) string {
+func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO, shared bool, storageAddresses []string) string {
 	var b strings.Builder
 	b.WriteString(`$ErrorActionPreference = 'Stop'
 $out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; mpioEffective=$false; disks=@(); rebootRequired=$false; message='' }
 $pathErrs = @()
+$persistErrs = @()
 $changed = $false
 
 # The initiator service is set to start ON DEMAND by default on Windows Server,
@@ -203,18 +207,227 @@ if ($out.mpioInstalled) {
 
 	// Portals. New-IscsiTargetPortal on an existing portal throws, so check.
 	b.WriteString("\n$portals = @(" + psStringList(spec.Portals) + ")\n")
-	b.WriteString(`foreach ($p in $portals) {
-  $addr = $p; $port = 3260
-  if ($p -match '^(.+):(\d+)$') { $addr = $Matches[1]; $port = [int]$Matches[2] }
+
+	// Which local address each portal is reached through, resolved here rather
+	// than on the host: only the desired state knows which vNICs are for storage,
+	// and the host cannot tell a storage vNIC from a management one.
+	//
+	// Used for BOTH the discovery portal and the login. Discovery was left
+	// unbound on the argument that a pinned portal keeps a source address the
+	// host may lose — but that failure is already detected below and repaired by
+	// the RepairISCSIPortals job, while leaving it unbound has a failure of its
+	// own that nothing catches. On a host with two storage subnets the routing
+	// table answers with ONE interface, so discovery to the second portal leaves
+	// through the first vNIC. The array is then asked about a target it does not
+	// advertise on that path, and answers "the target name is not found or is
+	// marked as hidden from login" — pointing squarely at the array, where
+	// nothing is wrong.
+	//
+	// HVNEW01, 2026-08-24: it failed on 10.0.61.52 while HVNEW03 succeeded on the
+	// same portal, and setting Initiator IP to 10.0.61.71 by hand in iscsicpl
+	// fixed it immediately.
+	b.WriteString("$initiatorFor = @{}\n")
+	for _, portal := range spec.Portals {
+		addr := types.InitiatorFor(portal, storageAddresses)
+		if addr == "" {
+			continue
+		}
+		host := portal
+		if h, _, err := net.SplitHostPort(strings.TrimSpace(portal)); err == nil {
+			host = h
+		}
+		fmt.Fprintf(&b, "$initiatorFor[%s] = %s\n", psQuote(host), psQuote(addr))
+	}
+
+	// DISCOVERY NEEDS THE CREDENTIAL TOO.
+	//
+	// CHAP was applied at LOGIN and nowhere else. But an array configured to
+	// require it authenticates the DISCOVERY session as well, and an
+	// unauthenticated discovery is simply told about nothing — no error, no
+	// refusal, an empty target list. Ballast then reported "the array answered on
+	// every portal but advertised NO target to this host" and sent the operator to
+	// the array's allowed-initiator list, where nothing was wrong.
+	//
+	// Found on the rig 2026-08-24 the only way it could be: the operator connected
+	// HVNEW01 by hand through iscsicpl, whose Discovery tab takes a CHAP secret,
+	// and it worked at once. Ballast's own diagnosis had been confidently pointing
+	// the other way.
+	//
+	// The two hosts that appeared to work were not evidence against it — they held
+	// sessions established earlier, so nothing ever asked them to discover again.
+	if spec.CredentialSecret != "" {
+		portalAuth := "ONEWAYCHAP"
+		if spec.MutualCHAP {
+			portalAuth = "MUTUALCHAP"
+		}
+		b.WriteString("$portalAuth = @{ AuthenticationType = '" + portalAuth + "'; " +
+			"ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }\n")
+	} else {
+		b.WriteString("$portalAuth = @{}\n")
+	}
+	b.WriteString(`# This host's own addresses, to judge whether a portal's source binding is
+# still real. Read once rather than per portal.
+$myIPs = @()
+try { $myIPs = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.IPAddress }) } catch {}
+$stalePortals = @()
+$portalErrs = @()
+
+foreach ($p in $portals) {
+  # UInt16 throughout: the port is part of the CIM key for these cmdlets.
+  $addr = $p; $port = [uint16]3260
+  if ($p -match '^(.+):(\d+)$') { $addr = $Matches[1]; $port = [uint16]$Matches[2] }
+  $have = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | Where-Object { $_.TargetPortalAddress -eq $addr -and [int]$_.TargetPortalPortNumber -eq $port })
+
+  # A PORTAL BOUND TO A SOURCE ADDRESS THIS HOST NO LONGER HAS.
+  #
+  # The existence check is address+port, so a leftover entry in the iSCSI
+  # Initiator control panel — one made by hand, or by an earlier configuration,
+  # carrying an InitiatorPortalAddress that pins discovery to a particular source
+  # IP — satisfies it. Ballast adopts that entry and never looks inside it.
+  # Discovery then runs out of an address the host does not have, returns nothing
+  # at all, and every login fails with "the target name is not found or is marked
+  # as hidden from login" — a message that points squarely at the array, where
+  # nothing is wrong.
+  #
+  # Seen on the rig 2026-08-23: HVNEW01 discovered ZERO targets on the same three
+  # portals where its peers discovered three, with its IQN present on the NAS.
+  #
+  # This pass only REPORTS it. Re-registering a portal means removing it first,
+  # and the reconcile is strictly additive — see the header, and
+  # TestISCSIReconcileNeverDisconnects, which enforces it. The repair is the
+  # RepairISCSIPortals job instead: operator-initiated, like RepairPool and
+  # RemoveCSV, because deciding to pull a portal entry is a decision, not a
+  # cadence.
+  foreach ($h in $have) {
+    $bound = [string]$h.InitiatorPortalAddress
+    if (-not $bound -or $bound -eq '0.0.0.0' -or ($myIPs -contains $bound)) { continue }
+    $stalePortals += ($addr + ' is pinned to source address ' + $bound + ', which this host no longer has')
+  }
+
   $have = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | Where-Object { $_.TargetPortalAddress -eq $addr -and [int]$_.TargetPortalPortNumber -eq $port })
   if ($have.Count -eq 0) {
-    New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -ErrorAction Stop | Out-Null
-    $changed = $true
+    # DO NOT REGISTER A PORTAL THAT IS NOT ANSWERING.
+    #
+    # New-IscsiTargetPortal performs discovery, and against an address that does
+    # not answer it blocks until the iSCSI layer gives up — minutes, per portal.
+    # Three of those inside a reconcile is most of a cycle, and on the rig
+    # 2026-08-24 the cluster pass sat stalled for 22 minutes doing exactly this.
+    # A three-second TCP probe answers the same question first, and costs nothing
+    # when the array is healthy.
+    $reach = $false
+    try {
+      $sock = New-Object System.Net.Sockets.TcpClient
+      $iar = $sock.BeginConnect($addr, $port, $null, $null)
+      if ($iar.AsyncWaitHandle.WaitOne(3000, $false)) { $sock.EndConnect($iar); $reach = $true }
+      $sock.Close()
+    } catch {}
+    if (-not $reach) {
+      $portalErrs += ($addr + ':' + $port + ' did not answer on the iSCSI port, so it was not registered')
+    } else {
+      # AND a failure here must not take the pass with it.
+      #
+      # This ran with -ErrorAction Stop and no catch, under an $ErrorActionPreference
+      # of Stop — so one portal refusing ("New-IscsiTargetPortal : Target Error")
+      # aborted the WHOLE script. The login loop, the sessions, the disks and every
+      # diagnosis after it never ran, and the host reported no iSCSI state at all:
+      # not a fault it could describe, but silence. HVNEW02 and HVNEW05 sat like
+      # that for a day while the console had nothing to show.
+      #
+      # Losing one portal is the ordinary iSCSI fault. The remaining paths are
+      # exactly what the node keeps working on, which is the same reasoning the
+      # login loop below already applies.
+      try {
+        # Discovery leaves through the storage vNIC on the portal's own subnet,
+        # for the same reason the session does. Unbound, the routing table picks
+        # one interface for every portal, so the second subnet is discovered out
+        # of the first vNIC and the array answers about a target it does not
+        # advertise on that path. Absent from the table means no storage vNIC
+        # shares that subnet, and then nothing is bound rather than guessed.
+        $pa = @{}
+        if ($initiatorFor.ContainsKey($addr)) { $pa['InitiatorPortalAddress'] = $initiatorFor[$addr] }
+        New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @portalAuth @pa -ErrorAction Stop | Out-Null
+        $changed = $true
+      } catch {
+        $portalErrs += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
+      }
+    }
   }
 }
 # Refresh so newly registered portals advertise their targets before we log in.
 try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
 $out.portals = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress + ':' + [string]$_.TargetPortalPortNumber })
+
+# NOTHING ADVERTISED AT ALL is a different fault from a login being refused, and
+# it has to be said first — the login error that follows names the target and
+# points at the array, when the real answer is that discovery came back empty.
+$discovered = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress })
+$advertisedNow = @(Get-IscsiTarget -ErrorAction SilentlyContinue)
+# A HOST THAT HOLDS A SESSION HAS PLAINLY BEEN OFFERED A TARGET.
+#
+# Get-IscsiTarget can come back empty for a moment — after Update-IscsiTarget, or
+# on a WMI hiccup — while the sessions built from those targets are up and
+# serving. Read on its own it says "the array advertised nothing", which on such
+# a host is simply false, and it was: HVNEW04 reported Connected, 1 of 1 targets,
+# 3 paths and 2 disks, directly above a message saying no target had been
+# advertised to it (rig, 2026-08-24). Two statements from one pass, contradicting
+# each other, one of them invented.
+#
+# An absent reading is not a zero. The sessions are the evidence that outranks it.
+$liveSessions = @(Get-IscsiSession -ErrorAction SilentlyContinue)
+if ($advertisedNow.Count -eq 0 -and $discovered.Count -gt 0 -and $liveSessions.Count -eq 0) {
+  # "No path" and "not permitted" look identical from here and have completely
+  # different remedies — one is a network fault on this host, the other is a line
+  # in the array's masking list. Ballast can tell them apart, so it does: if the
+  # portal answers on its port the wire is fine and the array is choosing not to
+  # advertise; if it does not answer, the array was never reached at all.
+  $reachable = @()
+  $unreachable = @()
+  foreach ($pp in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
+    $pa = [string]$pp.TargetPortalAddress
+    $pn = 3260
+    try { $pn = [int]$pp.TargetPortalPortNumber } catch {}
+    $okPort = $false
+    try {
+      $c = New-Object System.Net.Sockets.TcpClient
+      $iar = $c.BeginConnect($pa, $pn, $null, $null)
+      if ($iar.AsyncWaitHandle.WaitOne(3000, $false)) { $c.EndConnect($iar); $okPort = $true }
+      $c.Close()
+    } catch {}
+    if ($okPort) { $reachable += ($pa + ':' + $pn) } else { $unreachable += ($pa + ':' + $pn) }
+  }
+
+  if ($reachable.Count -eq 0) {
+    $out.message = 'no path to the array: ' + ($unreachable -join ', ') + ' did not answer on the iSCSI port from this host. ' +
+      'Nothing was discovered because nothing was reached, so any login error that follows names a target this host never saw. ' +
+      'The fault is HERE, not on the array — check this host''s storage network adapter and its route to those addresses.'
+  } elseif ($unreachable.Count -gt 0) {
+    $out.message = 'the array answered on ' + ($reachable -join ', ') + ' but advertised NO target to this host, and ' +
+      ($unreachable -join ', ') + ' did not answer at all. The portals that did answer prove the wire works, so the array is choosing not to advertise: ' +
+      'add this host''s initiator, ' + $out.initiatorIQN + ', to the allowed-initiator list of the SPECIFIC target. Those lists are per target on most arrays.'
+  } else {
+    $out.message = 'the array answered on every portal (' + ($reachable -join ', ') + ') but advertised NO target to this host. ' +
+      'The wire is fine and this is not a login being refused — nothing was offered for a name to match. Two things do this. ' +
+      'The array may require CHAP for DISCOVERY, not only for login' +
+      $(if ($usedChap) { ' — this spec does set a CHAP credential, so check the username and secret are the ones the array expects' } else { ' — and this spec sets NO CHAP credential, so add one to the storage configuration if the array wants it' }) +
+      '. Or this host''s initiator, ' + $out.initiatorIQN + ', is not on the allowed-initiator list of the SPECIFIC target; ' +
+      'those lists are per target, so an initiator already permitted on another target still has to be added to this one.'
+  }
+}
+# A stale binding outranks everything else this pass could say: it explains the
+# empty discovery AND the login errors that follow from it, and it is the only
+# one of the three an operator can act on directly.
+# A portal that could not be registered explains a missing target, and is the
+# first thing to say: everything after it is a consequence.
+if ($portalErrs.Count -gt 0) {
+  $out.message = 'could not register ' + ($portalErrs -join '; ') +
+    '. Any target reached only through those portals will be missing, and the paths through them are not available. ' +
+    $out.message
+}
+if ($stalePortals.Count -gt 0) {
+  $out.message = 'this host cannot discover through ' + ($stalePortals -join '; ') +
+    '. A discovery portal pinned to an address the host does not have returns nothing, which then fails every login with "the target name is not found" and points at the array, where nothing is wrong. ' +
+    'Run Repair iSCSI portals on this host to re-register them unbound. ' + $out.message
+}
 `)
 
 	// Registering the portals is safe; logging in through more than one of them is
@@ -275,7 +488,13 @@ foreach ($t in $wanted) {
   # working-until-restarted state in place.
   foreach ($s in $existing) {
     if (-not $s.IsPersistent) {
-      try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true } catch {}
+      # The reason is KEPT. Swallowing it left the console saying "Not
+      # persistent — a login here is not restored at boot, so this node loses
+      # its disks on the next restart" with nothing about WHY, and no way to
+      # act: HVNEW03, 2026-08-24. A state that costs a node its storage at the
+      # next reboot has to name its own cause.
+      try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true }
+      catch { $persistErrs += ([string]$s.TargetNodeAddress + ': ' + ([string]$_.Exception.Message).Trim()) }
     }
   }
   # Which portals already carry a session, taken through the session's own
@@ -313,7 +532,19 @@ foreach ($t in $wanted) {
 	// because declaring a session multipath while MPIO is not claiming is how the
 	// same LUN arrives twice as unrelated disks.
 	connect := "    $c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }\n" +
-		"    if ($mpioEffective) { $c['IsMultipathEnabled'] = $true }\n"
+		"    if ($mpioEffective) { $c['IsMultipathEnabled'] = $true }\n" +
+		// Bind the session to the storage vNIC on the portal's own subnet.
+		//
+		// Unbound, the initiator asks the routing table, and the routing table
+		// answers with ONE interface. That is how three declared portals became
+		// three sessions out of a single vNIC on the rig 2026-08-24: MPIO in
+		// effect, three paths reported, one cable carrying all of them. Only the
+		// binding makes the paths distinct.
+		//
+		// Absent from the table means no storage vNIC shares that subnet, and
+		// then nothing is bound rather than something guessed — the behaviour a
+		// host without declared storage vNICs has always had.
+		"    if ($initiatorFor.ContainsKey($addr)) { $c['InitiatorPortalAddress'] = $initiatorFor[$addr] }\n"
 	if spec.CredentialSecret != "" {
 		auth := "ONEWAYCHAP"
 		if spec.MutualCHAP {
@@ -343,6 +574,12 @@ foreach ($t in $wanted) {
 if ($pathErrs.Count -gt 0 -and -not $out.message) {
   $out.message = 'could not log in through ' + ($pathErrs -join '; ')
 }
+# Reported even when everything else worked. A session that is up but not
+# registered is invisible until the node reboots and its disks do not come back.
+if ($persistErrs.Count -gt 0) {
+  $note = 'a session could not be made persistent, so it will not be restored at boot: ' + ($persistErrs -join '; ')
+  if ($out.message) { $out.message = $out.message + '. ' + $note } else { $out.message = $note }
+}
 `)
 
 	b.WriteString(`
@@ -368,7 +605,19 @@ foreach ($t in @(Get-IscsiTarget -ErrorAction SilentlyContinue)) {
 # Disks arriving over iSCSI. The SERIAL is what identifies a LUN cluster-wide;
 # the disk number is per-node and moves across reboots, so it is reported for
 # display only and never used to bind a volume.
-$out.disks = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'iSCSI' } | ForEach-Object {
+#
+# The enumeration is NOT silently swallowed. -ErrorAction SilentlyContinue on its
+# own turns "the Storage service did not answer" into an empty list, which is
+# reported as "this host sees no iSCSI disks" — a different and much more
+# alarming statement than "I could not tell". Absent is not zero.
+$diskReadFailed = ''
+$rawDisks = @()
+try {
+  $rawDisks = @(Get-Disk -ErrorAction Stop)
+} catch {
+  $diskReadFailed = ([string]$_.Exception.Message).Trim()
+}
+$out.disks = @($rawDisks | Where-Object { $_.BusType -eq 'iSCSI' } | ForEach-Object {
   [pscustomobject]@{
     serialNumber = ([string]$_.SerialNumber).Trim()
     number       = [int]$_.Number
@@ -379,6 +628,35 @@ $out.disks = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.BusTyp
     offline      = [bool]$_.IsOffline
   }
 })
+
+# LOGGED IN AND NOTHING BEHIND IT.
+#
+# A session with paths and no LUNs behind it is a real, specific and very
+# diagnosable condition, and Ballast said NOTHING about it: no login failed, so
+# no message was set, and the host reported a healthy-looking iSCSI block with an
+# empty disk list. On the rig 2026-08-23 both DRCluster members sat like this —
+# three paths each, zero disks — while the cluster's two CSVs went Offline and
+# the only thing naming a problem was a CSV alarm one layer up.
+#
+# The initiator side is fine here by definition: the login succeeded and the
+# paths are up. What is missing is on the array — a LUN mapped to the target, and
+# this initiator permitted to see it. That is outside what Ballast administers,
+# so the message names the one step rather than implying the host is at fault.
+if (-not $out.message) {
+  $connected = @($out.sessions | Where-Object { $_.connected })
+  if ($diskReadFailed) {
+    # Say which it is. "Could not enumerate" and "there are none" look identical
+    # in an empty list and mean opposite things.
+    $out.message = 'could not read this host''s disks, so whether the iSCSI LUNs arrived is UNKNOWN rather than none: ' + $diskReadFailed
+  } elseif ($connected.Count -gt 0 -and $out.disks.Count -eq 0) {
+    $paths = [int](($connected | Measure-Object -Property paths -Sum).Sum)
+    $names = (@($connected | ForEach-Object { [string]$_.targetIQN }) -join ', ')
+    $out.message = 'logged in to ' + $names + ' over ' + $paths + ' path(s), but the array is presenting no LUNs on it. ' +
+      'The initiator side is working — the login succeeded and the paths are up — so this is on the storage device: ' +
+      'check that a LUN is mapped to that target and that this host''s initiator, ' + $out.initiatorIQN +
+      ', is permitted to see it. Any cluster volume on those LUNs will be Offline until it is.'
+  }
+}
 $out.changed = $changed
 [pscustomobject]$out | ConvertTo-Json -Compress -Depth 5
 `)
@@ -387,7 +665,7 @@ $out.changed = $changed
 
 // EnsureISCSI connects this node to the cluster's iSCSI storage and reports what
 // it sees. Additive only — it never disconnects a session or removes a portal.
-func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool) (ISCSIState, Outcome, error) {
+func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool, storageAddresses []string) (ISCSIState, Outcome, error) {
 	var st ISCSIState
 	if len(spec.Portals) == 0 {
 		return st, OutcomeUnchanged, fmt.Errorf("ensure iscsi: at least one portal is required")
@@ -402,7 +680,7 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		env = append(env, "BALLAST_CHAP_USER="+chapUser, "BALLAST_CHAP_SECRET="+chapSecret)
 	}
 
-	out, err := p.runWithEnvOut(ctx, iscsiScript(spec, wantMPIO, shared), env)
+	out, err := p.runWithEnvOut(ctx, iscsiScript(spec, wantMPIO, shared, storageAddresses), env)
 	if err != nil {
 		return st, OutcomeUnchanged, fmt.Errorf("ensure iscsi: %w", err)
 	}
@@ -454,4 +732,351 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		return st, OutcomeUpdated, nil
 	}
 	return st, OutcomeUnchanged, nil
+}
+
+// RepairISCSIPortals re-registers discovery portals whose source binding names
+// an address this host no longer has.
+//
+// A portal created with an InitiatorPortalAddress pins discovery to one source
+// IP. When that IP goes — a NIC replaced, a converged switch rebuilt, a host
+// re-addressed — the entry stays behind and discovery through it silently
+// returns nothing. Every login then fails with "the target name is not found or
+// is marked as hidden from login", which sends the operator to the array, where
+// nothing is wrong. The reconcile detects and reports this; it does not fix it,
+// because fixing it means REMOVING a portal entry and the reconcile is strictly
+// additive.
+//
+// So this is a job: deliberate, operator-initiated, and reported. It is the same
+// shape as RepairPool and RemoveCSV — the destructive half of a recovery, kept
+// out of the loop that runs every cycle.
+//
+// It is narrow on purpose. It touches ONLY portals whose bound address is absent
+// from this host: a binding to a real, present NIC is somebody's deliberate
+// choice about which path reaches the array, and is left exactly alone. It never
+// disconnects a session; removing a discovery portal does not drop existing
+// logins, and the reconcile re-registers anything the spec still wants.
+func (p *PowerShell) RepairISCSIPortals(ctx context.Context) (string, error) {
+	script := `$ErrorActionPreference = 'Stop'
+$myIPs = @()
+try { $myIPs = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [string]$_.IPAddress }) } catch {}
+$fixed = @()
+$failed = @()
+$checked = 0
+foreach ($h in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
+  $checked++
+  $addr = [string]$h.TargetPortalAddress
+  # UInt16: the port is part of the CIM key and an Int32 fails the lookup.
+  $port = [uint16]3260
+  try { $port = [uint16]$h.TargetPortalPortNumber } catch {}
+  $bound = [string]$h.InitiatorPortalAddress
+  # Unbound, or bound to an address this host really has: leave it alone. The
+  # second case is a deliberate choice about which path reaches the array.
+  if (-not $bound -or $bound -eq '0.0.0.0' -or ($myIPs -contains $bound)) { continue }
+  try {
+    Remove-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -Confirm:$false -ErrorAction Stop
+    New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -ErrorAction Stop | Out-Null
+    $fixed += ($addr + ':' + $port + ' (was pinned to ' + $bound + ')')
+  } catch {
+    $failed += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
+  }
+}
+# Re-run discovery so the result of the repair is visible immediately rather
+# than on the next reconcile.
+try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
+$seen = @(Get-IscsiTarget -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NodeAddress })
+$res = [ordered]@{ checked = $checked; fixed = $fixed; failed = $failed; targets = $seen }
+'RESULT=' + ($res | ConvertTo-Json -Compress -Depth 4)`
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("repair iscsi portals: %w", err)
+	}
+	var res struct {
+		Checked int      `json:"checked"`
+		Fixed   []string `json:"fixed"`
+		Failed  []string `json:"failed"`
+		Targets []string `json:"targets"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON(string(out))), &res); err != nil {
+		return "", fmt.Errorf("repair iscsi portals: could not read the result: %w", err)
+	}
+	if len(res.Failed) > 0 {
+		return "", fmt.Errorf("could not re-register %s", strings.Join(res.Failed, "; "))
+	}
+	// Say what discovery sees NOW. A repair that reports only what it changed
+	// leaves the operator to go and look for whether it worked.
+	found := "discovery now sees no targets — the portals are reachable but this host's initiator is not on any target's allowed list, or there is no path to them"
+	if len(res.Targets) > 0 {
+		found = "discovery now sees " + strings.Join(res.Targets, ", ")
+	}
+	if len(res.Fixed) == 0 {
+		return "checked " + strconv.Itoa(res.Checked) + " discovery portals; none was pinned to a missing address, so nothing needed re-registering. " + found, nil
+	}
+	return "re-registered " + strings.Join(res.Fixed, "; ") + ". " + found, nil
+}
+
+// resultJSON pulls the RESULT= payload out of a script's stdout, ignoring any
+// other lines a cmdlet decided to print.
+func resultJSON(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if v, found := strings.CutPrefix(strings.TrimSpace(line), "RESULT="); found {
+			return v
+		}
+	}
+	return "{}"
+}
+
+// DisconnectISCSITarget logs this host out of one target and forgets it, so the
+// login is not restored at the next boot.
+//
+// The reconcile will not do this. It is strictly additive on purpose: changing
+// the target in a spec adds the new login and leaves the old one, because
+// Ballast cannot tell from a spec edit whether a target it no longer lists is
+// one the operator retired or one something else on the host still depends on.
+// Deciding that is the operator's, so this is a job.
+//
+// It REFUSES while the target's disks are in use. A session carrying a clustered
+// disk, or an online one, is carrying something: disconnecting it takes the disk
+// away from whatever has it open, and "the volume went away" is not a failure
+// anybody can trace back to a button. The refusal names the disks so the answer
+// is actionable rather than a flat no.
+func (p *PowerShell) DisconnectISCSITarget(ctx context.Context, targetIQN string) (string, error) {
+	if strings.TrimSpace(targetIQN) == "" {
+		return "", fmt.Errorf("disconnect iscsi target: a target name is required")
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$t = %[1]s
+# PERSISTENT LOGINS OUTLIVE THE SESSION.
+#
+# Unregister-IscsiSession needs a live session to unregister, and
+# Disconnect-IscsiTarget ends a connection without touching the persistent
+# registration behind it. So a target that has been DELETED on the array leaves
+# an entry the initiator retries for ever — roughly once a minute, logged by the
+# array every time. Seen on the rig 2026-08-24: HVNEW02 held no session at all
+# and the Synology recorded "tried to login into a non-existent iSCSI iqn"
+# minute after minute, while Ballast reported nothing wrong.
+#
+# There is no cmdlet for this. iscsicli is the supported route, so it is parsed
+# rather than guessed at, and every removal is reported.
+function Remove-PersistentTarget([string]$want) {
+  $removed = @()
+  $errs = @()
+  $out = @()
+  try { $out = @(& iscsicli ListPersistentTargets 2>&1 | ForEach-Object { [string]$_ }) } catch { return @{ removed = $removed; errors = @('could not list persistent targets: ' + $_.Exception.Message) } }
+  $cur = @{}
+  $records = @()
+  foreach ($line in $out) {
+    $kv = $line -split '\s*:\s*', 2
+    if ($kv.Count -ne 2) { continue }
+    $k = $kv[0].Trim(); $v = $kv[1].Trim()
+    # A new "Target Name" starts a new record; flush the one before it.
+    if ($k -eq 'Target Name') {
+      if ($cur.ContainsKey('target')) { $records += ,$cur }
+      $cur = @{ target = $v }
+    }
+    elseif ($k -eq 'Initiator Name') { $cur['initiator'] = $v }
+    elseif ($k -eq 'Port Number') { $cur['port'] = $v }
+    elseif ($k -like 'Address and Socket*') { $cur['addr'] = $v }
+  }
+  if ($cur.ContainsKey('target')) { $records += ,$cur }
+
+  foreach ($rec in $records) {
+    if ([string]$rec['target'] -ne $want) { continue }
+    $init = [string]$rec['initiator']; if (-not $init) { $init = 'ROOT' + [char]92 + 'ISCSIPRT' + [char]92 + '0000_0' }
+    $port = [string]$rec['port']
+    # "<Any Port>" is iscsicli's wildcard; it is passed back as *.
+    if (-not $port -or $port -like '*Any*') { $port = '*' }
+    $addr = ''; $sock = '3260'
+    $parts = ([string]$rec['addr']) -split '\s+' | Where-Object { $_ }
+    if ($parts.Count -ge 1) { $addr = $parts[0] }
+    if ($parts.Count -ge 2) { $sock = $parts[1] }
+    if (-not $addr) { $errs += ('no portal address recorded for ' + $want); continue }
+    try {
+      $r = & iscsicli RemovePersistentTarget $init $want $port $addr $sock 2>&1
+      if ($LASTEXITCODE -eq 0) { $removed += ($addr + ':' + $sock) }
+      else { $errs += ($addr + ':' + $sock + ' - ' + (($r | ForEach-Object { [string]$_ }) -join ' ')) }
+    } catch { $errs += ($addr + ':' + $sock + ' - ' + $_.Exception.Message) }
+  }
+  return @{ removed = $removed; errors = $errs }
+}
+$persist = Remove-PersistentTarget $t
+# -eq is case-insensitive, which is what we want: Get-IscsiSession echoes the
+# target name lower-cased while the operator sees the array's capitalisation.
+$sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue | Where-Object { [string]$_.TargetNodeAddress -eq $t })
+if ($sessions.Count -eq 0) {
+  # Already gone. Still clear any persistent entry, or it returns at boot.
+  try { Disconnect-IscsiTarget -NodeAddress $t -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+  'RESULT=' + (@{ removed = 0; absent = $true; persistRemoved = $persist.removed; persistErrors = $persist.errors } | ConvertTo-Json -Compress -Depth 3)
+} else {
+  # What this target is actually carrying. The association is the only reliable
+  # way to attribute a disk to a session — the disk itself does not name its
+  # target, which is why the reported LUN is -1.
+  $inUse = @()
+  foreach ($s in $sessions) {
+    $disks = @()
+    try { $disks = @($s | Get-Disk -ErrorAction SilentlyContinue) } catch {}
+    foreach ($d in $disks) {
+      if ([bool]$d.IsClustered) { $inUse += ('disk ' + [int]$d.Number + ' is a clustered disk') }
+      elseif (-not [bool]$d.IsOffline) { $inUse += ('disk ' + [int]$d.Number + ' is online') }
+    }
+  }
+  if ($inUse.Count -gt 0) {
+    throw ('refusing to disconnect ' + $t + ': ' + (($inUse | Sort-Object -Unique) -join '; ') +
+      '. Disconnecting takes those disks away from whatever has them open. Take the volume offline (or remove it from the cluster) first, then disconnect.')
+  }
+  $n = 0
+  foreach ($s in $sessions) {
+    # Unregister first: a persistent session that is merely disconnected comes
+    # back at the next boot, which is a fix that lasts until the next restart.
+    try { Unregister-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction SilentlyContinue } catch {}
+    try { Disconnect-IscsiTarget -NodeAddress $t -SessionIdentifier $s.SessionIdentifier -Confirm:$false -ErrorAction Stop; $n++ } catch {}
+  }
+  # Belt and braces: clear the target's persistent entry outright, so nothing
+  # restores it.
+  try { Disconnect-IscsiTarget -NodeAddress $t -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+  $left = @(Get-IscsiSession -ErrorAction SilentlyContinue | Where-Object { [string]$_.TargetNodeAddress -eq $t })
+  if ($left.Count -gt 0) {
+    throw ('disconnected ' + $n + ' session(s) from ' + $t + ' but ' + $left.Count + ' remain - something still holds it')
+  }
+  'RESULT=' + (@{ removed = $n; absent = $false; persistRemoved = $persist.removed; persistErrors = $persist.errors } | ConvertTo-Json -Compress -Depth 3)
+}`, psQuote(targetIQN))
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("disconnect iscsi target %q: %w", targetIQN, err)
+	}
+	var res struct {
+		Removed        int      `json:"removed"`
+		Absent         bool     `json:"absent"`
+		PersistRemoved []string `json:"persistRemoved"`
+		PersistErrors  []string `json:"persistErrors"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON(string(out))), &res); err != nil {
+		return "", fmt.Errorf("disconnect iscsi target %q: could not read the result: %w", targetIQN, err)
+	}
+	// The persistent registration is the half that matters for a target the array
+	// has DELETED: with no session to end there is nothing to disconnect, and the
+	// entry alone makes the initiator retry about once a minute for ever.
+	persist := ""
+	switch {
+	case len(res.PersistErrors) > 0:
+		persist = "; the persistent login could NOT be removed (" + strings.Join(res.PersistErrors, "; ") +
+			"), so this host will keep retrying the target about once a minute"
+	case len(res.PersistRemoved) > 0:
+		persist = "; removed the persistent login through " + strings.Join(res.PersistRemoved, ", ") +
+			", so it will not be retried again"
+	default:
+		persist = "; no persistent login for it was registered"
+	}
+
+	if res.Absent {
+		return "this host held no session to " + targetIQN + persist, nil
+	}
+	return "disconnected " + strconv.Itoa(res.Removed) + " session(s) from " + targetIQN + persist, nil
+}
+
+// PruneISCSIPortals removes discovery portals this host holds that the spec does
+// not declare.
+//
+// The reconcile is strictly additive, deliberately: it cannot tell a portal an
+// operator retired from one something else on the host depends on. So a portal
+// added by mistake, or left over from an earlier configuration, stays for ever.
+// On the rig 2026-08-24 both members of Primary1 carried 10.0.60.53 and
+// 10.0.60.54 from a config three edits old — they inflated the path count the
+// console reports, and they kept advertising a target from a deleted cluster.
+// The only ways out were iscsicpl on the host, or ResetISCSIInitiator, which is
+// nuclear AND refuses while disks carry partitions, which is exactly when an
+// operator needs this. Opening a PowerShell session on a host to fix a managed
+// object is a defect, not a runbook step.
+//
+// Operator-initiated, like RepairPool and DisconnectISCSITarget, because
+// deciding to pull a portal entry is a decision rather than a cadence.
+//
+// SAFETY: an undeclared portal that is CARRYING A SESSION is refused, not
+// removed. Either the spec is missing a portal the host really uses, or a
+// session exists nobody declared; both are for a person to resolve, and guessing
+// either way drops a live storage path.
+func (p *PowerShell) PruneISCSIPortals(ctx context.Context, declared []string) (string, error) {
+	if len(declared) == 0 {
+		// Nothing declared means nothing to compare against. Pruning here would
+		// remove every portal on the host, which is ResetISCSIInitiator wearing a
+		// safer-sounding name.
+		return "", fmt.Errorf("prune iscsi portals: no portals are declared for this host, so there is nothing to prune against — declaring none would mean removing them all, which is what Reset initiator is for")
+	}
+	var quoted []string
+	for _, d := range declared {
+		h := strings.TrimSpace(d)
+		if x, _, err := net.SplitHostPort(h); err == nil {
+			h = x
+		}
+		quoted = append(quoted, psQuote(h))
+	}
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$declared = @(%s)
+$removed = @(); $kept = @(); $failed = @()
+# Which portals carry a live connection, taken from the sessions' own
+# connections — a session does not record the portal it was made through.
+$busy = @()
+foreach ($s in @(Get-IscsiSession -ErrorAction SilentlyContinue)) {
+  foreach ($cn in @($s | Get-IscsiConnection -ErrorAction SilentlyContinue)) {
+    $busy += [string]$cn.TargetAddress
+  }
+}
+foreach ($h in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
+  $addr = [string]$h.TargetPortalAddress
+  # UInt16: the port is part of the CIM key and an Int32 fails the lookup.
+  $port = [uint16]3260
+  try { $port = [uint16]$h.TargetPortalPortNumber } catch {}
+  if ($declared -contains $addr) { continue }
+  if ($busy -contains $addr) {
+    $kept += ($addr + ':' + $port)
+    continue
+  }
+  try {
+    Remove-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -Confirm:$false -ErrorAction Stop
+    $removed += ($addr + ':' + $port)
+  } catch {
+    $failed += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
+  }
+}
+# Re-run discovery so what survived is visible at once rather than next pass.
+try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
+$left = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress })
+$res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $left }
+'RESULT=' + ($res | ConvertTo-Json -Compress -Depth 4)`, strings.Join(quoted, ","))
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("prune iscsi portals: %w", err)
+	}
+	var res struct {
+		Removed []string `json:"removed"`
+		Kept    []string `json:"kept"`
+		Failed  []string `json:"failed"`
+		Left    []string `json:"left"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON(string(out))), &res); err != nil {
+		return "", fmt.Errorf("prune iscsi portals: could not read the result: %w", err)
+	}
+	if len(res.Failed) > 0 {
+		return "", fmt.Errorf("could not remove %s", strings.Join(res.Failed, "; "))
+	}
+	if len(res.Removed) == 0 && len(res.Kept) == 0 {
+		return "every discovery portal on this host is declared; nothing to prune", nil
+	}
+	note := ""
+	if len(res.Removed) > 0 {
+		note = "removed " + strconv.Itoa(len(res.Removed)) + " undeclared discovery portal(s): " + strings.Join(res.Removed, ", ")
+	}
+	// Reported, not hidden. A portal left behind is the one the operator most
+	// needs to think about: it is undeclared AND in use.
+	if len(res.Kept) > 0 {
+		k := strings.Join(res.Kept, ", ") + " were left: they are not declared but are carrying a live session, so removing them would drop a storage path. Either add them to the spec or disconnect the target first"
+		if note == "" {
+			note = k
+		} else {
+			note += ". " + k
+		}
+	}
+	return note, nil
 }

@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ func iscsiSpec() types.ISCSIStorageSpec {
 // are persistent, and an existing non-persistent one is registered rather than
 // left as a working-until-restarted state.
 func TestISCSILoginsArePersistent(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false, true)
+	s := iscsiScript(iscsiSpec(), false, true, nil)
 	// Splatted, and carrying the portal it is made through, so each declared path
 	// gets its own session. The persistence property asserted is unchanged.
 	if !strings.Contains(s, "$c = @{ NodeAddress = $t; IsPersistent = $true; TargetPortalAddress = $addr }") {
@@ -43,7 +44,7 @@ func TestISCSILoginsArePersistent(t *testing.T) {
 // whether an unlisted target is one the operator dropped or one something else
 // on the host needs.
 func TestISCSIReconcileNeverDisconnects(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), true, true)
+	s := iscsiScript(iscsiSpec(), true, true, nil)
 	for _, forbidden := range []string{
 		"Disconnect-IscsiTarget",
 		"Remove-IscsiTargetPortal",
@@ -62,7 +63,7 @@ func TestISCSIReconcileNeverDisconnects(t *testing.T) {
 // on a single path for ever — multipath in effect and nothing to coalesce. What
 // must not be repeated is a login through a portal that already carries one.
 func TestISCSIIsIdempotentPerPortal(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false, true)
+	s := iscsiScript(iscsiSpec(), false, true, nil)
 	if !strings.Contains(s, "if ($have.Count -eq 0) {") {
 		t.Error("a portal must only be registered when absent")
 	}
@@ -84,7 +85,7 @@ func TestISCSIIsIdempotentPerPortal(t *testing.T) {
 // devices the cluster believes are unrelated, which is a corruption, not a
 // tuning problem.
 func TestMPIOIsInstalledBeforeAnyLogin(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), true, true)
+	s := iscsiScript(iscsiSpec(), true, true, nil)
 	mpio := strings.Index(s, "Install-WindowsFeature -Name Multipath-IO")
 	login := strings.Index(s, "Connect-IscsiTarget")
 	if mpio == -1 || login == -1 {
@@ -101,7 +102,7 @@ func TestMPIOIsInstalledBeforeAnyLogin(t *testing.T) {
 }
 
 func TestMPIOIsNotInstalledWhenNotWanted(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false, true)
+	s := iscsiScript(iscsiSpec(), false, true, nil)
 	if strings.Contains(s, "Install-WindowsFeature -Name Multipath-IO") {
 		t.Fatal("a single-path cluster must not have MPIO forced on it")
 	}
@@ -117,7 +118,7 @@ func TestMPIOIsNotInstalledWhenNotWanted(t *testing.T) {
 // where nothing works yet — Get-InitiatorPort returns nothing without the
 // service, so the registry is the fallback.
 func TestTheInitiatorNameIsReportedEvenIfNothingElseWorks(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false, true)
+	s := iscsiScript(iscsiSpec(), false, true, nil)
 	if !strings.Contains(s, "Get-InitiatorPort") {
 		t.Fatal("the initiator IQN must be reported")
 	}
@@ -131,35 +132,48 @@ func TestTheInitiatorNameIsReportedEvenIfNothingElseWorks(t *testing.T) {
 func TestCHAPSecretsAreNotWrittenIntoTheScript(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret = "nas-chap"
-	s := iscsiScript(spec, false, true)
+	s := iscsiScript(spec, false, true, nil)
 	if !strings.Contains(s, "$env:BALLAST_CHAP_SECRET") {
 		t.Fatal("the secret must come from the environment")
 	}
 	if !strings.Contains(s, "$c['AuthenticationType'] = 'ONEWAYCHAP'") {
 		t.Error("a credential means CHAP")
 	}
-	// The cmdlet rejects a duplicated ChapSecret, which would fail every login.
-	if strings.Count(s, "ChapSecret") != 1 {
-		t.Errorf("exactly one ChapSecret argument, got %d", strings.Count(s, "ChapSecret"))
+	// The cmdlet rejects a DUPLICATED ChapSecret, which would fail every login.
+	// That rule is per invocation, not per script: discovery and login are two
+	// separate calls and each carries the credential once. Counting occurrences
+	// across the whole script was a proxy for it, and became wrong the moment
+	// discovery started authenticating too.
+	if n := strings.Count(s, "$c['ChapSecret']"); n != 1 {
+		t.Errorf("the login must pass exactly one ChapSecret, got %d", n)
+	}
+	if n := strings.Count(s, "ChapSecret = $env:BALLAST_CHAP_SECRET }"); n != 1 {
+		t.Errorf("the discovery must pass exactly one ChapSecret, got %d", n)
 	}
 }
 
 func TestMutualCHAPSelectsTheRightAuthType(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret, spec.MutualCHAP = "nas-chap", true
-	s := iscsiScript(spec, false, true)
+	s := iscsiScript(spec, false, true, nil)
 	if !strings.Contains(s, "$c['AuthenticationType'] = 'MUTUALCHAP'") {
 		t.Error("mutual CHAP must be requested as such")
 	}
-	if strings.Count(s, "ChapSecret") != 1 {
-		t.Errorf("mutual CHAP still takes one ChapSecret here, got %d", strings.Count(s, "ChapSecret"))
+	// Mutual CHAP needs the initiator's own secret set once on the host
+	// (Set-IscsiChapSecret), NOT a second -ChapSecret on the call — which the
+	// cmdlet rejects outright. One per invocation, discovery and login alike.
+	if n := strings.Count(s, "$c['ChapSecret']"); n != 1 {
+		t.Errorf("mutual CHAP still takes one ChapSecret on the login, got %d", n)
+	}
+	if !strings.Contains(s, "$portalAuth = @{ AuthenticationType = 'MUTUALCHAP'") {
+		t.Error("mutual CHAP must reach discovery as well")
 	}
 }
 
 // No credential means no CHAP flags at all — an open target must not be sent
 // empty credentials, which fails the login rather than connecting.
 func TestNoCredentialMeansNoCHAP(t *testing.T) {
-	s := iscsiScript(iscsiSpec(), false, true)
+	s := iscsiScript(iscsiSpec(), false, true, nil)
 	if strings.Contains(s, "-AuthenticationType") || strings.Contains(s, "-ChapSecret") {
 		t.Fatal("an open target must be connected without CHAP flags")
 	}
@@ -303,5 +317,440 @@ func TestTheOnlineStepDoesNotReFetchTheResourceByName(t *testing.T) {
 	}
 	if !strings.Contains(body, "Start-ClusterResource -InputObject $res") {
 		t.Error("the resource must be started through the object it was given")
+	}
+}
+
+// Logged in, paths up, and nothing behind it.
+//
+// From the rig, 2026-08-23: both DRCluster members held three-path sessions and
+// reported ZERO disks, while the cluster's two CSVs sat Offline. Ballast said
+// nothing at all about it — no login had failed, so no message was set, and the
+// host reported a healthy-looking iSCSI block with an empty disk list. The only
+// thing naming a problem was a CSV alarm one layer up, which pointed at the
+// cluster rather than at the array that had stopped presenting the LUNs.
+//
+// The initiator side is working by definition in this state, so the remedy is on
+// the storage device — which Ballast does not administer, and must therefore
+// name explicitly rather than fail obscurely.
+func TestISCSIReportsASessionWithNoLUNsBehindIt(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	if !strings.Contains(s, "$connected.Count -gt 0 -and $out.disks.Count -eq 0") {
+		t.Fatal("a connected session with no disks must be recognised as its own condition")
+	}
+	if !strings.Contains(s, "the array is presenting no LUNs on it") {
+		t.Error("the message must say what is actually missing")
+	}
+	// It must not read as a host fault: the login succeeded and the paths are up.
+	if !strings.Contains(s, "The initiator side is working") {
+		t.Error("the message must place the fault on the array, not on the host")
+	}
+	if !strings.Contains(s, "$out.initiatorIQN +") {
+		t.Error("the message must carry the initiator IQN — it is what gets added to the LUN's masking list")
+	}
+	// The consequence, so the CSV alarm one layer up is connected to its cause.
+	if !strings.Contains(s, "will be Offline until it is") {
+		t.Error("the message must link the missing LUNs to the offline cluster volumes")
+	}
+	// It must not stamp on a login failure, which is a more specific diagnosis.
+	if !strings.Contains(s, "if (-not $out.message) {") {
+		t.Error("a real login error must win over this fallback")
+	}
+}
+
+// Absent is not zero. `Get-Disk -ErrorAction SilentlyContinue` turns "the
+// Storage service did not answer" into an empty list, which is then reported as
+// "this host sees no iSCSI disks" — a different and far more alarming statement
+// than "I could not tell". This is the costliest recurring defect in Ballast, so
+// the enumeration says which of the two it is.
+func TestISCSIDiskEnumerationFailureIsNotReportedAsNoDisks(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	if !strings.Contains(s, "$rawDisks = @(Get-Disk -ErrorAction Stop)") {
+		t.Fatal("the disk read must fail loudly rather than yielding an empty list")
+	}
+	if !strings.Contains(s, "$diskReadFailed = ([string]$_.Exception.Message).Trim()") {
+		t.Error("the reason the read failed must be captured, not discarded")
+	}
+	if !strings.Contains(s, "is UNKNOWN rather than none") {
+		t.Error("an unreadable disk list must be reported as unknown, never as zero disks")
+	}
+}
+
+// Discovery returning nothing is a different fault from a login being refused,
+// and it has to be named first: the login error that follows names a target and
+// points at the array, when the real answer is that nothing was advertised at
+// all and no name could have matched.
+//
+// And "no path" and "not permitted" look identical from the initiator, with
+// completely different remedies — one is a network fault on this host, the other
+// is a line in the array's masking list. Ballast can tell them apart with a TCP
+// probe, so leaving the operator to guess would be a diagnosis it could make and
+// did not.
+func TestISCSIEmptyDiscoveryIsReportedBeforeTheLoginError(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	if !strings.Contains(s, "$advertisedNow.Count -eq 0 -and $discovered.Count -gt 0") {
+		t.Fatal("an empty discovery must be recognised as its own condition")
+	}
+	// The probe that separates the two causes.
+	if !strings.Contains(s, "New-Object System.Net.Sockets.TcpClient") {
+		t.Fatal("the portals must actually be probed, not guessed about")
+	}
+	if !strings.Contains(s, "$reachable += ") || !strings.Contains(s, "$unreachable += ") {
+		t.Error("each portal must be sorted into reachable or not")
+	}
+
+	// Three answers, because there are three situations.
+	for _, want := range []string{
+		"no path to the array: ",
+		"The fault is HERE, not on the array",
+		"but advertised NO target to this host, and ",
+		"the array answered on every portal",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the diagnosis must distinguish the causes; missing %q", want)
+		}
+	}
+	// The specific trap: an operator checks the array's initiator list, sees the
+	// IQN, and concludes masking is fine — but the lists are per target.
+	if strings.Count(s, "per target") < 2 {
+		t.Error("both masking branches must say allowed-initiator lists are per target")
+	}
+	if !strings.Contains(s, "this is not a login being refused") {
+		t.Error("the message must say what it is NOT")
+	}
+	// Decided BEFORE the login-failure branch, which is guarded on
+	// -not $out.message, so the more specific diagnosis wins.
+	if strings.Index(s, "$advertisedNow.Count -eq 0") > strings.Index(s, "could not log in through ") {
+		t.Error("empty discovery must be decided BEFORE the login error, or the vaguer message wins")
+	}
+}
+
+// The reconcile REPORTS a stale portal binding; the repair is a job.
+//
+// Fixing it means removing a portal entry, and TestISCSIReconcileNeverDisconnects
+// forbids that in the loop that runs every cycle — rightly, because a reconcile
+// that can pull storage entries is a reconcile that can pull them at three in
+// the morning for a reason nobody asked for. So the detection lives in the pass
+// and the remedy is operator-initiated, the same shape as RepairPool.
+func TestISCSIStalePortalIsReportedByTheReconcileNotFixedByIt(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	if !strings.Contains(s, "$bound = [string]$h.InitiatorPortalAddress") {
+		t.Fatal("the reconcile must inspect the portal's source binding")
+	}
+	if !strings.Contains(s, "$stalePortals += (") {
+		t.Error("a dead binding must be recorded")
+	}
+	if !strings.Contains(s, "cannot discover through ") {
+		t.Error("the message must say the host cannot discover, not merely that a portal looks odd")
+	}
+	// It must explain the misleading symptom it causes, or the operator follows
+	// the login error to the array and finds nothing wrong.
+	if !strings.Contains(s, `fails every login with "the target name is not found"`) {
+		t.Error("the message must connect the binding to the login error it produces")
+	}
+	if !strings.Contains(s, "Run Repair iSCSI portals") {
+		t.Error("the message must name the action that fixes it")
+	}
+	// And the reconcile itself must still not remove anything.
+	if strings.Contains(s, "Remove-IscsiTargetPortal") {
+		t.Error("the reconcile must stay additive; the removal belongs to the job")
+	}
+}
+
+// The repair job is narrow on purpose: a binding to a real, present NIC is a
+// deliberate choice about which path reaches the array, and is not ours to undo.
+func TestISCSIRepairJobOnlyTouchesADeadBinding(t *testing.T) {
+	var p PowerShell
+	var seen string
+	p.run = func(_ context.Context, script string) ([]byte, error) {
+		seen = script
+		return []byte(`RESULT={"checked":3,"fixed":["10.0.60.52:3260 (was pinned to 10.0.60.9)"],"failed":[],"targets":["iqn.test:t1"]}`), nil
+	}
+	note, err := p.RepairISCSIPortals(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(seen, "if (-not $bound -or $bound -eq '0.0.0.0' -or ($myIPs -contains $bound)) { continue }") {
+		t.Error("a binding to an address the host HAS must be left alone")
+	}
+	if !strings.Contains(seen, "Remove-IscsiTargetPortal") || !strings.Contains(seen, "New-IscsiTargetPortal") {
+		t.Error("the repair must re-register the portal unbound")
+	}
+	// It re-runs discovery so the operator sees the result now, not next cycle.
+	if !strings.Contains(seen, "Update-IscsiTarget") {
+		t.Error("the repair must refresh discovery so its own result is visible")
+	}
+	if !strings.Contains(note, "was pinned to 10.0.60.9") {
+		t.Errorf("the result must say what it changed: %q", note)
+	}
+	if !strings.Contains(note, "discovery now sees iqn.test:t1") {
+		t.Errorf("the result must say what discovery sees afterwards: %q", note)
+	}
+}
+
+// Nothing to fix is an answer, and it must not read as a repair having happened.
+// It also has to say what discovery sees, or the operator is left to go and look.
+func TestISCSIRepairJobSaysWhenThereWasNothingToFix(t *testing.T) {
+	var p PowerShell
+	p.run = func(_ context.Context, _ string) ([]byte, error) {
+		return []byte(`RESULT={"checked":3,"fixed":[],"failed":[],"targets":[]}`), nil
+	}
+	note, err := p.RepairISCSIPortals(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "none was pinned to a missing address") {
+		t.Errorf("expected a plain no-op answer, got %q", note)
+	}
+	// The remaining possibilities, named — this is the case HVNEW01 lands in if
+	// its portals turn out to be fine.
+	if !strings.Contains(note, "not on any target's allowed list") {
+		t.Errorf("with no targets found it must name what is left to check: %q", note)
+	}
+}
+
+func TestISCSIRepairJobFailsLoudly(t *testing.T) {
+	var p PowerShell
+	p.run = func(_ context.Context, _ string) ([]byte, error) {
+		return []byte(`RESULT={"checked":1,"fixed":[],"failed":["10.0.60.52:3260 - access denied"],"targets":[]}`), nil
+	}
+	if _, err := p.RepairISCSIPortals(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("a portal that could not be re-registered must fail the job with the reason, got %v", err)
+	}
+}
+
+// A persistent login outlives the session, and that is the half that matters
+// when the array has DELETED the target.
+//
+// From the rig, 2026-08-24: HVNEW02 held no session at all, yet the Synology
+// logged "Initiator [...hvnew02...] tried to login into a non-existent iSCSI
+// iqn [...xpenology.target-1...]" about once a minute, all morning. The
+// disconnect job had already run and reported success — it ended the session
+// and never touched the registration behind it, because
+// Unregister-IscsiSession needs a live session and Disconnect-IscsiTarget only
+// ends a connection. Ballast reported nothing wrong; the operator found it in
+// the array's own log.
+func TestISCSIDisconnectClearsThePersistentLogin(t *testing.T) {
+	var p PowerShell
+	var seen string
+	p.run = func(_ context.Context, script string) ([]byte, error) {
+		seen = script
+		return []byte(`RESULT={"removed":0,"absent":true,"persistRemoved":["10.0.60.52:3260"],"persistErrors":[]}`), nil
+	}
+	note, err := p.DisconnectISCSITarget(context.Background(), "iqn.syn:dead-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(seen, "iscsicli ListPersistentTargets") {
+		t.Fatal("the persistent registrations must actually be read; there is no cmdlet for them")
+	}
+	if !strings.Contains(seen, "iscsicli RemovePersistentTarget") {
+		t.Fatal("the registration must be removed, not just the session")
+	}
+	// A target with no live session is exactly the case this exists for, so the
+	// removal must not be inside the has-sessions branch.
+	if strings.Index(seen, "Remove-PersistentTarget $t") > strings.Index(seen, "if ($sessions.Count -eq 0)") {
+		t.Error("the persistent login must be cleared before the session branch, or a dead target is never reached")
+	}
+	if !strings.Contains(note, "removed the persistent login through 10.0.60.52:3260") {
+		t.Errorf("the result must say what it cleared: %q", note)
+	}
+	if !strings.Contains(note, "will not be retried again") {
+		t.Errorf("the result must say the retrying stops, which is the whole point: %q", note)
+	}
+}
+
+// A removal that failed must say so, and say what it costs — otherwise the
+// array goes on logging a warning a minute and nobody connects the two.
+func TestISCSIDisconnectSaysWhenThePersistentLoginSurvives(t *testing.T) {
+	var p PowerShell
+	p.run = func(_ context.Context, _ string) ([]byte, error) {
+		return []byte(`RESULT={"removed":1,"absent":false,"persistRemoved":[],"persistErrors":["10.0.60.52:3260 - access denied"]}`), nil
+	}
+	note, err := p.DisconnectISCSITarget(context.Background(), "iqn.syn:dead-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "could NOT be removed") || !strings.Contains(note, "access denied") {
+		t.Errorf("a failed removal must be named with its reason: %q", note)
+	}
+	if !strings.Contains(note, "once a minute") {
+		t.Errorf("it must say what the leftover actually does: %q", note)
+	}
+}
+
+func TestISCSIDisconnectSaysWhenThereWasNoPersistentLogin(t *testing.T) {
+	var p PowerShell
+	p.run = func(_ context.Context, _ string) ([]byte, error) {
+		return []byte(`RESULT={"removed":2,"absent":false,"persistRemoved":[],"persistErrors":[]}`), nil
+	}
+	note, err := p.DisconnectISCSITarget(context.Background(), "iqn.syn:t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "no persistent login for it was registered") {
+		t.Errorf("nothing found must read as nothing found, not as a removal: %q", note)
+	}
+}
+
+// A host that holds a session has plainly been offered a target.
+//
+// Get-IscsiTarget can return empty for a moment — after Update-IscsiTarget, or
+// on a WMI hiccup — while the sessions built from those targets are up and
+// serving. Read on its own it produced, on the rig 2026-08-24, a host reporting
+// "Connected · 1 of 1 targets · 3 paths · 2 disks" directly above "the array
+// advertised NO target to this host". Two statements from one pass, contradicting
+// each other, one of them invented.
+func TestISCSIEmptyDiscoveryIsNotClaimedWhileSessionsExist(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	if !strings.Contains(s, "$liveSessions = @(Get-IscsiSession -ErrorAction SilentlyContinue)") {
+		t.Fatal("the sessions must be read before claiming nothing was advertised")
+	}
+	if !strings.Contains(s, "$advertisedNow.Count -eq 0 -and $discovered.Count -gt 0 -and $liveSessions.Count -eq 0") {
+		t.Fatal("a live session must veto the empty-discovery diagnosis — it is proof a target was offered")
+	}
+	// The reasoning, kept where the next person will change this.
+	if !strings.Contains(s, "An absent reading is not a zero") {
+		t.Error("the guard must say why it is there, or it reads as a redundant check")
+	}
+}
+
+// One portal must not take the whole pass with it.
+//
+// From the rig, 2026-08-24. New-IscsiTargetPortal ran with -ErrorAction Stop and
+// no catch, under an $ErrorActionPreference of Stop, so a single portal refusing
+// ("New-IscsiTargetPortal : Target Error", HRESULT 0xefff0012) aborted the ENTIRE
+// script. The login loop, the sessions, the disks and every diagnosis after it
+// never ran — and the host reported no iSCSI state at all. Not a fault it could
+// describe: silence. HVNEW02 and HVNEW05 sat like that for a day while the
+// console had nothing whatever to show for them.
+//
+// And it blocked first: registering a portal performs discovery, and against an
+// address that does not answer that runs for minutes. Three of them inside a
+// reconcile is most of a cycle — the cluster pass sat stalled for 22 minutes.
+func TestISCSIAFailingPortalDoesNotAbortThePass(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	// The registration is inside a try. This is the whole bug.
+	idx := strings.Index(s, "New-IscsiTargetPortal -TargetPortalAddress $addr")
+	if idx < 0 {
+		t.Fatal("the portal registration went missing")
+	}
+	before := s[:idx]
+	if !strings.Contains(before[strings.LastIndex(before, "foreach ($p in $portals)"):], "try {") {
+		t.Fatal("the registration must be inside a try — without one, a refused portal aborts the whole script")
+	}
+	if !strings.Contains(s, "$portalErrs += ($addr + ':' + $port + ' - '") {
+		t.Error("a refused portal must be recorded rather than thrown")
+	}
+	// And said out loud: a missing portal explains a missing target.
+	if !strings.Contains(s, "could not register ") {
+		t.Error("a portal that could not be registered must reach the operator")
+	}
+	if !strings.Contains(s, "Any target reached only through those portals will be missing") {
+		t.Error("the message must connect the portal to the consequence")
+	}
+}
+
+// A portal that is not answering is not registered at all: the probe is what
+// keeps a dead address from costing minutes of a cycle.
+func TestISCSIPortalIsProbedBeforeRegistering(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+
+	reg := strings.Index(s, "New-IscsiTargetPortal -TargetPortalAddress $addr")
+	probe := strings.Index(s, "$sock = New-Object System.Net.Sockets.TcpClient")
+	if probe < 0 {
+		t.Fatal("a portal must be probed before a blocking registration is attempted")
+	}
+	if probe > reg {
+		t.Error("the probe must come BEFORE the registration, or it saves nothing")
+	}
+	if !strings.Contains(s, "WaitOne(3000, $false)") {
+		t.Error("the probe must be bounded; an unbounded check is the thing it replaces")
+	}
+	if !strings.Contains(s, "did not answer on the iSCSI port, so it was not registered") {
+		t.Error("skipping a portal must be reported, not silent")
+	}
+}
+
+// Discovery needs the credential too, not only login.
+//
+// CHAP was applied to Connect-IscsiTarget and nowhere else. An array configured
+// to require it authenticates the DISCOVERY session as well, and an
+// unauthenticated discovery is told about nothing — no error, no refusal, an
+// empty target list. Ballast then reported "the array answered on every portal
+// but advertised NO target to this host" and sent the operator to the array's
+// allowed-initiator list, where nothing was wrong.
+//
+// Found on the rig 2026-08-24 the only way it could be: the operator connected
+// HVNEW01 by hand through iscsicpl, whose Discovery tab takes a CHAP secret, and
+// it worked at once. The two hosts that appeared healthy were not evidence
+// against it — they held sessions established earlier, so nothing ever asked
+// them to discover again.
+func TestISCSIDiscoveryCarriesTheCHAPCredential(t *testing.T) {
+	spec := iscsiSpec()
+	spec.CredentialSecret = "nas-chap"
+	s := iscsiScript(spec, true, true, nil)
+
+	if !strings.Contains(s, "$portalAuth = @{ AuthenticationType = 'ONEWAYCHAP'") {
+		t.Fatal("a spec with a credential must authenticate the discovery session")
+	}
+	if !strings.Contains(s, "ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }") {
+		t.Error("the credential must reach discovery through the environment, as the login does")
+	}
+	// Splatted onto the registration, or it is built and never used.
+	if !strings.Contains(s, "New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @portalAuth") {
+		t.Fatal("the portal registration must actually carry the credential")
+	}
+
+	spec.MutualCHAP = true
+	if !strings.Contains(iscsiScript(spec, true, true, nil), "AuthenticationType = 'MUTUALCHAP'") {
+		t.Error("mutual CHAP must reach discovery too")
+	}
+}
+
+// No credential declared means no auth on discovery — an empty splat, so the
+// call is exactly what it was before.
+func TestISCSIDiscoveryIsUnauthenticatedWhenNoCredentialIsSet(t *testing.T) {
+	s := iscsiScript(iscsiSpec(), true, true, nil)
+	if !strings.Contains(s, "$portalAuth = @{}") {
+		t.Fatal("with no credential the discovery must carry none")
+	}
+	if strings.Contains(s, "AuthenticationType = 'ONEWAYCHAP'") {
+		t.Error("no credential was declared, so none may be invented")
+	}
+}
+
+// The diagnosis sent the operator to the array's masking list and named nothing
+// else. CHAP-on-discovery was the cause it could not see, and it is the one that
+// was actually happening.
+func TestISCSIEmptyDiscoveryNamesCHAPAsACause(t *testing.T) {
+	withChap := func(on bool) string {
+		spec := iscsiSpec()
+		if on {
+			spec.CredentialSecret = "nas-chap"
+		}
+		return iscsiScript(spec, true, true, nil)
+	}
+	for _, s := range []string{withChap(true), withChap(false)} {
+		if !strings.Contains(s, "The array may require CHAP for DISCOVERY, not only for login") {
+			t.Fatal("the diagnosis must offer CHAP-on-discovery as a cause")
+		}
+		if !strings.Contains(s, "not on the allowed-initiator list of the SPECIFIC target") {
+			t.Error("masking must remain the other candidate, not be replaced by it")
+		}
+	}
+	// And it must say which of the two situations THIS spec is in.
+	if !strings.Contains(withChap(true), "this spec does set a CHAP credential") {
+		t.Error("a spec with a credential must say to check the secret")
+	}
+	if !strings.Contains(withChap(false), "this spec sets NO CHAP credential") {
+		t.Error("a spec without one must say to add it if the array wants it")
 	}
 }

@@ -898,6 +898,79 @@ type ManagementVNICSpec struct {
 	// MinBandwidthWeight expresses relative QoS weight (1-100) for this vNIC
 	// when the switch uses weight-based bandwidth management.
 	MinBandwidthWeight int `json:"minBandwidthWeight,omitempty"`
+
+	// Purpose is what this vNIC carries. Empty means Management.
+	//
+	// It exists because storage traffic has requirements no other traffic has,
+	// and Ballast had no way to say which vNIC carried it. See VNICPurpose.
+	Purpose VNICPurpose `json:"purpose,omitempty"`
+
+	// TeamMemberAdapter pins this vNIC to ONE physical adapter in the switch's
+	// SET team (Set-VMNetworkAdapterTeamMapping).
+	//
+	// This is the field that makes redundancy real, and its absence is why a
+	// fleet can look multipathed and not be. Without a mapping, SET places every
+	// vNIC on whichever uplink it likes — so two storage vNICs, two subnets, MPIO
+	// or SMB Multichannel dutifully running over both, can share a single
+	// physical port. One cable then takes the lot, and nothing anywhere reports
+	// that the second path was never a second path.
+	//
+	// Observed 2026-08-24: three hosts with three declared portals reporting one
+	// path each, MPIO "in effect", nothing to fail over to.
+	//
+	// Empty leaves placement to SET, which is correct for management and VM
+	// traffic and wrong for storage.
+	TeamMemberAdapter string `json:"teamMemberAdapter,omitempty"`
+
+	// RDMA enables RDMA on this vNIC (Enable-NetAdapterRdma).
+	//
+	// S2D's east-west traffic is SMB Direct, and on RDMA-capable hardware that is
+	// the difference between a pool that performs and one that does not. Nil
+	// means off: RDMA needs capable adapters AND, for RoCE, DCB/PFC configured
+	// end to end including the switches — which Ballast does not administer. It
+	// is declared rather than inferred so a fleet that cannot do it says so
+	// instead of half-configuring it.
+	RDMA *bool `json:"rdma,omitempty"`
+}
+
+// VNICPurpose says what a management OS vNIC carries, because the answer
+// changes what has to be true of it.
+//
+// Ballast modelled every vNIC as management. That was survivable while the only
+// question was "does it have an address", and stopped being survivable once
+// storage was involved: a storage vNIC needs its own subnet, its own physical
+// uplink, and — for S2D — RDMA, none of which are preferences. A model that
+// cannot distinguish them cannot check any of it.
+type VNICPurpose string
+
+const (
+	// VNICManagement carries host management. The default, and the one vNIC that
+	// must never be torn down casually: it is how the agent is reachable.
+	VNICManagement VNICPurpose = ""
+	// VNICCluster carries cluster heartbeat and CSV redirected I/O.
+	VNICCluster VNICPurpose = "Cluster"
+	// VNICLiveMigration carries live migration traffic.
+	VNICLiveMigration VNICPurpose = "LiveMigration"
+	// VNICStorage carries storage: SMB Direct to an S2D pool, or iSCSI to an
+	// array. Two or more, on separate subnets and separate uplinks, is the
+	// arrangement both models need — SMB Multichannel and MPIO alike multiplex
+	// across interfaces, and cannot manufacture a second one.
+	VNICStorage VNICPurpose = "Storage"
+)
+
+// IsStorage reports whether this vNIC carries storage traffic.
+func (p VNICPurpose) IsStorage() bool { return p == VNICStorage }
+
+// StorageVNICs returns the host's storage-purpose vNICs, which are the
+// interfaces an iSCSI session or an SMB Direct connection should be made from.
+func (n HostNetworkingSpec) StorageVNICs() []ManagementVNICSpec {
+	var out []ManagementVNICSpec
+	for _, v := range n.ManagementVNICs {
+		if v.Purpose.IsStorage() {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 type IPConfig struct {
@@ -1211,6 +1284,25 @@ type ClusterMgmtVNIC struct {
 	// MinBandwidthWeight is the QoS weight (1-100) when the switch uses
 	// weight-based bandwidth management.
 	MinBandwidthWeight int `json:"minBandwidthWeight,omitempty"`
+
+	// Purpose says what the vNIC carries — management, cluster, live migration or
+	// storage. Fanned into every member so the storage-network rules apply on the
+	// host that has to honour them; see ValidateStorageNetwork.
+	Purpose VNICPurpose `json:"purpose,omitempty"`
+
+	// HostAdapters maps a member host to the physical adapter inside this
+	// switch's SET team that the vNIC is pinned to on that host.
+	//
+	// Per host, not one value, because adapter names are a property of the
+	// machine and members do not have to agree on them. A host with no entry is
+	// left to SET's own placement — which for a storage vNIC means the second
+	// path may share a cable with the first.
+	HostAdapters map[string]string `json:"hostAdapters,omitempty"`
+
+	// RDMA enables or disables RDMA on the vNIC. Nil leaves it alone: enabling
+	// it where the fabric cannot carry it produces storage that works until it is
+	// loaded, so it is declared rather than inferred.
+	RDMA *bool `json:"rdma,omitempty"`
 
 	// HostIPs maps a member host to this vNIC's IP (CIDR) on that host. A host
 	// with no entry gets DHCP.
@@ -1997,12 +2089,77 @@ const (
 	JobVMReverseReplication = "VMReverseReplication" // params: vm, fromKind, fromName — reverse replication so the new primary replicates back to the old primary
 	JobVMRemoveReplica      = "VMRemoveReplica"      // params: vm — run on the replica host: remove the replica relationship and delete the orphaned replica copy (+ its VHDs)
 
+	// Runbook orchestration. These run on the DR-side host, enqueued by the
+	// centre's runbook controller rather than by an operator — but they are
+	// ordinary jobs, visible in the activity feed and runnable on their own, so
+	// there is no hidden channel the console cannot show.
+	//
+	// JobVMHealthProbe is ONE SHOT and short: it probes once and reports. A gate
+	// that needs twenty minutes is twenty minutes of probes, not one job holding
+	// an agent worker open — so a centre restart mid-gate resumes the gate, and a
+	// guest that never boots does not tie up the host that has to run the rest of
+	// the recovery.
+	JobVMHealthProbe = "VMHealthProbe" // params: vm, check (Heartbeat|TCP|ICMP|Script), address (optional), port, script, expectExit — one probe, reports healthy or why not
+	// JobEnsureTestSwitch creates the private, uplink-less switch a test failover
+	// runs inside. It REFUSES if a switch of that name exists and is not private,
+	// because reconfiguring somebody's external switch to isolate a test is how a
+	// DR test takes production down.
+	JobEnsureTestSwitch = "EnsureTestSwitch" // params: switch — ensure a private (isolated) virtual switch exists on this host
+	JobRemoveTestSwitch = "RemoveTestSwitch" // params: switch — remove a private test switch; refuses if it is not private or still has VMs attached
+
 	JobRemoveSwitch   = "RemoveSwitch"   // params: switch — delete a virtual switch from the host
 	JobRemoveMgmtVNIC = "RemoveMgmtVNIC" // params: vnic — remove a management-OS vNIC from the host
 	JobRemoveVM       = "RemoveVM"       // params: vm — stop and delete a VM from the host (hard delete)
 	JobRemoveCSV      = "RemoveCSV"      // run on the former: params: volume — delete a Cluster Shared Volume from the S2D pool (destructive)
 	JobRepairPool     = "RepairPool"     // run on a member: retire and remove unhealthy disks from the S2D pool so it returns to Healthy
-	JobRebuildPool    = "RebuildPool"    // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
+	// JobRepairISCSIPortals re-registers discovery portals pinned to a source
+	// address the host no longer has. A pinned portal returns nothing from
+	// discovery, which then fails every login with "the target name is not
+	// found" and points at the array, where nothing is wrong. The reconcile
+	// detects and reports it but cannot fix it — fixing means REMOVING a portal
+	// entry, and the iSCSI reconcile is strictly additive.
+	JobRepairISCSIPortals = "RepairISCSIPortals" // params: none — re-register discovery portals bound to an address this host no longer has
+	// JobPruneISCSIPortals removes discovery portals the spec does not declare.
+	// The reconcile is strictly additive — it cannot tell a portal an operator
+	// retired from one something else on the host depends on — so a portal added
+	// by mistake or left from an earlier configuration stays for ever, inflating
+	// the reported path count and advertising targets nobody wants. Before this
+	// the only ways out were iscsicpl on the host, or Reset initiator, which is
+	// nuclear and refuses while disks carry partitions.
+	//
+	// The agent REFUSES to remove an undeclared portal that is carrying a live
+	// session, and says so: that is either a spec missing a portal or a session
+	// nobody declared, and both are for a person to resolve.
+	JobPruneISCSIPortals = "PruneISCSIPortals" // params: portals — comma-separated declared portals to keep
+	// JobDisconnectISCSITarget logs a host out of one target and clears its
+	// persistent entry. The reconcile is additive and will never do this: it
+	// cannot tell a target the operator retired from one something else on the
+	// host still depends on, so retiring a login is a decision, not a cadence.
+	// The agent refuses while the target's disks are clustered or online.
+	JobDisconnectISCSITarget = "DisconnectISCSITarget" // params: target — log out of one iSCSI target and forget it
+
+	// JobResetISCSIInitiator returns a host's iSCSI initiator to a clean slate —
+	// every session, every persistent login, every discovery portal — so the
+	// reconcile rebuilds it from the declared spec on its next pass.
+	//
+	// The reconcile is strictly additive and never prunes, so iSCSI state
+	// accumulates: dead favourite targets a host retries once a minute for ever,
+	// portals pinned to addresses it no longer has, disk objects for LUNs it
+	// cannot reach. Starting again is a decision, not a cadence, so it is a job.
+	// It REFUSES while any iSCSI disk is clustered or online.
+	JobResetISCSIInitiator = "ResetISCSIInitiator" // no params — DESTRUCTIVE: clear all iSCSI sessions, persistent logins and portals
+	JobRebuildPool         = "RebuildPool"         // run on a member: DESTRUCTIVE — destroy the S2D pool and its volumes, then re-enable S2D fresh (for a stale/degraded pool from a torn-down cluster)
+
+	// JobDestroyS2D tears an S2D pool down for good — CSVs, virtual disks, the
+	// pool, and Storage Spaces Direct itself — with an optional wipe of the
+	// disks back to raw. Unlike RebuildPool it does NOT re-enable S2D; it is what
+	// a cluster moving to an array needs.
+	//
+	// Without it, switching a cluster from S2D to iSCSI left the old pool behind
+	// reporting Unknown / Read-only for ever, indistinguishable from a failed
+	// one, with every disk still claimed — and the only way out was a PowerShell
+	// session on a member. It refuses while any clustered VM role still exists.
+	JobDestroyS2D = "DestroyS2D" // run on a member: DESTRUCTIVE — params: wipeDisks ("true" to return the disks to raw)
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter

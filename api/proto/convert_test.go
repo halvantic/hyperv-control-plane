@@ -415,3 +415,73 @@ func TestHostRoundTripCarriesEveryField(t *testing.T) {
 	check("PhysicalDisk", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalDisks[0]))
 	check("PhysicalAdapter", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalAdapters[0]))
 }
+
+// A field the proto does not carry round-trips perfectly as its zero value, so
+// the failure is silent: the centre stores the setting, the agent never receives
+// it, and nothing anywhere reports a problem. CLAUDE.md requires the proto and
+// both converters to change with the schema, covered by a round trip.
+//
+// These three decide whether storage redundancy is real, so a silent loss would
+// be a fleet that believes it is multipathed and is not.
+func TestVNICPurposeAndAffinityRoundTrip(t *testing.T) {
+	rdma := true
+	want := types.ManagementVNICSpec{
+		Name:               "SMB01",
+		SwitchName:         "ConvergedSwitch",
+		VLANID:             40,
+		MinBandwidthWeight: 50,
+		Purpose:            types.VNICStorage,
+		TeamMemberAdapter:  "Ethernet2",
+		RDMA:               &rdma,
+		IPConfig:           &types.IPConfig{Address: "10.0.40.11/24"},
+	}
+	got := mgmtVNICFromProto(mgmtVNICToProto(want))
+
+	if got.Purpose != types.VNICStorage {
+		t.Errorf("purpose lost: %q", got.Purpose)
+	}
+	if got.TeamMemberAdapter != "Ethernet2" {
+		t.Errorf("the uplink this vNIC is pinned to lost: %q — without it two storage vNICs can share one port", got.TeamMemberAdapter)
+	}
+	if got.RDMA == nil || !*got.RDMA {
+		t.Errorf("RDMA lost: %v", got.RDMA)
+	}
+	if got.Name != want.Name || got.VLANID != want.VLANID || got.IPConfig == nil || got.IPConfig.Address != want.IPConfig.Address {
+		t.Errorf("the fields that already worked must keep working: %+v", got)
+	}
+}
+
+// "Not declared" and "declared off" are different answers, and RDMA is the field
+// where that matters: a fleet whose adapters cannot do it has decided, and one
+// nobody has configured has not.
+func TestVNICRDMADistinguishesUnsetFromOff(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		name string
+		in   *bool
+	}{{"unset", nil}, {"off", &off}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mgmtVNICFromProto(mgmtVNICToProto(types.ManagementVNICSpec{Name: "v", RDMA: tc.in}))
+			if (got.RDMA == nil) != (tc.in == nil) {
+				t.Fatalf("nil-ness must survive: sent %v, got %v", tc.in, got.RDMA)
+			}
+			if tc.in != nil && *got.RDMA != *tc.in {
+				t.Fatalf("value lost: %v", *got.RDMA)
+			}
+		})
+	}
+}
+
+// A management vNIC authored before any of this existed must be unchanged by it.
+func TestVNICWithoutPurposeIsStillManagement(t *testing.T) {
+	got := mgmtVNICFromProto(mgmtVNICToProto(types.ManagementVNICSpec{Name: "Mgmt", SwitchName: "sw"}))
+	if got.Purpose != types.VNICManagement {
+		t.Errorf("an undeclared purpose is management: %q", got.Purpose)
+	}
+	if got.Purpose.IsStorage() {
+		t.Error("and must not be treated as storage")
+	}
+	if got.TeamMemberAdapter != "" || got.RDMA != nil {
+		t.Errorf("nothing may be invented for it: %+v", got)
+	}
+}

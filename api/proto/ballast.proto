@@ -505,6 +505,18 @@ message ManagementVNICSpec {
   // ip_config absent means DHCP.
   IPConfig ip_config = 4;
   int32 min_bandwidth_weight = 5;
+  // What this vNIC carries: "" (management), Cluster, LiveMigration, Storage.
+  // Storage traffic has requirements no other traffic has, and the model could
+  // not say which vNIC carried it.
+  string purpose = 6;
+  // The ONE physical adapter in the switch's SET team this vNIC is pinned to
+  // (Set-VMNetworkAdapterTeamMapping). Without it SET places vNICs freely, so
+  // two storage vNICs on two subnets can share one uplink and the redundancy is
+  // decorative. Empty leaves placement to SET.
+  string team_member_adapter = 7;
+  // RDMA on this vNIC. Optional so that "not set" and "off" stay distinct: RDMA
+  // needs capable adapters and, for RoCE, DCB end to end.
+  optional bool rdma = 8;
 }
 
 message IPConfig {

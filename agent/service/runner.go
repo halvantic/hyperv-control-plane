@@ -113,6 +113,13 @@ const (
 	// only the host that runs a failover job gets a forceScan nudge, so the OTHER
 	// side (former primary → replica) relied on this cadence to show its new role.
 	observeVMsEvery = 2
+	// vmRemovedHold — how long the reconciler refuses to recreate a VM a RemoveVM
+	// job has just deleted. It has to outlast a full reconcile pass (1–2 minutes
+	// on a busy host), because that pass is what would otherwise recreate the VM
+	// from a cached set loaded before the deletion. Nothing is lost by holding: if
+	// the centre still wants the VM, the next pull says so and the hold is dropped
+	// at once.
+	vmRemovedHold = 5 * time.Minute
 	// netProfileRefreshEvery — the network-location query (weakest connection-profile
 	// category) changes only when domain reachability does. ~60s.
 	netProfileRefreshEvery = 4
@@ -281,6 +288,18 @@ type runner struct {
 	// than fighting the job and reporting Degraded throughout. A count, not a
 	// flag: two jobs can legitimately name the same VM.
 	jobsVMs map[string]string
+	// vmRemoved holds, by lower-cased VM name, when a RemoveVM job successfully
+	// deleted a VM from this host. The reconciler stands off those names for
+	// vmRemovedHold, because clearing the hold the moment the job returns is not
+	// enough: a pass loads the cached desired set once and can reach a given VM a
+	// minute or more later, still holding a name the job has since deleted, and
+	// then recreates it. Guarded by jobsMu.
+	//
+	// The durable half of the same fix is store.DropDesiredVM; this covers only
+	// the window in which a pass already in flight holds the name in memory.
+	// Cleared early by a pull that re-lists the VM — that is the centre asking
+	// for it back, and intent always wins over the stand-off.
+	vmRemoved map[string]time.Time
 
 	// nudge lets a finished job ask the main loop to run an extra cycle now,
 	// instead of waiting for the next heartbeat, so the centre reflects the new
@@ -937,6 +956,8 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		if prev, ok, _ := r.st.LoadDesiredVMs(); !ok || vmSetChanged(prev, vms) {
 			force = true
 		}
+		// The centre listing a VM again outranks any local stand-off from a delete.
+		r.clearVMRemoved(vms)
 		if serr := r.st.SaveDesiredVMs(vms); serr != nil {
 			r.log.Error("persist desired vms failed", "err", serr)
 		}
@@ -1080,6 +1101,10 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	if assignment != nil {
 		genChanged := assignment.Cluster.Meta.Generation != r.lastClusterGen
 		if force || genChanged || maintChanged || r.cycles%clusterReconcileEvery == 0 {
+			// Let the cluster reconcile time its own stages on the SAME timer, so
+			// the sub-phases land in the same list as the phases around them
+			// rather than in a second instrument that has to be kept honest.
+			r.reconciler.SetPhaseRecorder(t.mark)
 			doneCluster := t.mark("clusterReconcile")
 			cres, cerr := r.reconciler.ReconcileCluster(ctx, *assignment, secrets)
 			doneCluster()
@@ -1184,6 +1209,22 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 				return
 			}
 			r.log.Info("job done", "id", job.ID, "kind", job.Kind, "result", msg)
+			// A successful delete has to change what this agent WANTS, not just what
+			// the host has. The centre drops the VM's desired state when it enqueues
+			// the job, but the agent only learns that on its next pull — and until
+			// then its cached set still names the VM, so the reconcile loop dutifully
+			// creates it again. Prune the name here, and hold it off for a few
+			// minutes so a pass already walking the old set cannot resurrect it
+			// either. Deleting is the centre's intent; honouring it immediately is
+			// the same contract as any other desired-state change.
+			if job.Kind == types.JobRemoveVM {
+				if vmName := job.Params["vm"]; vmName != "" {
+					r.noteVMRemoved(vmName)
+					if derr := r.st.DropDesiredVM(vmName); derr != nil {
+						r.log.Error("drop deleted vm from cached desired state", "vm", vmName, "err", derr)
+					}
+				}
+			}
 			r.reportJob(jctx, client, job.ID, types.JobSucceeded, msg)
 		}(job)
 	}
@@ -1614,16 +1655,60 @@ func jobHoldsVM(kind string) bool {
 	case types.JobVMMoveStorage, types.JobMigrateVM, types.JobClusterMoveVM,
 		types.JobVMClone, types.JobVMCaptureTemplate, types.JobVMExport,
 		types.JobVMDiscardSavedState, types.JobVMDiscardSavedStateAndStart,
-		types.JobVMApplyCheck, types.JobVMRemoveCheck:
+		types.JobVMApplyCheck, types.JobVMRemoveCheck,
+		// RemoveVM belongs here for the opposite reason to the rest: they hold the
+		// VM's files, this one deletes them. Without the hold the reconcile loop
+		// raced the delete — the job removed the cluster role and the VM, and the
+		// pass still holding the VM in its cached desired set recreated it and
+		// re-registered the role. Observed on 'Tes', 2026-08-20: gone from Failover
+		// Cluster Manager, back in the cluster a couple of minutes later.
+		types.JobRemoveVM:
 		return true
 	}
 	return false
 }
 
 // vmBusy reports whether an imperative job is currently holding a VM, and which.
+//
+// A VM a RemoveVM job has already deleted stays "busy" for vmRemovedHold. The
+// job is over, but the reason to stand off is not: a reconcile pass that loaded
+// its desired set before the deletion is still walking that set, and reaching
+// this name would recreate the VM.
 func (r *runner) vmBusy(name string) (string, bool) {
 	r.jobsMu.Lock()
 	defer r.jobsMu.Unlock()
-	kind, ok := r.jobsVMs[strings.ToLower(name)]
-	return kind, ok
+	key := strings.ToLower(name)
+	if kind, ok := r.jobsVMs[key]; ok {
+		return kind, true
+	}
+	if at, ok := r.vmRemoved[key]; ok {
+		if time.Since(at) < vmRemovedHold {
+			return types.JobRemoveVM, true
+		}
+		delete(r.vmRemoved, key)
+	}
+	return "", false
+}
+
+// noteVMRemoved records that a RemoveVM job has deleted a VM from this host, so
+// the reconciler stands off the name while a pass already in flight finishes.
+func (r *runner) noteVMRemoved(name string) {
+	r.jobsMu.Lock()
+	defer r.jobsMu.Unlock()
+	if r.vmRemoved == nil {
+		r.vmRemoved = make(map[string]time.Time)
+	}
+	r.vmRemoved[strings.ToLower(name)] = time.Now()
+}
+
+// clearVMRemoved drops the stand-off for every VM the centre has just delivered.
+// A VM back in the desired set is the centre asking for it again — an operator
+// who re-created it under the same name, or a delete that was undone — and the
+// agent honours the intent it was given rather than a hold it set itself.
+func (r *runner) clearVMRemoved(vms []types.VM) {
+	r.jobsMu.Lock()
+	defer r.jobsMu.Unlock()
+	for _, vm := range vms {
+		delete(r.vmRemoved, strings.ToLower(vm.Meta.Name))
+	}
 }

@@ -3387,8 +3387,20 @@ type ManagementVNICSpec struct {
 	// ip_config absent means DHCP.
 	IpConfig           *IPConfig `protobuf:"bytes,4,opt,name=ip_config,json=ipConfig,proto3" json:"ip_config,omitempty"`
 	MinBandwidthWeight int32     `protobuf:"varint,5,opt,name=min_bandwidth_weight,json=minBandwidthWeight,proto3" json:"min_bandwidth_weight,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// What this vNIC carries: "" (management), Cluster, LiveMigration, Storage.
+	// Storage traffic has requirements no other traffic has, and the model could
+	// not say which vNIC carried it.
+	Purpose string `protobuf:"bytes,6,opt,name=purpose,proto3" json:"purpose,omitempty"`
+	// The ONE physical adapter in the switch's SET team this vNIC is pinned to
+	// (Set-VMNetworkAdapterTeamMapping). Without it SET places vNICs freely, so
+	// two storage vNICs on two subnets can share one uplink and the redundancy is
+	// decorative. Empty leaves placement to SET.
+	TeamMemberAdapter string `protobuf:"bytes,7,opt,name=team_member_adapter,json=teamMemberAdapter,proto3" json:"team_member_adapter,omitempty"`
+	// RDMA on this vNIC. Optional so that "not set" and "off" stay distinct: RDMA
+	// needs capable adapters and, for RoCE, DCB end to end.
+	Rdma          *bool `protobuf:"varint,8,opt,name=rdma,proto3,oneof" json:"rdma,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ManagementVNICSpec) Reset() {
@@ -3454,6 +3466,27 @@ func (x *ManagementVNICSpec) GetMinBandwidthWeight() int32 {
 		return x.MinBandwidthWeight
 	}
 	return 0
+}
+
+func (x *ManagementVNICSpec) GetPurpose() string {
+	if x != nil {
+		return x.Purpose
+	}
+	return ""
+}
+
+func (x *ManagementVNICSpec) GetTeamMemberAdapter() string {
+	if x != nil {
+		return x.TeamMemberAdapter
+	}
+	return ""
+}
+
+func (x *ManagementVNICSpec) GetRdma() bool {
+	if x != nil && x.Rdma != nil {
+		return *x.Rdma
+	}
+	return false
 }
 
 type IPConfig struct {
@@ -6716,14 +6749,18 @@ const file_ballast_proto_rawDesc = "" +
 	"\fteam_members\x18\x02 \x03(\tR\vteamMembers\x12=\n" +
 	"\fteaming_mode\x18\x03 \x01(\x0e2\x1a.ballast.v1.SETTeamingModeR\vteamingMode\x12C\n" +
 	"\x0eload_balancing\x18\x04 \x01(\x0e2\x1c.ballast.v1.SETLoadBalancingR\rloadBalancing\x12.\n" +
-	"\x13allow_management_os\x18\x05 \x01(\bR\x11allowManagementOs\"\xc7\x01\n" +
+	"\x13allow_management_os\x18\x05 \x01(\bR\x11allowManagementOs\"\xb3\x02\n" +
 	"\x12ManagementVNICSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vswitch_name\x18\x02 \x01(\tR\n" +
 	"switchName\x12\x17\n" +
 	"\avlan_id\x18\x03 \x01(\x05R\x06vlanId\x121\n" +
 	"\tip_config\x18\x04 \x01(\v2\x14.ballast.v1.IPConfigR\bipConfig\x120\n" +
-	"\x14min_bandwidth_weight\x18\x05 \x01(\x05R\x12minBandwidthWeight\"_\n" +
+	"\x14min_bandwidth_weight\x18\x05 \x01(\x05R\x12minBandwidthWeight\x12\x18\n" +
+	"\apurpose\x18\x06 \x01(\tR\apurpose\x12.\n" +
+	"\x13team_member_adapter\x18\a \x01(\tR\x11teamMemberAdapter\x12\x17\n" +
+	"\x04rdma\x18\b \x01(\bH\x00R\x04rdma\x88\x01\x01B\a\n" +
+	"\x05_rdma\"_\n" +
 	"\bIPConfig\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x18\n" +
 	"\agateway\x18\x02 \x01(\tR\agateway\x12\x1f\n" +
@@ -7273,6 +7310,7 @@ func file_ballast_proto_init() {
 		return
 	}
 	file_ballast_proto_msgTypes[16].OneofWrappers = []any{}
+	file_ballast_proto_msgTypes[36].OneofWrappers = []any{}
 	file_ballast_proto_msgTypes[45].OneofWrappers = []any{}
 	file_ballast_proto_msgTypes[47].OneofWrappers = []any{}
 	type x struct{}

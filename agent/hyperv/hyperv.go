@@ -240,7 +240,10 @@ type Interface interface {
 	// switches that are not in keep and carry no manual static IPv4 — auto/leftover
 	// vNICs from earlier switch iterations. Never removes a declared vNIC, one with
 	// a manual IP, or the last management connection on a switch.
-	PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, error)
+	// Returns any DUPLICATE declared vNIC it found — two management OS vNICs with
+	// the same name on one switch, which the prune cannot remove because the name
+	// is in the keep set, and which nothing else can see.
+	PruneManagementVNICs(ctx context.Context, switches, keep []string) (Outcome, []string, error)
 
 	// RemoveMgmtVNIC removes a management-OS vNIC by name (imperative cleanup of a
 	// stray). Idempotent: a no-op when absent.
@@ -329,7 +332,7 @@ type Interface interface {
 	// online automatically: a shared disk mounted on two nodes at once is the state
 	// clustering exists to prevent, and the cluster will not take it. A standalone
 	// host is the opposite — its LUN should come online to be provisioned.
-	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool) (ISCSIState, Outcome, error)
+	EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpec, chapUser, chapSecret string, shared bool, storageAddresses []string) (ISCSIState, Outcome, error)
 
 	// AdoptISCSIDisk takes an array-presented LUN into the cluster, as a Cluster
 	// Shared Volume or as the witness disk, and reports the disk's serial so a
@@ -664,6 +667,54 @@ type Interface interface {
 	// ReverseReplication commits a pending failover and reverses replication so
 	// the new primary replicates back to the former primary. Returns a detail.
 	ReverseReplication(ctx context.Context, vmName string) (string, error)
+
+	// DestroyS2D removes the cluster's shared volumes, virtual disks and storage
+	// pool and disables Storage Spaces Direct; wipeDisks additionally returns the
+	// local pool disks to raw. DESTRUCTIVE and operator-initiated. Refuses while
+	// any clustered VM role still exists.
+	DestroyS2D(ctx context.Context, wipeDisks bool) (string, error)
+
+	// ResetISCSIInitiator clears every iSCSI session, persistent login and
+	// discovery portal on this host, so the reconcile rebuilds the initiator from
+	// the declared spec. DESTRUCTIVE and operator-initiated; refuses while any
+	// iSCSI disk is clustered or online, checked before anything is changed.
+	ResetISCSIInitiator(ctx context.Context) (string, error)
+
+	// DisconnectISCSITarget logs this host out of one iSCSI target and clears its
+	// persistent entry so the login does not return at boot. Operator-initiated:
+	// the reconcile is additive and never retires a login on its own. Refuses
+	// while the target's disks are clustered or online.
+	DisconnectISCSITarget(ctx context.Context, targetIQN string) (string, error)
+
+	// RepairISCSIPortals re-registers discovery portals whose source binding names
+	// an address this host no longer has. Operator-initiated, because the fix
+	// removes a portal entry and the iSCSI reconcile is strictly additive.
+	// Narrow: a binding to an address the host DOES have is deliberate and is
+	// left alone.
+	RepairISCSIPortals(ctx context.Context) (string, error)
+	// PruneISCSIPortals removes discovery portals the declared list does not name.
+	PruneISCSIPortals(ctx context.Context, declared []string) (string, error)
+
+	// EnsureTestSwitch ensures the isolated switch a test failover runs inside
+	// exists on this host. switchType is "Private" or "Internal". Idempotent; it
+	// REFUSES rather than reconfiguring a switch that already exists as
+	// something else, because a test failover attached to an external switch
+	// puts duplicates of live machines on the production network.
+	EnsureTestSwitch(ctx context.Context, name, switchType string) (string, error)
+
+	// RemoveTestSwitch removes a test bubble. A no-op when it is already gone;
+	// refuses while VMs are still attached to it.
+	RemoveTestSwitch(ctx context.Context, name string) error
+
+	// HealthProbe answers one question about one VM, once: is it heartbeating,
+	// is a port open, does it answer a ping, does a script on this host say it is
+	// healthy. A failing probe returns an error carrying what actually happened,
+	// because that string is what an operator watching a tier that will not come
+	// up has to read.
+	//
+	// One shot by design — the centre paces and retries. See
+	// types.JobVMHealthProbe.
+	HealthProbe(ctx context.Context, vmName, check, address string, port, expectExit int, script string) (string, error)
 
 	// RemoveReplicaVM removes an orphaned replica copy on this host (the replica
 	// relationship, the VM, and its replica VHDs). Refuses to run unless the VM

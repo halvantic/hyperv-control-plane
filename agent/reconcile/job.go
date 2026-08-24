@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
@@ -113,6 +114,25 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.MoveClusterGroup(ctx, p["group"], p["node"]), "moved "+p["group"]+" to "+p["node"])
 	case types.JobClusterMoveCSV:
 		return done(r.hv.MoveClusterSharedVolume(ctx, p["volume"], p["node"]), "moved "+p["volume"]+" to "+p["node"])
+	case types.JobDestroyS2D:
+		return r.hv.DestroyS2D(ctx, p["wipeDisks"] == "true")
+	case types.JobResetISCSIInitiator:
+		return r.hv.ResetISCSIInitiator(ctx)
+	case types.JobDisconnectISCSITarget:
+		return r.hv.DisconnectISCSITarget(ctx, p["target"])
+	case types.JobRepairISCSIPortals:
+		return r.hv.RepairISCSIPortals(ctx)
+	case types.JobPruneISCSIPortals:
+		// The declared list rides in the job rather than being read from the
+		// cached spec: the operator is acting on what the console showed them,
+		// and a spec that changed in between would silently prune something else.
+		var declared []string
+		for _, x := range strings.Split(p["portals"], ",") {
+			if t := strings.TrimSpace(x); t != "" {
+				declared = append(declared, t)
+			}
+		}
+		return r.hv.PruneISCSIPortals(ctx, declared)
 	case types.JobRepairPool:
 		return r.hv.RepairStoragePool(ctx)
 	case types.JobClusterUpdateFunctionalLevel:
@@ -187,9 +207,27 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.ReverseReplication(ctx, p["vm"])
 	case types.JobVMRemoveReplica:
 		return done(r.hv.RemoveReplicaVM(ctx, p["vm"]), "removed replica copy of "+p["vm"])
+	case types.JobEnsureTestSwitch:
+		return r.hv.EnsureTestSwitch(ctx, p["switch"], p["type"])
+	case types.JobRemoveTestSwitch:
+		return done(r.hv.RemoveTestSwitch(ctx, p["switch"]), "removed the isolated switch "+p["switch"])
+	case types.JobVMHealthProbe:
+		return r.hv.HealthProbe(ctx, p["vm"], p["check"], p["address"], atoiParam(p["port"]), atoiParam(p["expectExit"]), p["script"])
 	default:
 		return "", fmt.Errorf("unknown job kind %q", job.Kind)
 	}
+}
+
+// atoiParam reads a numeric job param, treating an absent or unparseable value
+// as zero. Every caller here has a meaningful zero — no port, exit code 0 — and
+// the agent-side validation refuses the ones where zero is not an answer, so a
+// malformed param produces a named refusal rather than a silent default.
+func atoiParam(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // splitList parses a comma-separated job param into a trimmed, non-empty slice.

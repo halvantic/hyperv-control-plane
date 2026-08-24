@@ -101,6 +101,18 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		changed bool
 	)
 
+	// Each stage of the cluster pass is timed separately. As one number,
+	// clusterReconcile said only that the cluster pass was slow — and which PART
+	// of it is the whole question. On the rig 2026-08-24 it was 3m20s-3m48s of a
+	// 5-minute cap on four of five hosts, with the host-call list able to account
+	// for barely 90 seconds of it.
+	//
+	// Sequential, not nested: each stage closes the one before it, so the numbers
+	// sum to the parent instead of double-counting inside it.
+	stage := r.mark("clusterReconcile/feature")
+	defer func() { stage() }()
+	nextStage := func(name string) { stage(); stage = r.mark(name) }
+
 	// 1. Failover-Clustering feature must be present on every member.
 	out, err := r.hv.EnsureFailoverClusteringFeature(ctx)
 	conds = append(conds, r.condition("FailoverClusteringInstalled", out, err))
@@ -109,6 +121,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	}
 	changed = changed || out != hyperv.OutcomeUnchanged
 
+	nextStage("clusterReconcile/firewall")
 	// 1b. The firewall rule groups a cluster member needs for node-to-node
 	// coordination (Failover Clusters + WMI). Without WMI, cross-node operations
 	// like Add-ClusterVirtualMachineRole fail with "RPC server unavailable". A
@@ -121,6 +134,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		changed = changed || fwOut != hyperv.OutcomeUnchanged
 	}
 
+	nextStage("clusterReconcile/ip")
 	// 1c. The cluster's own address, when one is declared.
 	//
 	// Placed BEFORE the state read on purpose. That read is precisely what hangs
@@ -149,6 +163,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		}
 	}
 
+	nextStage("clusterReconcile/observe")
 	// 2. Observe whether this node is already in the cluster.
 	state, err := r.clusterState(ctx)
 	if err != nil {
@@ -176,6 +191,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		// seen, not because nothing is there.
 		return ClusterResult{Phase: types.PhaseProgressing, Honoured: true, Changed: changed, Conditions: conds, StateUnreadable: true}, nil
 	}
+	nextStage("clusterReconcile/form")
 	// 3. Not formed yet.
 	if !state.Exists {
 		// Only the designated former acts; others wait.
@@ -234,12 +250,14 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		conds = append(conds, r.condition("ClusterFormed", hyperv.OutcomeUnchanged, nil))
 	}
 
+	nextStage("clusterReconcile/s2d+csv")
 	// 4. Storage Spaces Direct + Cluster Shared Volumes — the former provisions
 	// cluster-wide storage once the cluster exists. Non-formers do not touch it.
 	s2dEnabled, storageConds, storageChanged, storageErr := r.reconcileStorage(ctx, a, state.Groups)
 	conds = append(conds, storageConds...)
 	changed = changed || storageChanged
 
+	nextStage("clusterReconcile/iscsi")
 	// 4b. iSCSI shared storage. Unlike everything else cluster-wide here, this
 	// runs on EVERY MEMBER rather than the former only: a login is per-node, and
 	// a node that has not logged in simply does not see the disks. There is no
@@ -250,6 +268,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	conds = append(conds, iscsiConds...)
 	changed = changed || iscsiChanged
 
+	nextStage("clusterReconcile/iscsi-adopt")
 	// 4c. Adopting the array's LUNs is former-only and comes after the login,
 	// because a node that is not logged in cannot see a LUN and would report the
 	// array as not presenting it — sending the operator to the array to fix
@@ -258,6 +277,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	conds = append(conds, volConds...)
 	changed = changed || volChanged
 
+	nextStage("clusterReconcile/csv-mounts")
 	// 4d. A volume's MOUNT POINT must be its declared name, and that runs on every
 	// member because renaming belongs with owning the volume.
 	//
@@ -276,6 +296,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		r.log.Warn("adopt iSCSI volumes failed (retries next pass)", "err", volErr)
 	}
 
+	nextStage("clusterReconcile/migration")
 	// 5. Kerberos live migration needs constrained delegation between the nodes'
 	// computer accounts. The former (a domain admin) configures it once when the
 	// cluster's live-migration auth is Kerberos — so provisioning a cluster with
@@ -294,6 +315,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		}
 	}
 
+	nextStage("clusterReconcile/witness")
 	// 5b. Quorum witness. Former-only, like the other cluster-wide settings:
 	// every member can see the cluster, so without that gate all of them would
 	// race to set the same witness and each would read the others' write as
@@ -324,6 +346,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 		}
 	}
 
+	nextStage("clusterReconcile/replica-broker")
 	// 6. Hyper-V Replica Broker — required for the cluster to send or receive
 	// replica traffic; replication addresses the broker's client access point.
 	// Former-only, like other cluster-wide roles. Best-effort: a transient

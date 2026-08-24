@@ -56,7 +56,7 @@ func (r *Reconciler) reconcileHostISCSI(ctx context.Context, desired types.Host,
 		}
 	}
 
-	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, false)
+	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, false, desired.Spec.Networking.StorageAddresses())
 	conds := []types.Condition{r.condition("HostISCSI", out, err)}
 	if err != nil {
 		r.log.Error("ensure host iscsi failed", "err", err)
@@ -96,11 +96,27 @@ func (r *Reconciler) reconcileHostISCSI(ctx context.Context, desired types.Host,
 		})
 	}
 
+	// A target that is discovered but not logged in is worth its own condition:
+	// "the array is reachable but this node is not attached" has a different
+	// remedy from "the array cannot be reached", and both otherwise present as
+	// simply having no disks.
+	//
+	// Judged ONLY against the targets this spec declares. An array commonly
+	// serves several consumers from one set of portals, so discovery returns
+	// targets belonging to other clusters and other hosts — and this node must
+	// NOT be logged in to those. Flagging them made a node holding exactly what
+	// it was asked for report a fault: on the rig 2026-08-24 HVNEW04, correctly
+	// attached to DRCluster's target, was told it should also be logged in to
+	// iqn1000, which is S2DCluster's LUN and the one thing it must never touch.
+	//
+	// An empty target list means "log in to everything advertised", and there
+	// every discovered target really is one this node should hold.
 	var notConnected []string
 	for _, s := range status.Sessions {
-		if !s.Connected {
-			notConnected = append(notConnected, s.TargetIQN)
+		if s.Connected || !declaredISCSITarget(cfg.Targets, s.TargetIQN) {
+			continue
 		}
+		notConnected = append(notConnected, s.TargetIQN)
 	}
 	if len(notConnected) > 0 {
 		conds = append(conds, types.Condition{

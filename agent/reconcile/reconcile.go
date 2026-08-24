@@ -33,6 +33,30 @@ type Reconciler struct {
 	// now is injectable so tests can pin condition timestamps.
 	now func() time.Time
 
+	// phase records how long a named stage of the cycle took, so a slow one can
+	// name its own slowest part rather than leaving it to be guessed at.
+	//
+	// The cycle's phases are timed by the runner, which can only see the calls it
+	// makes: hostReconcile, clusterReconcile, journal, deliver. That was enough
+	// until clusterReconcile itself became the slow one — on the rig 2026-08-24
+	// four of five hosts were CUT OFF at the 5-minute cap with clusterReconcile
+	// taking 3m20s-3m48s of it, of which named host calls explained barely 90
+	// seconds. Two and a half minutes a pass, invisible, on every host.
+	//
+	// So the reconciler records its own sub-phases through this. Nil is a no-op,
+	// which is what every test and the stub get; the runner supplies the real one.
+	phase PhaseRecorder
+
+	// lastStorageAddresses is the storage vNIC addresses from the most recent
+	// host desired state, kept so the CLUSTER pass can bind its iSCSI sessions.
+	//
+	// The two passes are separate calls with separate inputs — the cluster
+	// assignment carries a Cluster, not the Host — and the runner always runs the
+	// host pass first in a cycle, so this is last-pass state rather than a
+	// guess. Empty until a host spec has been seen, which reads as "bind
+	// nothing" and is the behaviour every host had before pinning existed.
+	lastStorageAddresses []string
+
 	// transients tracks how long each condition has been failing with a known
 	// in-flight signature, so a settling operation reads as progressing but a
 	// stuck one still escalates to a real failure. See transient.go.
@@ -238,6 +262,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// runner, which is the only place that spans everything a pass does. See
 	// timing.go for the invariant.
 	defer func() { r.passes++ }()
+	// Recorded before anything is applied, so the cluster pass that follows binds
+	// its sessions to what the host was TOLD to have. Recording it after would
+	// make a vNIC that failed to apply silently stop being bound to, which is the
+	// pass where the operator most needs to see the path missing.
+	r.lastStorageAddresses = desired.Spec.Networking.StorageAddresses()
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -498,6 +527,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		}
 	}
 
+	// Whether the redundancy is real. Reported even on a settled pass, because a
+	// vNIC that has been correctly applied to the wrong uplink is settled and
+	// wrong, and nothing else on the host will ever say so.
+	conds = append(conds, storageNetworkCondition(net, wantsMultipathStorage(desired), r.now)...)
+
 	// Prune stray management-OS vNICs: on a switch we manage, remove any management
 	// vNIC not in the declared set that carries no real IPv4 at all (APIPA only) —
 	// an auto or leftover vNIC from an earlier switch/cluster iteration. A vNIC
@@ -513,8 +547,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		for _, v := range net.ManagementVNICs {
 			keep = append(keep, v.Name)
 		}
-		out, err := r.hv.PruneManagementVNICs(ctx, switches, keep)
+		out, dups, err := r.hv.PruneManagementVNICs(ctx, switches, keep)
 		conds = append(conds, r.advisoryCondition("PruneVNICs", out, err))
+		// A DUPLICATE of a declared vNIC is invisible to everything else.
+		//
+		// Hyper-V allows two management OS vNICs with the same name on one switch;
+		// only the network adapter alias is disambiguated ("vEthernet (Name) 2").
+		// So the prune above skips the duplicate — its name is in the keep set —
+		// and every alias built by concatenation addresses whichever one Windows
+		// lists first. HVNEW02 on 2026-08-24 carried a second ConvergedSwitch vNIC
+		// on a DHCP lease of 192.168.1.177 while the declared one held .72, the
+		// cluster used the .177 interface, and Ballast reported the host settled.
+		//
+		// Reported, never removed automatically: both carry a real address, and
+		// deleting the one the cluster is actually using takes the node off its
+		// heartbeat network. That is an operator's call.
+		if len(dups) > 0 {
+			conds = append(conds, types.Condition{
+				Type: "DuplicateVNICs", Status: true, Reason: "Duplicated",
+				Message: "this host has more than one management vNIC with the same name on a managed switch, which Hyper-V allows and nothing else reports: " +
+					strings.Join(dups, "; ") +
+					". Only the network adapter name is disambiguated, so the declared address and the one the cluster uses can be on different adapters. Remove whichever is not carrying the declared address",
+				LastTransitionTime: r.now(),
+			})
+		}
 		if err != nil {
 			r.log.Warn("prune stray management vNICs failed (best-effort)", "err", err)
 		} else if out != hyperv.OutcomeUnchanged {
@@ -977,4 +1033,28 @@ func (r *Reconciler) advisoryCondition(condType string, out hyperv.Outcome, err 
 		c.Message = err.Error() + " (best-effort; not blocking)"
 	}
 	return c
+}
+
+
+// PhaseRecorder starts timing a named stage and returns the function that stops
+// it. Same shape as the runner's own phase timer, so the runner can hand its
+// marker straight in.
+type PhaseRecorder func(name string) func()
+
+// SetPhaseRecorder wires the cycle's phase timer into the reconciler, so stages
+// inside a reconcile are timed by the same instrument as the stages around it —
+// one clock, one list, no second thing to keep honest.
+func (r *Reconciler) SetPhaseRecorder(p PhaseRecorder) { r.phase = p }
+
+// mark times a named stage. A reconciler with no recorder — every unit test, and
+// any caller that does not care — gets a no-op, so instrumentation can be added
+// to a step without every construction site having to know about it.
+//
+// Names are prefixed by their parent ("cluster/csv"), so the list reads as a
+// drill-down rather than as a flat set of unrelated numbers.
+func (r *Reconciler) mark(name string) func() {
+	if r.phase == nil {
+		return func() {}
+	}
+	return r.phase(name)
 }

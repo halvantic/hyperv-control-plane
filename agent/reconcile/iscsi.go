@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -51,7 +52,7 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 		}
 	}
 
-	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, true)
+	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, true, r.storageAddresses())
 	conds := []types.Condition{r.condition("ISCSIConnected", out, err)}
 	if err != nil {
 		r.log.Error("ensure iscsi failed", "err", err)
@@ -97,11 +98,23 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 	// "the array is reachable but this node is not attached" has a different
 	// remedy from "the array cannot be reached", and both otherwise present as
 	// simply having no disks.
+	//
+	// Judged ONLY against the targets this spec declares. An array commonly
+	// serves several consumers from one set of portals, so discovery returns
+	// targets belonging to other clusters and other hosts — and this node must
+	// NOT be logged in to those. Flagging them made a node holding exactly what
+	// it was asked for report a fault: on the rig 2026-08-24 HVNEW04, correctly
+	// attached to DRCluster's target, was told it should also be logged in to
+	// iqn1000, which is S2DCluster's LUN and the one thing it must never touch.
+	//
+	// An empty target list means "log in to everything advertised", and there
+	// every discovered target really is one this node should hold.
 	var notConnected []string
 	for _, s := range status.Sessions {
-		if !s.Connected {
-			notConnected = append(notConnected, s.TargetIQN)
+		if s.Connected || !declaredISCSITarget(cfg.Targets, s.TargetIQN) {
+			continue
 		}
+		notConnected = append(notConnected, s.TargetIQN)
 	}
 	if len(notConnected) > 0 {
 		conds = append(conds, types.Condition{
@@ -114,3 +127,31 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 
 	return status, conds, out != hyperv.OutcomeUnchanged
 }
+
+// declaredISCSITarget reports whether the spec asked for this target.
+//
+// An empty declared list means "log in to everything the portals advertise", so
+// every discovered target counts. Otherwise only the named ones do: an array
+// serves several consumers from one set of portals, and a target belonging to
+// another cluster is not this node's to hold.
+//
+// Case-insensitive deliberately. The initiator service matches target names
+// exactly, but Get-IscsiSession echoes them lower-cased while Get-IscsiTarget
+// returns the array's own capitalisation — so comparing exactly would report a
+// declared, connected target as undeclared.
+func declaredISCSITarget(declared []string, target string) bool {
+	if len(declared) == 0 {
+		return true
+	}
+	for _, d := range declared {
+		if strings.EqualFold(strings.TrimSpace(d), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+// storageAddresses is the storage vNIC addresses the host pass last saw. The
+// cluster pass has no Host of its own, and binding sessions to the interfaces
+// the routing table picks is what left three declared portals sharing one cable.
+func (r *Reconciler) storageAddresses() []string { return r.lastStorageAddresses }

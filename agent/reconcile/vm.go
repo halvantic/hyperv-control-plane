@@ -131,12 +131,21 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	// settled, nothing is wrong, and the reason is named.
 	if r.vmBusy != nil {
 		if kind, busy := r.vmBusy(vm.Meta.Name); busy {
+			// A delete is the one hold that is not about contention over files. It
+			// says the VM is meant to be gone, so the honest message is not "wait
+			// your turn" but "this is being removed" — and creating it here would
+			// undo the operator's action, not merely fail.
+			reason, msg := "JobInProgress", "standing off while "+kind+" runs on this VM — it holds the VM's files"
+			if kind == types.JobRemoveVM {
+				reason = "Removing"
+				msg = "this VM is being deleted from the host — not recreating it while the removal settles"
+			}
 			res.Phase = types.PhaseProgressing
 			res.Conditions = append(res.Conditions, types.Condition{
 				Type:               "VM/" + vm.Meta.Name,
 				Status:             false, // not met yet, and not a failure
-				Reason:             "JobInProgress",
-				Message:            "standing off while " + kind + " runs on this VM — it holds the VM's files",
+				Reason:             reason,
+				Message:            msg,
 				LastTransitionTime: r.now(),
 			})
 			return res
