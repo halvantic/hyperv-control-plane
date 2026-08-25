@@ -538,6 +538,24 @@ type HostStatus struct {
 	// time and a single-node view is exactly what hides it.
 	ISCSI *ISCSIStatus `json:"iscsi,omitempty"`
 
+	// ImportableVMs are virtual machines whose configuration files sit on this
+	// host's storage but which no host has registered.
+	//
+	// Adopting a LUN that already holds data brings the volume in and then says
+	// nothing about the VMs on it. The operator can see 800GB used and no VMs,
+	// and the only way to find out what is there is a PowerShell session and a
+	// directory listing — which the brief calls a defect, not a runbook step.
+	//
+	// Reported rather than acted on. Importing is a decision with real hazards
+	// (see ImportableVM), so the agent's job is to say what is there and what is
+	// wrong with it; the operator chooses.
+	ImportableVMs []ImportableVM `json:"importableVMs,omitempty"`
+
+	// ImportScan records when the scan last ran and what it cost, so a stale or
+	// skipped scan is legible as such instead of reading as "nothing found".
+	// Absent is not empty — the trap this codebase pays for most often.
+	ImportScan *ImportScanStatus `json:"importScan,omitempty"`
+
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
 
@@ -1512,6 +1530,116 @@ type ISCSIDisk struct {
 	ContentsKnown bool   `json:"contentsKnown,omitempty"`
 }
 
+// ImportableVM is a virtual machine configuration found on storage that no host
+// has registered — what an operator gets after adopting a LUN that already held
+// somebody else's VMs, or after a cluster was torn down around its storage.
+//
+// Everything here is OBSERVED. Ballast does not import anything on its own: an
+// import is a decision with consequences the agent cannot weigh, and three of
+// them destroy or corrupt data if guessed wrong. See RegisteredElsewhere,
+// InUseElsewhere and SavedState.
+type ImportableVM struct {
+	// Name and ID come from the configuration file itself, not from the folder
+	// it sits in. A VM's folder is named for the VM at CREATION and never
+	// renamed after, so the directory is a stale label, not an identity.
+	Name string `json:"name,omitempty"`
+	ID   string `json:"id,omitempty"`
+
+	// ConfigPath is the .vmcx, which is what Import-VM and Compare-VM take. It
+	// is also the identity the console groups by: every member of a cluster sees
+	// the same CSV, so the same VM is reported once per node.
+	ConfigPath string `json:"configPath,omitempty"`
+
+	// Volume is the CSV or drive the configuration was found on, so the console
+	// can offer the import from the storage the operator is looking at.
+	Volume string `json:"volume,omitempty"`
+
+	Generation         int32 `json:"generation,omitempty"`
+	ProcessorCount     int32 `json:"processorCount,omitempty"`
+	MemoryStartupBytes int64 `json:"memoryStartupBytes,omitempty"`
+	// SizeBytes is the whole VM folder, so the console can say what a COPY would
+	// cost before an operator chooses one over registering in place.
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
+
+	// SavedState reports a saved (not shut down) VM. Saved state is captured
+	// against the exact processor it ran on, so restoring it on different
+	// silicon fails with an error naming neither cause nor remedy. Ballast can
+	// establish this before the import rather than after.
+	SavedState bool `json:"savedState,omitempty"`
+
+	// RegisteredElsewhere means this VM's ID is already registered on a host
+	// Ballast knows about. Importing it a second time gives two hosts a live
+	// claim on one set of VHDXs, which corrupts them — this is the single most
+	// destructive thing this feature could do, so it is reported by the agent
+	// AND refused by the import.
+	RegisteredElsewhere bool   `json:"registeredElsewhere,omitempty"`
+	RegisteredOn        string `json:"registeredOn,omitempty"`
+
+	// InUseElsewhere means a file in this VM's folder is open — something outside
+	// this host is running it. Adopted storage very often came from a cluster
+	// that is still up, and importing into a running VM's files is the same
+	// corruption by a different route.
+	InUseElsewhere bool `json:"inUseElsewhere,omitempty"`
+
+	// Incompatibilities are Compare-VM's findings: the vSwitch this VM wants
+	// does not exist here, its ISO is gone, its processor features differ. This
+	// is the substance of the feature. Windows returns a code and a sentence;
+	// Ballast adds what to do about it, because a code and a sentence is exactly
+	// the "raw error passed through" the brief refuses.
+	Incompatibilities []VMIncompatibility `json:"incompatibilities,omitempty"`
+
+	// Compatible is Compare-VM's verdict, and CompatKnown separates "it checked
+	// and found nothing" from "it never ran". They read identically as an empty
+	// list and mean opposite things when the next click is Import.
+	Compatible  bool `json:"compatible,omitempty"`
+	CompatKnown bool `json:"compatKnown,omitempty"`
+
+	// Error is why this configuration could not be read at all, which is itself
+	// worth reporting: a .vmcx that cannot be parsed is a fact about the storage,
+	// not a reason to omit the row and imply the disk is empty.
+	Error string `json:"error,omitempty"`
+}
+
+// VMIncompatibility is one finding from Compare-VM, with Ballast's reading of
+// it. Windows gives Code and Message; Kind and Remedy are ours.
+type VMIncompatibility struct {
+	Code    int32  `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Kind buckets the finding so the console can treat it consistently:
+	// "Switch", "ISO", "SavedState", "Processor", "Storage", "Other".
+	Kind string `json:"kind,omitempty"`
+	// Remedy is what closes it, in the operator's terms. Empty means Ballast has
+	// nothing useful to add beyond the message, which is honest; inventing a
+	// remedy for a finding nobody has seen would be worse than silence.
+	Remedy string `json:"remedy,omitempty"`
+	// Fixable means the import can proceed once the remedy is applied, as
+	// against a finding that only blocks. Compare-VM's own report distinguishes
+	// these by whether the incompatibility can be resolved on the report object.
+	Fixable bool `json:"fixable,omitempty"`
+}
+
+// ImportScanStatus records the scan itself, so the console can tell an empty
+// result from a scan that never ran, was skipped for cost, or was cut short.
+//
+// The alternative is a page that says "no VMs found" for a host whose scan
+// timed out, which is this codebase's most expensive bug class: a stale or
+// absent reading presented as current fact.
+type ImportScanStatus struct {
+	// Roots are the paths that were walked, so "nothing found" can be read
+	// against where it looked.
+	Roots []string `json:"roots,omitempty"`
+	// ScannedAt is when the walk completed. Zero means it has never run.
+	ScannedAt time.Time `json:"scannedAt,omitempty"`
+	// ElapsedMs is what it cost, because a scan is the one part of a pass whose
+	// cost scales with somebody else's data.
+	ElapsedMs int64 `json:"elapsedMs,omitempty"`
+	// Truncated means the walk hit its cap and there may be more. Reported so
+	// the count is never presented as complete when it is not.
+	Truncated bool `json:"truncated,omitempty"`
+	// Message is why the scan did not run or did not finish.
+	Message string `json:"message,omitempty"`
+}
+
 // ClusterReplicaBrokerStatus is the observed Hyper-V Replica Broker: the role a
 // cluster needs before it can send or receive Hyper-V Replica traffic.
 type ClusterReplicaBrokerStatus struct {
@@ -2198,6 +2326,35 @@ const (
 	JobAdoptISCSIDisk = "AdoptISCSIDisk" // params: cluster, volume, mode (keep|wipe)
 
 	JobPruneISCSIPortals = "PruneISCSIPortals" // params: portals — comma-separated declared portals to keep
+
+	// JobScanImportableVMs walks this host's storage for VM configurations no
+	// host has registered and reports them in status.
+	//
+	// A job rather than an unconditional part of every pass, because the cost
+	// scales with somebody else's data: Compare-VM has to load each
+	// configuration, and a volume adopted from a busy cluster can hold hundreds.
+	// The reconcile does the cheap half on its own — a directory walk that
+	// notices configurations exist — and this job does the expensive half when
+	// an operator is actually looking.
+	JobScanImportableVMs = "ScanImportableVMs" // params: path — optional single volume to scan; empty scans every storage root
+
+	// JobImportVM registers a VM whose files already sit on this host's storage.
+	//
+	// Two modes, and choosing wrong is expensive in opposite directions:
+	//
+	//   "register"  Import-VM -Register. The files stay exactly where they are
+	//               and the host takes ownership of them. This is the right
+	//               choice for a VM already on the CSV it will run from, which
+	//               is every VM this feature exists for.
+	//   "copy"      Import-VM -Copy -GenerateNewId. The files are DUPLICATED
+	//               into the host's VM path and the copy gets a new identity.
+	//               Correct for cloning a template; on a 500GB VM already on the
+	//               right volume it silently writes 500GB to the same disk.
+	//
+	// The import REFUSES a VM whose ID is already registered anywhere Ballast
+	// knows about, and one whose files are open. Two live claims on one set of
+	// VHDXs corrupts them, and that is not a warning to click through.
+	JobImportVM = "ImportVM" // params: path — the .vmcx; mode — register|copy; cluster — true to add a cluster role after
 	// JobDisconnectISCSITarget logs a host out of one target and clears its
 	// persistent entry. The reconcile is additive and will never do this: it
 	// cannot tell a target the operator retired from one something else on the

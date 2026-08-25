@@ -579,6 +579,8 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 		IsoLibrary:         isoLibraryStatusToProto(s.ISOLibrary),
 		Iscsi:              iscsiStatusToProto(s.ISCSI),
 		WindowsLicence:     windowsLicenceToProto(s.WindowsLicence),
+		ImportableVms:      importableVMsToProto(s.ImportableVMs),
+		ImportScan:         importScanToProto(s.ImportScan),
 		ClusterNode:        s.ClusterNode,
 		ClusterService:     s.ClusterService,
 		ClusterNodeOf:      s.ClusterNodeOf,
@@ -684,6 +686,8 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 		ISOLibrary:         isoLibraryStatusFromProto(s.GetIsoLibrary()),
 		ISCSI:              iscsiStatusFromProto(s.GetIscsi()),
 		WindowsLicence:     windowsLicenceFromProto(s.GetWindowsLicence()),
+		ImportableVMs:      importableVMsFromProto(s.GetImportableVms()),
+		ImportScan:         importScanFromProto(s.GetImportScan()),
 		ClusterNode:        s.GetClusterNode(),
 		ClusterService:     s.GetClusterService(),
 		ClusterNodeOf:      s.GetClusterNodeOf(),
@@ -1640,5 +1644,130 @@ func windowsLicenceSpecFromProto(s *WindowsLicenceSpec) *types.WindowsLicenceSpe
 	return &types.WindowsLicenceSpec{
 		Edition: s.GetEdition(), ProductKeySecret: s.GetProductKeySecret(),
 		Activation: s.GetActivation(), ActivationKeySecret: s.GetActivationKeySecret(), KMSServer: s.GetKmsServer(),
+	}
+}
+
+/* Importable VMs found on a host's storage.
+
+   Written out field by field in both directions rather than by any shortcut:
+   the brief is explicit that a field the proto does not carry round-trips
+   perfectly as its zero value, so the failure is silent — the centre stores the
+   setting, the agent never receives it, and nothing anywhere reports a problem.
+   For this type the silent zero values would be RegisteredElsewhere and
+   InUseElsewhere, the two that stop an import from corrupting a running VM. */
+
+func importableVMsToProto(in []types.ImportableVM) []*ImportableVM {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*ImportableVM, 0, len(in))
+	for _, v := range in {
+		out = append(out, &ImportableVM{
+			Name:                v.Name,
+			Id:                  v.ID,
+			ConfigPath:          v.ConfigPath,
+			Volume:              v.Volume,
+			Generation:          v.Generation,
+			ProcessorCount:      v.ProcessorCount,
+			MemoryStartupBytes:  v.MemoryStartupBytes,
+			SizeBytes:           v.SizeBytes,
+			SavedState:          v.SavedState,
+			RegisteredElsewhere: v.RegisteredElsewhere,
+			RegisteredOn:        v.RegisteredOn,
+			InUseElsewhere:      v.InUseElsewhere,
+			Incompatibilities:   incompatibilitiesToProto(v.Incompatibilities),
+			Compatible:          v.Compatible,
+			CompatKnown:         v.CompatKnown,
+			Error:               v.Error,
+		})
+	}
+	return out
+}
+
+func importableVMsFromProto(in []*ImportableVM) []types.ImportableVM {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.ImportableVM, 0, len(in))
+	for _, v := range in {
+		out = append(out, types.ImportableVM{
+			Name:                v.GetName(),
+			ID:                  v.GetId(),
+			ConfigPath:          v.GetConfigPath(),
+			Volume:              v.GetVolume(),
+			Generation:          v.GetGeneration(),
+			ProcessorCount:      v.GetProcessorCount(),
+			MemoryStartupBytes:  v.GetMemoryStartupBytes(),
+			SizeBytes:           v.GetSizeBytes(),
+			SavedState:          v.GetSavedState(),
+			RegisteredElsewhere: v.GetRegisteredElsewhere(),
+			RegisteredOn:        v.GetRegisteredOn(),
+			InUseElsewhere:      v.GetInUseElsewhere(),
+			Incompatibilities:   incompatibilitiesFromProto(v.GetIncompatibilities()),
+			Compatible:          v.GetCompatible(),
+			CompatKnown:         v.GetCompatKnown(),
+			Error:               v.GetError(),
+		})
+	}
+	return out
+}
+
+func incompatibilitiesToProto(in []types.VMIncompatibility) []*VMIncompatibility {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*VMIncompatibility, 0, len(in))
+	for _, c := range in {
+		out = append(out, &VMIncompatibility{
+			Code:    c.Code,
+			Message: c.Message,
+			Kind:    c.Kind,
+			Remedy:  c.Remedy,
+			Fixable: c.Fixable,
+		})
+	}
+	return out
+}
+
+func incompatibilitiesFromProto(in []*VMIncompatibility) []types.VMIncompatibility {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.VMIncompatibility, 0, len(in))
+	for _, c := range in {
+		out = append(out, types.VMIncompatibility{
+			Code:    c.GetCode(),
+			Message: c.GetMessage(),
+			Kind:    c.GetKind(),
+			Remedy:  c.GetRemedy(),
+			Fixable: c.GetFixable(),
+		})
+	}
+	return out
+}
+
+func importScanToProto(s *types.ImportScanStatus) *ImportScanStatus {
+	if s == nil {
+		return nil
+	}
+	return &ImportScanStatus{
+		Roots:     s.Roots,
+		ScannedAt: tsToProto(s.ScannedAt),
+		ElapsedMs: s.ElapsedMs,
+		Truncated: s.Truncated,
+		Message:   s.Message,
+	}
+}
+
+func importScanFromProto(s *ImportScanStatus) *types.ImportScanStatus {
+	if s == nil {
+		return nil
+	}
+	return &types.ImportScanStatus{
+		Roots:     s.GetRoots(),
+		ScannedAt: tsFromProto(s.GetScannedAt()),
+		ElapsedMs: s.GetElapsedMs(),
+		Truncated: s.GetTruncated(),
+		Message:   s.GetMessage(),
 	}
 }

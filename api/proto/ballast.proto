@@ -335,6 +335,65 @@ message HostStatus {
   // for Windows deliberately: Ballast's own product licensing is a separate
   // concern the agent is never aware of.
   WindowsLicenceStatus windows_licence = 19;
+  // importable_vms are VM configurations on this host's storage that no host has
+  // registered — what adopting a LUN with data on it leaves behind.
+  repeated ImportableVM importable_vms = 73;
+  // import_scan records the walk itself, so an empty list can be read against
+  // when it last looked. Absent is not empty.
+  ImportScanStatus import_scan = 74;
+}
+
+// ImportableVM is a VM configuration found on storage that nothing has
+// registered. Entirely observed; Ballast never imports on its own.
+message ImportableVM {
+  string name = 1;
+  string id = 2;
+  // config_path is the .vmcx, which is both what Import-VM takes and the
+  // identity the console groups by — every cluster member sees the same CSV.
+  string config_path = 3;
+  string volume = 4;
+  int32 generation = 5;
+  int32 processor_count = 6;
+  int64 memory_startup_bytes = 7;
+  // size_bytes is the whole VM folder, so a COPY's cost is known before it is
+  // chosen over registering in place.
+  int64 size_bytes = 8;
+  // saved_state is captured against the exact processor it ran on, so restoring
+  // it on different silicon fails with an error naming neither cause nor cure.
+  bool saved_state = 9;
+  // registered_elsewhere: this ID is already registered on a host Ballast knows.
+  // Importing again gives two hosts a live claim on one set of VHDXs.
+  bool registered_elsewhere = 10;
+  string registered_on = 11;
+  // in_use_elsewhere: a file in the folder is open, so something outside this
+  // host is running it.
+  bool in_use_elsewhere = 12;
+  repeated VMIncompatibility incompatibilities = 13;
+  // compatible is Compare-VM's verdict; compat_known separates "checked and
+  // found nothing" from "never ran".
+  bool compatible = 14;
+  bool compat_known = 15;
+  string error = 16;
+}
+
+// VMIncompatibility is one Compare-VM finding, with Ballast's reading of it.
+// Windows supplies code and message; kind and remedy are ours.
+message VMIncompatibility {
+  int32 code = 1;
+  string message = 2;
+  string kind = 3;
+  string remedy = 4;
+  bool fixable = 5;
+}
+
+// ImportScanStatus records the scan, so "nothing found" can be told apart from
+// a scan that never ran or was cut short.
+message ImportScanStatus {
+  repeated string roots = 1;
+  google.protobuf.Timestamp scanned_at = 2;
+  int64 elapsed_ms = 3;
+  bool truncated = 4;
+  string message = 5;
 }
 
 message WindowsLicenceSpec {

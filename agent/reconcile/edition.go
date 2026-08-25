@@ -33,7 +33,7 @@ func (r *Reconciler) reconcileWindowsEdition(ctx context.Context, desired types.
 			// host is running perfectly on the edition it has.
 			return Result{Conditions: []types.Condition{{
 				Type: "WindowsEdition", Status: false, Reason: "NotApplied",
-				Message: fmt.Sprintf("this host declares edition %s, but the product key %q was not sent to it. If the key exists in Settings this is a delivery fault at the centre rather than anything to fix here.", spec.Edition, spec.ProductKeySecret),
+				Message:            fmt.Sprintf("this host declares edition %s, but the product key %q was not sent to it. If the key exists in Settings this is a delivery fault at the centre rather than anything to fix here.", spec.Edition, spec.ProductKeySecret),
 				LastTransitionTime: r.now(),
 			}}}, false, nil
 		}
@@ -61,7 +61,7 @@ func (r *Reconciler) reconcileWindowsEdition(ctx context.Context, desired types.
 
 	conds := []types.Condition{{
 		Type: "WindowsEdition", Status: true, Reason: "Updated",
-		Message: fmt.Sprintf("converted to %s; the change takes effect on restart", spec.Edition),
+		Message:            fmt.Sprintf("converted to %s; the change takes effect on restart", spec.Edition),
 		LastTransitionTime: r.now(),
 	}}
 	r.log.Info("windows edition conversion staged", "edition", spec.Edition)
@@ -97,7 +97,7 @@ func (r *Reconciler) reconcileWindowsActivation(ctx context.Context, desired typ
 		if !ok {
 			return []types.Condition{{
 				Type: "WindowsActivation", Status: false, Reason: "NotApplied",
-				Message: fmt.Sprintf("this host activates by %s with key %q, but that key was not sent to it. If it exists in Settings this is a delivery fault at the centre rather than anything to fix here.", spec.Activation, spec.ActivationKeySecret),
+				Message:            fmt.Sprintf("this host activates by %s with key %q, but that key was not sent to it. If it exists in Settings this is a delivery fault at the centre rather than anything to fix here.", spec.Activation, spec.ActivationKeySecret),
 				LastTransitionTime: r.now(),
 			}}
 		}
