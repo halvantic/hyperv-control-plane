@@ -156,10 +156,49 @@ try {
   if ($why -like '*credential*' -or $why -like '*logon*' -or $why -like '*password*' -or $why -like '*denied*') {
     throw ('the guest credential was rejected by ' + $vm + '. Sysprep runs INSIDE the guest over PowerShell Direct, so this must be an account that exists in the guest operating system and is a local administrator there - not the host credential, and not a domain account the guest does not trust. A domain-joined guest wants DOMAIN\user; a workgroup guest wants the local account name. (' + $why + ')')
   }
-  if ($why -like '*not in a state*' -or $why -like '*Integration*' -or $why -like '*Guest Service*') {
-    throw ('PowerShell Direct could not reach ' + $vm + '. The guest must be Running with Integration Services enabled and its operating system fully booted - a guest still starting, or sitting at a boot menu, cannot be generalised. (' + $why + ')')
+  # PowerShell Direct could not establish a session at all. That is a different
+  # failure from a rejected credential and it has several causes, so the host is
+  # ASKED rather than guessed at: heartbeat, uptime and the integration services
+  # are all readable from here, and between them they say which cause it is.
+  #
+  # Seen on the rig 2026-08-25 as the bare text "An error has occurred which
+  # Windows PowerShell cannot handle. A remote session might have ended.", which
+  # names neither the cause nor anything to do about it. The most likely reason
+  # is the one Ballast is best placed to spot and the operator least likely to
+  # think of: a guest that has ALREADY been generalised sits at OOBE, and
+  # nothing can get a PowerShell Direct session into a machine at OOBE.
+  $hb = ''; $up = ''; $ints = @()
+  try {
+    $d = Get-VM -Name $vm -ErrorAction SilentlyContinue
+    if ($d) {
+      $hb = [string]$d.Heartbeat
+      try { $up = [string]$d.Uptime } catch {}
+    }
+    foreach ($i in @(Get-VMIntegrationService -VMName $vm -ErrorAction SilentlyContinue)) {
+      if (-not $i.Enabled) { $ints += [string]$i.Name }
+    }
+  } catch {}
+
+  $evidence = @()
+  if ($hb) { $evidence += ('heartbeat ' + $hb) }
+  if ($up) { $evidence += ('up ' + $up) }
+  if ($ints.Count -gt 0) { $evidence += ('integration services disabled: ' + ($ints -join ', ')) }
+  $seen = ''
+  if ($evidence.Count -gt 0) { $seen = ' The host reports ' + ($evidence -join '; ') + '.' }
+
+  if ($hb -eq 'NoContact' -or $hb -eq 'Disabled' -or $ints -contains 'Heartbeat') {
+    throw ('PowerShell Direct cannot reach ' + $vm + ': the guest is not talking to Hyper-V at all.' + $seen +
+      ' Either Integration Services are disabled on this VM, or the guest operating system is not running them. Enable them on the VM and inside the guest, then capture again. (' + $why + ')')
   }
-  throw ('could not run commands inside ' + $vm + ' to generalise it: ' + $why)
+  if ($why -like '*not in a state*' -or $why -like '*Integration*' -or $why -like '*Guest Service*') {
+    throw ('PowerShell Direct could not reach ' + $vm + '. The guest must be Running with Integration Services enabled and its operating system fully booted - a guest still starting, or sitting at a boot menu, cannot be generalised.' + $seen + ' (' + $why + ')')
+  }
+  throw ('PowerShell Direct could not open a session inside ' + $vm + ', so it cannot be generalised.' + $seen +
+    ' The guest is running and answering Hyper-V, so this is the operating system refusing the session rather than the VM being unreachable. In order of likelihood:' +
+    ' (1) THIS GUEST HAS ALREADY BEEN GENERALISED and is sitting at the Windows setup screen - sysprep leaves it there, and no session can be opened until setup is completed and the machine is logged in at least once;' +
+    ' (2) the guest is still booting, or sitting at a login or boot menu;' +
+    ' (3) the Hyper-V PowerShell Direct service (vmicvmsession) is stopped or disabled inside the guest.' +
+    ' Open the VM console to see which. (' + $why + ')')
 }
 
 # Sysprep shuts the guest down itself, which tears down the PowerShell Direct

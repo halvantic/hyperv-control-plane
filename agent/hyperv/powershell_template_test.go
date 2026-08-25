@@ -598,3 +598,78 @@ func TestCaptureBudgetOutlastsTheSysprepWait(t *testing.T) {
 		t.Errorf("a plain capture is budgeted %v, want the copy allowance %v", got, CaptureCopyAllowance)
 	}
 }
+
+
+/* Seen on the rig 2026-08-25, capturing WindowsServer2025 with generalise
+   ticked. It failed in seven seconds at the credential probe with:
+
+     could not run commands inside WindowsServer2025 to generalise it:
+     An error has occurred which Windows PowerShell cannot handle.
+     A remote session might have ended.
+
+   That is PowerShell's own transport error passed straight through. It says a
+   session could not be opened; it does not say why, what to look at, or what to
+   do — and the brief calls a raw error with a known remedy a defect in Ballast.
+
+   The likeliest cause is also the one an operator is least likely to think of
+   and Ballast is best placed to spot: a guest that has ALREADY been generalised
+   sits at OOBE, and no PowerShell Direct session can be opened into a machine
+   at OOBE. This VM had been sysprepped by an earlier capture whose job was
+   killed by the budget bug, so it was sitting at exactly that screen. */
+
+func TestPowerShellDirectFailureAsksTheHostRatherThanGuessing(t *testing.T) {
+	s := captureTemplateScript(true, false)
+
+	// Evidence gathering: all three are readable from the host, and between them
+	// they distinguish "guest not talking at all" from "guest fine, OS refusing".
+	for _, want := range []string{
+		"$hb = [string]$d.Heartbeat",
+		"Get-VMIntegrationService -VMName $vm",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the failure path does not gather %q", want)
+		}
+	}
+	if !strings.Contains(s, "The host reports ") {
+		t.Error("the evidence gathered is never reported to the operator")
+	}
+}
+
+func TestAGuestNotTalkingAtAllIsCalledThat(t *testing.T) {
+	s := captureTemplateScript(true, false)
+	if !strings.Contains(s, "$hb -eq 'NoContact'") {
+		t.Fatal("a guest with no heartbeat is not distinguished from one that is answering")
+	}
+	if !strings.Contains(s, "the guest is not talking to Hyper-V at all") {
+		t.Error("the no-heartbeat case does not say what it means")
+	}
+}
+
+/* The remedy that matters. An operator staring at "a remote session might have
+   ended" has no reason to suspect their VM is sitting at a setup screen. */
+func TestAnAlreadyGeneralisedGuestIsNamedAsTheLikeliestCause(t *testing.T) {
+	s := captureTemplateScript(true, false)
+	if !strings.Contains(s, "ALREADY BEEN GENERALISED") {
+		t.Fatal("the commonest cause of this failure is not named")
+	}
+	if !strings.Contains(s, "no session can be opened until setup is completed") {
+		t.Error("it names the cause without saying what unblocks it")
+	}
+	// And it must not be the ONLY thing offered — the other two causes are real.
+	if !strings.Contains(s, "vmicvmsession") {
+		t.Error("the PowerShell Direct service inside the guest is not mentioned")
+	}
+	if !strings.Contains(s, "still booting") {
+		t.Error("a guest that has simply not finished booting is not mentioned")
+	}
+}
+
+/* Windows' own words are kept. An operator searching for the message must still
+   find it, and a support case needs the original text. */
+func TestTheOriginalMessageSurvivesTheDiagnosis(t *testing.T) {
+	s := captureTemplateScript(true, false)
+	// Every throw on this path ends by quoting $why.
+	if strings.Count(s, "' + $why + ')") < 4 {
+		t.Error("not every diagnosis carries Windows' own message alongside it")
+	}
+}
