@@ -286,7 +286,7 @@ func TestApplyIPScriptFreesAddressOnOtherInterface(t *testing.T) {
 func TestEnsureMgmtVNICAppliesIPOnDrift(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{
 		[]byte(`{"exists":true,"known":true,"switchName":"ConvergedSwitch","vlanID":0}`), // queryVNIC: adapter matches
-		[]byte(`{"address":"","gateway":"","dnsServers":[]}`),               // queryVNICIP: no static yet
+		[]byte(`{"address":"","gateway":"","dnsServers":[]}`),                            // queryVNICIP: no static yet
 	}}
 	spec := types.ManagementVNICSpec{
 		Name: "Management", SwitchName: "ConvergedSwitch", VLANID: 0,

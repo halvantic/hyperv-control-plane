@@ -1,8 +1,10 @@
 package hyperv
 
-import "strings"
-
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
 
 // The template scripts are built as strings and only ever run against a real
 // host, so their content is what these tests can pin. Match the exact construct,
@@ -560,5 +562,39 @@ func TestProgressLinesKeepEveryLine(t *testing.T) {
 	}
 	if len(notes) != 2 || notes[0] != "copying image 10%" {
 		t.Errorf("progress notes = %v, want two notes starting with 'copying image 10%%'", notes)
+	}
+}
+
+/* The script's sysprep deadline and the Go constant the job layer budgets from
+   must be the same number.
+
+   They were written independently once, and that is exactly how generalising
+   captures broke: the script waited sixty minutes for the guest to shut down
+   and the job layer cancelled it at ten. Sysprep ran, the guest stopped as
+   promised, and the job was reported Failed part-way through with no template.
+
+   The script now renders the constant. This proves it still does — and that the
+   message an operator reads quotes the same figure rather than a hardcoded one
+   that drifts from the behaviour it describes. */
+func TestTheCaptureScriptWaitsExactlyTheDeclaredDeadline(t *testing.T) {
+	s := captureTemplateScript(true, false)
+	mins := strconv.Itoa(int(SysprepDeadline.Minutes()))
+	if !strings.Contains(s, "AddMinutes("+mins+")") {
+		t.Fatalf("the capture script does not wait %v", SysprepDeadline)
+	}
+	if !strings.Contains(s, "timed out after "+mins+" minutes") {
+		t.Error("the timeout message does not quote the deadline actually used")
+	}
+}
+
+/* The budget must outlast the wait, with room for the copy that follows. This
+   lives here as well as in agent/service because the relationship is a property
+   of these two constants, not of the caller. */
+func TestCaptureBudgetOutlastsTheSysprepWait(t *testing.T) {
+	if got := CaptureBudget(true); got <= SysprepDeadline {
+		t.Fatalf("a generalising capture is budgeted %v against its own %v wait", got, SysprepDeadline)
+	}
+	if got := CaptureBudget(false); got != CaptureCopyAllowance {
+		t.Errorf("a plain capture is budgeted %v, want the copy allowance %v", got, CaptureCopyAllowance)
 	}
 }

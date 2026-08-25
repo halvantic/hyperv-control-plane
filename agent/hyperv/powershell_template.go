@@ -8,7 +8,42 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
+
+/* How long a capture may take, in ONE place.
+
+   These were two numbers in two files that each looked reasonable alone. The
+   capture script waits up to sixty minutes for a generalised guest to shut
+   itself down; the agent's job layer capped every job it did not recognise at
+   ten. A generalising capture therefore ran sysprep, the guest shut down
+   correctly — and the job was cancelled and reported Failed somewhere in the
+   middle, with no template produced and nothing saying why. The operator saw
+   the server sysprep and stop, exactly as promised, and then nothing.
+
+   Deriving the job budget from the script's own deadline is what stops them
+   drifting apart again. A number a second file has to guess is a number that
+   will be wrong. */
+
+// SysprepDeadline is how long the capture waits for a generalised guest to shut
+// itself down. Sysprep on a Windows guest routinely takes several minutes and
+// can take far longer on a large or heavily configured image.
+const SysprepDeadline = 60 * time.Minute
+
+// CaptureCopyAllowance is the time given to the VHDX copy that follows. A
+// template disk is tens of gigabytes over whatever storage the library sits on,
+// which on an SMB share is the slowest part of the whole operation.
+const CaptureCopyAllowance = 30 * time.Minute
+
+// CaptureBudget is how long a capture job may run. A plain capture is a copy; a
+// generalising one is a sysprep AND a copy, and the guest shutdown is the part
+// nothing can hurry.
+func CaptureBudget(generalise bool) time.Duration {
+	if generalise {
+		return SysprepDeadline + CaptureCopyAllowance
+	}
+	return CaptureCopyAllowance
+}
 
 // VM template operations are pure disk work. Capture copies a VM's first VHDX
 // into the library, optionally generalising the guest with sysprep first;
@@ -138,7 +173,7 @@ Invoke-Command -VMName $vm -Credential $gcred -ScriptBlock {
   }
   Start-Process -FilePath $sp -ArgumentList '/generalize','/oobe','/shutdown','/quiet'
 }
-$deadline = (Get-Date).AddMinutes(60)
+$deadline = (Get-Date).AddMinutes(` + strconv.Itoa(int(SysprepDeadline.Minutes())) + `)
 while ($true) {
   # A CLUSTERED VM shutting itself down takes its role offline, which deregisters
   # it from Hyper-V — so the VM vanishing here means sysprep finished, not that
@@ -148,7 +183,7 @@ while ($true) {
   $st = [string]$g.State
   if ($st -eq 'Off') { break }
   if ((Get-Date) -gt $deadline) {
-    throw ('timed out after 60 minutes waiting for ' + $vm + ' to shut down after sysprep (it is ' + $st + '). Sysprep logs its own failures in the guest at C:\Windows\System32\Sysprep\Panther.')
+    throw ('timed out after ` + strconv.Itoa(int(SysprepDeadline.Minutes())) + ` minutes waiting for ' + $vm + ' to shut down after sysprep (it is ' + $st + '). Sysprep logs its own failures in the guest at C:\Windows\System32\Sysprep\Panther.')
   }
   Start-Sleep -Seconds 10
 }

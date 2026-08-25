@@ -224,7 +224,6 @@ func firstLines(s string, n int) string {
 	return strings.Join(parts, "\n")
 }
 
-
 /* Compare-VM's real output, from the rig 2026-08-25 against a template on
    SecDS1. Both findings came back under MessageId 40010.
 
@@ -292,7 +291,6 @@ func TestAnUnnamedMissingFileGetsNoConfidentRemedy(t *testing.T) {
 		t.Errorf("the remedy does not admit which file it is:\n %s", got.Remedy)
 	}
 }
-
 
 /* Seen on the rig 2026-08-25. The console said both findings were survivable —
    "import and then reconnect the adapter", "importing anyway gives you the VM's
