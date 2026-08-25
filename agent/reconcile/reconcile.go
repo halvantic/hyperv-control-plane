@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -63,6 +64,24 @@ type Reconciler struct {
 	// names only the volume. Keeping the serial here rather than in the job is
 	// what stops the job becoming a second authority over which disk is meant.
 	volumeSources map[string]types.CSVSourceSpec
+
+	/* importScan is the last scan for unregistered VMs on this host's storage,
+	   held so the reconcile can REPORT it without re-running it.
+
+	   The scan is a job, not a step: Compare-VM loads every configuration it
+	   finds, so the cost scales with somebody else's data rather than with
+	   anything Ballast controls. Running it each pass would put an unbounded
+	   cost in the loop for an answer that changes only when a volume is adopted
+	   or a VM is imported.
+
+	   So the job scans and stores; every pass afterwards reports what it found,
+	   with the scan record saying when. A result presented without its age is
+	   this codebase's most expensive bug class, which is why the record is a
+	   sibling field and not an afterthought. */
+	importScanMu     sync.Mutex
+	importVMs        []types.ImportableVM
+	importScan       *types.ImportScanStatus
+	importRootsCache []string
 
 	// iscsiReadBudget overrides the cap on the iSCSI step, for tests. Zero uses
 	// iscsiStepBudget.
@@ -1045,7 +1064,6 @@ func (r *Reconciler) advisoryCondition(condType string, out hyperv.Outcome, err 
 	}
 	return c
 }
-
 
 // PhaseRecorder starts timing a named stage and returns the function that stops
 // it. Same shape as the runner's own phase timer, so the runner can hand its

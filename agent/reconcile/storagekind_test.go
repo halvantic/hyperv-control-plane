@@ -176,4 +176,3 @@ func TestOnlyTheFormerReconcilesStorage(t *testing.T) {
 		t.Fatalf("a non-former must not provision: changed=%v conds=%d err=%v", changed, len(conds), err)
 	}
 }
-

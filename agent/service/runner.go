@@ -1057,6 +1057,17 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	if st.ISCSI == nil {
 		st.ISCSI = r.clusterISCSI
 	}
+	// VMs found sitting on this host's storage that nothing has registered.
+	//
+	// REPORTED here, SCANNED only by the job. The walk runs Compare-VM on every
+	// configuration it finds, so its cost scales with somebody else's data — the
+	// one thing in a pass Ballast does not control — and it has no business in
+	// the loop. What the pass carries is the last result together with when it
+	// was taken, so a list is never shown without its age.
+	st.ImportableVMs, st.ImportScan = r.reconciler.ImportStatus()
+	// The scan job needs to know which volumes this host can see, and the pass
+	// is where that becomes known.
+	r.reconciler.RememberImportRoots(resources)
 	st.ComputerName = identity.ComputerName
 	st.Domain = identity.Domain
 	// Network location changes only when domain reachability does — refresh it

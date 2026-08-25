@@ -300,4 +300,3 @@ func TestTheScriptRefusesANodeThatIsNotQuarantined(t *testing.T) {
 		t.Error("running it on the quarantined node itself must be explained, not just fail")
 	}
 }
-

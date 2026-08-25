@@ -165,6 +165,36 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 				"Removing them all is what Reset initiator is for; this job only removes what the spec does not name")
 		}
 		return r.hv.PruneISCSIPortals(ctx, declared, targets)
+	case types.JobScanImportableVMs:
+		return r.scanImportableVMs(ctx, p["path"])
+	case types.JobImportVM:
+		path := strings.TrimSpace(p["path"])
+		if path == "" {
+			return "", fmt.Errorf("import vm: no configuration path was given. The path comes from the scan, which is the only thing that knows where the configuration actually is")
+		}
+		mode := strings.ToLower(strings.TrimSpace(p["mode"]))
+		// No default. Register-in-place and copy fail in opposite, expensive
+		// directions — one gives two clusters a claim on one set of files, the
+		// other silently rewrites a 500GB VM onto the volume it is already on —
+		// so an unset mode is a refusal, not a coin toss.
+		if mode != "register" && mode != "copy" {
+			return "", fmt.Errorf("import %s: mode must be register or copy, got %q", path, p["mode"])
+		}
+		out, err := r.hv.ImportVM(ctx, hyperv.VMImport{
+			ConfigPath:        path,
+			Copy:              mode == "copy",
+			Cluster:           p["cluster"] == "true",
+			DiscardSavedState: p["discardSavedState"] == "true",
+		})
+		if err != nil {
+			return "", err
+		}
+		// The imported VM is no longer importable, and the console must stop
+		// offering it immediately rather than at the next scan. Dropping it here
+		// is cheap and truthful; leaving it would invite a second import, which
+		// is the refusal this feature guards hardest.
+		r.forgetImportable(path)
+		return out, nil
 	case types.JobRepairPool:
 		return r.hv.RepairStoragePool(ctx)
 	case types.JobClusterUpdateFunctionalLevel:

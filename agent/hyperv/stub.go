@@ -856,8 +856,10 @@ func (s *Stub) CaptureTemplate(_ context.Context, _, _ string, _, _ bool, _, _ s
 	return 0, nil
 }
 
-func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string, _ ProgressFunc) error { return nil }
-func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error      { return nil }
+func (s *Stub) DeployFromTemplate(_ context.Context, _, _, _ string, _ ProgressFunc) error {
+	return nil
+}
+func (s *Stub) DiscardVMSavedState(_ context.Context, _ string) error { return nil }
 
 // EnsureNodeMaintenance models pausing/resuming this node. A stub not in a
 // cluster reports no membership, mirroring a standalone host where maintenance
@@ -884,11 +886,11 @@ func (s *Stub) EnsureNodeMaintenance(_ context.Context, _ string, intent Mainten
 func (s *Stub) MoveVMStorage(_ context.Context, vm, folder string, _ ProgressFunc) (string, error) {
 	return "moved " + vm + " storage to " + folder, nil
 }
-func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)             { return "", nil }
+func (s *Stub) FetchISO(_ context.Context, _, _ string) (string, error)                { return "", nil }
 func (s *Stub) GuestJoinDomain(_ context.Context, _, _, _, _, _, _, _, _ string) error { return nil }
-func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error      { return nil }
-func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error              { return nil }
-func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error             { return nil }
+func (s *Stub) GuestSetIP(_ context.Context, _, _, _, _, _, _, _ string) error         { return nil }
+func (s *Stub) ApplyVMCheckpoint(_ context.Context, _, _ string) error                 { return nil }
+func (s *Stub) RemoveVMCheckpoint(_ context.Context, _, _ string) error                { return nil }
 
 func (s *Stub) AddClusterNode(_ context.Context, node string) error {
 	s.mu.Lock()
@@ -1098,3 +1100,16 @@ func (s *Stub) MgmtVNIC(name string) (types.ManagementVNICSpec, bool) {
 
 // compile-time assertion that Stub satisfies the interface.
 var _ Interface = (*Stub)(nil)
+
+/* The stub reports a host with nothing importable, which is the honest answer
+   for a host that does not exist. It returns a SCAN RECORD rather than a bare
+   nil so tests exercise the same "absent is not empty" path the real agent
+   does. */
+
+func (s *Stub) ScanImportableVMs(_ context.Context, roots []string) ([]types.ImportableVM, *types.ImportScanStatus, error) {
+	return nil, &types.ImportScanStatus{Roots: roots}, nil
+}
+
+func (s *Stub) ImportVM(_ context.Context, v VMImport) (string, error) {
+	return "imported " + v.ConfigPath, nil
+}

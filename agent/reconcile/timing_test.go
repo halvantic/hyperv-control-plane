@@ -16,7 +16,7 @@ import (
 
 func TestAQuickPassSaysNothing(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "CollectInventory", Took: time.Second}},
-nil, 2*time.Second, SlowPassThreshold, false)
+		nil, 2*time.Second, SlowPassThreshold, false)
 	if got != "" {
 		t.Fatalf("a healthy pass must stay silent, got %q", got)
 	}
@@ -30,7 +30,7 @@ func TestASlowPassNamesItsSlowestCalls(t *testing.T) {
 		{Name: "ObserveVMs", Took: 12 * time.Second, Calls: 3},
 		{Name: "CollectMetrics", Took: 20 * time.Millisecond, Calls: 1},
 	},
-nil, 105*time.Second, SlowPassThreshold, false)
+		nil, 105*time.Second, SlowPassThreshold, false)
 
 	if !strings.Contains(got, "GetClusterState 1m30s") {
 		t.Errorf("the slowest call must be named with its cost: %q", got)
@@ -55,7 +55,7 @@ nil, 105*time.Second, SlowPassThreshold, false)
 // is how often the host is read, while it goes on reading online throughout.
 func TestTheMessageExplainsWhySlownessMatters(t *testing.T) {
 	got := SlowPassMessage([]hyperv.CallTiming{{Name: "GetClusterState", Took: 90 * time.Second, Calls: 1}},
-nil, 105*time.Second, SlowPassThreshold, false)
+		nil, 105*time.Second, SlowPassThreshold, false)
 	for _, want := range []string{"how often this host is actually read", "still reads online", "Readings taken"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the message must connect slowness to what it costs (%q): %q", want, got)
@@ -104,7 +104,7 @@ func TestAPassThatIsNotExplainedByItsListSaysSo(t *testing.T) {
 		{Name: "querySwitch", Took: 3 * time.Second, Calls: 1},
 		{Name: "GetNodeSelf", Took: 2 * time.Second, Calls: 1},
 	},
-nil, 210*time.Second, SlowPassThreshold, false)
+		nil, 210*time.Second, SlowPassThreshold, false)
 
 	if !strings.Contains(got, "Those are 1m37s of it") {
 		t.Errorf("the message must say how much of the pass its list actually accounts for: %q", got)
@@ -125,7 +125,7 @@ func TestAPassWithARealCulpritIsNotQualified(t *testing.T) {
 		{Name: "EnsureReplicaServer", Took: 3*time.Minute + 52*time.Second, Calls: 1},
 		{Name: "CollectInventory", Took: 27 * time.Second, Calls: 1},
 	},
-nil, 5*time.Minute, SlowPassThreshold, false)
+		nil, 5*time.Minute, SlowPassThreshold, false)
 
 	if strings.Contains(got, "Those are") {
 		t.Errorf("one call at 77%% of the pass IS the explanation: %q", got)

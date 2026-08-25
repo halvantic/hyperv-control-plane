@@ -698,6 +698,18 @@ type Interface interface {
 	// already holds data: keep the existing volume, or wipe and format it.
 	AdoptISCSIDiskWithContents(ctx context.Context, a ISCSIAdoption) (string, error)
 
+	// ScanImportableVMs walks the given storage roots for VM configurations no
+	// host has registered, with Compare-VM's verdict on each.
+	//
+	// Returns a scan record even when it finds nothing, and especially when it
+	// FAILS: an empty list and a failed walk read identically to a console, and
+	// the difference is whether "this volume holds no VMs" is a fact or a guess.
+	ScanImportableVMs(ctx context.Context, roots []string) ([]types.ImportableVM, *types.ImportScanStatus, error)
+
+	// ImportVM registers a VM whose files already sit on this host's storage.
+	// Refuses an already-registered ID and open files; see VMImport.
+	ImportVM(ctx context.Context, v VMImport) (string, error)
+
 	// EnsureTestSwitch ensures the isolated switch a test failover runs inside
 	// exists on this host. switchType is "Private" or "Internal". Idempotent; it
 	// REFUSES rather than reconfiguring a switch that already exists as
