@@ -259,3 +259,110 @@ func TestClusteredStopShutsTheGuestDownBeforeGoingOffline(t *testing.T) {
 		t.Error("the guest-shutdown block is not gated to the Off request, so a start could run it")
 	}
 }
+
+/* Memory, split by what Hyper-V will actually accept on a RUNNING VM.
+
+   Every memory change used to be gated wholly on $running, so raising a dynamic
+   ceiling waited for a power-off. That is stricter than the platform: with
+   Dynamic Memory already enabled, Minimum and Maximum change live — it is the
+   whole point of dynamic memory — and only Startup, or turning dynamic memory
+   on or off, needs the VM stopped.
+
+   Deferring a live-capable change is not safe conservatism. It leaves the VM
+   Progressing behind a "needs the VM off" message that is untrue, and asks an
+   operator to schedule an outage to raise a ceiling Hyper-V would have moved
+   while the guest ran. */
+
+func dynVM(startup, min, max uint64) types.VM {
+	return types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{
+			MemoryStartupBytes: startup,
+			DynamicMemory:      &types.DynamicMemorySpec{MinBytes: min, MaxBytes: max},
+		},
+	}
+}
+
+func TestDynamicMemoryBandAppliesWithoutStoppingTheVM(t *testing.T) {
+	s := newTestPS(&fakeRunner{}).ensureVMScript(dynVM(4294967296, 1073741824, 8589934592), 2)
+
+	// The band has its own branch, reached when dynamic memory is already on and
+	// Startup agrees — and that branch applies unconditionally, with no $running
+	// test in front of it.
+	if !strings.Contains(s, "Set-VMMemory -VMName 'Web01' -MinimumBytes 1073741824 -MaximumBytes 8589934592") {
+		t.Fatalf("there is no live apply for the dynamic band:\n%s", s)
+	}
+	// The precise regression: Minimum and Maximum used to sit INSIDE the
+	// needs-off test, which is exactly what made a band change wait for a
+	// power-off. Their absence from it is the fix.
+	needsOff := "(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne 4294967296)"
+	i := strings.Index(s, needsOff)
+	if i < 0 {
+		t.Fatalf("the needs-off test is not the expected shape:\n%s", s)
+	}
+	line := s[i : i+strings.Index(s[i:], "\n")]
+	if strings.Contains(line, "Minimum") || strings.Contains(line, "Maximum") {
+		t.Errorf("the band is still part of the needs-off test, so it defers:\n%s", line)
+	}
+
+	band := strings.Index(s, "Set-VMMemory -VMName 'Web01' -MinimumBytes")
+	seg := s[strings.LastIndex(s[:band], "} elseif ("):band]
+	if strings.Contains(seg, "$running") || strings.Contains(seg, "$pending = $true") {
+		t.Errorf("the band change is still gated on the VM being stopped:\n%s", seg)
+	}
+	// The branch must test the band it applies, not a condition that is always
+	// false — otherwise the apply is dead code and this test would still pass.
+	if !strings.Contains(seg, "($m.Minimum -ne 1073741824) -or ($m.Maximum -ne 8589934592)") {
+		t.Errorf("the live branch does not test the band it applies:\n%s", seg)
+	}
+	if strings.Contains(seg, "$false") {
+		t.Errorf("the live branch is unreachable:\n%s", seg)
+	}
+}
+
+/* Startup and enabling dynamic memory DO need the VM off — Hyper-V refuses
+   both while it runs, so the deferral must survive for exactly those. */
+func TestStartupAndEnablingDynamicMemoryStillNeedThePowerOff(t *testing.T) {
+	s := newTestPS(&fakeRunner{}).ensureVMScript(dynVM(4294967296, 1073741824, 8589934592), 2)
+	if !strings.Contains(s, "(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne 4294967296)") {
+		t.Fatalf("the needs-off test does not cover enabling dynamic memory and moving Startup:\n%s", s)
+	}
+	if !strings.Contains(s, "if ($running) { $pending = $true; $pendingWhat += 'memory' }") {
+		t.Error("the power-off deferral is gone entirely")
+	}
+}
+
+/* Static memory is fixed at boot, so every change still needs the VM off. The
+   split must not have loosened that by accident. */
+func TestStaticMemoryStillNeedsThePowerOff(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{MemoryStartupBytes: 4294967296},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	if !strings.Contains(s, "Set-VMMemory -VMName 'Web01' -DynamicMemoryEnabled $false -StartupBytes 4294967296") {
+		t.Fatalf("static memory is not applied at all:\n%s", s)
+	}
+	if !strings.Contains(s, "$m.DynamicMemoryEnabled -or ($m.Startup -ne 4294967296)") {
+		t.Error("the static-memory difference test changed shape")
+	}
+	// And there is no live branch for a static VM — there is nothing Hyper-V
+	// would accept while it runs.
+	if strings.Contains(s, "-MinimumBytes") {
+		t.Error("a static-memory VM was given a dynamic band to apply")
+	}
+}
+
+/* Processor count is unchanged by this: Hyper-V refuses it on a running VM
+   whatever the memory model, and loosening it would leave the VM in a state
+   Set-VMProcessor simply throws on. */
+func TestProcessorCountStillNeedsThePowerOff(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{ProcessorCount: 4, MemoryStartupBytes: 4294967296},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	if !strings.Contains(s, "$pendingWhat += 'processor count'") {
+		t.Error("a processor change no longer defers to a power-off")
+	}
+}
