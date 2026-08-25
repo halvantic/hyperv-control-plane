@@ -84,10 +84,18 @@ func TestResetClearsInTheRightOrder(t *testing.T) {
 	}
 	_, _ = p.ResetISCSIInitiator(context.Background())
 
-	unreg := strings.Index(seen, "Unregister-IscsiSession")
-	disc := strings.Index(seen, "Disconnect-IscsiTarget")
-	portal := strings.Index(seen, "Remove-IscsiTargetPortal")
-	persist := strings.Index(seen, "RemovePersistentTarget")
+	// The CALLS, not any mention of them. A bare Index matched a COMMENT naming
+	// Remove-IscsiTargetPortal and reported the order wrong — the third assertion
+	// in this package today to read prose instead of code.
+	unreg := strings.Index(seen, "$s | Unregister-IscsiSession")
+	disc := strings.Index(seen, "$s | Disconnect-IscsiTarget")
+	portal := strings.Index(seen, "Remove-IscsiTargetPortal @rm")
+	persist := strings.Index(seen, "RemovePersistentTarget $init")
+	for n, i := range map[string]int{"unregister": unreg, "disconnect": disc, "portal removal": portal, "persistent removal": persist} {
+		if i < 0 {
+			t.Fatalf("no %s call found in the script", n)
+		}
+	}
 
 	// Unregister before disconnect: a persistent session merely disconnected
 	// comes back at the next boot, which is a fix that lasts until a restart.
@@ -225,7 +233,10 @@ func TestASessionThatWillNotDisconnectSaysWhy(t *testing.T) {
 	}
 	// A session that was never persistent has nothing to unregister, and that is
 	// not a failure worth reporting.
-	if !strings.Contains(seen, "if ($m -notmatch 'not persistent|does not exist|not found')") {
+	// Includes "Failed to remove persistent login": an entry the initiator has
+	// already dropped is nothing to do either, and reporting it buried the one
+	// error that mattered under noise on HVNEW05.
+	if !strings.Contains(seen, "$m -notmatch 'not persistent|does not exist|not found|Failed to remove persistent login'") {
 		t.Error("an unregister that had nothing to do must not be reported as an error")
 	}
 
@@ -237,5 +248,35 @@ func TestASessionThatWillNotDisconnectSaysWhy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "in use by a clustered disk") {
 		t.Errorf("the reason must be in the message an operator reads: %v", err)
+	}
+}
+
+/* iSCSI target names are CASE-SENSITIVE, and the session reports them lowercased.
+
+   Disconnect-IscsiTarget was given -NodeAddress $s.TargetNodeAddress.
+   Get-IscsiSession echoes the name lowercased while the initiator holds the
+   array's own capitalisation — "…:Xpenology.default-target…" against
+   "…:xpenology.default-target…" — so per RFC 3720 the initiator found no such
+   target and refused with "The parameter is incorrect", while the session it was
+   looking at sat there connected. HVNEW04 and HVNEW05, 2026-08-25.
+
+   This repo already recorded that these names are case-sensitive, for the LOGIN
+   path. The disconnect kept rebuilding the key anyway. */
+func TestTheDisconnectDoesNotRebuildTheTargetName(t *testing.T) {
+	var p PowerShell
+	var seen string
+	p.run = func(_ context.Context, script string) ([]byte, error) { seen = script; return []byte(`RESULT={}`), nil }
+	_, _ = p.ResetISCSIInitiator(context.Background())
+
+	if strings.Contains(seen, "Disconnect-IscsiTarget -NodeAddress") {
+		t.Fatal("naming the target reintroduces the case mismatch — pipe the session instead")
+	}
+	if !strings.Contains(seen, "$s | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop") {
+		t.Fatalf("the session object carries the identity the initiator assigned:\n%s", seen)
+	}
+	// Same for the unregister: a session identifier enumerated a moment ago can
+	// already be gone, which is what "Invalid Session Id" was.
+	if !strings.Contains(seen, "$s | Unregister-IscsiSession -ErrorAction Stop") {
+		t.Error("the unregister must pipe the session too")
 	}
 }

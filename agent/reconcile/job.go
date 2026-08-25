@@ -145,13 +145,26 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		// The declared list rides in the job rather than being read from the
 		// cached spec: the operator is acting on what the console showed them,
 		// and a spec that changed in between would silently prune something else.
-		var declared []string
-		for _, x := range strings.Split(p["portals"], ",") {
-			if t := strings.TrimSpace(x); t != "" {
-				declared = append(declared, t)
+		split := func(v string) []string {
+			var out []string
+			for _, x := range strings.Split(v, ",") {
+				if t := strings.TrimSpace(x); t != "" {
+					out = append(out, t)
+				}
 			}
+			return out
 		}
-		return r.hv.PruneISCSIPortals(ctx, declared)
+		declared := split(p["portals"])
+		// The declared TARGETS matter as much as the portals now: the prune also
+		// removes stale favourite targets, and without this list it would find
+		// nothing declared and remove them all — every node losing its storage at
+		// the next reboot. Refused rather than defaulted.
+		targets := split(p["targets"])
+		if len(targets) == 0 {
+			return "", fmt.Errorf("prune iscsi: no declared targets were sent with this job, so every favourite target on the host would look undeclared. " +
+				"Removing them all is what Reset initiator is for; this job only removes what the spec does not name")
+		}
+		return r.hv.PruneISCSIPortals(ctx, declared, targets)
 	case types.JobRepairPool:
 		return r.hv.RepairStoragePool(ctx)
 	case types.JobClusterUpdateFunctionalLevel:

@@ -1001,7 +1001,7 @@ func (s *Stub) RepairISCSIPortals(_ context.Context) (string, error) {
 	return "checked 0 discovery portals; none was pinned to a missing address (stub)", nil
 }
 
-func (s *Stub) PruneISCSIPortals(_ context.Context, _ []string) (string, error) {
+func (s *Stub) PruneISCSIPortals(_ context.Context, _, _ []string) (string, error) {
 	return "every discovery portal on this host is declared; nothing to prune (stub)", nil
 }
 

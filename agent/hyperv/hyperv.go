@@ -693,7 +693,7 @@ type Interface interface {
 	// left alone.
 	RepairISCSIPortals(ctx context.Context) (string, error)
 	// PruneISCSIPortals removes discovery portals the declared list does not name.
-	PruneISCSIPortals(ctx context.Context, declared []string) (string, error)
+	PruneISCSIPortals(ctx context.Context, declared, declaredTargets []string) (string, error)
 	// AdoptISCSIDiskWithContents adopts a LUN the reconcile refused because it
 	// already holds data: keep the existing volume, or wipe and format it.
 	AdoptISCSIDiskWithContents(ctx context.Context, a ISCSIAdoption) (string, error)

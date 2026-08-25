@@ -100,12 +100,32 @@ $sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue)
 $sessionErr = @()
 foreach ($s in $sessions) {
   $t = [string]$s.TargetNodeAddress
-  try { Unregister-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop }
+  # Piped for the same reason as the disconnect below, and because a session
+  # identifier enumerated a moment ago can already be gone — "Invalid Session Id"
+  # was reported alongside the case failure on HVNEW05.
+  try { $s | Unregister-IscsiSession -ErrorAction Stop }
   catch {
     $m = [string]$_.Exception.Message
-    if ($m -notmatch 'not persistent|does not exist|not found') { $sessionErr += ($t + ' (unregister): ' + $m.Trim()) }
+    # A session with no persistent entry has nothing to unregister, and neither
+    # has one whose entry the initiator has already dropped. Neither is a reason
+    # to stop, and reporting them buried the ONE error that mattered under noise.
+    if ($m -notmatch 'not persistent|does not exist|not found|Failed to remove persistent login') { $sessionErr += ($t + ' (unregister): ' + $m.Trim()) }
   }
-  try { Disconnect-IscsiTarget -NodeAddress $t -SessionIdentifier $s.SessionIdentifier -Confirm:$false -ErrorAction Stop }
+  # THE SESSION OBJECT IS PIPED. Do not name the target.
+  #
+  # -NodeAddress was given $s.TargetNodeAddress, and Get-IscsiSession echoes that
+  # name LOWERCASED while the initiator holds the array's own capitalisation —
+  # "iqn.2000-01.com.synology:Xpenology.default-target..." against
+  # "...xpenology.default-target...". iSCSI names are case-sensitive per RFC 3720,
+  # so the initiator found no such target and refused with "The parameter is
+  # incorrect", while the session it was looking at sat there connected.
+  # Observed on HVNEW04 and HVNEW05, 2026-08-25.
+  #
+  # This repo already knew names here are case-sensitive; it was recorded for the
+  # LOGIN path and the disconnect kept rebuilding the key anyway. Piping the
+  # object carries the identity the initiator itself assigned, which is the same
+  # remedy as Remove-IscsiTargetPortal and Remove-ClusterGroup.
+  try { $s | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop }
   catch { $sessionErr += ($t + ': ' + ([string]$_.Exception.Message).Trim()) }
 }
 

@@ -34,7 +34,7 @@ func prunePS(t *testing.T, result string) (*PowerShell, *string) {
 // Declaring nothing would mean removing everything, which is a different job.
 func TestPruningWithNothingDeclaredIsRefused(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={}`)
-	_, err := p.PruneISCSIPortals(context.Background(), nil)
+	_, err := p.PruneISCSIPortals(context.Background(), nil, []string{"iqn.x:t"})
 	if err == nil {
 		t.Fatal("pruning against an empty declared list must be refused")
 	}
@@ -51,7 +51,7 @@ func TestPruningWithNothingDeclaredIsRefused(t *testing.T) {
    for a person to resolve. Guessing either way drops a live storage path. */
 func TestAnUndeclaredPortalCarryingASessionIsRefusedNotRemoved(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={"removed":["10.0.60.54:3260"],"kept":["10.0.60.53:3260"],"failed":[],"left":["10.0.60.52"]}`)
-	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52", "10.0.61.52"})
+	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52", "10.0.61.52"}, []string{"iqn.x:t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestAnUndeclaredPortalCarryingASessionIsRefusedNotRemoved(t *testing.T) {
 // A declared portal is never a candidate, whatever else is true of it.
 func TestDeclaredPortalsAreNeverTouched(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={"removed":[],"kept":[],"failed":[],"left":["10.0.60.52"]}`)
-	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52", "10.0.61.52:3260"})
+	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52", "10.0.61.52:3260"}, []string{"iqn.x:t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestDeclaredPortalsAreNeverTouched(t *testing.T) {
 
 func TestAPortalThatWillNotGoIsAFailure(t *testing.T) {
 	p, _ := prunePS(t, `RESULT={"removed":[],"kept":[],"failed":["10.0.60.53:3260 - access denied"],"left":[]}`)
-	_, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"})
+	_, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"}, []string{"iqn.x:t"})
 	if err == nil || !strings.Contains(err.Error(), "access denied") {
 		t.Fatalf("the portal's own reason must reach the operator: %v", err)
 	}
@@ -105,8 +105,56 @@ func TestAPortalThatWillNotGoIsAFailure(t *testing.T) {
 // Discovery re-runs so the result is visible at once rather than next pass.
 func TestPruningRefreshesDiscovery(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={"removed":[],"kept":[],"failed":[],"left":[]}`)
-	_, _ = p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"})
+	_, _ = p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"}, []string{"iqn.x:t"})
 	if !strings.Contains(*seen, "Update-IscsiTarget") {
 		t.Error("discovery must be refreshed after a prune")
+	}
+}
+
+/* Stale FAVOURITE TARGETS are what actually drag.
+
+   Pruning discovery portals alone was not enough. A persistent login outlives
+   the portal it was made through: the initiator retries a target that no longer
+   exists, once a minute, for ever, and each one costs time on every pass. On
+   Secondary 2026-08-25 the iSCSI step took 3m43s of a 5m pass, and the operator
+   found the cause in iscsicpl — a pile of old entries — after this button had
+   already claimed to tidy up. */
+func TestPruningAlsoRemovesStaleFavouriteTargets(t *testing.T) {
+	p, seen := prunePS(t, `RESULT={"removed":[],"kept":[],"failed":[],"left":[],"persistRemoved":["iqn.old:dead via 10.0.60.53"],"persistKept":["iqn.live:x"]}`)
+	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"}, []string{"iqn.2000-01.com.synology:target-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Declared targets must reach the script, or every favourite target looks
+	// undeclared and they all go — which is Reset initiator, not this.
+	if !strings.Contains(*seen, "$declaredTargets = @('iqn.2000-01.com.synology:target-2')") {
+		t.Fatalf("the declared targets must be sent, lower-cased:\n%s", *seen)
+	}
+	if !strings.Contains(*seen, "if ($declaredTargets -contains $tn.ToLower()) { continue }") {
+		t.Error("a declared target must never be pruned")
+	}
+	// A persistent entry behind a LIVE session is what makes that session come
+	// back after a reboot. Removing it is how a node silently loses its storage.
+	if !strings.Contains(*seen, "if ($liveTargets -contains $tn.ToLower()) { $persistKept += $tn; continue }") {
+		t.Error("a favourite target with a live session must be kept")
+	}
+	if !strings.Contains(note, "removed 1 stale favourite target(s)") {
+		t.Errorf("what went must be reported: %q", note)
+	}
+	if !strings.Contains(note, "loses its storage at the next reboot") {
+		t.Errorf("what was kept must say why: %q", note)
+	}
+}
+
+// Without declared targets the prune would mean something different from what
+// its button says, so it is refused rather than defaulted.
+func TestPruningWithNoDeclaredTargetsIsRefused(t *testing.T) {
+	p, seen := prunePS(t, `RESULT={}`)
+	_, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"}, nil)
+	if err == nil {
+		t.Fatal("no declared targets must be refused, not treated as none-declared")
+	}
+	if *seen != "" {
+		t.Error("nothing may run on the host when the request is refused")
 	}
 }

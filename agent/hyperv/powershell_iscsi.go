@@ -21,7 +21,7 @@ type ISCSIState struct {
 	ServiceRunning bool
 	Portals        []string
 	Sessions       []ISCSISessionState
-	MPIOInstalled bool
+	MPIOInstalled  bool
 	// MPIOClaimed reports that MPIO is actually claiming iSCSI devices. Installed
 	// is not the same thing: the feature can be present with no bus type claimed,
 	// which protects nothing while looking configured.
@@ -31,7 +31,7 @@ type ISCSIState struct {
 	// host rather than derived here — deriving it from what a pass happened to do
 	// reported a host that had never restarted as protected.
 	MPIOEffective bool
-	Disks       []ISCSIDiskState
+	Disks         []ISCSIDiskState
 	// RebootRequired is set when installing MPIO asked for one. Multipath claim
 	// does not take effect until then, so a cluster is NOT safe to put multipath
 	// storage under until the node has restarted.
@@ -1160,12 +1160,20 @@ if ($sessions.Count -eq 0) {
 // removed. Either the spec is missing a portal the host really uses, or a
 // session exists nobody declared; both are for a person to resolve, and guessing
 // either way drops a live storage path.
-func (p *PowerShell) PruneISCSIPortals(ctx context.Context, declared []string) (string, error) {
+func (p *PowerShell) PruneISCSIPortals(ctx context.Context, declared, declaredTargets []string) (string, error) {
 	if len(declared) == 0 {
 		// Nothing declared means nothing to compare against. Pruning here would
 		// remove every portal on the host, which is ResetISCSIInitiator wearing a
 		// safer-sounding name.
 		return "", fmt.Errorf("prune iscsi portals: no portals are declared for this host, so there is nothing to prune against — declaring none would mean removing them all, which is what Reset initiator is for")
+	}
+	if len(declaredTargets) == 0 {
+		// Without them every favourite target on the host looks undeclared, and
+		// the prune below would remove the lot — each node losing its storage at
+		// the next reboot. Refused here as well as in the job dispatch: this is
+		// the layer that does the removing, and a guard that only lives in the
+		// caller is one a second caller will not have.
+		return "", fmt.Errorf("prune iscsi: no declared targets were given, so every favourite target on this host would look undeclared and be removed. That is what Reset initiator does; this only removes what the spec does not name")
 	}
 	var quoted []string
 	for _, d := range declared {
@@ -1175,8 +1183,20 @@ func (p *PowerShell) PruneISCSIPortals(ctx context.Context, declared []string) (
 		}
 		quoted = append(quoted, psQuote(h))
 	}
+	// The declared TARGETS, lower-cased for the comparison. Without them the
+	// persistent-login prune below would find $declaredTargets undefined, and
+	// "$null -contains x" is false — so it would remove every favourite target on
+	// the host, declared ones included, and each node would lose its storage at
+	// the next reboot. An empty list here is a refusal, not a default.
+	var tq []string
+	for _, t := range declaredTargets {
+		if v := strings.ToLower(strings.TrimSpace(t)); v != "" {
+			tq = append(tq, psQuote(v))
+		}
+	}
 	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $declared = @(%s)
+$declaredTargets = @(`+strings.Join(tq, ",")+`)
 $removed = @(); $kept = @(); $failed = @()
 # Which portals carry a live connection, taken from the sessions' own
 # connections — a session does not record the portal it was made through.
@@ -1204,10 +1224,55 @@ foreach ($h in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
     $failed += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
   }
 }
+# STALE FAVOURITE TARGETS, which are what actually drag.
+#
+# Pruning discovery portals alone was not enough. A persistent login outlives the
+# portal it was made through: the initiator keeps retrying a target that no
+# longer exists, once a minute, for ever, and every one costs time on every pass.
+# On Secondary 2026-08-25 the iSCSI step took 3m43s of a 5m pass, and the
+# operator found the cause in iscsicpl — a pile of old entries — after this
+# button had already claimed to have tidied up.
+#
+# Only targets the spec does not declare, and only where NO live session uses
+# them. A persistent entry behind a working session is what brings that session
+# back after a reboot; removing it is how a node silently loses its storage at
+# the next restart.
+$persistRemoved = @(); $persistKept = @()
+$liveTargets = @(Get-IscsiSession -ErrorAction SilentlyContinue | ForEach-Object { ([string]$_.TargetNodeAddress).ToLower() })
+$plisting = @()
+try { $plisting = @(& iscsicli ListPersistentTargets 2>&1 | ForEach-Object { [string]$_ }) } catch {}
+$pcur = @{}; $precords = @()
+foreach ($line in $plisting) {
+  $kv = $line -split '\s*:\s*', 2
+  if ($kv.Count -ne 2) { continue }
+  $k = $kv[0].Trim(); $v = $kv[1].Trim()
+  if ($k -eq 'Target Name') { if ($pcur.ContainsKey('target')) { $precords += ,$pcur }; $pcur = @{ target = $v } }
+  elseif ($k -eq 'Initiator Name') { $pcur['initiator'] = $v }
+  elseif ($k -eq 'Port Number') { $pcur['port'] = $v }
+  elseif ($k -like 'Address and Socket*') { $pcur['addr'] = $v }
+}
+if ($pcur.ContainsKey('target')) { $precords += ,$pcur }
+foreach ($rec in $precords) {
+  $tn = [string]$rec['target']
+  if ($declaredTargets -contains $tn.ToLower()) { continue }
+  if ($liveTargets -contains $tn.ToLower()) { $persistKept += $tn; continue }
+  $init = [string]$rec['initiator']; if (-not $init) { $init = 'ROOT' + [char]92 + 'ISCSIPRT' + [char]92 + '0000_0' }
+  $pport = [string]$rec['port']; if (-not $pport -or $pport -like '*Any*') { $pport = '*' }
+  $paddr = ''; $psock = '3260'
+  $pparts = @(([string]$rec['addr']) -split '\s+' | Where-Object { $_ })
+  if ($pparts.Count -ge 1) { $paddr = $pparts[0] }
+  if ($pparts.Count -ge 2) { $psock = $pparts[1] }
+  if (-not $paddr) { continue }
+  try {
+    & iscsicli RemovePersistentTarget $init $tn $pport $paddr $psock | Out-Null
+    if ($LASTEXITCODE -eq 0) { $persistRemoved += ($tn + ' via ' + $paddr) }
+  } catch {}
+}
+
 # Re-run discovery so what survived is visible at once rather than next pass.
 try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
 $left = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress })
-$res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $left }
+$res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $left; persistRemoved = $persistRemoved; persistKept = $persistKept }
 'RESULT=' + ($res | ConvertTo-Json -Compress -Depth 4)`, strings.Join(quoted, ","))
 
 	out, err := p.run(ctx, script)
@@ -1215,10 +1280,12 @@ $res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $l
 		return "", fmt.Errorf("prune iscsi portals: %w", err)
 	}
 	var res struct {
-		Removed []string `json:"removed"`
-		Kept    []string `json:"kept"`
-		Failed  []string `json:"failed"`
-		Left    []string `json:"left"`
+		Removed        []string `json:"removed"`
+		Kept           []string `json:"kept"`
+		PersistRemoved []string `json:"persistRemoved"`
+		PersistKept    []string `json:"persistKept"`
+		Failed         []string `json:"failed"`
+		Left           []string `json:"left"`
 	}
 	if err := json.Unmarshal([]byte(resultJSON(string(out))), &res); err != nil {
 		return "", fmt.Errorf("prune iscsi portals: could not read the result: %w", err)
@@ -1226,7 +1293,18 @@ $res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $l
 	if len(res.Failed) > 0 {
 		return "", fmt.Errorf("could not remove %s", strings.Join(res.Failed, "; "))
 	}
-	if len(res.Removed) == 0 && len(res.Kept) == 0 {
+	// Stale favourite targets are what actually drag: a persistent login outlives
+	// the portal it was made through and the initiator retries it once a minute
+	// for ever. Reported separately from portals because they are a different
+	// leftover with a different cost.
+	var extra []string
+	if len(res.PersistRemoved) > 0 {
+		extra = append(extra, "removed "+strconv.Itoa(len(res.PersistRemoved))+" stale favourite target(s): "+strings.Join(res.PersistRemoved, ", "))
+	}
+	if len(res.PersistKept) > 0 {
+		extra = append(extra, strings.Join(res.PersistKept, ", ")+" were left: undeclared, but a live session is using them, and removing the persistent entry is how a node loses its storage at the next reboot")
+	}
+	if len(res.Removed) == 0 && len(res.Kept) == 0 && len(extra) == 0 {
 		return "every discovery portal on this host is declared; nothing to prune", nil
 	}
 	note := ""
@@ -1241,6 +1319,13 @@ $res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $l
 			note = k
 		} else {
 			note += ". " + k
+		}
+	}
+	if len(extra) > 0 {
+		if note == "" {
+			note = strings.Join(extra, ". ")
+		} else {
+			note += ". " + strings.Join(extra, ". ")
 		}
 	}
 	return note, nil
