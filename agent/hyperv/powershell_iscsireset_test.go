@@ -155,37 +155,62 @@ func TestResetNamesAPersistentLoginItCouldNotRemove(t *testing.T) {
 	}
 }
 
-/* The port is part of the CIM key.
+/*
+The portal OBJECT is piped. The port is never named.
 
-   Remove-IscsiTargetPortal is a CDXML cmdlet over WMI and TargetPortalPortNumber
-   is a UInt16 there. Passing an Int32 fails the key lookup outright with "Type
-   mismatch for parameter" — so on HVNEW01 and HVNEW03 on 2026-08-24 every
-   session went and every portal survived, on both nodes, with the same message
-   twice. */
-func TestThePortalPortIsAUInt16(t *testing.T) {
+	Remove-IscsiTargetPortal has an InputObject parameter set fed straight from
+	Get-IscsiTargetPortal, and Microsoft's example removes a portal without
+	mentioning a port at all. -TargetPortalPortNumber failed with "Type mismatch
+	for parameter" whatever was put in it — [int] first, then [uint16], which was
+	a guess and the wrong way round: Remove declares Int32 while New declares
+	UInt16. The two do not agree, and the port was never the fixable part.
+
+	Same lesson as Remove-ClusterGroup -Name in RemoveReplicaBroker: with these
+	CDXML cmdlets, pipe the object rather than rebuilding its key. Every member of
+	Primary1 lost every session and kept every portal, twice, before this.
+*/
+func TestPortalRemovalUsesTheBindingThenThePipe(t *testing.T) {
 	var p PowerShell
 	var seen string
 	p.run = func(_ context.Context, script string) ([]byte, error) { seen = script; return []byte(`RESULT={}`), nil }
 	_, _ = p.ResetISCSIInitiator(context.Background())
 
-	if strings.Contains(seen, "[int]$pt.TargetPortalPortNumber") {
-		t.Fatal("an Int32 port fails the CIM key lookup — that is the Type mismatch")
+	// The source binding is part of what identifies a portal. One registered with
+	// -InitiatorPortalAddress is not found by target address alone: the removal
+	// reports "The specified portal was not found" and the portal survives.
+	if !strings.Contains(seen, "$rm['InitiatorPortalAddress'] = $ipa") {
+		t.Fatalf("a bound portal must be removed by its binding:\n%s", seen)
 	}
-	if !strings.Contains(seen, "[uint16]$pt.TargetPortalPortNumber") {
-		t.Errorf("the port must be cast to UInt16:\n%s", seen)
+	if !strings.Contains(seen, "Remove-IscsiTargetPortal @rm -Confirm:$false -ErrorAction Stop") {
+		t.Fatal("the removal must be splatted, so the binding is included or omitted per portal")
 	}
-	// The default too — a portal that cannot report its port still has to be
-	// removable.
-	if !strings.Contains(seen, "$pn = [uint16]3260") {
-		t.Error("the fallback port must be UInt16 as well")
+	// Piping carries the CIM key itself, and stays as the fallback.
+	if !strings.Contains(seen, "$pt | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop") {
+		t.Error("the piped form must remain as a fallback")
+	}
+	// The parameter that could never bind must not appear on a removal at all:
+	// Remove declares Int32 and New declares UInt16, and neither width worked.
+	if strings.Contains(seen, "Remove-IscsiTargetPortal -TargetPortalAddress $pa -TargetPortalPortNumber") {
+		t.Error("naming the port is what produced \"Type mismatch for parameter\"")
+	}
+	// What was tried reaches the operator: bound and unbound fail identically.
+	if !strings.Contains(seen, "' (via ' + $ipa + ')'") || !strings.Contains(seen, "' (unbound)'") {
+		t.Error("the failure must say whether the portal was bound, and to what")
+	}
+	// The FIRST reason is reported, not the fallback's — they are different faults.
+	if !strings.Contains(seen, "+ ' - ' + $first)") {
+		t.Error("the original reason must survive the fallback attempt")
 	}
 }
 
-/* A session that refuses to go used to leave no reason at all: both calls were
-   SilentlyContinue inside a bare catch, so the job reported "2 sessions are
-   still connected" and nothing about why. A teardown that cannot say what
-   stopped it sends an operator to the one place this exists to keep them out
-   of. */
+/*
+A session that refuses to go used to leave no reason at all: both calls were
+
+	SilentlyContinue inside a bare catch, so the job reported "2 sessions are
+	still connected" and nothing about why. A teardown that cannot say what
+	stopped it sends an operator to the one place this exists to keep them out
+	of.
+*/
 func TestASessionThatWillNotDisconnectSaysWhy(t *testing.T) {
 	var p PowerShell
 	var seen string

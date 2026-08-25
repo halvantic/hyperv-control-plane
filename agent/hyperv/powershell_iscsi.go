@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -53,6 +54,11 @@ type ISCSIDiskState struct {
 	LUN          int
 	Clustered    bool
 	Offline      bool
+	// Contents is what the LUN already carries, and ContentsKnown whether anyone
+	// looked. See the probe in the script: blank and unprobed read identically as
+	// "" and mean opposite things when the next step is a format.
+	Contents      string
+	ContentsKnown bool
 }
 
 // iscsiScript connects this node to the declared portals and targets and reports
@@ -77,6 +83,27 @@ $out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions
 $pathErrs = @()
 $persistErrs = @()
 $changed = $false
+
+# WHERE THE TIME WENT, inside this script.
+#
+# The pass timer names "iscsi" as the slow step and stops there. On Secondary,
+# 2026-08-25, that read "clusterReconcile 4m15s (iscsi 4m3s)" on both members —
+# enough to know the cluster never formed because the pass was cut off at five
+# minutes, and not enough to know which call was blocking. Several iSCSI cmdlets
+# can hang for minutes against a portal that answers on 3260 but does not
+# complete the operation, and a TCP probe cannot tell them apart.
+#
+# So the script times itself. Guessing which cmdlet is slow has been wrong
+# repeatedly today; asking it is cheap.
+$phases = [ordered]@{}
+$swTotal = [System.Diagnostics.Stopwatch]::StartNew()
+$swPhase = [System.Diagnostics.Stopwatch]::StartNew()
+function Mark-Phase([string]$n) {
+  $swPhase.Stop()
+  if ($phases.Contains($n)) { $phases[$n] = [int]$phases[$n] + [int]$swPhase.ElapsedMilliseconds }
+  else { $phases[$n] = [int]$swPhase.ElapsedMilliseconds }
+  $swPhase.Restart()
+}
 
 # The initiator service is set to start ON DEMAND by default on Windows Server,
 # which is not enough for a cluster member: the logins have to be re-established
@@ -239,31 +266,71 @@ if ($out.mpioInstalled) {
 		fmt.Fprintf(&b, "$initiatorFor[%s] = %s\n", psQuote(host), psQuote(addr))
 	}
 
-	// DISCOVERY NEEDS THE CREDENTIAL TOO.
+	// DISCOVERY IS TRIED WITHOUT CHAP FIRST.
 	//
-	// CHAP was applied at LOGIN and nowhere else. But an array configured to
-	// require it authenticates the DISCOVERY session as well, and an
-	// unauthenticated discovery is simply told about nothing — no error, no
-	// refusal, an empty target list. Ballast then reported "the array answered on
-	// every portal but advertised NO target to this host" and sent the operator to
-	// the array's allowed-initiator list, where nothing was wrong.
+	// iSCSI has two session types and they authenticate INDEPENDENTLY: the
+	// discovery (SendTargets) session, and the normal session that logs in to a
+	// target. An array can require CHAP on one, both, or neither.
 	//
-	// Found on the rig 2026-08-24 the only way it could be: the operator connected
-	// HVNEW01 by hand through iscsicpl, whose Discovery tab takes a CHAP secret,
-	// and it worked at once. Ballast's own diagnosis had been confidently pointing
-	// the other way.
+	// Synology — and most arrays — configure CHAP PER TARGET, so it applies to the
+	// normal session. Discovery is unauthenticated and masked by the target's
+	// allowed-initiator list instead. Sending CHAP to a discovery portal that does
+	// not expect it is not ignored: the array rejects it, and
+	// New-IscsiTargetPortal fails with "Authentication Failure". That is what all
+	// three members of Primary1 hit on 2026-08-25 — every portal refused, no
+	// targets discovered, nothing logged in.
 	//
-	// The two hosts that appeared to work were not evidence against it — they held
-	// sessions established earlier, so nothing ever asked them to discover again.
+	// This code previously sent CHAP on discovery unconditionally, and the reason
+	// recorded here was wrong. The evidence was an operator connecting a host by
+	// hand through iscsicpl with CHAP filled in — but that was the CONNECT dialog,
+	// which is the normal-session login, and the thing that actually fixed it was
+	// the initiator-address binding beside it. The operator later added a
+	// discovery portal with NO password and it worked immediately, which is the
+	// direct disproof.
+	//
+	// So: no CHAP on discovery, and fall back to CHAP only if the array refuses —
+	// an array that genuinely requires discovery CHAP then still works, and one
+	// that does not is never handed a credential it will reject.
 	if spec.CredentialSecret != "" {
 		portalAuth := "ONEWAYCHAP"
 		if spec.MutualCHAP {
 			portalAuth = "MUTUALCHAP"
 		}
-		b.WriteString("$portalAuth = @{ AuthenticationType = '" + portalAuth + "'; " +
-			"ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }\n")
+		auth := "@{ AuthenticationType = '" + portalAuth + "'; " +
+			"ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }\n"
+		// DiscoveryAndTarget presents the credential on the FIRST attempt, for an
+		// array that requires it or a policy that mandates it. Anything else holds
+		// it back — see CHAPScope.
+		if spec.CHAPScope.AuthenticatesDiscovery() {
+			b.WriteString("$portalAuthFirst = " + auth)
+			b.WriteString("$portalAuthFallback = @{}\n")
+		} else {
+			b.WriteString("$portalAuthFirst = @{}\n")
+			// TargetOnly is a statement that the array does not want CHAP on
+			// discovery, so retrying with it anyway would be the console overruling
+			// the operator. Only Auto earns the credential by being refused first.
+			if spec.CHAPScope.MayRetryDiscoveryWithCHAP() {
+				b.WriteString("$portalAuthFallback = " + auth)
+			} else {
+				b.WriteString("$portalAuthFallback = @{}\n")
+			}
+		}
+		// Whether a credential was supplied, for the empty-discovery diagnosis
+		// further down. It read $usedChap and NOTHING EVER SET IT — an undefined
+		// variable is $null, which is falsy, so that diagnosis told every host on
+		// every pass that the spec set no CHAP credential. Primary1 declared one
+		// throughout and the message sent the operator to add what was already
+		// there (2026-08-24). The other branch had never once been reached.
+		b.WriteString("$usedChap = $true\n")
+		// The same credential the login uses, for making an EXISTING session
+		// persistent. Register-IscsiSession writes the persistent entry with what
+		// it is handed, and an empty secret fails its own length check.
+		b.WriteString("$sessionChap = @{ ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }\n")
 	} else {
-		b.WriteString("$portalAuth = @{}\n")
+		b.WriteString("$portalAuthFirst = @{}\n")
+		b.WriteString("$portalAuthFallback = @{}\n")
+		b.WriteString("$usedChap = $false\n")
+		b.WriteString("$sessionChap = @{}\n")
 	}
 	b.WriteString(`# This host's own addresses, to judge whether a portal's source binding is
 # still real. Read once rather than per portal.
@@ -345,14 +412,35 @@ foreach ($p in $portals) {
         # shares that subnet, and then nothing is bound rather than guessed.
         $pa = @{}
         if ($initiatorFor.ContainsKey($addr)) { $pa['InitiatorPortalAddress'] = $initiatorFor[$addr] }
-        New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @portalAuth @pa -ErrorAction Stop | Out-Null
+        # UNAUTHENTICATED FIRST. Discovery and target login authenticate
+        # independently, and most arrays — Synology included — put CHAP on the
+        # target, not on discovery. Handing a credential to a discovery portal
+        # that does not want one is refused outright with "Authentication
+        # Failure", which is what stopped all three members of Primary1 on
+        # 2026-08-25.
+        New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @pa @portalAuthFirst -ErrorAction Stop | Out-Null
         $changed = $true
       } catch {
-        $portalErrs += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
+        $plain = ([string]$_.Exception.Message).Trim()
+        # An array that genuinely requires CHAP for DISCOVERY refuses the
+        # unauthenticated attempt. Only then is the credential offered, so both
+        # kinds of array work and neither is sent something it will reject.
+        if ($portalAuthFallback.Count -gt 0) {
+          try {
+            New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @pa @portalAuthFallback -ErrorAction Stop | Out-Null
+            $changed = $true
+          } catch {
+            $portalErrs += ($addr + ':' + $port + ' - ' + $plain +
+              ' (and again with the CHAP credential: ' + ([string]$_.Exception.Message).Trim() + ')')
+          }
+        } else {
+          $portalErrs += ($addr + ':' + $port + ' - ' + $plain)
+        }
       }
     }
   }
 }
+Mark-Phase 'portals'
 # Refresh so newly registered portals advertise their targets before we log in.
 try { Update-IscsiTarget -ErrorAction SilentlyContinue } catch {}
 $out.portals = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress + ':' + [string]$_.TargetPortalPortNumber })
@@ -493,7 +581,26 @@ foreach ($t in $wanted) {
       # its disks on the next restart" with nothing about WHY, and no way to
       # act: HVNEW03, 2026-08-24. A state that costs a node its storage at the
       # next reboot has to name its own cause.
-      try { Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop; $changed = $true }
+      # THE CREDENTIAL GOES WITH IT.
+      #
+      # Register-IscsiSession takes -ChapUsername and -ChapSecret, and writes the
+      # persistent entry with whatever it is given. Called without them it writes
+      # an EMPTY secret, and Windows validates that against its own length rule:
+      # "Target CHAP secret given is invalid. Maximum size of CHAP secret is 16
+      # bytes. Minimum size is 12 bytes if IPSec is not used." The complaint is
+      # about the nothing we passed, not about the operator's credential.
+      #
+      # It read as a bad secret, and it is not: HVNEW01 and HVNEW02 failed here
+      # on 2026-08-25 with a credential that logs in perfectly. HVNEW03 was clean
+      # for the reason that proves it — its session was made FRESH by
+      # Connect-IscsiTarget, which carries IsPersistent and CHAP together and so
+      # never needs this call. Deleting the discovery portal by hand fixed the
+      # other two for the same reason.
+      $reg = @{ SessionIdentifier = $s.SessionIdentifier }
+      # Matched to the session, so registering does not quietly change what it is.
+      if ($s.IsMultipathEnabled) { $reg['IsMultipathEnabled'] = $true }
+      $reg += $sessionChap
+      try { Register-IscsiSession @reg -ErrorAction Stop; $changed = $true }
       catch { $persistErrs += ([string]$s.TargetNodeAddress + ': ' + ([string]$_.Exception.Message).Trim()) }
     }
   }
@@ -583,6 +690,7 @@ if ($persistErrs.Count -gt 0) {
 `)
 
 	b.WriteString(`
+Mark-Phase 'logins'
 $out.sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue | Group-Object TargetNodeAddress | ForEach-Object {
   $first = $_.Group[0]
   [pscustomobject]@{
@@ -617,6 +725,30 @@ try {
 } catch {
   $diskReadFailed = ([string]$_.Exception.Message).Trim()
 }
+# Read-BallastDiskContents describes what a LUN already carries, in the words the
+# adoption refusal uses — one probe, one vocabulary, so the console and the
+# refusal cannot disagree about the same disk.
+function Read-BallastDiskContents($d) {
+  try {
+    if ([string]$d.PartitionStyle -eq 'RAW') { return '' }
+    $what = @()
+    foreach ($p in @(Get-Partition -DiskNumber ([int]$d.Number) -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' })) {
+      $v = Get-Volume -Partition $p -ErrorAction SilentlyContinue
+      if ($v -and $v.FileSystem) {
+        $label = [string]$v.FileSystemLabel
+        $used = [math]::Round(($v.Size - $v.SizeRemaining)/1GB,1)
+        $tot = [math]::Round($v.Size/1GB,1)
+        $what += ('a ' + [string]$v.FileSystem + ' volume' + $(if ($label) { ' labelled "' + $label + '"' } else { '' }) + ', ' + $used + 'GB used of ' + $tot + 'GB')
+      } elseif ($v) {
+        $what += 'an unformatted partition'
+      } else {
+        $what += ('a ' + [string]$p.Type + ' partition whose filesystem could not be read')
+      }
+    }
+    return ($what -join ' and ')
+  } catch { return '' }
+}
+
 $out.disks = @($rawDisks | Where-Object { $_.BusType -eq 'iSCSI' } | ForEach-Object {
   [pscustomobject]@{
     serialNumber = ([string]$_.SerialNumber).Trim()
@@ -626,6 +758,16 @@ $out.disks = @($rawDisks | Where-Object { $_.BusType -eq 'iSCSI' } | ForEach-Obj
     lun          = -1
     clustered    = [bool]$_.IsClustered
     offline      = [bool]$_.IsOffline
+    # WHAT IS ALREADY ON IT, so the console can say what adopting would destroy
+    # BEFORE an operator chooses — rather than after the reconcile has refused.
+    # The same probe the adoption itself does; it was computed there, used to
+    # refuse, and thrown away, so nothing upstream could ever show it.
+    #
+    # contentsKnown separates "blank" from "nobody looked". Both read as an empty
+    # string and they have opposite consequences for a wipe, which is the
+    # absent-is-not-zero trap in the one place it costs data.
+    contents      = Read-BallastDiskContents $_
+    contentsKnown = $true
   }
 })
 
@@ -657,6 +799,9 @@ if (-not $out.message) {
       ', is permitted to see it. Any cluster volume on those LUNs will be Offline until it is.'
   }
 }
+Mark-Phase 'report'
+$out.phases = $phases
+$out.elapsedMs = [int]$swTotal.ElapsedMilliseconds
 $out.changed = $changed
 [pscustomobject]$out | ConvertTo-Json -Compress -Depth 5
 `)
@@ -685,6 +830,11 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 		return st, OutcomeUnchanged, fmt.Errorf("ensure iscsi: %w", err)
 	}
 	var res struct {
+		// Where the time went inside the script, so a slow pass names the cmdlet
+		// rather than just the step. See the Mark-Phase notes above.
+		Phases    map[string]int `json:"phases"`
+		ElapsedMs int            `json:"elapsedMs"`
+
 		InitiatorIQN   string   `json:"initiatorIQN"`
 		ServiceRunning bool     `json:"serviceRunning"`
 		Portals        []string `json:"portals"`
@@ -716,6 +866,15 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 	st.InitiatorIQN = res.InitiatorIQN
 	st.ServiceRunning, st.Portals = res.ServiceRunning, res.Portals
 	st.MPIOInstalled, st.MPIOClaimed, st.RebootRequired, st.Message = res.MPIOInstalled, res.MPIOClaimed, res.RebootRequired, res.Message
+	// A slow pass has to name the cmdlet, not just the step. Appended only when
+	// this actually took long enough to matter — on a healthy host it is noise,
+	// and a message that always carries timings is one nobody reads.
+	if slow := slowISCSIPhases(res.Phases, res.ElapsedMs); slow != "" {
+		if st.Message != "" {
+			st.Message += ". "
+		}
+		st.Message += slow
+	}
 	st.MPIOEffective = res.MPIOEffective
 	for _, s := range res.Sessions {
 		st.Sessions = append(st.Sessions, ISCSISessionState{
@@ -773,7 +932,12 @@ foreach ($h in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
   # second case is a deliberate choice about which path reaches the array.
   if (-not $bound -or $bound -eq '0.0.0.0' -or ($myIPs -contains $bound)) { continue }
   try {
-    Remove-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -Confirm:$false -ErrorAction Stop
+    # Piped, and the port is not named: -TargetPortalPortNumber fails with "Type
+    # mismatch for parameter" on this cmdlet whatever is put in it. See the note
+    # in powershell_iscsireset.go. The re-add still names the port, because
+    # New-IscsiTargetPortal takes it happily (UInt16 there, Int32 here — they do
+    # not agree, which is half the reason the parameter was never usable).
+    $h | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop
     New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -ErrorAction Stop | Out-Null
     $fixed += ($addr + ':' + $port + ' (was pinned to ' + $bound + ')')
   } catch {
@@ -1033,7 +1197,8 @@ foreach ($h in @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)) {
     continue
   }
   try {
-    Remove-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port -Confirm:$false -ErrorAction Stop
+    # Piped; see powershell_iscsireset.go for why the port is never named.
+    $h | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop
     $removed += ($addr + ':' + $port)
   } catch {
     $failed += ($addr + ':' + $port + ' - ' + ([string]$_.Exception.Message).Trim())
@@ -1079,4 +1244,51 @@ $res = [ordered]@{ removed = $removed; kept = $kept; failed = $failed; left = $l
 		}
 	}
 	return note, nil
+}
+
+// slowISCSIPhaseThreshold is when the iSCSI step is worth explaining. A pass is
+// cut off at five minutes and the cluster reconcile runs after this, so a step
+// taking tens of seconds is already eating someone else's budget.
+const slowISCSIPhaseThreshold = 30000
+
+// slowISCSIPhases names where a slow iSCSI step spent its time.
+//
+// The pass timer stops at "iscsi 4m3s" — enough to know the cluster never
+// formed because the pass was cut off, and not enough to know which call
+// blocked. Several of these cmdlets hang for minutes against a portal that
+// answers on 3260 but does not complete the operation, and the TCP probe cannot
+// tell those apart. Guessing which one has been wrong repeatedly; the script now
+// times itself and this reports it.
+//
+// Returns "" for a pass fast enough not to care about.
+func slowISCSIPhases(phases map[string]int, elapsed int) string {
+	if elapsed < slowISCSIPhaseThreshold || len(phases) == 0 {
+		return ""
+	}
+	type kv struct {
+		name string
+		ms   int
+	}
+	var all []kv
+	for n, ms := range phases {
+		all = append(all, kv{n, ms})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].ms != all[j].ms {
+			return all[i].ms > all[j].ms
+		}
+		return all[i].name < all[j].name // stable: a message that reorders reads as a new one
+	})
+	var parts []string
+	for _, p := range all {
+		if p.ms < 1000 {
+			continue
+		}
+		parts = append(parts, p.name+" "+strconv.Itoa(p.ms/1000)+"s")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "this iSCSI step took " + strconv.Itoa(elapsed/1000) + "s, which is most of a reconcile pass and is why anything after it may not have run — " +
+		strings.Join(parts, ", ")
 }

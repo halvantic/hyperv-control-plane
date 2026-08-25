@@ -4193,7 +4193,13 @@ type ISCSIStorageSpec struct {
 	// Multiple paths without MPIO makes Windows present one LUN as several disks,
 	// and a cluster writing to two of them corrupts data — so it is not a
 	// preference that can be honoured when several portals are declared.
-	EnableMpio    *bool `protobuf:"varint,5,opt,name=enable_mpio,json=enableMpio,proto3,oneof" json:"enable_mpio,omitempty"`
+	EnableMpio *bool `protobuf:"varint,5,opt,name=enable_mpio,json=enableMpio,proto3,oneof" json:"enable_mpio,omitempty"`
+	// chap_scope says WHERE the credential is presented: discovery and target
+	// authenticate independently. Empty tries discovery unauthenticated and falls
+	// back to CHAP if refused, which is right without knowing what the array
+	// wants. "TargetOnly" never sends it on discovery; "DiscoveryAndTarget" sends
+	// it from the first attempt.
+	ChapScope     string `protobuf:"bytes,6,opt,name=chap_scope,json=chapScope,proto3" json:"chap_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4261,6 +4267,13 @@ func (x *ISCSIStorageSpec) GetEnableMpio() bool {
 		return *x.EnableMpio
 	}
 	return false
+}
+
+func (x *ISCSIStorageSpec) GetChapScope() string {
+	if x != nil {
+		return x.ChapScope
+	}
+	return ""
 }
 
 // ISCSIStatus is ONE NODE's observed iSCSI state. Per-node because that is how
@@ -4460,7 +4473,13 @@ type ISCSIDisk struct {
 	Clustered    bool   `protobuf:"varint,6,opt,name=clustered,proto3" json:"clustered,omitempty"`
 	// offline is NORMAL for a clustered disk on a non-owner and a problem on the
 	// owner, so it is reported rather than judged here.
-	Offline       bool `protobuf:"varint,7,opt,name=offline,proto3" json:"offline,omitempty"`
+	Offline bool `protobuf:"varint,7,opt,name=offline,proto3" json:"offline,omitempty"`
+	// contents describes what is ALREADY on the LUN, so the console can say what
+	// adopting it would destroy before an operator chooses. Empty means the disk
+	// is blank or was never probed — see ContentsKnown, because "nothing reported"
+	// and "nothing on it" have opposite consequences for a wipe.
+	Contents      string `protobuf:"bytes,8,opt,name=contents,proto3" json:"contents,omitempty"`
+	ContentsKnown bool   `protobuf:"varint,9,opt,name=contents_known,json=contentsKnown,proto3" json:"contents_known,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4540,6 +4559,20 @@ func (x *ISCSIDisk) GetClustered() bool {
 func (x *ISCSIDisk) GetOffline() bool {
 	if x != nil {
 		return x.Offline
+	}
+	return false
+}
+
+func (x *ISCSIDisk) GetContents() string {
+	if x != nil {
+		return x.Contents
+	}
+	return ""
+}
+
+func (x *ISCSIDisk) GetContentsKnown() bool {
+	if x != nil {
+		return x.ContentsKnown
 	}
 	return false
 }
@@ -6816,7 +6849,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04_lun\"|\n" +
 	"\x12ClusterStorageSpec\x122\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1e.ballast.v1.ClusterStorageKindR\x04kind\x122\n" +
-	"\x05iscsi\x18\x02 \x01(\v2\x1c.ballast.v1.ISCSIStorageSpecR\x05iscsi\"\xca\x01\n" +
+	"\x05iscsi\x18\x02 \x01(\v2\x1c.ballast.v1.ISCSIStorageSpecR\x05iscsi\"\xe9\x01\n" +
 	"\x10ISCSIStorageSpec\x12\x18\n" +
 	"\aportals\x18\x01 \x03(\tR\aportals\x12\x18\n" +
 	"\atargets\x18\x02 \x03(\tR\atargets\x12+\n" +
@@ -6824,7 +6857,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\vmutual_chap\x18\x04 \x01(\bR\n" +
 	"mutualChap\x12$\n" +
 	"\venable_mpio\x18\x05 \x01(\bH\x00R\n" +
-	"enableMpio\x88\x01\x01B\x0e\n" +
+	"enableMpio\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"chap_scope\x18\x06 \x01(\tR\tchapScopeB\x0e\n" +
 	"\f_enable_mpio\"\xd4\x02\n" +
 	"\vISCSIStatus\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12#\n" +
@@ -6843,7 +6878,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"persistent\x18\x03 \x01(\bR\n" +
 	"persistent\x12\x14\n" +
-	"\x05paths\x18\x04 \x01(\x05R\x05paths\"\xd0\x01\n" +
+	"\x05paths\x18\x04 \x01(\x05R\x05paths\"\x93\x02\n" +
 	"\tISCSIDisk\x12#\n" +
 	"\rserial_number\x18\x01 \x01(\tR\fserialNumber\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x1d\n" +
@@ -6853,7 +6888,9 @@ const file_ballast_proto_rawDesc = "" +
 	"target_iqn\x18\x04 \x01(\tR\ttargetIqn\x12\x10\n" +
 	"\x03lun\x18\x05 \x01(\x05R\x03lun\x12\x1c\n" +
 	"\tclustered\x18\x06 \x01(\bR\tclustered\x12\x18\n" +
-	"\aoffline\x18\a \x01(\bR\aoffline\"\xb6\x01\n" +
+	"\aoffline\x18\a \x01(\bR\aoffline\x12\x1a\n" +
+	"\bcontents\x18\b \x01(\tR\bcontents\x12%\n" +
+	"\x0econtents_known\x18\t \x01(\bR\rcontentsKnown\"\xb6\x01\n" +
 	"\vWitnessSpec\x12+\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
 	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +

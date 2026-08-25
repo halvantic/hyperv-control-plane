@@ -286,6 +286,8 @@ func sampleClusterStatus() types.ClusterStatus {
 			Disks: []types.ISCSIDisk{{
 				SerialNumber: "6001405abcdef", Number: 4, SizeBytes: 1 << 40,
 				TargetIQN: "iqn.2000-01.com.synology:nas.target-1", LUN: 1, Clustered: true, Offline: true,
+				Contents:      `a ReFS volume labelled "Cluster Disk 1", 7.6GB used of 999.9GB`,
+				ContentsKnown: true,
 			}},
 		}},
 		Conditions: []types.Condition{{Type: "Cluster", Status: true, Reason: "Formed", Message: "ok"}},
@@ -483,5 +485,52 @@ func TestVNICWithoutPurposeIsStillManagement(t *testing.T) {
 	}
 	if got.TeamMemberAdapter != "" || got.RDMA != nil {
 		t.Errorf("nothing may be invented for it: %+v", got)
+	}
+}
+
+// Where CHAP is presented must survive the wire.
+//
+// Discovery and target login authenticate independently, and an operator who
+// declares "DiscoveryAndTarget" has said something the array requires. A field
+// the proto does not carry round-trips as its zero value — silently turning
+// that back into Auto on every agent, with nothing anywhere reporting it.
+func TestCHAPScopeRoundTrips(t *testing.T) {
+	for _, want := range []types.CHAPScope{types.CHAPAuto, types.CHAPTargetOnly, types.CHAPDiscoveryAndTarget} {
+		in := &types.ISCSIStorageSpec{Portals: []string{"10.0.60.52"}, CredentialSecret: "chap", CHAPScope: want}
+		got := iscsiSpecFromProto(iscsiSpecToProto(in))
+		if got.CHAPScope != want {
+			t.Errorf("CHAPScope %q round-tripped as %q", want, got.CHAPScope)
+		}
+	}
+}
+
+/*
+What is already on a LUN must survive the wire.
+
+	A field the proto does not carry round-trips as its zero value, and here that
+	turns "holds a ReFS volume with 7.6GB on it" into "blank" on the way to the
+	console — in the one place that mistake ends with an operator wiping data.
+	ContentsKnown carries the difference between a blank disk and one nobody
+	probed, which read identically as "" before.
+*/
+func TestISCSIDiskContentsRoundTrips(t *testing.T) {
+	in := types.ISCSIStatus{Disks: []types.ISCSIDisk{
+		{SerialNumber: "8a1d8c9e", Contents: `a ReFS volume labelled "Cluster Disk 1", 7.6GB used of 999.9GB`, ContentsKnown: true},
+		{SerialNumber: "blank", Contents: "", ContentsKnown: true},
+		{SerialNumber: "unprobed"},
+	}}
+	got := iscsiStatusFromProto(iscsiStatusToProto(&in))
+	if got == nil || len(got.Disks) != 3 {
+		t.Fatalf("disks lost in transit: %+v", got)
+	}
+	if got.Disks[0].Contents != in.Disks[0].Contents || !got.Disks[0].ContentsKnown {
+		t.Errorf("contents did not survive: %+v", got.Disks[0])
+	}
+	// Blank-and-probed must not arrive looking like never-probed.
+	if got.Disks[1].Contents != "" || !got.Disks[1].ContentsKnown {
+		t.Errorf("a blank disk must stay known-blank: %+v", got.Disks[1])
+	}
+	if got.Disks[2].ContentsKnown {
+		t.Errorf("an unprobed disk must not claim to be known: %+v", got.Disks[2])
 	}
 }

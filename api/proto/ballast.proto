@@ -647,6 +647,12 @@ message ISCSIStorageSpec {
   // and a cluster writing to two of them corrupts data — so it is not a
   // preference that can be honoured when several portals are declared.
   optional bool enable_mpio = 5;
+  // chap_scope says WHERE the credential is presented: discovery and target
+  // authenticate independently. Empty tries discovery unauthenticated and falls
+  // back to CHAP if refused, which is right without knowing what the array
+  // wants. "TargetOnly" never sends it on discovery; "DiscoveryAndTarget" sends
+  // it from the first attempt.
+  string chap_scope = 6;
 }
 
 // ISCSIStatus is ONE NODE's observed iSCSI state. Per-node because that is how
@@ -689,6 +695,12 @@ message ISCSIDisk {
   // offline is NORMAL for a clustered disk on a non-owner and a problem on the
   // owner, so it is reported rather than judged here.
   bool offline = 7;
+  // contents describes what is ALREADY on the LUN, so the console can say what
+  // adopting it would destroy before an operator chooses. Empty means the disk
+  // is blank or was never probed — see ContentsKnown, because "nothing reported"
+  // and "nothing on it" have opposite consequences for a wipe.
+  string contents = 8;
+  bool contents_known = 9;
 }
 
 enum WitnessType {

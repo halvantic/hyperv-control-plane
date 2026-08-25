@@ -28,7 +28,7 @@ func (r *Reconciler) reconcileHostISCSI(ctx context.Context, desired types.Host,
 	if cm := desired.Spec.ClusterMembership; cm != nil && cm.ClusterName != "" {
 		return nil, []types.Condition{{
 			Type: "HostISCSI", Status: false, Reason: "Invalid",
-			Message: fmt.Sprintf("this host is a member of cluster %q, which declares its own iSCSI configuration, so the host-level one is not applied. Two authorities over one initiator would leave the node logged in to whichever was reconciled last — configure the array on the cluster, or remove this host from it.", cm.ClusterName),
+			Message:            fmt.Sprintf("this host is a member of cluster %q, which declares its own iSCSI configuration, so the host-level one is not applied. Two authorities over one initiator would leave the node logged in to whichever was reconciled last — configure the array on the cluster, or remove this host from it.", cm.ClusterName),
 			LastTransitionTime: r.now(),
 		}}
 	}
@@ -81,6 +81,7 @@ func (r *Reconciler) reconcileHostISCSI(ctx context.Context, desired types.Host,
 		status.Disks = append(status.Disks, types.ISCSIDisk{
 			SerialNumber: d.SerialNumber, Number: d.Number, SizeBytes: d.SizeBytes,
 			TargetIQN: d.TargetIQN, LUN: d.LUN, Clustered: d.Clustered, Offline: d.Offline,
+			Contents: d.Contents, ContentsKnown: d.ContentsKnown,
 		})
 	}
 

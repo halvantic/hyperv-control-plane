@@ -694,6 +694,9 @@ type Interface interface {
 	RepairISCSIPortals(ctx context.Context) (string, error)
 	// PruneISCSIPortals removes discovery portals the declared list does not name.
 	PruneISCSIPortals(ctx context.Context, declared []string) (string, error)
+	// AdoptISCSIDiskWithContents adopts a LUN the reconcile refused because it
+	// already holds data: keep the existing volume, or wipe and format it.
+	AdoptISCSIDiskWithContents(ctx context.Context, a ISCSIAdoption) (string, error)
 
 	// EnsureTestSwitch ensures the isolated switch a test failover runs inside
 	// exists on this host. switchType is "Private" or "Internal". Idempotent; it

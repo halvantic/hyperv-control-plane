@@ -1,6 +1,9 @@
 package hyperv
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -153,6 +156,48 @@ func TestDestroyClusterReportsWhyARemovalFailed(t *testing.T) {
 	for _, want := range []string{"groups remaining", "resources still online", "nodes: "} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the existing state report must be kept; missing %q", want)
+		}
+	}
+}
+
+/*
+A cluster object is never looked up by -Name from a PROPERTY or an INDEX.
+
+	Get-ClusterResource and Get-ClusterGroup declare -Name as a StringCollection.
+	A quoted literal binds fine, which is why most call sites here are safe. What
+	fails is a value arriving as a PSObject — $x.Name, $arr[0] — with "Cannot
+	convert 'Cluster Disk 1' to the type
+	System.Collections.Specialized.StringCollection".
+
+	Three times in this repo: Remove-ClusterGroup in RemoveReplicaBroker,
+	Ensure-ResourceOnline, and the LUN adoption on Primary1 2026-08-25 — where the
+	rename SUCCEEDED and the lookup after it threw, so a finished adoption was
+	reported to the operator as a failure.
+
+	Deliberately narrow: flagging the quoted-literal call sites too would cry wolf
+	on eight safe ones, and a test nobody trusts gets deleted.
+*/
+func TestNoClusterObjectIsLookedUpByNameFromAnObject(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := regexp.MustCompile(`Get-Cluster(Resource|Group) -Name \$[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z]|\[)`)
+	comment := regexp.MustCompile(`^\s*(#|//)`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, rerr := os.ReadFile(f)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if comment.MatchString(line) || !bad.MatchString(line) {
+				continue
+			}
+			t.Errorf("%s:%d: -Name binds to a StringCollection and throws on a PSObject — enumerate and filter, or cast to [string]:\n\t%s",
+				f, i+1, strings.TrimSpace(line))
 		}
 	}
 }

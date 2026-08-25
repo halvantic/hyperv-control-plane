@@ -110,9 +110,11 @@ func TestDiscoveryPortalsAreBoundToTheirOwnSubnet(t *testing.T) {
 	if strings.Index(s, "$initiatorFor = @{}") > strings.Index(s, "New-IscsiTargetPortal -TargetPortalAddress") {
 		t.Error("the table must be built before the portals are registered")
 	}
-	// CHAP still goes with it; discovery needs the credential too.
-	if !strings.Contains(call, "@portalAuth") {
-		t.Errorf("the discovery credential must survive: %s", call)
+	// No CHAP on the first attempt: discovery and target login authenticate
+	// independently, and an array that puts CHAP on the target refuses a
+	// credential it never asked for. See TestISCSIDiscoveryIsUnauthenticatedFirst.
+	if strings.Contains(call, "@portalAuthFallback") {
+		t.Errorf("the first discovery attempt must carry no credential: %s", call)
 	}
 }
 
@@ -161,5 +163,131 @@ func TestAFailureToMakeASessionPersistentKeepsItsReason(t *testing.T) {
 	}
 	if !strings.Contains(s, "if ($out.message) { $out.message = $out.message + '. ' + $note }") {
 		t.Error("it must not overwrite a login failure already being reported")
+	}
+}
+
+/* The empty-discovery diagnosis has to tell the truth about CHAP.
+
+   It branches on $usedChap, and NOTHING EVER SET IT. An undefined variable is
+   $null in PowerShell, which is falsy — so every host on every pass was told
+   "this spec sets NO CHAP credential", whether one was declared or not.
+   Primary1 declared one throughout and all three members were sent to add what
+   was already there (2026-08-24). The true branch had never been reached.
+
+   A diagnosis that states a fact about the spec must read the spec. */
+func TestTheCHAPDiagnosisReflectsTheSpec(t *testing.T) {
+	withChap := fannedSpec()
+	withChap.CredentialSecret = "ballast"
+	s := iscsiScript(withChap, true, true, nil)
+
+	if !strings.Contains(s, "$usedChap = $true") {
+		t.Fatalf("a spec WITH a credential must say so:\n%s", s)
+	}
+	if strings.Contains(s, "$usedChap = $false") {
+		t.Error("both branches must not be emitted")
+	}
+
+	s = iscsiScript(fannedSpec(), true, true, nil)
+	if !strings.Contains(s, "$usedChap = $false") {
+		t.Fatalf("a spec with no credential must say so:\n%s", s)
+	}
+
+	// And it must be SET before it is read, or it is $null either way.
+	set := strings.Index(s, "$usedChap = ")
+	read := strings.Index(s, "$(if ($usedChap)")
+	if set < 0 || read < 0 || set > read {
+		t.Fatal("$usedChap must be assigned before the diagnosis reads it")
+	}
+}
+
+/* Making an existing session persistent carries the credential.
+
+   Register-IscsiSession takes -ChapUsername and -ChapSecret and writes the
+   persistent entry with whatever it is handed. Called without them it writes an
+   EMPTY secret, and Windows checks that against its own rule: "Target CHAP
+   secret given is invalid. Maximum size of CHAP secret is 16 bytes. Minimum size
+   is 12 bytes if IPSec is not used." The complaint is about the nothing we
+   passed, and it reads exactly like a bad credential.
+
+   HVNEW01 and HVNEW02 failed here on 2026-08-25 with a credential that logs in
+   perfectly. HVNEW03 was clean for the reason that proves the diagnosis: its
+   session had been made FRESH by Connect-IscsiTarget, which carries
+   IsPersistent and CHAP together and never needs this call. */
+func TestMakingASessionPersistentCarriesTheCredential(t *testing.T) {
+	spec := fannedSpec()
+	spec.CredentialSecret = "nas-chap"
+	s := iscsiScript(spec, true, true, nil)
+
+	if !strings.Contains(s, "$sessionChap = @{ ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }") {
+		t.Fatalf("the credential must be available to the registration:\n%s", s)
+	}
+	if !strings.Contains(s, "$reg += $sessionChap") || !strings.Contains(s, "Register-IscsiSession @reg -ErrorAction Stop") {
+		t.Fatalf("the registration must actually carry it:\n%s", s)
+	}
+	// Bare, it writes an empty secret and fails its own length check.
+	if strings.Contains(s, "Register-IscsiSession -SessionIdentifier $s.SessionIdentifier -ErrorAction Stop") {
+		t.Error("registering without the credential is what produced the bogus length error")
+	}
+	// And registering must not silently change what the session IS.
+	if !strings.Contains(s, "if ($s.IsMultipathEnabled) { $reg['IsMultipathEnabled'] = $true }") {
+		t.Error("the session's multipath setting must be preserved across registration")
+	}
+
+	// An open target passes nothing, or the empty-secret failure comes back by
+	// another door.
+	if !strings.Contains(iscsiScript(fannedSpec(), true, true, nil), "$sessionChap = @{}") {
+		t.Error("with no credential the registration must carry none")
+	}
+}
+
+/* A slow iSCSI step has to name the cmdlet, not just the step.
+
+   The pass timer reported "clusterReconcile 4m15s (iscsi 4m3s)" on both members
+   of Secondary, 2026-08-25. Enough to know the cluster never formed because the
+   pass was cut off at five minutes; not enough to know which call blocked.
+   Several of these cmdlets hang for minutes against a portal that answers on
+   3260 but does not complete the operation, and the TCP probe cannot tell those
+   apart. Guessing which one has been wrong repeatedly, so the script times
+   itself. */
+func TestASlowISCSIStepNamesItsPhases(t *testing.T) {
+	got := slowISCSIPhases(map[string]int{"portals": 243000, "logins": 4000, "report": 200}, 247000)
+	if got == "" {
+		t.Fatal("a four-minute step must be explained")
+	}
+	if !strings.Contains(got, "portals 243s") {
+		t.Errorf("the slow phase must be named: %q", got)
+	}
+	// Ordered slowest first, and stable — a message that reorders between passes
+	// reads as a new one.
+	if strings.Index(got, "portals") > strings.Index(got, "logins") {
+		t.Error("phases must be ordered slowest first")
+	}
+	// Sub-second phases are noise.
+	if strings.Contains(got, "report") {
+		t.Error("a phase under a second must not be listed")
+	}
+	if !strings.Contains(got, "why anything after it may not have run") {
+		t.Error("it must say what a slow step costs, not just that it was slow")
+	}
+}
+
+// On a healthy host this is noise, and a message that always carries timings is
+// one nobody reads.
+func TestAFastISCSIStepSaysNothing(t *testing.T) {
+	if got := slowISCSIPhases(map[string]int{"portals": 900, "logins": 400}, 1400); got != "" {
+		t.Fatalf("a fast pass must not be explained: %q", got)
+	}
+	if got := slowISCSIPhases(nil, 90000); got != "" {
+		t.Error("no phases reported means nothing to say — an older agent must not produce an empty list")
+	}
+}
+
+// And the script must actually record them, or the report above has nothing.
+func TestTheScriptTimesItsOwnPhases(t *testing.T) {
+	s := iscsiScript(fannedSpec(), true, true, nil)
+	for _, want := range []string{"$phases = [ordered]@{}", "Mark-Phase 'portals'", "Mark-Phase 'logins'", "$out.phases = $phases", "$out.elapsedMs"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the script must record %q", want)
+		}
 	}
 }

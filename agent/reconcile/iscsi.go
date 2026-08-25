@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
@@ -52,7 +53,35 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 		}
 	}
 
-	st, out, err := r.hv.EnsureISCSI(ctx, *cfg, chapUser, chapSecret, true, r.storageAddresses())
+	// BOUNDED, because this step can otherwise eat the whole pass.
+	//
+	// Several iSCSI cmdlets hang for minutes against a portal that answers on
+	// 3260 but never completes the operation, and a TCP probe cannot tell those
+	// apart. On Secondary, 2026-08-25, iSCSI took 3m43s of a 5m pass on both
+	// members: the pass was cut off before the cluster was ever formed, so a
+	// cluster that needs no storage to exist could not come up because its
+	// storage was slow. Formation does not depend on iSCSI — only CSV adoption
+	// does — and one slow step must not decide whether the rest of the pass runs.
+	//
+	// The step is given its own budget and the pass CONTINUES when it is spent.
+	// That is the difference between "this cluster has a storage problem" and
+	// "this cluster does not exist", which is what the console showed.
+	//
+	// It also makes the script's own phase timings reachable: a cancelled script
+	// never emits them, so before this the slow step could not say what it was
+	// slow in.
+	ictx, icancel := context.WithTimeout(ctx, r.iscsiBudget())
+	st, out, err := r.hv.EnsureISCSI(ictx, *cfg, chapUser, chapSecret, true, r.storageAddresses())
+	icancel()
+	if err != nil && ictx.Err() != nil && ctx.Err() == nil {
+		// Ours, not the pass's. Named as the step giving up rather than as the
+		// host failing, because nothing has been established about the array.
+		return nil, []types.Condition{r.condition("ISCSIConnected", hyperv.OutcomeUnchanged,
+			fmt.Errorf("the iSCSI step did not finish within %s and was stopped so the rest of this pass could run. "+
+				"Something it called is blocking rather than failing — most often a portal that accepts a TCP connection but never completes discovery or login. "+
+				"The cluster itself does not need the array to form, so formation and everything after it continue; only the volumes on this array wait. "+
+				"Check the declared portals and targets still exist on the array", r.iscsiBudget()))}, false
+	}
 	conds := []types.Condition{r.condition("ISCSIConnected", out, err)}
 	if err != nil {
 		r.log.Error("ensure iscsi failed", "err", err)
@@ -79,6 +108,7 @@ func (r *Reconciler) reconcileISCSI(ctx context.Context, a ClusterAssignment, se
 		status.Disks = append(status.Disks, types.ISCSIDisk{
 			SerialNumber: d.SerialNumber, Number: d.Number, SizeBytes: d.SizeBytes,
 			TargetIQN: d.TargetIQN, LUN: d.LUN, Clustered: d.Clustered, Offline: d.Offline,
+			Contents: d.Contents, ContentsKnown: d.ContentsKnown,
 		})
 	}
 
@@ -155,3 +185,15 @@ func declaredISCSITarget(declared []string, target string) bool {
 // cluster pass has no Host of its own, and binding sessions to the interfaces
 // the routing table picks is what left three declared portals sharing one cable.
 func (r *Reconciler) storageAddresses() []string { return r.lastStorageAddresses }
+
+// iscsiStepBudget caps the iSCSI step so a blocking cmdlet cannot consume the
+// pass. Well inside the cycle limit, and well beyond a healthy run: the same
+// step on Primary1's members completes in seconds.
+const iscsiStepBudget = 90 * time.Second
+
+func (r *Reconciler) iscsiBudget() time.Duration {
+	if r.iscsiReadBudget > 0 {
+		return r.iscsiReadBudget
+	}
+	return iscsiStepBudget
+}

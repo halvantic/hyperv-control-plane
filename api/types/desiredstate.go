@@ -1500,6 +1500,16 @@ type ISCSIDisk struct {
 	// for a clustered disk on a non-owner and a problem on the owner, so it is
 	// reported rather than judged here.
 	Offline bool `json:"offline,omitempty"`
+	// Contents describes what is already on the LUN — "a ReFS volume labelled
+	// \"Cluster Disk 1\", 7.6GB used of 999.9GB" — so the console can say what
+	// adopting it would destroy BEFORE an operator chooses, instead of after the
+	// reconcile has refused it.
+	//
+	// ContentsKnown separates "the disk is blank" from "nobody looked". They read
+	// identically as an empty string and have opposite consequences for a wipe,
+	// which is the absent-is-not-zero trap in the one place it destroys data.
+	Contents      string `json:"contents,omitempty"`
+	ContentsKnown bool   `json:"contentsKnown,omitempty"`
 }
 
 // ClusterReplicaBrokerStatus is the observed Hyper-V Replica Broker: the role a
@@ -1554,6 +1564,31 @@ func (s ClusterSpec) StorageKind() ClusterStorageKind {
 	return ""
 }
 
+// CHAPScope selects which iSCSI sessions carry the CHAP credential.
+type CHAPScope string
+
+const (
+	// CHAPAuto tries discovery without CHAP and falls back to it if the array
+	// refuses. The default, and correct without knowing what the array wants.
+	CHAPAuto CHAPScope = ""
+	// CHAPTargetOnly never sends CHAP on discovery. Synology and most arrays.
+	CHAPTargetOnly CHAPScope = "TargetOnly"
+	// CHAPDiscoveryAndTarget authenticates the discovery session too, from the
+	// first attempt — for an array that requires it, or a policy that mandates it.
+	CHAPDiscoveryAndTarget CHAPScope = "DiscoveryAndTarget"
+)
+
+// AuthenticatesDiscovery reports whether the discovery session should carry the
+// credential on its FIRST attempt. Auto does not: it earns the credential by
+// being refused without one.
+func (c CHAPScope) AuthenticatesDiscovery() bool { return c == CHAPDiscoveryAndTarget }
+
+// MayRetryDiscoveryWithCHAP reports whether a refused unauthenticated discovery
+// should be retried with the credential. Only Auto does — an operator who has
+// said TargetOnly has stated the array does not want it, and retrying anyway
+// would be the console overruling them.
+func (c CHAPScope) MayRetryDiscoveryWithCHAP() bool { return c == CHAPAuto }
+
 // ISCSIStorageSpec connects every cluster member to an iSCSI array.
 //
 // Ballast's job here is ONLY the initiator side: start the service, register the
@@ -1588,6 +1623,25 @@ type ISCSIStorageSpec struct {
 	// because a mismatch presents as a login failure with no indication which
 	// direction failed.
 	MutualCHAP bool `json:"mutualCHAP,omitempty"`
+
+	// CHAPScope says WHERE the credential is presented.
+	//
+	// iSCSI has two session types and they authenticate independently: the
+	// discovery (SendTargets) session and the normal session that logs in to a
+	// target. An array can require CHAP on one, both or neither, and most —
+	// Synology, and TrueNAS by default — put it on the target and mask discovery
+	// by allowed-initiator list instead.
+	//
+	// Empty (CHAPAuto) is the default and needs no knowledge of the array: try
+	// discovery unauthenticated, and offer the credential only if that is
+	// refused. Both kinds of array then work and neither is sent something it
+	// will reject.
+	//
+	// The explicit values exist because "just try it" is not always free. Some
+	// arrays log an unauthenticated discovery attempt as an intrusion, or lock
+	// the initiator out after a few; and a shop whose policy mandates CHAP
+	// everywhere wants that DECLARED rather than inferred at runtime.
+	CHAPScope CHAPScope `json:"chapScope,omitempty"`
 
 	// EnableMPIO installs and configures Multipath I/O.
 	//
@@ -2130,6 +2184,19 @@ const (
 	// The agent REFUSES to remove an undeclared portal that is carrying a live
 	// session, and says so: that is either a spec missing a portal or a session
 	// nobody declared, and both are for a person to resolve.
+	// JobAdoptISCSIDisk adopts a LUN that already has contents, which the
+	// reconcile refuses on purpose: formatting a disk with data on it is a
+	// decision an operator makes once, about one disk, with the contents named to
+	// them — not a field in a spec that re-applies on every pass.
+	//
+	// Two modes, and the difference is everything. "keep" brings the EXISTING
+	// volume into the cluster untouched, which is what moving a CSV between
+	// clusters needs. "wipe" formats first, for contents that are finished with.
+	//
+	// The refusal message named "Wipe and adopt" long before any such action
+	// existed, so it sent operators looking for a button that was never built.
+	JobAdoptISCSIDisk = "AdoptISCSIDisk" // params: cluster, volume, mode (keep|wipe)
+
 	JobPruneISCSIPortals = "PruneISCSIPortals" // params: portals — comma-separated declared portals to keep
 	// JobDisconnectISCSITarget logs a host out of one target and clears its
 	// persistent entry. The reconcile is additive and will never do this: it

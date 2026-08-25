@@ -57,6 +57,17 @@ type Reconciler struct {
 	// nothing" and is the behaviour every host had before pinning existed.
 	lastStorageAddresses []string
 
+	// volumeSources is the declared LUN behind each cluster volume, from the most
+	// recent cluster pass. The ADOPT job needs it: the reconcile refuses a LUN
+	// that has contents, and the operator's decision arrives later as a job that
+	// names only the volume. Keeping the serial here rather than in the job is
+	// what stops the job becoming a second authority over which disk is meant.
+	volumeSources map[string]types.CSVSourceSpec
+
+	// iscsiReadBudget overrides the cap on the iSCSI step, for tests. Zero uses
+	// iscsiStepBudget.
+	iscsiReadBudget time.Duration
+
 	// transients tracks how long each condition has been failing with a known
 	// in-flight signature, so a settling operation reads as progressing but a
 	// stuck one still escalates to a real failure. See transient.go.
