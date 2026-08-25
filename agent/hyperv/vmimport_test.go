@@ -223,3 +223,72 @@ func firstLines(s string, n int) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+
+/* Compare-VM's real output, from the rig 2026-08-25 against a template on
+   SecDS1. Both findings came back under MessageId 40010.
+
+   That is the whole problem: 40010 is not "ISO", it is Windows' generic
+   file-not-found for VM media, and it covers a missing DVD image and a missing
+   BOOT DISK alike. Classifying on the code put "Virtual Hard Disk file not
+   found." in the ISO bucket, and the console told the operator "the VM imports
+   and runs without it". It does not — it imports and fails to boot.
+
+   The message was carrying the right answer the whole time. So the message
+   decides and the code is only ever a fallback. */
+func TestRealCompareVMOutputIsClassifiedByMessageNotCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     int32
+		msg      string
+		wantKind string
+		wantIn   string
+		mustNot  string
+	}{
+		{
+			name: "a missing virtual hard disk is not an ISO",
+			code: 40010, msg: "Virtual Hard Disk file not found.",
+			wantKind: "Storage", wantIn: "import but not boot",
+			// The exact sentence that was wrong. A missing boot disk is never
+			// something a VM "runs without".
+			mustNot: "runs without it",
+		},
+		{
+			name: "a missing switch, which came through correctly",
+			code: 40010, msg: "Could not find Ethernet switch 'DRSwitch'.",
+			wantKind: "Switch", wantIn: "Create the switch",
+		},
+		{
+			name: "a genuine missing ISO still reads as one",
+			code: 40010, msg: `The ISO at 'D:\iso\win.iso' could not be opened.`,
+			wantKind: "ISO", wantIn: "runs without it",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := explainIncompatibility(tt.code, tt.msg, true)
+			if got.Kind != tt.wantKind {
+				t.Fatalf("kind = %q, want %q — remedy given was:\n %s", got.Kind, tt.wantKind, got.Remedy)
+			}
+			if !strings.Contains(got.Remedy, tt.wantIn) {
+				t.Errorf("remedy did not say what to do:\n %s", got.Remedy)
+			}
+			if tt.mustNot != "" && strings.Contains(got.Remedy, tt.mustNot) {
+				t.Errorf("remedy still contains %q, which is false for this finding:\n %s", tt.mustNot, got.Remedy)
+			}
+		})
+	}
+}
+
+/* "File not found" with nothing naming WHAT gets no confident remedy. A wrong
+   remedy in an infra console gets followed, and this is the shape of message
+   most likely to tempt a guess. */
+func TestAnUnnamedMissingFileGetsNoConfidentRemedy(t *testing.T) {
+	got := explainIncompatibility(40010, "The file could not be found.", true)
+	if strings.Contains(got.Remedy, "runs without it") {
+		t.Errorf("an unidentified missing file was described as harmless:\n %s", got.Remedy)
+	}
+	if !strings.Contains(got.Remedy, "cannot tell") {
+		t.Errorf("the remedy does not admit which file it is:\n %s", got.Remedy)
+	}
+}
