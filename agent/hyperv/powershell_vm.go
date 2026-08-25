@@ -512,22 +512,47 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 	// Memory diff and apply: static unless dynamic memory is configured. A
 	// startup of 0 with no dynamic-memory block means "do not manage memory"
 	// (same adoption semantics as ProcessorCount above).
-	var memDiff, memApply string
+	/* Memory, split by what Hyper-V will actually accept on a RUNNING VM.
+
+	   It used to be one test gated wholly on $running, so every memory change
+	   waited for a power-off. That is stricter than the platform: with Dynamic
+	   Memory already enabled, Minimum and Maximum can be changed live — it is
+	   the whole point of dynamic memory — and only Startup, or turning dynamic
+	   memory on or off, needs the VM stopped.
+
+	   Deferring a live-capable change is not a safe conservatism. It leaves the
+	   VM Progressing with a "needs the VM off" message that is untrue, and asks
+	   an operator to schedule an outage to raise a ceiling Hyper-V would have
+	   moved while the guest ran. */
 	memScript := ""
 	if s.DynamicMemory == nil && s.MemoryStartupBytes == 0 {
 		// unmanaged memory: leave memScript empty
 	} else if s.DynamicMemory != nil {
-		memDiff = fmt.Sprintf("(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne %d) -or ($m.Minimum -ne %d) -or ($m.Maximum -ne %d)",
-			s.MemoryStartupBytes, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
-		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $true -StartupBytes %[2]d -MinimumBytes %[3]d -MaximumBytes %[4]d",
+		// Needs the VM off: enabling dynamic memory at all, or moving Startup.
+		needsOff := fmt.Sprintf("(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne %d)", s.MemoryStartupBytes)
+		offApply := fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $true -StartupBytes %[2]d -MinimumBytes %[3]d -MaximumBytes %[4]d",
 			name, s.MemoryStartupBytes, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
-	} else {
-		memDiff = fmt.Sprintf("$m.DynamicMemoryEnabled -or ($m.Startup -ne %d)", s.MemoryStartupBytes)
-		memApply = fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $false -StartupBytes %[2]d", name, s.MemoryStartupBytes)
-	}
-	if memDiff != "" {
+		// Applies live: the band, once dynamic memory is on and Startup agrees.
+		liveDiff := fmt.Sprintf("($m.Minimum -ne %d) -or ($m.Maximum -ne %d)", s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
+		liveApply := fmt.Sprintf("Set-VMMemory -VMName %[1]s -MinimumBytes %[2]d -MaximumBytes %[3]d",
+			name, s.DynamicMemory.MinBytes, s.DynamicMemory.MaxBytes)
 		memScript = fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
 if (%[2]s) {
+  # Startup, or dynamic memory itself: Hyper-V refuses these while running.
+  if ($running) { $pending = $true; $pendingWhat += 'memory' } else { %[3]s; $changed = $true }
+} elseif (%[4]s) {
+  # Just the band. Dynamic memory is already on and Startup matches, so this
+  # applies whether the VM is running or not — which is what dynamic memory is
+  # for. Naming the pending reason 'memory' here would be false.
+  %[5]s
+  $changed = $true
+}`, name, needsOff, offApply, liveDiff, liveApply)
+	} else {
+		memDiff := fmt.Sprintf("$m.DynamicMemoryEnabled -or ($m.Startup -ne %d)", s.MemoryStartupBytes)
+		memApply := fmt.Sprintf("Set-VMMemory -VMName %[1]s -DynamicMemoryEnabled $false -StartupBytes %[2]d", name, s.MemoryStartupBytes)
+		memScript = fmt.Sprintf(`$m = Get-VMMemory -VMName %[1]s
+if (%[2]s) {
+  # Static memory: the assignment is fixed at boot, so every change needs off.
   if ($running) { $pending = $true; $pendingWhat += 'memory' } else { %[3]s; $changed = $true }
 }`, name, memDiff, memApply)
 	}
