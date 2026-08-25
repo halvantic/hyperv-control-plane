@@ -1005,6 +1005,13 @@ func (s *Stub) PruneISCSIPortals(_ context.Context, _ []string) (string, error) 
 	return "every discovery portal on this host is declared; nothing to prune (stub)", nil
 }
 
+func (s *Stub) AdoptISCSIDiskWithContents(_ context.Context, a ISCSIAdoption) (string, error) {
+	if a.Wipe == a.Keep {
+		return "", fmt.Errorf("adopt %q: choose exactly one of keep or wipe", a.Name)
+	}
+	return "adopted " + a.Name + " (stub)", nil
+}
+
 func (s *Stub) RemoveTestSwitch(_ context.Context, _ string) error { return nil }
 
 // HealthProbe always passes on the stub. A gate that could never pass off-host

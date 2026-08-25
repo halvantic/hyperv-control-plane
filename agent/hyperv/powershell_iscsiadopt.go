@@ -24,6 +24,12 @@ type ISCSIAdoption struct {
 	Source    types.CSVSourceSpec
 	AsWitness bool
 	Wipe      bool
+	// Keep adopts the volume ALREADY on the LUN instead of formatting it — the
+	// case where the disk holds the data you want, typically a CSV moving between
+	// clusters. Mutually exclusive with Wipe in meaning, and neither is ever set
+	// from desired state: both are decisions an operator makes once, about one
+	// disk, with its contents named to them.
+	Keep bool
 	// FileSystem is NTFS or ReFS. ReFS is what Microsoft recommends under CSV for
 	// Hyper-V workloads, and is the default when this is empty.
 	FileSystem string
@@ -49,6 +55,11 @@ $name    = %[3]s
 $witness = %[4]s
 $wipe    = %[5]s
 $fs      = %[6]s
+# Adopt the volume that is ALREADY on the LUN, without formatting it. The steps
+# below already do the right thing when this is set — New-Partition is skipped
+# because a partition exists, Format-Volume because a filesystem does — so this
+# only has to get past the refusal.
+$keep    = %[7]s
 
 Import-Module FailoverClusters -ErrorAction SilentlyContinue
 
@@ -248,10 +259,13 @@ if ($disk.PartitionStyle -ne 'RAW') {
   }
 }
 if ($hasData -and -not $wipe -and -not $ours -and $unreadable) {
+  # NOT bypassable with $keep. "Adopt as is" is a promise to preserve what is
+  # there, and a filesystem that cannot be read is one nothing can promise about.
+  # Wiping stays available, because that is an explicit decision to lose it.
   Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) holds ' + ($what -join ' and ') + ', so Ballast cannot tell whether it is this volume''s own data or something else''s' + $(if ($wasOffline) { ' (the disk was offline; it has been brought online, so a retry may now read it)' } else { '' }) + '. It will not format a LUN it cannot read. Check the disk is online and healthy on this node, then reconcile again.')
 }
-if ($hasData -and -not $wipe -and -not $ours) {
-  Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) already contains ' + ($what -join ' and ') + '. Adopting it formats it, so Ballast will not do that to a disk with contents. If this is the right LUN and its contents are finished with, use "Wipe and adopt"; otherwise correct the serial or present a different LUN.')
+if ($hasData -and -not $wipe -and -not $keep -and -not $ours) {
+  Fail ('the LUN (serial ' + ([string]$disk.SerialNumber).Trim() + ', ' + [math]::Round($disk.Size/1GB,1) + 'GB) already contains ' + ($what -join ' and ') + '. Adopting it normally FORMATS it, so Ballast will not do that to a disk with contents. Two ways forward: "Adopt as is" brings the existing volume into the cluster untouched, which is what you want when this LUN already holds the data; "Wipe and adopt" formats it first, for when the contents are finished with. Otherwise correct the serial or present a different LUN.')
 }
 
 }
@@ -338,14 +352,25 @@ if (-not $clusDisk) {
     $why += ('this node sees it as disk ' + [string]$disk.Number + ', online=' + (-not $disk.IsOffline) + ', partition style ' + [string]$disk.PartitionStyle)
     Fail ('the disk was prepared but the cluster did not take it: ' + ($why -join '; ') + '. Check the same LUN is offline on the other members, or that it is not already held by another cluster.')
   }
-  $clusDisk = Get-ClusterResource -Name $new[0] -ErrorAction Stop
+  # Filtered, never -Name. Get-ClusterResource's -Name binds to a
+  # StringCollection and refuses a PSObject: "Cannot convert 'Cluster Disk 1' to
+  # the type System.Collections.Specialized.StringCollection". Ensure-ResourceOnline
+  # above documents the same trap, and Remove-ClusterGroup -Name taught it to
+  # this repo before that. Three times now — do not name-lookup a cluster object.
+  $clusDisk = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq [string]$new[0] })[0]
 }
 
 # Named outside the add, so a disk the cluster already holds is named too. Inside
 # it, a resumed adoption kept whatever the cluster called the resource — "Cluster
 # Disk 1" — and the operator's volume name appeared nowhere.
 if ($name -and [string]$clusDisk.Name -ne $name) {
-  try { $clusDisk.Name = $name; $clusDisk = Get-ClusterResource -Name $name -ErrorAction Stop } catch {}
+  # The object is renamed in place and KEPT. Re-fetching it by name is what
+  # failed on Primary1 2026-08-25 with mode=keep: the rename itself worked — the
+  # cluster showed the disk adopted — and the lookup afterwards threw, so a
+  # completed adoption was reported to the operator as a failure.
+  try { $clusDisk.Name = $name } catch {}
+  $found = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]
+  if ($found) { $clusDisk = $found }
 }
 
 if (-not $witness) {
@@ -394,6 +419,7 @@ func (p *PowerShell) AdoptISCSIDisk(ctx context.Context, a ISCSIAdoption) (seria
 		psBool(a.AsWitness),
 		psBool(a.Wipe),
 		psQuote(fs),
+		psBool(a.Keep),
 	)
 	raw, rerr := p.run(ctx, script)
 	if rerr != nil {
@@ -473,4 +499,40 @@ func (p *PowerShell) ensureDiskWitness(ctx context.Context, src types.CSVSourceS
 		return OutcomeUpdated, nil
 	}
 	return OutcomeUnchanged, nil
+}
+
+// AdoptISCSIDiskWithContents adopts a LUN the reconcile refused because it
+// already carries data.
+//
+// The reconcile will not do this, deliberately: it cannot tell a LUN whose
+// contents are finished with from one something else depends on, and it runs
+// every pass. So it refuses and names both remedies, and this is where they
+// live — operator-initiated, once, about one disk.
+//
+// It reports what it DID, because "adopted" is ambiguous here and the two modes
+// have opposite consequences for the data.
+func (p *PowerShell) AdoptISCSIDiskWithContents(ctx context.Context, a ISCSIAdoption) (string, error) {
+	if a.Wipe == a.Keep {
+		// Neither, or both. Formatting a LUN because a parameter was missing is
+		// not a mistake that can be walked back.
+		return "", fmt.Errorf("adopt %q: choose exactly one of keep or wipe — keeping the existing volume and formatting it are opposite acts, and defaulting to either would be guessing about data", a.Name)
+	}
+	serial, note, out, err := p.AdoptISCSIDisk(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	what := "adopted the existing volume on " + a.Name + " into the cluster without formatting it"
+	if a.Wipe {
+		what = "wiped " + a.Name + " and adopted it as a new volume"
+	}
+	if serial != "" {
+		what += " (serial " + serial + ")"
+	}
+	if note != "" {
+		what += ". " + note
+	}
+	if out == OutcomeUnchanged {
+		what += ". Nothing needed changing"
+	}
+	return what, nil
 }

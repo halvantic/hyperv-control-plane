@@ -1201,7 +1201,7 @@ foreach ($g in @($all | Group-Object { [string]$_.SwitchName + '/' + [string]$_.
     if (-not $na) { $na = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('vEthernet (' + [string]$d.Name + ')*') }) }
     foreach ($x in @($na)) {
       $ip = @(Get-NetIPAddress -InterfaceAlias ([string]$x.Name) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' })[0]
-      $aliases += ([string]$x.Name + (if ($ip) { ' = ' + [string]$ip.IPAddress } else { ' = no address' }))
+      $aliases += ([string]$x.Name + $(if ($ip) { ' = ' + [string]$ip.IPAddress } else { ' = no address' }))
     }
   }
   $dups += ([string]$first.Name + ' on ' + [string]$first.SwitchName + ': ' + (($aliases | Sort-Object -Unique) -join '; '))

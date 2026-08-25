@@ -874,6 +874,10 @@ func iscsiSpecToProto(s *types.ISCSIStorageSpec) *ISCSIStorageSpec {
 		// which is a third state. Flattened to false, a two-portal cluster would
 		// arrive asking for MPIO off — the configuration that corrupts data.
 		EnableMpio: s.EnableMPIO,
+		// Where the credential is presented. A field the proto does not carry
+		// round-trips as its zero value, and here that would silently turn a
+		// declared "DiscoveryAndTarget" back into Auto on every agent.
+		ChapScope: string(s.CHAPScope),
 	}
 }
 
@@ -885,6 +889,7 @@ func iscsiSpecFromProto(s *ISCSIStorageSpec) *types.ISCSIStorageSpec {
 		Portals: s.GetPortals(), Targets: s.GetTargets(),
 		CredentialSecret: s.GetCredentialSecret(), MutualCHAP: s.GetMutualChap(),
 		EnableMPIO: s.EnableMpio,
+		CHAPScope:  types.CHAPScope(s.GetChapScope()),
 	}
 }
 
@@ -992,6 +997,11 @@ func iscsiStatusToProto(s *types.ISCSIStatus) *ISCSIStatus {
 		out.Disks = append(out.Disks, &ISCSIDisk{
 			SerialNumber: d.SerialNumber, Number: int32(d.Number), SizeBytes: d.SizeBytes,
 			TargetIqn: d.TargetIQN, Lun: int32(d.LUN), Clustered: d.Clustered, Offline: d.Offline,
+			// What is already on the LUN, and whether anyone looked. A field the
+			// proto does not carry round-trips as its zero value — here that would
+			// turn "holds a ReFS volume" into "blank" on the way to the console,
+			// which is the one place that mistake destroys data.
+			Contents: d.Contents, ContentsKnown: d.ContentsKnown,
 		})
 	}
 	return out
@@ -1016,6 +1026,7 @@ func iscsiStatusFromProto(s *ISCSIStatus) *types.ISCSIStatus {
 		out.Disks = append(out.Disks, types.ISCSIDisk{
 			SerialNumber: d.GetSerialNumber(), Number: int(d.GetNumber()), SizeBytes: d.GetSizeBytes(),
 			TargetIQN: d.GetTargetIqn(), LUN: int(d.GetLun()), Clustered: d.GetClustered(), Offline: d.GetOffline(),
+			Contents: d.GetContents(), ContentsKnown: d.GetContentsKnown(),
 		})
 	}
 	return out

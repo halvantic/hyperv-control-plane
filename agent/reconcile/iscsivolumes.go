@@ -58,6 +58,12 @@ func (r *Reconciler) reconcileISCSIVolumes(ctx context.Context, a ClusterAssignm
 		}}, false, nil
 	}
 
+	// Remembered for the ADOPT job, which the operator runs after the reconcile
+	// has refused a LUN with contents on it. The job names the volume; the serial
+	// that identifies the disk stays the single declared one here, so the job
+	// cannot become a second authority over which disk is meant.
+	r.rememberVolumeSources(spec.Volumes)
+
 	for _, vol := range spec.Volumes {
 		if vol.Source == nil {
 			// Under iSCSI a volume without a source is not something Ballast can
@@ -154,4 +160,33 @@ func iscsiVolumeSummary(vols []types.CSVSpec) string {
 		names = append(names, v.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// rememberVolumeSources records the declared LUN behind each volume, so the
+// adopt job can find it by volume name alone.
+func (r *Reconciler) rememberVolumeSources(vols []types.CSVSpec) {
+	m := make(map[string]types.CSVSourceSpec, len(vols))
+	for _, v := range vols {
+		if v.Source != nil {
+			m[strings.ToLower(v.Name)] = *v.Source
+		}
+	}
+	r.volumeSources = m
+}
+
+// volumeSource returns the declared LUN for a volume the adopt job names.
+//
+// It refuses rather than guessing. A job that arrives for a volume this node has
+// no spec for is one where the cluster changed underneath the operator, and
+// adopting SOME disk because a name nearly matched is how the wrong LUN gets
+// formatted.
+func (r *Reconciler) volumeSource(name string) (types.CSVSourceSpec, error) {
+	src, ok := r.volumeSources[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return types.CSVSourceSpec{}, fmt.Errorf("this node holds no declared volume called %q, so there is no LUN to adopt — the cluster spec may have changed since the console offered this", name)
+	}
+	if strings.TrimSpace(src.SerialNumber) == "" && strings.TrimSpace(src.TargetIQN) == "" {
+		return types.CSVSourceSpec{}, fmt.Errorf("volume %q declares no serial and no target, so there is nothing that identifies which disk to adopt", name)
+	}
+	return src, nil
 }

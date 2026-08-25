@@ -147,8 +147,24 @@ func TestCHAPSecretsAreNotWrittenIntoTheScript(t *testing.T) {
 	if n := strings.Count(s, "$c['ChapSecret']"); n != 1 {
 		t.Errorf("the login must pass exactly one ChapSecret, got %d", n)
 	}
-	if n := strings.Count(s, "ChapSecret = $env:BALLAST_CHAP_SECRET }"); n != 1 {
-		t.Errorf("the discovery must pass exactly one ChapSecret, got %d", n)
+	// PER INVOCATION, not per script. There are three now — discovery, the
+	// discovery retry, and making a session persistent — and each carries the
+	// secret exactly once. A script-wide count was a proxy for the real rule and
+	// has already broken twice as invocations were added; count within each
+	// hashtable instead.
+	for _, splat := range []string{"$portalAuthFallback = @{", "$sessionChap = @{"} {
+		i := strings.Index(s, splat)
+		if i < 0 {
+			t.Errorf("expected splat %s", splat)
+			continue
+		}
+		line := s[i:]
+		if end := strings.IndexByte(line, '\n'); end > 0 {
+			line = line[:end]
+		}
+		if n := strings.Count(line, "ChapSecret"); n != 1 {
+			t.Errorf("%s must pass exactly one ChapSecret, got %d: %s", splat, n, line)
+		}
 	}
 }
 
@@ -165,17 +181,40 @@ func TestMutualCHAPSelectsTheRightAuthType(t *testing.T) {
 	if n := strings.Count(s, "$c['ChapSecret']"); n != 1 {
 		t.Errorf("mutual CHAP still takes one ChapSecret on the login, got %d", n)
 	}
-	if !strings.Contains(s, "$portalAuth = @{ AuthenticationType = 'MUTUALCHAP'") {
-		t.Error("mutual CHAP must reach discovery as well")
+	// Discovery gets it only as a FALLBACK, not on the first attempt — see
+	// TestISCSIDiscoveryIsUnauthenticatedFirst.
+	if !strings.Contains(s, "$portalAuthFallback = @{ AuthenticationType = 'MUTUALCHAP'") {
+		t.Error("mutual CHAP must survive into the discovery fallback")
 	}
 }
 
-// No credential means no CHAP flags at all — an open target must not be sent
-// empty credentials, which fails the login rather than connecting.
+/*
+No credential means no CHAP anywhere — an open target must not be sent empty
+
+	credentials, which fails the login rather than connecting.
+
+	Asserted on the ASSIGNMENTS, not on the flag names appearing somewhere in the
+	script. The old form searched for "-ChapSecret" across the whole text and so
+	matched a COMMENT that happened to name the parameter, which is the second
+	time today a test in this package read prose instead of code.
+*/
 func TestNoCredentialMeansNoCHAP(t *testing.T) {
 	s := iscsiScript(iscsiSpec(), false, true, nil)
-	if strings.Contains(s, "-AuthenticationType") || strings.Contains(s, "-ChapSecret") {
-		t.Fatal("an open target must be connected without CHAP flags")
+	for _, forbidden := range []string{
+		"$c['AuthenticationType']",
+		"$c['ChapSecret']",
+		"$c['ChapUsername']",
+	} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("an open target must be connected without CHAP: found %s", forbidden)
+		}
+	}
+	// The splats that carry it elsewhere must be empty too, or an empty secret
+	// reaches discovery or the persistence registration instead.
+	for _, empty := range []string{"$portalAuthFirst = @{}", "$portalAuthFallback = @{}", "$sessionChap = @{}"} {
+		if !strings.Contains(s, empty) {
+			t.Errorf("with no credential, %s must be empty", empty)
+		}
 	}
 }
 
@@ -679,48 +718,77 @@ func TestISCSIPortalIsProbedBeforeRegistering(t *testing.T) {
 	}
 }
 
-// Discovery needs the credential too, not only login.
-//
-// CHAP was applied to Connect-IscsiTarget and nowhere else. An array configured
-// to require it authenticates the DISCOVERY session as well, and an
-// unauthenticated discovery is told about nothing — no error, no refusal, an
-// empty target list. Ballast then reported "the array answered on every portal
-// but advertised NO target to this host" and sent the operator to the array's
-// allowed-initiator list, where nothing was wrong.
-//
-// Found on the rig 2026-08-24 the only way it could be: the operator connected
-// HVNEW01 by hand through iscsicpl, whose Discovery tab takes a CHAP secret, and
-// it worked at once. The two hosts that appeared healthy were not evidence
-// against it — they held sessions established earlier, so nothing ever asked
-// them to discover again.
-func TestISCSIDiscoveryCarriesTheCHAPCredential(t *testing.T) {
+/*
+Discovery is tried WITHOUT CHAP first.
+
+	iSCSI has two session types and they authenticate independently: the
+	discovery (SendTargets) session, and the normal session that logs in to a
+	target. Most arrays — Synology among them — put CHAP on the TARGET, so it
+	applies to the normal session, and mask discovery by allowed-initiator list
+	instead.
+
+	This code used to send CHAP on discovery whenever a credential was declared.
+	An array that does not want it does not ignore it: it refuses, and
+	New-IscsiTargetPortal fails with "Authentication Failure". All three members
+	of Primary1 hit that on 2026-08-25 — every portal refused, nothing
+	discovered, nothing logged in.
+
+	The belief came from an operator connecting a host by hand through iscsicpl
+	with CHAP filled in. That was the CONNECT dialog — the normal-session login —
+	and what actually fixed it was the initiator-address binding beside it. The
+	operator then added a discovery portal with NO password and it worked at
+	once, which is the direct disproof. These tests encoded the wrong belief and
+	passed the whole time.
+*/
+func TestISCSIDiscoveryIsUnauthenticatedFirst(t *testing.T) {
 	spec := iscsiSpec()
 	spec.CredentialSecret = "nas-chap"
 	s := iscsiScript(spec, true, true, nil)
 
-	if !strings.Contains(s, "$portalAuth = @{ AuthenticationType = 'ONEWAYCHAP'") {
-		t.Fatal("a spec with a credential must authenticate the discovery session")
+	// The first attempt's splat is EMPTY, so it carries the binding and nothing
+	// else. Asserted on the splat rather than the call text: the call always
+	// names it, and what matters is what is in it.
+	if !strings.Contains(s, "$portalAuthFirst = @{}") {
+		t.Fatalf("the first discovery attempt must carry no credential:\n%s", s)
 	}
-	if !strings.Contains(s, "ChapUsername = $env:BALLAST_CHAP_USER; ChapSecret = $env:BALLAST_CHAP_SECRET }") {
-		t.Error("the credential must reach discovery through the environment, as the login does")
+	// The credential is prepared, and held back for the retry.
+	if !strings.Contains(s, "$portalAuthFallback = @{ AuthenticationType = 'ONEWAYCHAP'") {
+		t.Error("the credential must still be available as a fallback")
 	}
-	// Splatted onto the registration, or it is built and never used.
-	if !strings.Contains(s, "New-IscsiTargetPortal -TargetPortalAddress $addr -TargetPortalPortNumber $port @portalAuth") {
-		t.Fatal("the portal registration must actually carry the credential")
+}
+
+// An array that GENUINELY requires discovery CHAP still works: the credential is
+// offered only after the unauthenticated attempt is refused, so both kinds of
+// array succeed and neither is sent something it will reject.
+func TestISCSIDiscoveryFallsBackToCHAPWhenRefused(t *testing.T) {
+	spec := iscsiSpec()
+	spec.CredentialSecret = "nas-chap"
+	s := iscsiScript(spec, true, true, nil)
+
+	if !strings.Contains(s, "if ($portalAuthFallback.Count -gt 0) {") {
+		t.Fatalf("the retry must be guarded on a credential existing:\n%s", s)
+	}
+	if !strings.Contains(s, "-TargetPortalPortNumber $port @pa @portalAuthFallback -ErrorAction Stop") {
+		t.Fatal("the retry must carry the credential")
+	}
+	// Both reasons reach the operator: an array wanting no CHAP and an array
+	// wanting a different one fail differently and must read differently.
+	if !strings.Contains(s, "(and again with the CHAP credential: ") {
+		t.Error("a failed retry must report both attempts, not just the second")
 	}
 
 	spec.MutualCHAP = true
 	if !strings.Contains(iscsiScript(spec, true, true, nil), "AuthenticationType = 'MUTUALCHAP'") {
-		t.Error("mutual CHAP must reach discovery too")
+		t.Error("mutual CHAP must survive into the fallback")
 	}
 }
 
-// No credential declared means no auth on discovery — an empty splat, so the
-// call is exactly what it was before.
-func TestISCSIDiscoveryIsUnauthenticatedWhenNoCredentialIsSet(t *testing.T) {
+// With no credential declared there is nothing to fall back to, and the single
+// attempt must be the plain one.
+func TestISCSIDiscoveryWithNoCredentialTriesOnce(t *testing.T) {
 	s := iscsiScript(iscsiSpec(), true, true, nil)
-	if !strings.Contains(s, "$portalAuth = @{}") {
-		t.Fatal("with no credential the discovery must carry none")
+	if !strings.Contains(s, "$portalAuthFallback = @{}") {
+		t.Fatal("with no credential there is no fallback")
 	}
 	if strings.Contains(s, "AuthenticationType = 'ONEWAYCHAP'") {
 		t.Error("no credential was declared, so none may be invented")
@@ -752,5 +820,54 @@ func TestISCSIEmptyDiscoveryNamesCHAPAsACause(t *testing.T) {
 	}
 	if !strings.Contains(withChap(false), "this spec sets NO CHAP credential") {
 		t.Error("a spec without one must say to add it if the array wants it")
+	}
+}
+
+/*
+Where the credential is presented, when the operator has said.
+
+	Auto is right without knowing the array, but "just try it" is not always
+	free: some arrays log an unauthenticated discovery attempt as an intrusion or
+	lock the initiator out after a few, and a shop whose policy mandates CHAP
+	everywhere wants it declared rather than inferred.
+*/
+func TestCHAPScopeDecidesWhereTheCredentialGoes(t *testing.T) {
+	base := iscsiSpec()
+	base.CredentialSecret = "nas-chap"
+
+	// DiscoveryAndTarget: on the first attempt, with nothing held back — there is
+	// no second attempt to make.
+	spec := base
+	spec.CHAPScope = types.CHAPDiscoveryAndTarget
+	s := iscsiScript(spec, true, true, nil)
+	if !strings.Contains(s, "$portalAuthFirst = @{ AuthenticationType = 'ONEWAYCHAP'") {
+		t.Fatalf("DiscoveryAndTarget must authenticate the first attempt:\n%s", s)
+	}
+	if !strings.Contains(s, "$portalAuthFallback = @{}") {
+		t.Error("nothing is held back when the credential is already on the first attempt")
+	}
+
+	// TargetOnly: never on discovery, and NOT retried with it either. The
+	// operator has stated the array does not want it; retrying anyway would be
+	// the console overruling them.
+	spec = base
+	spec.CHAPScope = types.CHAPTargetOnly
+	s = iscsiScript(spec, true, true, nil)
+	if strings.Contains(s, "$portalAuthFirst = @{ AuthenticationType") {
+		t.Error("TargetOnly must not authenticate discovery")
+	}
+	if strings.Contains(s, "$portalAuthFallback = @{ AuthenticationType") {
+		t.Fatalf("TargetOnly must not retry discovery with CHAP either:\n%s", s)
+	}
+	// The TARGET login still carries it — that is the whole point of the scope.
+	if !strings.Contains(s, "$c['AuthenticationType'] = 'ONEWAYCHAP'") {
+		t.Error("TargetOnly must still authenticate the target login")
+	}
+
+	// Auto: held back, offered only if refused.
+	spec = base
+	s = iscsiScript(spec, true, true, nil)
+	if !strings.Contains(s, "$portalAuthFirst = @{}") || !strings.Contains(s, "$portalAuthFallback = @{ AuthenticationType") {
+		t.Errorf("Auto must try plain then fall back:\n%s", s)
 	}
 }

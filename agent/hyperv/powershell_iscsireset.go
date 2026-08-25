@@ -156,14 +156,44 @@ $portals = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)
 $portalErr = @()
 foreach ($pt in $portals) {
   $pa = [string]$pt.TargetPortalAddress
-  # UInt16, not Int32. Remove-IscsiTargetPortal is a CDXML cmdlet over WMI and
-  # the port is part of the CIM key, so an Int32 fails the lookup outright with
-  # "Type mismatch for parameter". Observed on HVNEW01 and HVNEW03 2026-08-24:
-  # every session went, and every portal survived.
-  $pn = [uint16]3260
-  try { $pn = [uint16]$pt.TargetPortalPortNumber } catch {}
-  try { Remove-IscsiTargetPortal -TargetPortalAddress $pa -TargetPortalPortNumber $pn -Confirm:$false -ErrorAction Stop }
-  catch { $portalErr += ($pa + ' - ' + ([string]$_.Exception.Message).Trim()) }
+  # THE OBJECT IS PIPED. Do not name the port.
+  #
+  # Remove-IscsiTargetPortal has an InputObject parameter set that takes the
+  # portal straight from Get-IscsiTargetPortal, and Microsoft's own example
+  # removes a portal without mentioning a port at all. Passing
+  # -TargetPortalPortNumber failed with "Type mismatch for parameter" whatever
+  # was put in it: [int] first, then [uint16] — which was a guess, and the wrong
+  # way round, since Remove declares Int32 while New declares UInt16. The port
+  # was never the fixable part.
+  #
+  # Same lesson as Remove-ClusterGroup -Name in RemoveReplicaBroker: with these
+  # CDXML cmdlets, pipe the object rather than reconstructing its key. Observed
+  # on all three members of Primary1, 2026-08-25 — every session went and every
+  # portal survived, twice.
+  # THE SOURCE BINDING IS PART OF WHAT IDENTIFIES A PORTAL.
+  #
+  # Since discovery portals started being registered with
+  # -InitiatorPortalAddress, removing one by target address alone looks for a
+  # portal with NO binding, does not find it, and reports "The specified portal
+  # was not found" — while the bound portal sits there untouched. All three
+  # members of Primary1 reported exactly that on 2026-08-25, having previously
+  # reported "Type mismatch" for the same removal.
+  $rm = @{ TargetPortalAddress = $pa }
+  $ipa = [string]$pt.InitiatorPortalAddress
+  if ($ipa -and $ipa -ne '0.0.0.0') { $rm['InitiatorPortalAddress'] = $ipa }
+  try { Remove-IscsiTargetPortal @rm -Confirm:$false -ErrorAction Stop }
+  catch {
+    $first = ([string]$_.Exception.Message).Trim()
+    # Piping the object is the fallback: it carries the CIM key itself, so it
+    # covers a portal identified by something this does not reconstruct.
+    try { $pt | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop }
+    catch {
+      # What was actually tried, or the next person debugs it blind. A portal
+      # bound to a source address and one that is not fail identically
+      # otherwise.
+      $portalErr += ($pa + $(if ($ipa) { ' (via ' + $ipa + ')' } else { ' (unbound)' }) + ' - ' + $first)
+    }
+  }
 }
 
 # What is ACTUALLY left, read back rather than assumed. A teardown that reports

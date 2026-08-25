@@ -68,7 +68,10 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
     # problem, and the difference cost two rounds of guessing.
     $why = ''
     try {
-      $r = Get-ClusterResource -Name $name -ErrorAction SilentlyContinue
+      # Filtered rather than -Name: that parameter binds to a StringCollection
+      # and throws on a PSObject. Here it is inside a diagnosis, so the throw
+      # would replace the explanation with a cast error — the worst place for it.
+      $r = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]
       if ($r) {
         $why = ', resource state ' + [string]$r.State + ' on owner ' + [string]$r.OwnerNode
         if ([string]$r.State -ne 'Online') {

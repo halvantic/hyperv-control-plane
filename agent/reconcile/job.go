@@ -122,6 +122,25 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.DisconnectISCSITarget(ctx, p["target"])
 	case types.JobRepairISCSIPortals:
 		return r.hv.RepairISCSIPortals(ctx)
+	case types.JobAdoptISCSIDisk:
+		// The volume's source LUN comes from the CLUSTER spec, not the job: the job
+		// says which volume and what to do about its contents, and the serial that
+		// identifies the disk stays the single declared one. A job carrying its own
+		// serial would be a second authority over which disk this is.
+		vol, aerr := r.volumeSource(p["volume"])
+		if aerr != nil {
+			return "", aerr
+		}
+		mode := strings.ToLower(strings.TrimSpace(p["mode"]))
+		if mode != "keep" && mode != "wipe" {
+			return "", fmt.Errorf("adopt %q: mode must be keep or wipe, got %q", p["volume"], p["mode"])
+		}
+		return r.hv.AdoptISCSIDiskWithContents(ctx, hyperv.ISCSIAdoption{
+			Name:   p["volume"],
+			Source: vol,
+			Keep:   mode == "keep",
+			Wipe:   mode == "wipe",
+		})
 	case types.JobPruneISCSIPortals:
 		// The declared list rides in the job rather than being read from the
 		// cached spec: the operator is acting on what the console showed them,
