@@ -50,6 +50,17 @@ type VMImport struct {
 	// over. Only meaningful on a member, and refused with a plain reason on a
 	// host that is not one.
 	Cluster bool
+	// ApplyFixes resolves the findings Compare-VM reported that CAN be resolved
+	// — disconnecting an adapter whose switch is absent, emptying a DVD drive
+	// whose image is gone, removing a reference to a virtual disk that is not
+	// here. Compare-VM's report is a work list, not a verdict: each finding
+	// carries the offending object, and resolving them on the report is the
+	// documented way to import a VM that does not fit the host as it stands.
+	//
+	// Explicit, because two of those change what the VM IS. Removing a disk
+	// reference is why the console says such a VM imports without booting
+	// rather than calling it harmless.
+	ApplyFixes bool
 	// DiscardSavedState imports a saved VM as though it had been shut down.
 	// Explicit, because the cost is the guest's unsaved work — the same as
 	// pulling its power — and no default is right for somebody else's VM.
@@ -72,7 +83,8 @@ $path = ` + q(v.ConfigPath) + `
 $doCopy = $` + fmt.Sprint(v.Copy) + `
 $doCluster = $` + fmt.Sprint(v.Cluster) + `
 $discardSaved = $` + fmt.Sprint(v.DiscardSavedState) + `
-$out = [ordered]@{ name = ''; id = ''; imported = $false; clustered = $false; note = '' }
+$fix = $` + fmt.Sprint(v.ApplyFixes) + `
+$out = [ordered]@{ name = ''; id = ''; imported = $false; clustered = $false; note = ''; fixed = @() }
 
 if (-not (Test-Path -LiteralPath $path)) {
   throw "the configuration $path is not on this host's storage any more. It may have been imported already, or the volume may not be mounted here."
@@ -104,27 +116,79 @@ if ($busy -ne '' -and -not $doCopy) {
   throw ("a virtual disk in this VM's folder is open (" + $busy + "), which means another host is running it. Importing it here would give two hosts one set of disks. Shut the VM down where it is running, or remove that host's access to this storage, before importing.")
 }
 
-# REFUSAL 3: Compare-VM found something that stops it running here. Reported as
-# the finding, not as "import failed" — the whole point of checking first.
-if ($report.Incompatibilities.Count -gt 0) {
-  $msgs = @()
-  foreach ($i in $report.Incompatibilities) {
-    $msgs += ('[' + [string]$i.MessageId + '] ' + ([string]$i.Message).Trim())
+# THE FINDINGS. Compare-VM's report is not a verdict, it is a WORK LIST: each
+# incompatibility carries the offending object on $i.Source, and resolving them
+# on the report is the documented way to import a VM that does not fit the host
+# as it stands. Refusing outright was wrong — the console told the operator a
+# missing switch could be reconnected afterwards, left the row selectable, and
+# then the job refused the thing it had just offered.
+#
+# Nothing is resolved without being asked for. $fix is the operator ticking
+# "import anyway", having been shown exactly what each finding costs.
+$fixed = @()
+$unresolved = @()
+foreach ($i in @($report.Incompatibilities)) {
+  $m = ([string]$i.Message).Trim()
+  $id = [string]$i.MessageId
+  $src = $null
+  try { $src = $i.Source } catch {}
+
+  # SAVED STATE. Its own consent, because the cost is the guest's unsaved work
+  # rather than a configuration change.
+  if ($m -match 'saved state|restore') {
+    if ($discardSaved) {
+      try { $report.VM | Remove-VMSavedState -ErrorAction Stop; $fixed += 'discarded the saved state' }
+      catch { $unresolved += ('[' + $id + '] ' + $m) }
+    } else { $unresolved += ('[' + $id + '] ' + $m) }
+    continue
   }
-  # Saved state is the one an operator can decide to spend, so it is offered
-  # rather than refused — but only when they said so.
-  $onlySaved = $true
-  foreach ($i in $report.Incompatibilities) {
-    if (([string]$i.Message) -notmatch 'saved state|restore') { $onlySaved = $false }
-  }
-  if (-not ($onlySaved -and $discardSaved)) {
-    throw ("this VM cannot run on this host as configured: " + ($msgs -join ' | '))
+
+  if (-not $fix) { $unresolved += ('[' + $id + '] ' + $m); continue }
+
+  $type = ''
+  if ($src) { try { $type = [string]$src.GetType().Name } catch {} }
+  try {
+    switch -Regex ($type) {
+      'VMNetworkAdapter' {
+        # The switch does not exist here. Disconnecting leaves the adapter on
+        # the VM with nothing attached, which is exactly what the console said
+        # would happen and what "reconnect it afterwards" means.
+        Disconnect-VMNetworkAdapter -VMNetworkAdapter $src -ErrorAction Stop
+        $fixed += ('disconnected the network adapter that wanted ' + $m)
+      }
+      'VMDvdDrive' {
+        # A missing ISO. The drive stays and comes in empty.
+        Set-VMDvdDrive -VMDvdDrive $src -Path $null -ErrorAction Stop
+        $fixed += 'emptied the DVD drive whose image is not on this host'
+      }
+      'VMHardDiskDrive' {
+        # A missing VHDX. Removing the reference is the only way the VM can be
+        # registered at all, and it is why the console says the VM will import
+        # WITHOUT BOOTING rather than calling this harmless.
+        Remove-VMHardDiskDrive -VMHardDiskDrive $src -ErrorAction Stop
+        $fixed += ('removed the reference to a virtual disk that is not on this host (' + $m + ')')
+      }
+      default { $unresolved += ('[' + $id + '] ' + $m) }
+    }
+  } catch {
+    $unresolved += ('[' + $id + '] ' + $m + ' — could not be resolved: ' + ([string]$_.Exception.Message).Trim())
   }
 }
 
-if ($discardSaved) {
-  # Done through the report, so the import that follows carries the resolution.
-  try { $report.VM | Remove-VMSavedState -ErrorAction SilentlyContinue } catch {}
+if ($unresolved.Count -gt 0) {
+  throw ("this VM cannot run on this host as configured: " + ($unresolved -join ' | '))
+}
+
+# Re-check. Resolving one finding can expose another, and importing a report
+# that still carries incompatibilities fails with a message far less useful
+# than the ones above.
+if ($fixed.Count -gt 0) {
+  $report = Compare-VM -CompatibilityReport $report -ErrorAction Stop
+  if ($report.Incompatibilities.Count -gt 0) {
+    $rest = @()
+    foreach ($i in @($report.Incompatibilities)) { $rest += ('[' + [string]$i.MessageId + '] ' + ([string]$i.Message).Trim()) }
+    throw ("after applying the fixes this VM still cannot run here: " + ($rest -join ' | '))
+  }
 }
 
 if ($doCopy) {
@@ -136,6 +200,7 @@ if ($doCopy) {
   $new = Import-VM -CompatibilityReport $report -ErrorAction Stop
 }
 $out.imported = $true
+$out.fixed = $fixed
 if ($new) { $out.name = [string]$new.Name; $out.id = [string]$new.Id }
 
 if ($doCluster) {
@@ -173,11 +238,12 @@ func (p *PowerShell) ImportVM(ctx context.Context, v VMImport) (string, error) {
 		return "", fmt.Errorf("import %s: %w", v.ConfigPath, err)
 	}
 	var res struct {
-		Name      string `json:"name"`
-		ID        string `json:"id"`
-		Imported  bool   `json:"imported"`
-		Clustered bool   `json:"clustered"`
-		Note      string `json:"note"`
+		Name      string   `json:"name"`
+		ID        string   `json:"id"`
+		Imported  bool     `json:"imported"`
+		Clustered bool     `json:"clustered"`
+		Note      string   `json:"note"`
+		Fixed     []string `json:"fixed"`
 	}
 	body := bytes.TrimSpace(raw)
 	if i := bytes.LastIndex(body, []byte("RESULT=")); i >= 0 {
@@ -196,14 +262,26 @@ func (p *PowerShell) ImportVM(ctx context.Context, v VMImport) (string, error) {
 	if name == "" {
 		name = v.ConfigPath
 	}
+	/* What was CHANGED is part of the result, not a detail.
+
+	   Two of the fixes alter what the VM is — a disconnected adapter, a removed
+	   disk reference — and an import that quietly did that and reported plain
+	   success would be worse than the refusal it replaced. The operator
+	   consented to the change; they are also told it happened. */
+	var out string
 	switch {
-	case res.Note != "":
-		return "imported " + name + " — " + res.Note, nil
 	case res.Clustered:
-		return "imported " + name + " and added it as a clustered role", nil
+		out = "imported " + name + " and added it as a clustered role"
 	case v.Copy:
-		return "imported a copy of " + name + " as a new VM", nil
+		out = "imported a copy of " + name + " as a new VM"
 	default:
-		return "imported " + name + ", registered in place", nil
+		out = "imported " + name + ", registered in place"
 	}
+	if len(res.Fixed) > 0 {
+		out += " — " + strings.Join(res.Fixed, "; ")
+	}
+	if res.Note != "" {
+		out += " — " + res.Note
+	}
+	return out, nil
 }

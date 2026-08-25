@@ -292,3 +292,112 @@ func TestAnUnnamedMissingFileGetsNoConfidentRemedy(t *testing.T) {
 		t.Errorf("the remedy does not admit which file it is:\n %s", got.Remedy)
 	}
 }
+
+
+/* Seen on the rig 2026-08-25. The console said both findings were survivable —
+   "import and then reconnect the adapter", "importing anyway gives you the VM's
+   settings with no disk attached" — left the row selectable, and the job threw:
+
+     this VM cannot run on this host as configured:
+     [40010] Virtual Hard Disk file not found. |
+     [33012] Could not find Ethernet switch 'DRSwitch'.
+
+   Compare-VM's report is a WORK LIST, not a verdict: each incompatibility
+   carries the offending object on $i.Source and resolving them on the report is
+   the documented way to import a VM that does not fit the host as it stands.
+   Refusing outright made the console offer what the agent would not do. */
+
+func TestFindingsAreResolvedWhenTheOperatorAsks(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+
+	if !strings.Contains(s, "$fix = $true") {
+		t.Fatal("the fix flag did not reach the script")
+	}
+	// Each resolution acts on the report's own Source object, which is the only
+	// thing that identifies WHICH adapter or drive is at fault.
+	for _, want := range []string{
+		"Disconnect-VMNetworkAdapter -VMNetworkAdapter $src",
+		"Set-VMDvdDrive -VMDvdDrive $src -Path $null",
+		"Remove-VMHardDiskDrive -VMHardDiskDrive $src",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the script does not resolve findings with %q", want)
+		}
+	}
+}
+
+/* Nothing is changed without being asked. An import that quietly removed a disk
+   reference because the operator clicked Import would be far worse than the
+   refusal it replaced. */
+func TestNothingIsResolvedWithoutConsent(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`})
+	if !strings.Contains(s, "$fix = $false") {
+		t.Fatal("fixes would be applied without being asked for")
+	}
+	// With consent withheld every finding goes to the unresolved list, which is
+	// what refuses the import.
+	if !strings.Contains(s, "if (-not $fix) { $unresolved +=") {
+		t.Error("withholding consent does not send the findings to the refusal path")
+	}
+}
+
+/* A finding nothing knows how to resolve must still refuse. Silently importing
+   a VM that cannot run would look like success and fail at first boot. */
+func TestAnUnresolvableFindingStillRefuses(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "default { $unresolved += ('[' + $id + '] ' + $m) }") {
+		t.Error("a finding with no known resolution is not refused")
+	}
+	if !strings.Contains(s, "if ($unresolved.Count -gt 0) {") || !strings.Contains(s, "this VM cannot run on this host as configured") {
+		t.Error("the refusal path is gone entirely")
+	}
+}
+
+/* Resolving one finding can expose another, and importing a report that still
+   carries incompatibilities fails with a message far less useful than the ones
+   the script has just assembled. */
+func TestTheReportIsRecheckedAfterFixing(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "$report = Compare-VM -CompatibilityReport $report") {
+		t.Fatal("the report is not re-checked after the fixes are applied")
+	}
+	ri := strings.Index(s, "$report = Compare-VM -CompatibilityReport $report")
+	ii := strings.Index(s, "$new = Import-VM")
+	if ri > ii {
+		t.Fatalf("the re-check runs after the import (recheck at %d, import at %d)", ri, ii)
+	}
+	if !strings.Contains(s, "after applying the fixes this VM still cannot run here") {
+		t.Error("a report that is still incompatible after fixing does not say so")
+	}
+}
+
+/* Two of the fixes change what the VM IS. An import that made those changes and
+   reported plain success would be worse than the refusal. */
+func TestWhatWasChangedIsReported(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "$out.fixed = $fixed") {
+		t.Fatal("the script does not report what it changed")
+	}
+	for _, want := range []string{
+		"disconnected the network adapter",
+		"emptied the DVD drive",
+		"removed the reference to a virtual disk",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("no wording for %q", want)
+		}
+	}
+}
+
+/* Saved state keeps its own consent: the cost is the guest's unsaved work, not
+   a configuration change, so ApplyFixes must not spend it. */
+func TestApplyFixesDoesNotSpendSavedState(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true, DiscardSavedState: false})
+	if !strings.Contains(s, "$discardSaved = $false") {
+		t.Fatal("discardSavedState was not passed through")
+	}
+	// The saved-state branch is gated on $discardSaved alone, never on $fix.
+	if !strings.Contains(s, "if ($discardSaved) {\n      try { $report.VM | Remove-VMSavedState") {
+		t.Error("discarding saved state is not gated on its own consent")
+	}
+}

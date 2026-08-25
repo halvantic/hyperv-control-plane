@@ -184,6 +184,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			ConfigPath:        path,
 			Copy:              mode == "copy",
 			Cluster:           p["cluster"] == "true",
+			ApplyFixes:        p["applyFixes"] == "true",
 			DiscardSavedState: p["discardSavedState"] == "true",
 		})
 		if err != nil {

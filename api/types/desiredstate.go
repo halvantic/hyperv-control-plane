@@ -2354,7 +2354,7 @@ const (
 	// The import REFUSES a VM whose ID is already registered anywhere Ballast
 	// knows about, and one whose files are open. Two live claims on one set of
 	// VHDXs corrupts them, and that is not a warning to click through.
-	JobImportVM = "ImportVM" // params: path — the .vmcx; mode — register|copy; cluster — true to add a cluster role after
+	JobImportVM = "ImportVM" // params: path — the .vmcx; mode — register|copy; cluster — add a cluster role; applyFixes — resolve the resolvable Compare-VM findings; discardSavedState
 	// JobDisconnectISCSITarget logs a host out of one target and clears its
 	// persistent entry. The reconcile is additive and will never do this: it
 	// cannot tell a target the operator retired from one something else on the
