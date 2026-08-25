@@ -322,11 +322,26 @@ func explainIncompatibility(code int32, msg string, fixable bool) types.VMIncomp
 	c := types.VMIncompatibility{Code: code, Message: msg, Fixable: fixable, Kind: "Other"}
 	lower := strings.ToLower(msg)
 	switch {
-	case code == 33012 || strings.Contains(lower, "ethernet switch"):
+	// A MISSING VIRTUAL HARD DISK, first, and separated from the DVD case by
+	// what the message says rather than by the code.
+	//
+	// Seen on the rig 2026-08-25 against a real template: Compare-VM returned
+	// "Virtual Hard Disk file not found." under MessageId 40010 — the same code
+	// Windows uses for missing DVD media. Classifying on the code alone put a
+	// missing BOOT DISK in the ISO bucket, and the console told the operator
+	// "the VM imports and runs without it". It does not: it imports and fails
+	// to boot. That is the wrong-remedy-gets-followed hazard exactly, and the
+	// message was carrying the right answer the whole time.
+	case strings.Contains(lower, "virtual hard disk") || strings.Contains(lower, ".vhd"):
+		c.Kind = "Storage"
+		c.Remedy = "a virtual disk this VM references is not at the path in its configuration, so it will import but not boot. " +
+			"Usually only the configuration was copied and the VHDX was left behind — check the whole VM folder came across. " +
+			"Importing anyway gives you the VM's settings with no disk attached."
+	case strings.Contains(lower, "ethernet switch") || code == 33012:
 		c.Kind = "Switch"
 		c.Remedy = "this VM's network adapter wants a virtual switch this host does not have. " +
 			"Create the switch with the same name on this host, or import and then reconnect the adapter to an existing one."
-	case code == 40010 || strings.Contains(lower, ".iso"):
+	case strings.Contains(lower, ".iso") || strings.Contains(lower, "dvd"):
 		c.Kind = "ISO"
 		c.Remedy = "the ISO this VM's DVD drive points at is not on this host. The VM imports and runs without it; " +
 			"the drive comes in empty and can be pointed at the library afterwards."
@@ -338,10 +353,15 @@ func explainIncompatibility(code int32, msg string, fixable bool) types.VMIncomp
 		c.Kind = "Processor"
 		c.Remedy = "this host's processor does not offer a feature the VM was configured for. " +
 			"Enabling processor compatibility on the VM lets it start here at the cost of the newer instructions."
-	case strings.Contains(lower, "vhd") || strings.Contains(lower, "disk") || strings.Contains(lower, "path"):
+	// Deliberately last and deliberately vague-proof: "file not found" with
+	// nothing naming what the file IS gets no remedy rather than a guessed one.
+	// Both phrasings: Windows writes "file not found" in some messages and
+	// "could not be found" in others, and matching only the first left the
+	// second falling through to silence.
+	case strings.Contains(lower, "file") && (strings.Contains(lower, "not found") || strings.Contains(lower, "not be found")):
 		c.Kind = "Storage"
-		c.Remedy = "a virtual disk this VM references was not found at the path recorded in its configuration. " +
-			"Check the whole VM folder came across, not just the configuration."
+		c.Remedy = "a file this VM references is not on this host. Ballast cannot tell from Windows' message which one, " +
+			"so check the whole VM folder came across before importing."
 	}
 	return c
 }
