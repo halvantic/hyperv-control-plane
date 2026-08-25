@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,17 +26,57 @@ import (
 // and reported Failed, so a stuck host operation can never wedge the agent.
 const jobTimeout = 10 * time.Minute
 
-// jobTimeoutFor returns the cap for a job kind. Most finish in seconds, but
-// storage rebuilds/repairs and live migrations legitimately run for many minutes
-// (disk rebalance, VM+storage copy), so they get a longer cap rather than being
-// killed mid-operation and left in a half-applied state.
-func jobTimeoutFor(kind string) time.Duration {
-	switch kind {
+/*
+jobTimeoutFor returns the cap for a job. Most finish in seconds, but storage
+
+	rebuilds/repairs and live migrations legitimately run for many minutes (disk
+	rebalance, VM+storage copy), so they get a longer cap rather than being
+	killed mid-operation and left in a half-applied state.
+
+	It takes the JOB, not just the kind, because one kind is not one duration. A
+	template capture that only copies a disk and one that runs sysprep first are
+	the same job kind and an hour apart: sysprep shuts the guest down on its own
+	schedule and nothing can hurry it.
+
+	That distinction is why generalising captures failed. The capture script
+	waits SysprepDeadline for the guest to stop; this function did not recognise
+	the kind at all and gave it the ten-minute default. Sysprep ran, the guest
+	shut down exactly as promised, and the job was then cancelled and reported
+	Failed part-way through with no template produced. The budget now comes from
+	hyperv.CaptureBudget so the two cannot disagree again.
+*/
+func jobTimeoutFor(job types.Job) time.Duration {
+	switch job.Kind {
+	case types.JobVMCaptureTemplate:
+		return hyperv.CaptureBudget(job.Params["generalise"] == "true")
 	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM, types.JobFetchISO, types.JobVMExport:
 		return 30 * time.Minute
 	default:
 		return jobTimeout
 	}
+}
+
+// jobReportTimeout bounds the report of a job's TERMINAL state, which is sent on
+// its own context rather than the job's — see the failure path in runJobs.
+const jobReportTimeout = 30 * time.Second
+
+/*
+describeJobFailure says what actually happened when a job ends.
+
+	A job killed by its budget reports Go's own "context deadline exceeded",
+	which names neither the budget nor the operation and reads as an internal
+	error rather than as a long job that was cut short. For a capture that is
+	actively misleading: sysprep ran, the guest shut down as asked, and the
+	operator is shown a phrase that suggests nothing happened at all.
+*/
+func describeJobFailure(job types.Job, jctx context.Context, err error) string {
+	if jctx.Err() == nil || !errors.Is(jctx.Err(), context.DeadlineExceeded) {
+		return err.Error()
+	}
+	budget := jobTimeoutFor(job)
+	return fmt.Sprintf("%s ran longer than the %v this agent allows for it and was stopped. "+
+		"Anything it had already done on the host stands — check the host before running it again. (%v)",
+		job.Kind, budget, err)
 }
 
 // fullResyncEvery forces a full desired-state pull (ignoring the cached
@@ -326,9 +368,9 @@ type runner struct {
 	// lastMetrics is carried forward when a collection fails or times out, so a
 	// host whose storage is hanging reports its last real CPU and memory rather
 	// than zeros. See the collect site.
-	lastMetrics types.HostMetrics
-	lastIdentity   hyperv.HostIdentity
-	haveIdentity   bool
+	lastMetrics  types.HostMetrics
+	lastIdentity hyperv.HostIdentity
+	haveIdentity bool
 
 	// lastObservedVMs caches the host-wide VM inventory (roles/power/replication)
 	// for discovery/adoption and the operational VM view; refreshed on the
@@ -1205,7 +1247,7 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 				// without waiting for the next heartbeat.
 				r.requestNudge()
 			}()
-			jctx, cancel := context.WithTimeout(ctx, jobTimeoutFor(job.Kind))
+			jctx, cancel := context.WithTimeout(ctx, jobTimeoutFor(job))
 			defer cancel()
 			r.reportJob(jctx, client, job.ID, types.JobRunning, "")
 			// A long-running job (live migration) streams progress notes; surface
@@ -1215,8 +1257,24 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 			}
 			msg, jerr := r.reconciler.ExecuteJob(jctx, job, onProgress)
 			if jerr != nil {
+				/* Report the failure on a FRESH context, never the job's own.
+
+				   jctx is exactly what has just expired when a job hits its
+				   budget, so reporting the failure through it was a call on a
+				   dead context that could not succeed. The centre therefore
+				   never learned the job had ended: it stayed Running for ever,
+				   and a capture behind it stayed Capturing — which the template
+				   delete guard then refuses to clear, so the record could not be
+				   removed from the console either. The one case where reporting
+				   matters most was the one case it could not happen.
+
+				   WithoutCancel so a cycle ending underneath us does not take
+				   the report with it; a short budget of its own so this can
+				   never be what wedges the agent. */
+				rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), jobReportTimeout)
 				r.log.Error("job failed", "id", job.ID, "kind", job.Kind, "err", jerr)
-				r.reportJob(jctx, client, job.ID, types.JobFailed, jerr.Error())
+				r.reportJob(rctx, client, job.ID, types.JobFailed, describeJobFailure(job, jctx, jerr))
+				rcancel()
 				return
 			}
 			r.log.Info("job done", "id", job.ID, "kind", job.Kind, "result", msg)
