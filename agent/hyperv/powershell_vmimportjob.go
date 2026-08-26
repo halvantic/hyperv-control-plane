@@ -102,6 +102,7 @@ $out.id = [string]$vm.Id
 # a button is exactly where this goes wrong.
 $existing = @(Get-VM -ErrorAction SilentlyContinue | Where-Object { ([string]$_.Id) -eq ([string]$vm.Id) })
 if ($existing.Count -gt 0) {
+  Discard-BallastPlanned
   throw ("this host already has " + $vm.Name + " registered (id " + $vm.Id + "). Importing it again would give two registrations one set of virtual disks, which corrupts them. If the intent is a second copy, import with Copy, which writes new files and a new identity.")
 }
 
@@ -113,7 +114,24 @@ foreach ($f in @(Get-ChildItem -LiteralPath $vmDir -Recurse -Force -File -Includ
   catch { $busy = $f.Name; break }
 }
 if ($busy -ne '' -and -not $doCopy) {
+  Discard-BallastPlanned
   throw ("a virtual disk in this VM's folder is open (" + $busy + "), which means another host is running it. Importing it here would give two hosts one set of disks. Shut the VM down where it is running, or remove that host's access to this storage, before importing.")
+}
+
+# DISCARD THE PLANNED VM ON EVERY REFUSAL.
+#
+# Compare-VM does not merely inspect: it registers a PLANNED VM under
+# C:\ProgramData\Microsoft\Windows\Hyper-V\Planned Virtual Machines and hands
+# back a report bound to it. Import-VM consumes it. Throwing without consuming
+# it leaves it registered, holding the configuration open — and the next
+# Compare-VM on the same files then fails with "the process cannot access the
+# file because it is being used by another process", which reads as another
+# host running the VM when it is this host's own leftover.
+#
+# Seen on the rig 2026-08-26: TestPillVM reported exactly that after an earlier
+# refused import of the same volume.
+function Discard-BallastPlanned {
+  try { if ($report -and $report.VM) { Remove-VM -VM $report.VM -Force -ErrorAction SilentlyContinue | Out-Null } } catch {}
 }
 
 # THE FINDINGS. Compare-VM's report is not a verdict, it is a WORK LIST: each
@@ -143,32 +161,55 @@ foreach ($i in @($report.Incompatibilities)) {
     continue
   }
 
-  if (-not $fix) { $unresolved += ('[' + $id + '] ' + $m); continue }
+  if (-not $fix) {
+    $unresolved += ('[' + $id + '] ' + $m + ' - this can be resolved on import, but that was not asked for.')
+    continue
+  }
 
   $type = ''
   if ($src) { try { $type = [string]$src.GetType().Name } catch {} }
   try {
+    # MATCHED ON THE TYPE THE REPORT HANDS BACK, not on a name built from the
+    # cmdlet noun.
+    #
+    # The first version tested 'VMHardDiskDrive' and 'VMDvdDrive', invented by
+    # prefixing VM to Remove-VMHardDiskDrive and Set-VMDvdDrive. Hyper-V's
+    # actual types are Microsoft.HyperV.PowerShell.HardDiskDrive and .DvdDrive —
+    # only the network adapter really is VMNetworkAdapter. So on the rig the
+    # switch finding resolved and the missing disk fell to default, and the
+    # import refused a VM the operator had just consented to fix.
+    #
+    # Constructing an identifier instead of reading one, again. The patterns are
+    # now the part both spellings share.
     switch -Regex ($type) {
-      'VMNetworkAdapter' {
+      'NetworkAdapter' {
         # The switch does not exist here. Disconnecting leaves the adapter on
         # the VM with nothing attached, which is exactly what the console said
         # would happen and what "reconnect it afterwards" means.
         Disconnect-VMNetworkAdapter -VMNetworkAdapter $src -ErrorAction Stop
         $fixed += ('disconnected the network adapter that wanted ' + $m)
       }
-      'VMDvdDrive' {
+      'DvdDrive' {
         # A missing ISO. The drive stays and comes in empty.
         Set-VMDvdDrive -VMDvdDrive $src -Path $null -ErrorAction Stop
         $fixed += 'emptied the DVD drive whose image is not on this host'
       }
-      'VMHardDiskDrive' {
+      'HardDiskDrive' {
         # A missing VHDX. Removing the reference is the only way the VM can be
         # registered at all, and it is why the console says the VM will import
         # WITHOUT BOOTING rather than calling this harmless.
         Remove-VMHardDiskDrive -VMHardDiskDrive $src -ErrorAction Stop
         $fixed += ('removed the reference to a virtual disk that is not on this host (' + $m + ')')
       }
-      default { $unresolved += ('[' + $id + '] ' + $m) }
+      default {
+        # Name the type. A refusal that says only "cannot run as configured"
+        # after the operator ticked "apply these changes" does not say whether
+        # the fix was refused, attempted, or never understood — and the type is
+        # the one fact that tells whoever reads this what to add here.
+        $seen = 'no object'
+        if ($type) { $seen = 'a ' + $type }
+        $unresolved += ('[' + $id + '] ' + $m + ' - Ballast does not know how to resolve this: the report offered ' + $seen + '.')
+      }
     }
   } catch {
     $unresolved += ('[' + $id + '] ' + $m + ' — could not be resolved: ' + ([string]$_.Exception.Message).Trim())
@@ -176,7 +217,15 @@ foreach ($i in @($report.Incompatibilities)) {
 }
 
 if ($unresolved.Count -gt 0) {
-  throw ("this VM cannot run on this host as configured: " + ($unresolved -join ' | '))
+  # Say what DID get resolved alongside what did not. Listing only the failure
+  # made a partial success read as nothing having happened, and on the rig it
+  # hid the fact that the network fix had worked and only the disk had not.
+  $head = 'this VM cannot run on this host as configured'
+  if ($fixed.Count -gt 0) {
+    $head = ('resolved ' + ($fixed -join '; ') + ', but this VM still cannot run on this host')
+  }
+  Discard-BallastPlanned
+  throw ($head + ': ' + ($unresolved -join ' | '))
 }
 
 # Re-check. Resolving one finding can expose another, and importing a report
@@ -187,6 +236,7 @@ if ($fixed.Count -gt 0) {
   if ($report.Incompatibilities.Count -gt 0) {
     $rest = @()
     foreach ($i in @($report.Incompatibilities)) { $rest += ('[' + [string]$i.MessageId + '] ' + ([string]$i.Message).Trim()) }
+    Discard-BallastPlanned
     throw ("after applying the fixes this VM still cannot run here: " + ($rest -join ' | '))
   }
 }
