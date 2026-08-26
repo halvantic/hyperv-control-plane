@@ -334,8 +334,8 @@ func TestNothingIsResolvedWithoutConsent(t *testing.T) {
 	}
 	// With consent withheld every finding goes to the unresolved list, which is
 	// what refuses the import.
-	if !strings.Contains(s, "if (-not $fix) { $unresolved +=") {
-		t.Error("withholding consent does not send the findings to the refusal path")
+	if !strings.Contains(s, "if (-not $fix) {") || !strings.Contains(s, "this can be resolved on import, but that was not asked for") {
+		t.Error("withholding consent does not send the findings to the refusal path, saying so")
 	}
 }
 
@@ -343,7 +343,7 @@ func TestNothingIsResolvedWithoutConsent(t *testing.T) {
    a VM that cannot run would look like success and fail at first boot. */
 func TestAnUnresolvableFindingStillRefuses(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
-	if !strings.Contains(s, "default { $unresolved += ('[' + $id + '] ' + $m) }") {
+	if !strings.Contains(s, "Ballast does not know how to resolve this") {
 		t.Error("a finding with no known resolution is not refused")
 	}
 	if !strings.Contains(s, "if ($unresolved.Count -gt 0) {") || !strings.Contains(s, "this VM cannot run on this host as configured") {
@@ -397,5 +397,81 @@ func TestApplyFixesDoesNotSpendSavedState(t *testing.T) {
 	// The saved-state branch is gated on $discardSaved alone, never on $fix.
 	if !strings.Contains(s, "if ($discardSaved) {\n      try { $report.VM | Remove-VMSavedState") {
 		t.Error("discarding saved state is not gated on its own consent")
+	}
+}
+
+/* Seen on the rig 2026-08-26, importing the Template off SecDS1 with
+   applyFixes ticked:
+
+     this VM cannot run on this host as configured:
+     [40010] Virtual Hard Disk file not found.
+
+   The SWITCH finding (33012) had gone, so the resolution mechanism worked. Only
+   the disk failed — because the types were matched as 'VMHardDiskDrive' and
+   'VMDvdDrive', invented by prefixing VM to Remove-VMHardDiskDrive and
+   Set-VMDvdDrive. Hyper-V's actual types are
+   Microsoft.HyperV.PowerShell.HardDiskDrive and .DvdDrive; only the network
+   adapter really is VMNetworkAdapter, which is exactly why that one worked.
+
+   Constructing an identifier instead of reading one, in a new place. */
+
+func TestFindingsAreMatchedOnHyperVsRealTypeNames(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+
+	// The patterns must be the part BOTH spellings share, so neither the real
+	// type nor a prefixed one can miss.
+	for _, want := range []string{"'NetworkAdapter' {", "'DvdDrive' {", "'HardDiskDrive' {"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("type match %q is missing", want)
+		}
+	}
+	// The invented spellings must be gone: 'VMHardDiskDrive' as a case label
+	// matches nothing Hyper-V returns.
+	for _, bad := range []string{"'VMHardDiskDrive' {", "'VMDvdDrive' {"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("%s is still matched, and no Hyper-V object carries that type name", bad)
+		}
+	}
+}
+
+/* A refusal after the operator ticked "apply these changes" must say whether
+   the fix was refused, attempted, or never understood. "cannot run as
+   configured" alone says none of those. */
+func TestAnUnresolvableFindingNamesTheTypeItSaw(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "Ballast does not know how to resolve this: the report offered ") {
+		t.Fatal("an unhandled finding does not say why it was not resolved")
+	}
+	if !strings.Contains(s, "$seen = 'a ' + $type") {
+		t.Error("it does not name the type, which is the one fact that says what to add here")
+	}
+}
+
+/* Listing only the failures made a partial success read as nothing having
+   happened — on the rig it hid that the network fix HAD worked. */
+func TestAPartialResolutionSaysWhatItDidResolve(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "$head = ('resolved ' + ($fixed -join '; ') + ', but this VM still cannot run on this host')") {
+		t.Error("a refusal after partial success does not report what succeeded")
+	}
+}
+
+/* Compare-VM REGISTERS a planned VM; it does not merely inspect. Import-VM
+   consumes it. Throwing without consuming it leaves it registered and holding
+   the configuration open, and the next Compare-VM on the same files fails with
+   "the process cannot access the file because it is being used by another
+   process" — which reads as another host running the VM when it is this host's
+   own leftover. */
+func TestEveryRefusalDiscardsThePlannedVM(t *testing.T) {
+	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
+	if !strings.Contains(s, "function Discard-BallastPlanned") {
+		t.Fatal("nothing discards the planned VM Compare-VM registered")
+	}
+	// Every throw that happens AFTER the report exists must discard first.
+	after := s[strings.Index(s, "$report = Compare-VM -Path $path"):]
+	throws := strings.Count(after, "\n  throw (") + strings.Count(after, "\n    throw (")
+	discards := strings.Count(after, "Discard-BallastPlanned\n")
+	if discards < throws {
+		t.Errorf("%d refusals after the report is created but only %d discard the planned VM", throws, discards)
 	}
 }
