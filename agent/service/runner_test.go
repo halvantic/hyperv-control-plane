@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -215,5 +216,25 @@ func TestVMBusyClaimAndRelease(t *testing.T) {
 	delete(r.jobsVMs, "windows")
 	if _, busy := r.vmBusy("Windows"); busy {
 		t.Fatal("the claim must be released when the job finishes")
+	}
+}
+
+/* A VMware copy pass gets hours, not the default ten minutes.
+
+   The default would kill a base copy in its first pass, dismount the disk
+   mid-write, and the retry would start again from nothing — for ever, on any
+   VM big enough to matter. */
+func TestACopyPassIsNotHeldToTheDefaultBudget(t *testing.T) {
+	pass := jobTimeoutFor(types.Job{Kind: types.JobMigrationPass})
+	if pass <= jobTimeout {
+		t.Errorf("a copy pass is allowed %v, no more than the %v default", pass, jobTimeout)
+	}
+	if pass < 4*time.Hour {
+		t.Errorf("a copy pass is allowed %v, which would cut a large base copy short", pass)
+	}
+	// Cleanup consolidates a snapshot on somebody else's datastore, which is
+	// real I/O and must not be abandoned part-way.
+	if c := jobTimeoutFor(types.Job{Kind: types.JobMigrationCleanup}); c <= jobTimeout {
+		t.Errorf("snapshot cleanup is allowed only %v", c)
 	}
 }

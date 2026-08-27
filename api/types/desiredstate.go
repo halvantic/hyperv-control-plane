@@ -556,6 +556,15 @@ type HostStatus struct {
 	// Absent is not empty — the trap this codebase pays for most often.
 	ImportScan *ImportScanStatus `json:"importScan,omitempty"`
 
+	// MigrationPasses is the result of the last VMware copy pass this host ran
+	// for each migration in flight on it, most importantly the per-disk change
+	// markers the next pass resumes from.
+	//
+	// In status rather than in the job's result message because the centre has
+	// to act on the numbers, and parsing them back out of a sentence written for
+	// a person is how a pass ends up resuming from a marker nobody checked.
+	MigrationPasses []MigrationPassResult `json:"migrationPasses,omitempty"`
+
 	// AgentVersion is the reporting agent's build version, for the UI/diagnostics.
 	AgentVersion string `json:"agentVersion,omitempty"`
 
@@ -2324,6 +2333,26 @@ const (
 	// The refusal message named "Wipe and adopt" long before any such action
 	// existed, so it sent operators looking for a button that was never built.
 	JobAdoptISCSIDisk = "AdoptISCSIDisk" // params: cluster, volume, mode (keep|wipe)
+
+	/* The VMware migration jobs. One pass each, never the whole migration.
+
+	   A warm migration runs for hours and the centre may restart in the middle
+	   of it, so the position lives in the Migration object and each job is one
+	   short, resumable step. The alternative — one job that runs to completion —
+	   would be a nine-hour job with no position anybody could read, and a centre
+	   restart would lose all of it.
+
+	   MigrationPass covers the base copy, every delta, and the final pass after
+	   the source is stopped. They are one code path on purpose: a separate
+	   "final pass" that had drifted from the delta path would be the one nobody
+	   had run a hundred times. */
+	JobMigrationEnableCBT = "MigrationEnableCBT" // params: migration, source creds (address/username/password/insecure), moRef
+	JobMigrationPass      = "MigrationPass"      // params: as above plus destDir, markers (JSON key->changeId), final (true on cutover)
+	// JobMigrationCleanup removes the VMware snapshot Ballast created. It runs
+	// on the way out of EVERY terminal phase, failure included: a snapshot left
+	// on somebody else's VM grows until their datastore fills, which is the
+	// worst thing this feature could leave behind on a system it does not own.
+	JobMigrationCleanup = "MigrationCleanup" // params: source creds, moRef, migration
 
 	JobPruneISCSIPortals = "PruneISCSIPortals" // params: portals — comma-separated declared portals to keep
 

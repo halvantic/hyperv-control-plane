@@ -78,6 +78,12 @@ type Reconciler struct {
 	   with the scan record saying when. A result presented without its age is
 	   this codebase's most expensive bug class, which is why the record is a
 	   sibling field and not an afterthought. */
+	// migrationPasses is the last VMware copy pass this host ran for each
+	// migration in flight on it, reported in status so the centre can resume the
+	// next pass from the per-disk change markers.
+	migrationMu     sync.Mutex
+	migrationPasses []types.MigrationPassResult
+
 	importScanMu     sync.Mutex
 	importVMs        []types.ImportableVM
 	importScan       *types.ImportScanStatus

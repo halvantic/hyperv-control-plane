@@ -594,9 +594,37 @@ func StatusToProto(s types.HostStatus) *HostStatus {
 			MemoryInUseBytes: s.Metrics.MemoryInUseBytes,
 			UptimeSeconds:    s.Metrics.UptimeSeconds,
 		},
-		Resources:       resourcesToProto(s.Resources),
-		ObservedVmsJson: observedVMsToJSON(s.ObservedVMs),
+		Resources:           resourcesToProto(s.Resources),
+		ObservedVmsJson:     observedVMsToJSON(s.ObservedVMs),
+		MigrationPassesJson: migrationPassesToJSON(s.MigrationPasses),
 	}
+}
+
+func migrationPassesToJSON(in []types.MigrationPassResult) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if b, err := json.Marshal(v); err == nil {
+			out = append(out, string(b))
+		}
+	}
+	return out
+}
+
+func migrationPassesFromJSON(in []string) []types.MigrationPassResult {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]types.MigrationPassResult, 0, len(in))
+	for _, s := range in {
+		var v types.MigrationPassResult
+		if err := json.Unmarshal([]byte(s), &v); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func observedVMsToJSON(vms []types.ObservedVM) []string {
@@ -706,6 +734,7 @@ func StatusFromProto(s *HostStatus) types.HostStatus {
 	}
 	out.Resources = resourcesFromProto(s.GetResources())
 	out.ObservedVMs = observedVMsFromJSON(s.GetObservedVmsJson())
+	out.MigrationPasses = migrationPassesFromJSON(s.GetMigrationPassesJson())
 	return out
 }
 

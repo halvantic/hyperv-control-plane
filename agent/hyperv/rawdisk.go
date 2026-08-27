@@ -121,6 +121,51 @@ if (-not $d.IsOffline) { Set-Disk -Number $d.Number -IsOffline $true }
 	return &RawDisk{path: path, device: dev, f: f, sizeBytes: sizeBytes, ps: p}, nil
 }
 
+/* MountVHDX attaches a VHDX that already exists, for a later pass.
+
+   Separate from CreateAndMountVHDX because the two must never be confused: that
+   one DELETES what it finds, which is right for a base copy starting again and
+   catastrophic for a delta pass onto a disk holding hours of copied data. A
+   delta that silently started from an empty disk would finish, import, and
+   produce a VM with an empty disk that nothing reported. */
+func (p *PowerShell) MountVHDX(ctx context.Context, path string) (*RawDisk, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$path = %[1]s
+if (-not (Test-Path -LiteralPath $path)) { throw "the disk $path is not there any more" }
+
+# Already attached from an interrupted pass is the normal case, not a failure:
+# reuse the attachment rather than dismount and reattach, which would race with
+# anything still holding it.
+$v = Get-VHD -Path $path
+if (-not $v.DiskNumber) {
+  $v = Mount-VHD -Path $path -NoDriveLetter -Passthru
+}
+$d = Get-Disk -Number $v.DiskNumber
+if (-not $d.IsOffline) { Set-Disk -Number $d.Number -IsOffline $true }
+
+[pscustomobject]@{ number = [int]$d.Number; size = [int64]$v.Size } | ConvertTo-Json -Compress
+`, psQuote(path))
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("mount %s: %w", path, err)
+	}
+	var res struct {
+		Number int   `json:"number"`
+		Size   int64 `json:"size"`
+	}
+	if derr := decodeJSON(out, &res); derr != nil {
+		return nil, fmt.Errorf("mount %s: %w", path, derr)
+	}
+	dev := fmt.Sprintf(`\\.\PhysicalDrive%d`, res.Number)
+	f, err := os.OpenFile(dev, os.O_RDWR, 0)
+	if err != nil {
+		_ = p.DismountVHDX(ctx, path)
+		return nil, fmt.Errorf("open %s for writing: %w — the disk has been dismounted again", dev, err)
+	}
+	return &RawDisk{path: path, device: dev, f: f, sizeBytes: res.Size, ps: p}, nil
+}
+
 /* WriteAt writes guest bytes at a guest offset.
 
    Both the offset and the length must be sector-aligned, and that is checked

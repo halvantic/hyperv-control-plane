@@ -2089,9 +2089,18 @@ type HostStatus struct {
 	ImportableVms []*ImportableVM `protobuf:"bytes,73,rep,name=importable_vms,json=importableVms,proto3" json:"importable_vms,omitempty"`
 	// import_scan records the walk itself, so an empty list can be read against
 	// when it last looked. Absent is not empty.
-	ImportScan    *ImportScanStatus `protobuf:"bytes,74,opt,name=import_scan,json=importScan,proto3" json:"import_scan,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ImportScan *ImportScanStatus `protobuf:"bytes,74,opt,name=import_scan,json=importScan,proto3" json:"import_scan,omitempty"`
+	// migration_passes_json is the result of the last VMware copy pass this host
+	// ran for each migration it is working on, each a JSON MigrationPassResult.
+	//
+	// Reported in status rather than returned in the job message because the
+	// centre needs the per-disk change markers to run the NEXT pass, and a job
+	// message is prose an operator reads. Carried as JSON for the same reason
+	// observed_vms_json is: the shape belongs to api/types, and mirroring it here
+	// creates two definitions that drift.
+	MigrationPassesJson []string `protobuf:"bytes,75,rep,name=migration_passes_json,json=migrationPassesJson,proto3" json:"migration_passes_json,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *HostStatus) Reset() {
@@ -2288,6 +2297,13 @@ func (x *HostStatus) GetImportableVms() []*ImportableVM {
 func (x *HostStatus) GetImportScan() *ImportScanStatus {
 	if x != nil {
 		return x.ImportScan
+	}
+	return nil
+}
+
+func (x *HostStatus) GetMigrationPassesJson() []string {
+	if x != nil {
+		return x.MigrationPassesJson
 	}
 	return nil
 }
@@ -6997,7 +7013,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x17\n" +
 	"\aou_path\x18\x02 \x01(\tR\x06ouPath\x12+\n" +
-	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\x80\t\n" +
+	"\x11credential_secret\x18\x03 \x01(\tR\x10credentialSecret\"\xb4\t\n" +
 	"\n" +
 	"HostStatus\x12!\n" +
 	"\fcluster_node\x18F \x01(\tR\vclusterNode\x12'\n" +
@@ -7030,7 +7046,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\x0fwindows_licence\x18\x13 \x01(\v2 .ballast.v1.WindowsLicenceStatusR\x0ewindowsLicence\x12?\n" +
 	"\x0eimportable_vms\x18I \x03(\v2\x18.ballast.v1.ImportableVMR\rimportableVms\x12=\n" +
 	"\vimport_scan\x18J \x01(\v2\x1c.ballast.v1.ImportScanStatusR\n" +
-	"importScan\"\xce\x04\n" +
+	"importScan\x122\n" +
+	"\x15migration_passes_json\x18K \x03(\tR\x13migrationPassesJson\"\xce\x04\n" +
 	"\fImportableVM\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1f\n" +

@@ -196,6 +196,12 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		// is the refusal this feature guards hardest.
 		r.forgetImportable(path)
 		return out, nil
+	case types.JobMigrationEnableCBT:
+		return r.migrationEnableCBT(ctx, p)
+	case types.JobMigrationPass:
+		return r.migrationPass(ctx, job, onProgress)
+	case types.JobMigrationCleanup:
+		return r.migrationCleanup(ctx, p)
 	case types.JobRepairPool:
 		return r.hv.RepairStoragePool(ctx)
 	case types.JobClusterUpdateFunctionalLevel:

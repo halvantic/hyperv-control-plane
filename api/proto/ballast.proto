@@ -341,6 +341,15 @@ message HostStatus {
   // import_scan records the walk itself, so an empty list can be read against
   // when it last looked. Absent is not empty.
   ImportScanStatus import_scan = 74;
+  // migration_passes_json is the result of the last VMware copy pass this host
+  // ran for each migration it is working on, each a JSON MigrationPassResult.
+  //
+  // Reported in status rather than returned in the job message because the
+  // centre needs the per-disk change markers to run the NEXT pass, and a job
+  // message is prose an operator reads. Carried as JSON for the same reason
+  // observed_vms_json is: the shape belongs to api/types, and mirroring it here
+  // creates two definitions that drift.
+  repeated string migration_passes_json = 75;
 }
 
 // ImportableVM is a VM configuration found on storage that nothing has

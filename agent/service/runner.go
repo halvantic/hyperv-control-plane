@@ -51,6 +51,23 @@ func jobTimeoutFor(job types.Job) time.Duration {
 		return hyperv.CaptureBudget(job.Params["generalise"] == "true")
 	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM, types.JobFetchISO, types.JobVMExport:
 		return 30 * time.Minute
+	case types.JobMigrationPass:
+		/* A VMware copy pass is bounded by somebody else's disk and somebody
+		   else's link, not by anything on this host. A terabyte at a plausible
+		   200MB/s is an hour and a half; the same terabyte over a saturated
+		   1Gb/s is nearer three.
+
+		   Twelve hours, then. Deliberately generous, because cutting a base copy
+		   short at hour four wastes every byte of it — the disk is dismounted
+		   mid-write and the retry starts again from nothing. A pass that is
+		   genuinely stuck shows as no progress in the console long before this,
+		   which is the signal an operator can act on. */
+		return 12 * time.Hour
+	case types.JobMigrationCleanup:
+		// Removing a snapshot means consolidating it, which is real I/O on the
+		// source datastore. It is also the job that must not be abandoned: a
+		// snapshot left behind grows until somebody else's datastore fills.
+		return 30 * time.Minute
 	default:
 		return jobTimeout
 	}
@@ -1107,6 +1124,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// the loop. What the pass carries is the last result together with when it
 	// was taken, so a list is never shown without its age.
 	st.ImportableVMs, st.ImportScan = r.reconciler.ImportStatus()
+	st.MigrationPasses = r.reconciler.MigrationPasses()
 	// The scan job needs to know which volumes this host can see, and the pass
 	// is where that becomes known.
 	r.reconciler.RememberImportRoots(resources)

@@ -203,3 +203,54 @@ type MigrationDisk struct {
 	Done    bool   `json:"done,omitempty"`
 	Message string `json:"message,omitempty"`
 }
+
+/* MigrationPassResult is what one copy pass on a host actually did.
+
+   Reported in HostStatus rather than returned in the job's message, because the
+   centre needs the per-disk change markers to run the NEXT pass and a job
+   message is prose for a person to read. Parsing numbers back out of a sentence
+   is how a migration ends up resuming from a marker nobody checked.
+
+   Kept only while the migration is live. A host does not carry the history of
+   every VM it has ever pulled off VMware; the Migration object is where that
+   lives. */
+type MigrationPassResult struct {
+	// Migration is the object this pass belongs to, and JobID the job that ran
+	// it — so a result from a job the centre has already given up on is
+	// recognisable as stale rather than applied on top of a newer one.
+	Migration string `json:"migration"`
+	JobID     string `json:"jobId,omitempty"`
+
+	// Final marks the cutover pass, the one that ran with the source stopped.
+	Final bool `json:"final,omitempty"`
+	// SourcePoweredOff records that this pass stopped the guest. It is the
+	// moment a production workload stopped, so it belongs in the record.
+	SourcePoweredOff bool `json:"sourcePoweredOff,omitempty"`
+
+	Disks       []MigrationPassDisk `json:"disks,omitempty"`
+	CopiedBytes int64               `json:"copiedBytes,omitempty"`
+
+	StartedAt  time.Time `json:"startedAt,omitempty"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
+
+	// Error is the agent's own words when the pass failed. Present with disks
+	// already filled in is normal and useful: a four-disk VM that failed on the
+	// third still copied two, and the markers for those are worth keeping.
+	Error string `json:"error,omitempty"`
+	// CBTReset says the failure was an invalidated change marker, which is
+	// recoverable by reading in full rather than a reason to fail a migration
+	// that is still perfectly possible.
+	CBTReset bool `json:"cbtReset,omitempty"`
+}
+
+// MigrationPassDisk is one disk within a pass.
+type MigrationPassDisk struct {
+	Key         int32  `json:"key"`
+	Label       string `json:"label,omitempty"`
+	SourcePath  string `json:"sourcePath,omitempty"`
+	DestPath    string `json:"destPath,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
+	CopiedBytes int64  `json:"copiedBytes,omitempty"`
+	// NextChangeID is the marker the following pass resumes from.
+	NextChangeID string `json:"nextChangeId,omitempty"`
+}
