@@ -2518,6 +2518,21 @@ const (
 	// being one wrong selection away.
 	SecretCHAPCredential = "CHAPCredential"
 
+	// SecretVMwareCredential authenticates to vCenter or ESXi, in the same
+	// "username" + "password" keys.
+	//
+	// Its own type for the reason CHAP has one: these credentials leave the
+	// fabric. A vCenter SSO account offered in a picker beside domain
+	// administrators is one wrong click from sending a domain password to
+	// somebody else's management plane — and the reverse, a domain account sent
+	// to vCenter, fails in a way that looks like Ballast being broken.
+	//
+	// It is also a different SHAPE of account in practice: vCenter wants an SSO
+	// principal (administrator@vsphere.local), a standalone ESXi wants a local
+	// one (root). Neither authenticates against the other, which the connect
+	// error says explicitly.
+	SecretVMwareCredential = "VMwareCredential"
+
 	// SecretLocalCredential is a LOCAL administrator on a host, in the same
 	// "username" + "password" keys.
 	//
