@@ -25,4 +25,3 @@ frontend/node_modules/
 # Claude Code session data (transcripts, worktrees, scratch)
 .claude/
 vendor.key
-tools/qemu-img.exe
