@@ -174,8 +174,18 @@ type MigrationStatus struct {
 	// later whether it was always like that.
 	CBTEnabledByBallast bool `json:"cbtEnabledByBallast,omitempty"`
 
+	// CancelRequested is a person asking to stop. Recorded rather than acted on
+	// directly because the controller has one thing it must still do on the way
+	// out — remove the snapshot from the source — and a cancel that skipped it
+	// would leave the worst possible thing behind on a system Ballast does not
+	// own.
+	CancelRequested   bool      `json:"cancelRequested,omitempty"`
+	CancelRequestedBy string    `json:"cancelRequestedBy,omitempty"`
+	CancelRequestedAt time.Time `json:"cancelRequestedAt,omitempty"`
+
 	// CutoverRequestedBy and At record who released the cutover, because it is
 	// the moment a production workload stopped.
+	CutoverReleased    bool      `json:"cutoverReleased,omitempty"`
 	CutoverRequestedBy string    `json:"cutoverRequestedBy,omitempty"`
 	CutoverRequestedAt time.Time `json:"cutoverRequestedAt,omitempty"`
 }
