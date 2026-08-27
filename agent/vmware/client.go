@@ -1,0 +1,473 @@
+// Package vmware is the AGENT's half of a migration: the part that moves bytes.
+//
+// The centre reads inventory and decides; this connects to the same vCenter
+// from the Hyper-V host that will own the VM and streams the disks straight
+// onto its storage. One hop instead of two, no staging space anywhere, and
+// several hosts migrating at once rather than queueing behind the centre.
+//
+// It is a separate package from centre/vmware on purpose. That one is read-only
+// by design and says so; this one enables Changed Block Tracking, takes
+// snapshots and powers VMs off. Sharing a package would put the destructive
+// calls one import away from the code that promises not to make them.
+package vmware
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/find"
+	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/property"
+	"github.com/vmware/govmomi/vim25/methods"
+	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/soap"
+	"github.com/vmware/govmomi/vim25/types"
+)
+
+// Endpoint is everything needed to reach a source. Delivered on the job rather
+// than cached on the host, for the reason CHAP secrets are: a credential that
+// lives on a host outlives the operator's intent for it.
+type Endpoint struct {
+	Address     string
+	Username    string
+	Password    string
+	InsecureTLS bool
+}
+
+// Client is a connection from an agent to one vCenter or ESXi.
+type Client struct {
+	c *govmomi.Client
+}
+
+func Connect(ctx context.Context, e Endpoint) (*Client, error) {
+	addr := strings.TrimSpace(e.Address)
+	if !strings.Contains(addr, "://") {
+		addr = "https://" + addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("vmware: bad address %q: %w", e.Address, err)
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/sdk"
+	}
+	u.User = url.UserPassword(e.Username, e.Password)
+
+	c, err := govmomi.NewClient(ctx, u, e.InsecureTLS)
+	if err != nil {
+		return nil, fmt.Errorf("vmware: connect %s: %w", u.Host, err)
+	}
+	return &Client{c: c}, nil
+}
+
+func (v *Client) Close(ctx context.Context) {
+	if v == nil || v.c == nil {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = v.c.Logout(cctx)
+}
+
+func (v *Client) vm(moRef string) *object.VirtualMachine {
+	return object.NewVirtualMachine(v.c.Client, types.ManagedObjectReference{Type: "VirtualMachine", Value: moRef})
+}
+
+// Disk describes one virtual disk to copy.
+type Disk struct {
+	Key int32
+	// Label is what an operator sees in vSphere Client.
+	Label string
+	// Path is the datastore path, "[datastore1] Web01/Web01.vmdk".
+	Path string
+	// SizeBytes is the guest-visible capacity, which is what the destination
+	// VHDX is created at.
+	SizeBytes int64
+}
+
+// VMInfo is what a copy needs to know about the source.
+type VMInfo struct {
+	Name       string
+	PowerState string
+	CBTEnabled bool
+	Disks      []Disk
+}
+
+// Inspect reads the VM's current shape. Read every pass rather than carried on
+// the job: a disk added or grown in VMware between passes changes what has to
+// be copied, and a plan made an hour ago would quietly copy the old shape.
+func (v *Client) Inspect(ctx context.Context, moRef string) (VMInfo, error) {
+	var m mo.VirtualMachine
+	pc := property.DefaultCollector(v.c.Client)
+	err := pc.RetrieveOne(ctx, v.vm(moRef).Reference(), []string{
+		"name", "runtime.powerState", "config.changeTrackingEnabled", "config.hardware.device",
+	}, &m)
+	if err != nil {
+		return VMInfo{}, fmt.Errorf("vmware: read %s: %w", moRef, err)
+	}
+	out := VMInfo{Name: m.Name, PowerState: string(m.Runtime.PowerState)}
+	if m.Config == nil {
+		return out, fmt.Errorf("vmware: %s reports no configuration, so there is nothing to copy", moRef)
+	}
+	out.CBTEnabled = m.Config.ChangeTrackingEnabled != nil && *m.Config.ChangeTrackingEnabled
+	for _, dev := range m.Config.Hardware.Device {
+		d, ok := dev.(*types.VirtualDisk)
+		if !ok {
+			continue
+		}
+		disk := Disk{Key: d.Key, SizeBytes: d.CapacityInBytes}
+		if d.DeviceInfo != nil {
+			disk.Label = d.DeviceInfo.GetDescription().Label
+		}
+		if b, ok := d.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok {
+			disk.Path = b.FileName
+		}
+		out.Disks = append(out.Disks, disk)
+	}
+	return out, nil
+}
+
+/* EnableCBT turns Changed Block Tracking on.
+
+   Refused on a running VM, deliberately. The setting applies at power-on, so
+   enabling it on a running guest reports success and changes nothing — the
+   next QueryChangedDiskAreas fails and the operator is left with a migration
+   that said it was ready and was not. Ballast will not restart somebody's VM
+   to save itself a step, so the honest answer is to say what has to happen. */
+func (v *Client) EnableCBT(ctx context.Context, moRef string) error {
+	info, err := v.Inspect(ctx, moRef)
+	if err != nil {
+		return err
+	}
+	if info.CBTEnabled {
+		return nil // already on; nothing to do and nothing to say
+	}
+	if info.PowerState == string(types.VirtualMachinePowerStatePoweredOn) {
+		return fmt.Errorf("%s is running and Changed Block Tracking is off. It takes effect at power-on, so turning it on now "+
+			"would report success and change nothing. Restart the VM once at a time of your choosing, then migrate with no further "+
+			"downtime until cutover — or migrate it cold, which copies once and needs it stopped anyway", info.Name)
+	}
+
+	on := true
+	task, err := v.vm(moRef).Reconfigure(ctx, types.VirtualMachineConfigSpec{ChangeTrackingEnabled: &on})
+	if err != nil {
+		return fmt.Errorf("vmware: enable tracking on %s: %w", info.Name, err)
+	}
+	if err := task.Wait(ctx); err != nil {
+		return fmt.Errorf("vmware: enable tracking on %s: %w", info.Name, err)
+	}
+	return nil
+}
+
+/* Snapshot freezes the disks so they can be read while the guest runs.
+
+   Memory is deliberately NOT captured: it would double the snapshot's cost and
+   the time the guest is stunned, and nothing here ever restores it. Quiescing
+   is also off — it needs VMware Tools, fails on guests that do not have it,
+   and turning a copy into a refusal because a guest could not flush its
+   filesystem is the wrong trade for a migration that will be cut over cleanly
+   later. */
+func (v *Client) Snapshot(ctx context.Context, moRef, name string) (string, error) {
+	task, err := v.vm(moRef).CreateSnapshot(ctx, name,
+		"Created by Ballast for a migration. Safe to leave; Ballast removes it when the migration ends.",
+		false /* memory */, false /* quiesce */)
+	if err != nil {
+		return "", fmt.Errorf("vmware: snapshot %s: %w", moRef, err)
+	}
+	info, err := task.WaitForResult(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("vmware: snapshot %s: %w", moRef, err)
+	}
+	ref, ok := info.Result.(types.ManagedObjectReference)
+	if !ok {
+		return "", fmt.Errorf("vmware: snapshot %s: the task returned no snapshot reference", moRef)
+	}
+	return ref.Value, nil
+}
+
+/* RemoveSnapshot deletes one and waits for the data to merge back.
+
+   Waiting matters. Returning as soon as the task is accepted would let the
+   next pass start while consolidation is still running, and the next pass
+   reads the base disk — which is mid-merge and not yet complete. Consolidation
+   is also the expensive part for the source's datastore, so a pass that
+   overlaps the last one's merge is how a migration starts hurting the system
+   it is leaving. Removing one that has already gone is not an error: this runs
+   on cleanup paths that do not know how far a failed attempt got. */
+func (v *Client) RemoveSnapshot(ctx context.Context, moRef, snapRef string) error {
+	if strings.TrimSpace(snapRef) == "" {
+		return nil
+	}
+	// By reference, not by name. Ballast names its snapshots, and a name is
+	// something a person can create a second of in vSphere Client — removing
+	// "the one called ballast-migration" could then remove somebody else's.
+	// Bounded. Waiting for ever on a merge that is not progressing hangs the
+	// migration with no message; giving up says which datastore to go and look
+	// at, and leaves the snapshot where an operator can see it.
+	wctx, cancel := context.WithTimeout(ctx, consolidateWait)
+	defer cancel()
+
+	consolidate := true
+	task, err := v.vm(moRef).RemoveSnapshot(wctx, snapRef, false /* removeChildren */, &consolidate)
+	if err != nil {
+		if isGone(err) {
+			return nil
+		}
+		return fmt.Errorf("vmware: remove snapshot %s: %w", snapRef, err)
+	}
+	if err := task.Wait(wctx); err != nil {
+		if isGone(err) {
+			return nil
+		}
+		if wctx.Err() != nil && ctx.Err() == nil {
+			return fmt.Errorf("vmware: snapshot %s on %s was still merging after %s. The migration is stopping rather than "+
+				"reading a disk that is mid-merge; the snapshot is still there and the source datastore is where to look",
+				snapRef, moRef, consolidateWait)
+		}
+		return fmt.Errorf("vmware: remove snapshot %s: %w", snapRef, err)
+	}
+	return nil
+}
+
+// isGone covers a snapshot that is not there any more, however that is phrased.
+// "snapshot %q not found" and "no snapshots for this VM" come from the lookup
+// govmomi does before the removal, and both mean the same thing as a successful
+// delete for a caller that is tidying up.
+func isGone(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "no snapshots for this vm") ||
+		strings.Contains(s, "not found") ||
+		strings.Contains(s, "has already been deleted") ||
+		strings.Contains(s, "could not be found") ||
+		strings.Contains(s, "managed object not found")
+}
+
+// Extent is one region of a disk that holds data or has changed.
+type Extent struct {
+	Start  int64
+	Length int64
+}
+
+/* ChangedAreas asks what to copy.
+
+   changeID "*" means "everything allocated", which is what a BASE copy wants:
+   a thin 500GB disk with 40GB written transfers 40GB, not 500. The same call
+   with the previous pass's marker returns only what has changed since, so the
+   base copy and every delta are one operation with a different argument. The
+   returned ChangeId is the marker for the NEXT pass and must be stored whether
+   or not anything came back — a pass that found nothing still moves the marker
+   forward, and reusing the old one would re-copy that window for ever. */
+func (v *Client) ChangedAreas(ctx context.Context, moRef, snapRef string, deviceKey int32, changeID string, diskSize int64) ([]Extent, string, error) {
+	if changeID == "" {
+		changeID = "*"
+	}
+	snap := types.ManagedObjectReference{Type: "VirtualMachineSnapshot", Value: snapRef}
+
+	var out []Extent
+	// The API returns at most a page of areas per call and expects to be asked
+	// again from where it stopped. Looping until the reported end reaches the
+	// disk size is what makes a large disk work at all.
+	offset := int64(0)
+	for offset < diskSize {
+		res, err := methods.QueryChangedDiskAreas(ctx, v.c.Client, &types.QueryChangedDiskAreas{
+			This:        v.vm(moRef).Reference(),
+			Snapshot:    &snap,
+			DeviceKey:   deviceKey,
+			StartOffset: offset,
+			ChangeId:    changeID,
+		})
+		if err != nil {
+			return nil, "", explainCBTError(err, changeID)
+		}
+		area := res.Returnval
+		for _, c := range area.ChangedArea {
+			out = append(out, Extent{Start: c.Start, Length: c.Length})
+		}
+		next := area.StartOffset + area.Length
+		if next <= offset {
+			// No forward progress: stop rather than loop for ever on a source
+			// that is answering but not advancing.
+			break
+		}
+		offset = next
+	}
+
+	// The marker for the NEXT pass is read from the snapshot, NOT carried over
+	// from the input. Returning the input would leave every delta querying from
+	// the same point: each pass would re-copy everything since the base and the
+	// window would grow instead of shrinking, so the migration would never
+	// converge and would look like a guest writing harder and harder.
+	next, err := v.snapshotChangeID(ctx, snapRef, deviceKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return out, next, nil
+}
+
+/* snapshotChangeID reads the change marker VMware stamped on a disk when the
+   snapshot was taken. It lives on the snapshot's copy of the hardware, not the
+   VM's, which is the whole point: it names the exact instant this pass read. */
+func (v *Client) snapshotChangeID(ctx context.Context, snapRef string, deviceKey int32) (string, error) {
+	var m mo.VirtualMachineSnapshot
+	pc := property.DefaultCollector(v.c.Client)
+	ref := types.ManagedObjectReference{Type: "VirtualMachineSnapshot", Value: snapRef}
+	if err := pc.RetrieveOne(ctx, ref, []string{"config.hardware.device"}, &m); err != nil {
+		return "", fmt.Errorf("read the change marker from snapshot %s: %w", snapRef, err)
+	}
+	for _, d := range m.Config.Hardware.Device {
+		disk, ok := d.(*types.VirtualDisk)
+		if !ok || disk.Key != deviceKey {
+			continue
+		}
+		if b, ok := disk.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok && b.ChangeId != "" {
+			return b.ChangeId, nil
+		}
+		if b, ok := disk.Backing.(*types.VirtualDiskSeSparseBackingInfo); ok && b.ChangeId != "" {
+			return b.ChangeId, nil
+		}
+		// A disk with no marker means CBT produced nothing to resume from. Say
+		// so here rather than return an empty string, which the caller would
+		// store and later read back as "*" — a silent full re-copy.
+		return "", fmt.Errorf("disk %d carries no change marker in snapshot %s, so there is nothing for the next pass to resume from. "+
+			"Changed block tracking has to be active at the moment the snapshot is taken", deviceKey, snapRef)
+	}
+	return "", fmt.Errorf("disk %d is not in snapshot %s — it was added or removed in VMware after this migration started", deviceKey, snapRef)
+}
+
+/* explainCBTError names the one failure that matters and cannot be retried.
+
+   A CBT reset — caused by a storage vMotion, a failed consolidation, or some
+   power operations — invalidates the marker, and VMware then refuses the query
+   rather than silently returning everything. That is the good outcome: the bad
+   one would be copying the whole disk while telling the operator it is a
+   delta. It is named here so the migration can fall back to a full re-copy
+   knowingly. */
+func explainCBTError(err error, changeID string) error {
+	s := strings.ToLower(err.Error())
+	// The reset is checked FIRST. Its message mentions change tracking too, and
+	// classified as "not enabled" it would send the migration off to enable
+	// something already enabled, then fail again the same way — where a reset is
+	// recoverable on the spot by reading the disk in full.
+	if strings.Contains(s, "reset") || strings.Contains(s, "invalid change") || strings.Contains(s, "changeid") {
+		return fmt.Errorf("%w: the marker %q is no longer valid — VMware has reset change tracking, "+
+			"usually after a storage vMotion or a snapshot consolidation, and the disk has to be read in full again: %w",
+			ErrCBTReset, changeID, err)
+	}
+	if strings.Contains(s, "change tracking is not enabled") || strings.Contains(s, "changetracking") {
+		return fmt.Errorf("changed block tracking is not active on this VM. It takes effect at power-on, so a VM that has "+
+			"not been restarted since it was enabled cannot be copied incrementally: %w", err)
+	}
+	return err
+}
+
+// ErrCBTReset reports a change marker VMware no longer recognises. Its own error
+// because the remedy is specific and automatic: start again from a full read,
+// and say so, rather than failing a migration that is still perfectly possible.
+var ErrCBTReset = fmt.Errorf("change tracking was reset")
+
+/* ReadAt reads bytes from a disk file on the datastore.
+
+   Over the datastore HTTP endpoint with a Range header, authenticated by the
+   same session as everything else. This is what removes the need for VMware's
+   VDDK — a C library under a click-through licence with no Go bindings — at
+   the cost of reading the FLAT file rather than a consolidated view, which is
+   why every pass consolidates its snapshot before the next one starts. */
+func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64) (io.ReadCloser, error) {
+	ds, path, err := v.datastoreFor(ctx, dsPath)
+	if err != nil {
+		return nil, err
+	}
+	u := ds.NewURL(path)
+	p := soap.DefaultDownload
+	p.Headers = map[string]string{"Range": rangeHeader(offset, length)}
+	rc, _, err := v.c.Client.Download(ctx, u, &p)
+	if err != nil {
+		return nil, fmt.Errorf("vmware: read %s at %d+%d: %w", dsPath, offset, length, err)
+	}
+	return rc, nil
+}
+
+// rangeHeader builds an HTTP byte range. Inclusive at BOTH ends, which is the
+// one thing to get right here: off by one re-reads or skips a byte on every
+// chunk of every disk, and the result still looks like a completed copy.
+func rangeHeader(offset, length int64) string {
+	return fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
+}
+
+// datastoreFor turns "[datastore1] Web01/Web01.vmdk" into a datastore and a
+// path within it.
+func (v *Client) datastoreFor(ctx context.Context, dsPath string) (*object.Datastore, string, error) {
+	var p object.DatastorePath
+	if !p.FromString(dsPath) {
+		return nil, "", fmt.Errorf("vmware: %q is not a datastore path", dsPath)
+	}
+	finder := find.NewFinder(v.c.Client, false)
+	dc, err := finder.DefaultDatacenter(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("vmware: find datacenter: %w", err)
+	}
+	finder.SetDatacenter(dc)
+	ds, err := finder.Datastore(ctx, p.Datastore)
+	if err != nil {
+		return nil, "", fmt.Errorf("vmware: find datastore %q: %w", p.Datastore, err)
+	}
+	return ds, p.Path, nil
+}
+
+/* PowerOff shuts the source down for a cutover.
+
+   Graceful first, through VMware Tools, then a hard stop only after the guest
+   has been given time. A migration cutover ends with the guest's filesystem
+   being read one last time, and pulling the power on a Windows guest with
+   writes in flight puts a dirty filesystem into the disk that is about to
+   become production. */
+func (v *Client) PowerOff(ctx context.Context, moRef string, graceful time.Duration) error {
+	vm := v.vm(moRef)
+	info, err := v.Inspect(ctx, moRef)
+	if err != nil {
+		return err
+	}
+	if info.PowerState != string(types.VirtualMachinePowerStatePoweredOn) {
+		return nil
+	}
+
+	// Ask the guest. A VM with no Tools refuses this immediately, which is not
+	// a failure — it just means the polite route is unavailable.
+	if err := vm.ShutdownGuest(ctx); err == nil {
+		deadline := time.Now().Add(graceful)
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+			st, ierr := v.Inspect(ctx, moRef)
+			if ierr == nil && st.PowerState != string(types.VirtualMachinePowerStatePoweredOn) {
+				return nil
+			}
+		}
+	}
+
+	task, err := vm.PowerOff(ctx)
+	if err != nil {
+		return fmt.Errorf("vmware: power off %s: %w", info.Name, err)
+	}
+	if err := task.Wait(ctx); err != nil {
+		return fmt.Errorf("vmware: power off %s: %w", info.Name, err)
+	}
+	return nil
+}
+
+/* consolidateWait is how long a pass waits for a snapshot to merge.
+
+   Generous, because the alternative is worse in both directions: giving up
+   early leaves a snapshot growing on the source, and the next pass then reads
+   a base disk that is mid-merge. Ten minutes covers a normal consolidation on
+   busy storage; beyond that something is genuinely wrong and saying so beats
+   waiting silently. */
+const consolidateWait = 10 * time.Minute

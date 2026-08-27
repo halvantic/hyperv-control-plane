@@ -56,15 +56,13 @@ type RawDisk struct {
 	ps        *PowerShell
 }
 
-/*
-CreateAndMountVHDX makes a fixed VHDX of exactly sizeBytes and attaches it.
+/* CreateAndMountVHDX makes a fixed VHDX of exactly sizeBytes and attaches it.
 
-	sizeBytes is the SOURCE disk's size and is not rounded up for convenience: a
-	VHDX larger than the disk it holds boots fine and then reports the wrong
-	capacity to the guest for ever, which is the sort of thing nobody connects
-	back to a migration months later. Hyper-V requires a multiple of 512, so a
-	source that is not one is refused rather than quietly grown.
-*/
+   sizeBytes is the SOURCE disk's size and is not rounded up for convenience: a
+   VHDX larger than the disk it holds boots fine and then reports the wrong
+   capacity to the guest for ever, which is the sort of thing nobody connects
+   back to a migration months later. Hyper-V requires a multiple of 512, so a
+   source that is not one is refused rather than quietly grown. */
 func (p *PowerShell) CreateAndMountVHDX(ctx context.Context, path string, sizeBytes int64) (*RawDisk, error) {
 	if sizeBytes <= 0 {
 		return nil, fmt.Errorf("create %s: a disk size of %d makes no sense", path, sizeBytes)
@@ -123,16 +121,14 @@ if (-not $d.IsOffline) { Set-Disk -Number $d.Number -IsOffline $true }
 	return &RawDisk{path: path, device: dev, f: f, sizeBytes: sizeBytes, ps: p}, nil
 }
 
-/*
-WriteAt writes guest bytes at a guest offset.
+/* WriteAt writes guest bytes at a guest offset.
 
-	Both the offset and the length must be sector-aligned, and that is checked
-	rather than silently corrected. Rounding a caller's range outward would write
-	bytes it did not ask to write — over data the previous pass had already put
-	there — and rounding inward would drop the edges of every changed range. A
-	changed-block list from VMware is sector-aligned already; one that is not
-	means something upstream is wrong and should say so.
-*/
+   Both the offset and the length must be sector-aligned, and that is checked
+   rather than silently corrected. Rounding a caller's range outward would
+   write bytes it did not ask to write — over data the previous pass had
+   already put there — and rounding inward would drop the edges of every
+   changed range. A changed-block list from VMware is sector-aligned already;
+   one that is not means something upstream is wrong and should say so. */
 func (d *RawDisk) WriteAt(b []byte, offset int64) error {
 	if offset < 0 {
 		return fmt.Errorf("write to %s: negative offset %d", d.path, offset)
@@ -156,14 +152,12 @@ func (d *RawDisk) Size() int64 { return d.sizeBytes }
 // Path is the VHDX on disk.
 func (d *RawDisk) Path() string { return d.path }
 
-/*
-Close flushes and dismounts.
+/* Close flushes and dismounts.
 
-	Both, always, even when the flush fails. A VHDX left mounted outlives the job
-	and the reboot, and a host with a stray attached disk confuses every tool
-	that enumerates storage — including Ballast's own inventory, which would
-	report it as a disk somebody could use.
-*/
+   Both, always, even when the flush fails. A VHDX left mounted outlives the
+   job and the reboot, and a host with a stray attached disk confuses every
+   tool that enumerates storage — including Ballast's own inventory, which
+   would report it as a disk somebody could use. */
 func (d *RawDisk) Close(ctx context.Context) error {
 	if d == nil || d.f == nil {
 		return nil
@@ -206,17 +200,15 @@ try {
 	return nil
 }
 
-/*
-alignedRange widens a changed range out to sector boundaries.
+/* AlignedRange widens a changed range out to sector boundaries.
 
-	VMware reports changed areas in bytes and does not promise alignment. Widening
-	is safe in a way that narrowing is not: the extra bytes at each edge are read
-	from the same source and written to the same place, so the destination ends up
-	with the source's content either way. Narrowing would leave the edges stale.
-
-	Returned as start and length so the caller reads exactly what it will write.
-*/
-func alignedRange(offset, length int64) (int64, int64) {
+   VMware reports changed areas in bytes and does not promise alignment.
+   Widening is safe in a way that narrowing is not: the extra bytes at each
+   edge are read from the same source and written to the same place, so the
+   destination ends up with the source's content either way. Narrowing would
+   leave the edges stale. Returned as start and length so the caller reads
+   exactly what it will write. */
+func AlignedRange(offset, length int64) (int64, int64) {
 	if length <= 0 {
 		return offset, 0
 	}

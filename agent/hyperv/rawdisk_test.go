@@ -80,23 +80,23 @@ func TestAChangedRangeIsWidenedToSectors(t *testing.T) {
 		{4095, 4098, 0, 12288},
 	}
 	for _, tt := range tests {
-		off, l := alignedRange(tt.off, tt.len)
+		off, l := AlignedRange(tt.off, tt.len)
 		if off != tt.wantOff || l != tt.wantLen {
-			t.Errorf("alignedRange(%d,%d) = (%d,%d), want (%d,%d)", tt.off, tt.len, off, l, tt.wantOff, tt.wantLen)
+			t.Errorf("AlignedRange(%d,%d) = (%d,%d), want (%d,%d)", tt.off, tt.len, off, l, tt.wantOff, tt.wantLen)
 		}
 		// The widened range must always cover the original, or the copy is
 		// silently dropping changed bytes.
 		if off > tt.off || off+l < tt.off+tt.len {
-			t.Errorf("alignedRange(%d,%d) = (%d,%d) does not cover the original range", tt.off, tt.len, off, l)
+			t.Errorf("AlignedRange(%d,%d) = (%d,%d) does not cover the original range", tt.off, tt.len, off, l)
 		}
 		if off%sectorSize != 0 || l%sectorSize != 0 {
-			t.Errorf("alignedRange(%d,%d) = (%d,%d) is not aligned", tt.off, tt.len, off, l)
+			t.Errorf("AlignedRange(%d,%d) = (%d,%d) is not aligned", tt.off, tt.len, off, l)
 		}
 	}
 }
 
 func TestAnEmptyRangeStaysEmpty(t *testing.T) {
-	if off, l := alignedRange(4096, 0); off != 4096 || l != 0 {
+	if off, l := AlignedRange(4096, 0); off != 4096 || l != 0 {
 		t.Errorf("an empty range became (%d,%d)", off, l)
 	}
 }
