@@ -24,7 +24,10 @@ type fakeSource struct {
 	extents []Extent
 	next    string
 	reads   []Extent
-	err     error
+	// readPaths is which FILE each read came from, which is the difference
+	// between reading a disk and reading its descriptor.
+	readPaths []string
+	err       error
 }
 
 func (f *fakeSource) ChangedAreas(_ context.Context, _, _ string, _ int32, _ string, _ int64) ([]Extent, string, error) {
@@ -34,8 +37,9 @@ func (f *fakeSource) ChangedAreas(_ context.Context, _, _ string, _ int32, _ str
 	return f.extents, f.next, nil
 }
 
-func (f *fakeSource) ReadAt(_ context.Context, _ string, offset, length int64) (io.ReadCloser, error) {
+func (f *fakeSource) ReadAt(_ context.Context, path string, offset, length int64) (io.ReadCloser, error) {
 	f.reads = append(f.reads, Extent{Start: offset, Length: length})
+	f.readPaths = append(f.readPaths, path)
 	if offset+length > int64(len(f.image)) {
 		return nil, fmt.Errorf("read past the end of the fake image")
 	}
@@ -215,9 +219,14 @@ func TestASizeThatCannotBeWrittenAlignedIsRefusedUpFront(t *testing.T) {
 	}
 }
 
-/* A short read means the file is not the size its configuration claims. The
-   copy stops: writing the partial read would leave the rest of that range
-   holding whatever was there before, with nothing reporting it. */
+/* A short read stops the copy: writing the partial read would leave the rest of
+   that range holding whatever was there before, with nothing reporting it.
+
+   What it must NOT do is explain itself. This message used to conclude "the disk
+   file is not the size its configuration reports", which was one cause of a
+   short read stated as the finding — and on the first real migration it was the
+   wrong one: the file being read was the descriptor, not the disk. The byte
+   count is what tells those apart, so the byte count is what it reports. */
 func TestAShortReadStopsTheCopyRatherThanWritingPartOfIt(t *testing.T) {
 	src := &shortSource{fakeSource{image: pattern(1 << 20), extents: []Extent{{Start: 0, Length: 8192}}, next: "x/1"}}
 	dst := &fakeSink{buf: make([]byte, 1<<20)}
@@ -225,8 +234,14 @@ func TestAShortReadStopsTheCopyRatherThanWritingPartOfIt(t *testing.T) {
 	if err == nil {
 		t.Fatal("a short read was accepted")
 	}
-	if !strings.Contains(err.Error(), "not the size its configuration reports") {
-		t.Errorf("the failure does not explain what a short read means: %v", err)
+	for _, want := range []string{"8192", "4096", "[ds1] a.vmdk"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure does not report %q — what was asked for, what came back, and from where: %v", want, err)
+		}
+	}
+	// The old conclusion, which was a guess wearing a fact's clothes.
+	if strings.Contains(err.Error(), "not the size its configuration reports") {
+		t.Errorf("the failure asserts a cause it did not establish: %v", err)
 	}
 	if !bytes.Equal(dst.buf[:8192], make([]byte, 8192)) {
 		t.Error("part of a short read was written to the destination")

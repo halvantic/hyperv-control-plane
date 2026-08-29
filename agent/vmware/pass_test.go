@@ -20,9 +20,25 @@ type fakePass struct {
 	info  VMInfo
 	calls []string
 	// failCopy makes the copy fail, to prove cleanup still runs.
-	failCopy  error
-	failPower error
-	removed   []string
+	failCopy    error
+	failPower   error
+	failResolve error
+	removed     []string
+	resolved    []string
+}
+
+/*
+The fake resolves a descriptor to its flat file the way VMFS does, so the
+
+	tests exercise the real shape: what VMware names is not what is read.
+*/
+func (f *fakePass) ResolveDiskFile(_ context.Context, dsPath string, _ int64) (string, error) {
+	f.calls = append(f.calls, "resolve:"+dsPath)
+	if f.failResolve != nil {
+		return "", f.failResolve
+	}
+	f.resolved = append(f.resolved, dsPath)
+	return strings.TrimSuffix(dsPath, ".vmdk") + "-flat.vmdk", nil
 }
 
 func (f *fakePass) Inspect(context.Context, string) (VMInfo, error) {
@@ -105,11 +121,13 @@ func onePass() (*fakePass, *fakeProv) {
 	return src, &fakeProv{}
 }
 
-/* Power off comes BEFORE the snapshot on a cutover.
+/*
+Power off comes BEFORE the snapshot on a cutover.
 
-   The other way round, whatever the guest writes between the snapshot and the
-   shutdown is in neither place: not in the snapshot this pass reads, and not in
-   a later pass, because there is no later pass. */
+	The other way round, whatever the guest writes between the snapshot and the
+	shutdown is in neither place: not in the snapshot this pass reads, and not in
+	a later pass, because there is no later pass.
+*/
 func TestTheCutoverStopsTheGuestBeforeItSnapshotsIt(t *testing.T) {
 	src, prov := onePass()
 	req := PassRequest{Migration: "mig-1", MoRef: "vm-1", DestDir: `C:\CSV1`, Final: true}
@@ -144,9 +162,12 @@ func TestADeltaPassNeverTouchesThePower(t *testing.T) {
 	}
 }
 
-/* The snapshot is removed on EVERY exit, failure included. One left on somebody
-   else's VM grows until their datastore fills, which is the worst thing this
-   feature could leave behind on a system it does not own. */
+/*
+The snapshot is removed on EVERY exit, failure included. One left on somebody
+
+	else's VM grows until their datastore fills, which is the worst thing this
+	feature could leave behind on a system it does not own.
+*/
 func TestTheSnapshotIsRemovedEvenWhenTheCopyFails(t *testing.T) {
 	src, prov := onePass()
 	src.failCopy = errors.New("the datastore stopped answering")
@@ -165,11 +186,13 @@ func TestTheSnapshotIsRemovedEvenWhenTheCopyFails(t *testing.T) {
 	}
 }
 
-/* A pass with no marker CREATES the destination; one with a marker OPENS it.
+/*
+A pass with no marker CREATES the destination; one with a marker OPENS it.
 
-   Getting this backwards is the quiet catastrophe: Create replaces what it
-   finds, so a delta that created its disk would start from empty, finish, be
-   imported, and produce a VM with a blank disk that nothing anywhere reported. */
+	Getting this backwards is the quiet catastrophe: Create replaces what it
+	finds, so a delta that created its disk would start from empty, finish, be
+	imported, and produce a VM with a blank disk that nothing anywhere reported.
+*/
 func TestADeltaOpensTheDiskAndABaseCopyCreatesIt(t *testing.T) {
 	src, prov := onePass()
 	if _, err := runPass(t.Context(), src, prov, PassRequest{Migration: "m", MoRef: "vm-1", DestDir: `C:\CSV1`}, nil); err != nil {
@@ -190,8 +213,11 @@ func TestADeltaOpensTheDiskAndABaseCopyCreatesIt(t *testing.T) {
 	}
 }
 
-/* The snapshot carries the migration's name, so a leftover one on a customer's
-   vCenter can be traced back to what made it. */
+/*
+The snapshot carries the migration's name, so a leftover one on a customer's
+
+	vCenter can be traced back to what made it.
+*/
 func TestTheSnapshotIsNamedForTheMigration(t *testing.T) {
 	src, prov := onePass()
 	if _, err := runPass(t.Context(), src, prov, PassRequest{Migration: "mig-web01", MoRef: "vm-1", DestDir: `C:\CSV1`}, nil); err != nil {
@@ -203,8 +229,11 @@ func TestTheSnapshotIsNamedForTheMigration(t *testing.T) {
 	}
 }
 
-/* A VM with no disks is a vCLS agent or a template, not a workload. Copying
-   nothing and reporting success would produce an empty VM at the far end. */
+/*
+A VM with no disks is a vCLS agent or a template, not a workload. Copying
+
+	nothing and reporting success would produce an empty VM at the far end.
+*/
 func TestAVMWithNoDisksIsRefusedWithTheReason(t *testing.T) {
 	src, prov := onePass()
 	src.info.Disks = nil
@@ -220,9 +249,12 @@ func TestAVMWithNoDisksIsRefusedWithTheReason(t *testing.T) {
 	}
 }
 
-/* A CBT reset is reported as recoverable in the same breath as the failure. The
-   remedy is automatic and costs only time, and an operator who reads it as a
-   lost migration will start again from nothing. */
+/*
+A CBT reset is reported as recoverable in the same breath as the failure. The
+
+	remedy is automatic and costs only time, and an operator who reads it as a
+	lost migration will start again from nothing.
+*/
 func TestACBTResetSaysWhatHappensNext(t *testing.T) {
 	src, prov := onePass()
 	src.fakeSource.err = explainCBTError(errors.New("A specified parameter was not correct: changeId"), "52 aa/1")
@@ -241,10 +273,13 @@ func TestACBTResetSaysWhatHappensNext(t *testing.T) {
 	}
 }
 
-/* Destination names come from the SOURCE disk's file name. A VM with disks
-   added and removed over the years has keys 2000, 2002 and 2005; numbering the
-   destinations 1, 2, 3 loses the only thing that lets an operator match a VHDX
-   back to the VMDK it came from a year later. */
+/*
+Destination names come from the SOURCE disk's file name. A VM with disks
+
+	added and removed over the years has keys 2000, 2002 and 2005; numbering the
+	destinations 1, 2, 3 loses the only thing that lets an operator match a VHDX
+	back to the VMDK it came from a year later.
+*/
 func TestADestinationIsNamedAfterTheDiskItCameFrom(t *testing.T) {
 	got := DestPathFor(`C:\ClusterStorage\DS1`, "Web01", Disk{Key: 2001, Path: "[datastore1] Web01/Web01_1.vmdk"})
 	if !strings.HasSuffix(got, `Web01\Web01_1.vhdx`) {
@@ -252,9 +287,12 @@ func TestADestinationIsNamedAfterTheDiskItCameFrom(t *testing.T) {
 	}
 }
 
-/* VMware names allow characters NTFS does not. A VM called "web/prod" must not
-   create a directory nobody asked for, and one ending in a dot produces a path
-   Windows will write and never open again. */
+/*
+VMware names allow characters NTFS does not. A VM called "web/prod" must not
+
+	create a directory nobody asked for, and one ending in a dot produces a path
+	Windows will write and never open again.
+*/
 func TestASourceNameCannotEscapeIntoThePath(t *testing.T) {
 	got := DestPathFor(`C:\CSV1`, `web/prod: "live"`, Disk{Key: 2000, Path: "[ds1] a/b.vmdk"})
 	if strings.Contains(strings.TrimPrefix(got, `C:\CSV1\`), "/") {

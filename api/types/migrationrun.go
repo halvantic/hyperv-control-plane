@@ -135,6 +135,15 @@ type MigrationStatus struct {
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
 
+	/* Copying is per-disk progress for the pass running RIGHT NOW.
+
+	   Its own field rather than folded into Disks, because the two count
+	   different things: Disks accumulates what every pass has copied, and this
+	   is what the current one has moved so far. Adding a live figure into a
+	   running total would make a delta pass appear to have copied the whole disk
+	   again. Replaced on every report and cleared when the pass ends. */
+	Copying []MigrationDisk `json:"copying,omitempty"`
+
 	// Disks carry per-disk progress. A VM with four disks copying at different
 	// rates is normal, and one aggregate percentage hides a disk that has
 	// stalled while the others finish.
@@ -256,6 +265,19 @@ type MigrationPassResult struct {
 	// recognisable as stale rather than applied on top of a newer one.
 	Migration string `json:"migration"`
 	JobID     string `json:"jobId,omitempty"`
+
+	/* InProgress marks a result reported WHILE the pass is still running.
+
+	   A base copy of half a terabyte takes hours, and until this existed the
+	   only per-disk numbers were written when the pass finished — so the console
+	   showed "nothing copied yet" for the whole of it while the bytes were
+	   plainly moving. The progress meter had nothing to draw.
+
+	   It is display only, and the centre must treat it as such: a partial result
+	   carries no change markers, because the marker for the next pass is not
+	   known until this one has read to the end. Folding one in as though the
+	   pass had finished would resume the next pass from a point never reached. */
+	InProgress bool `json:"inProgress,omitempty"`
 
 	// Final marks the cutover pass, the one that ran with the source stopped.
 	Final bool `json:"final,omitempty"`

@@ -77,6 +77,9 @@ type DiskOutcome struct {
 	// NextChangeID is the marker for the following pass. Stored even when
 	// nothing was copied.
 	NextChangeID string
+	// FullRead records that this disk was read end to end because the source
+	// could not answer a change-tracking query.
+	FullRead bool
 }
 
 // PassOutcome is what the pass did, in the shape the centre stores.
@@ -87,6 +90,11 @@ type PassOutcome struct {
 	SourcePoweredOff bool
 	// CopiedBytes is the total across disks, for the one-line job message.
 	CopiedBytes int64
+	// FullRead records that at least one disk had to be read end to end for the
+	// want of change tracking. Said out loud rather than left to the byte count,
+	// because it is the difference between a base copy that will be followed by
+	// small deltas and one that cannot be.
+	FullRead bool
 }
 
 // defaultGracefulOff is how long a guest gets to shut down before the power is
@@ -100,7 +108,22 @@ const defaultGracefulOff = 5 * time.Minute
    left behind on somebody else's VM grows until their datastore fills, and
    filling a datastore Ballast does not own is the worst thing this feature
    could do to a system it is only visiting. */
-func RunPass(ctx context.Context, prov Provisioner, req PassRequest, onProgress func(string)) (PassOutcome, error) {
+/* PassProgress is what a pass reports while it is still running.
+
+   Note is one line for the job message, which is prose for a person. Disks is
+   the same moment expressed as numbers, because a progress meter cannot be
+   drawn from a sentence — and parsing one back into bytes is exactly the habit
+   this codebase refuses elsewhere. */
+type PassProgress struct {
+	Note string
+	// Disks is every disk in the pass, with SizeBytes always set and CopiedBytes
+	// filling in as it goes. Disks not started yet are present at zero, so the
+	// total is the whole job from the first report rather than growing as each
+	// disk begins — a denominator that moves makes a meter run backwards.
+	Disks []DiskOutcome
+}
+
+func RunPass(ctx context.Context, prov Provisioner, req PassRequest, onProgress func(PassProgress)) (PassOutcome, error) {
 	c, err := Connect(ctx, req.Endpoint)
 	if err != nil {
 		return PassOutcome{}, err
@@ -118,19 +141,25 @@ func RunPass(ctx context.Context, prov Provisioner, req PassRequest, onProgress 
 type passSource interface {
 	Source
 	Inspect(ctx context.Context, moRef string) (VMInfo, error)
+	ResolveDiskFile(ctx context.Context, dsPath string, capacity int64) (string, error)
 	Snapshot(ctx context.Context, moRef, name string) (string, error)
 	RemoveSnapshot(ctx context.Context, moRef, snapRef string) error
 	PowerOff(ctx context.Context, moRef string, graceful time.Duration) error
 }
 
-func runPass(ctx context.Context, c passSource, prov Provisioner, req PassRequest, onProgress func(string)) (PassOutcome, error) {
+func runPass(ctx context.Context, c passSource, prov Provisioner, req PassRequest, onProgress func(PassProgress)) (PassOutcome, error) {
 	var out PassOutcome
 
-	note := func(msg string) {
+	// live is every disk in this pass, carried across the whole run so a report
+	// always describes the complete job rather than the disk in hand.
+	var live []DiskOutcome
+	report := func(p PassProgress) {
 		if onProgress != nil {
-			onProgress(msg)
+			p.Disks = append([]DiskOutcome(nil), live...)
+			onProgress(p)
 		}
 	}
+	note := func(msg string) { report(PassProgress{Note: msg}) }
 
 	/* The power off comes BEFORE the snapshot, not after.
 
@@ -155,6 +184,23 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			"neither of which is a workload that can be migrated", info.Name)
 	}
 
+	/* Resolve where each disk's bytes actually live, BEFORE the snapshot and
+	   before a single byte is provisioned at the destination.
+
+	   VMware's backing names the descriptor, which on VMFS is a few hundred
+	   bytes of text beside the real data. Finding that out at the first read —
+	   after a snapshot has been taken on somebody else's VM and a VHDX created
+	   here — is a failure that has already cost something. Resolving it here
+	   costs one call per disk and fails before anything has been changed. */
+	for i := range info.Disks {
+		d := &info.Disks[i]
+		data, rerr := c.ResolveDiskFile(ctx, d.Path, d.SizeBytes)
+		if rerr != nil {
+			return out, rerr
+		}
+		d.DataPath = data
+	}
+
 	note("taking a snapshot on the source")
 	snapRef, err := c.Snapshot(ctx, req.MoRef, SnapshotName(req.Migration))
 	if err != nil {
@@ -170,9 +216,18 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 		}
 	}()
 
-	for _, d := range info.Disks {
+	// Seeded before the first copy so the total is the whole pass from the first
+	// report. A denominator that grows as each disk starts makes a meter run
+	// backwards, which reads as a copy losing ground.
+	live = make([]DiskOutcome, len(info.Disks))
+	for i, d := range info.Disks {
+		live[i] = DiskOutcome{Key: d.Key, Label: d.Label, SourcePath: d.Path, SizeBytes: d.SizeBytes}
+	}
+
+	for i, d := range info.Disks {
 		marker := req.Marker[d.Key]
 		dest := DestPathFor(req.DestDir, info.Name, d)
+		live[i].DestPath = dest
 
 		var dst Disk2
 		var oerr error
@@ -187,7 +242,10 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 		}
 
 		res, cerr := CopyDisk(ctx, c, req.MoRef, snapRef, d, marker, dst, func(copied, total int64) {
-			note(fmt.Sprintf("%s: %s of %s", d.Label, fmtBytes(copied), fmtBytes(total)))
+			// The bytes as numbers AND as a sentence. The sentence is the job
+			// message an operator reads; the numbers are what the meter needs.
+			live[i].CopiedBytes = copied
+			report(PassProgress{Note: fmt.Sprintf("%s: %s of %s", d.Label, fmtBytes(copied), fmtBytes(total))})
 		})
 		// Closed before the error is returned, and its failure reported if the
 		// copy itself did not fail: a dismount that did not happen leaves a disk
@@ -214,8 +272,14 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			SizeBytes:    d.SizeBytes,
 			CopiedBytes:  res.BytesCopied,
 			NextChangeID: res.NextChangeID,
+			FullRead:     res.FullRead,
 		})
+		if res.FullRead {
+			out.FullRead = true
+		}
 		out.CopiedBytes += res.BytesCopied
+		live[i].CopiedBytes = res.BytesCopied
+		live[i].NextChangeID = res.NextChangeID
 	}
 	return out, nil
 }

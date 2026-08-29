@@ -99,10 +99,42 @@ func (r *Reconciler) migrationPass(ctx context.Context, job types.Job, onProgres
 	}
 
 	started := time.Now()
-	out, perr := vmware.RunPass(ctx, prov, req, func(msg string) {
-		if onProgress != nil {
-			onProgress(msg)
+	/* Live progress, reported two ways.
+
+	   The sentence goes to the job message, as it always did. The per-disk bytes
+	   go into the status journal as an IN-PROGRESS pass result, because a base
+	   copy of half a terabyte runs for hours and until this existed the console
+	   said "nothing copied yet" for the whole of it — the numbers only existed
+	   once the pass had finished.
+
+	   Throttled, because the copy calls back on every chunk. Host status is
+	   reported on a heartbeat, so anything faster than the heartbeat is work
+	   nobody sees. */
+	var lastReport time.Time
+	out, perr := vmware.RunPass(ctx, prov, req, func(pp vmware.PassProgress) {
+		if onProgress != nil && pp.Note != "" {
+			onProgress(pp.Note)
 		}
+		if len(pp.Disks) == 0 || time.Since(lastReport) < migrationProgressEvery {
+			return
+		}
+		lastReport = time.Now()
+		live := types.MigrationPassResult{
+			Migration: name, JobID: job.ID, Final: req.Final,
+			InProgress: true, StartedAt: started,
+		}
+		for _, d := range pp.Disks {
+			// NextChangeID is deliberately NOT carried while the pass is running.
+			// The marker for the next pass is not known until this one has read
+			// to the end, and a partial one would resume from a point never
+			// reached — copying nothing and reporting a delta.
+			live.Disks = append(live.Disks, types.MigrationPassDisk{
+				Key: d.Key, Label: d.Label, SourcePath: d.SourcePath, DestPath: d.DestPath,
+				SizeBytes: d.SizeBytes, CopiedBytes: d.CopiedBytes,
+			})
+			live.CopiedBytes += d.CopiedBytes
+		}
+		r.recordMigrationPass(live)
 	})
 
 	res := types.MigrationPassResult{
@@ -142,7 +174,18 @@ func (r *Reconciler) migrationPass(ctx context.Context, job types.Job, onProgres
 	case len(markers) == 0:
 		what = "base copy"
 	}
-	return fmt.Sprintf("%s: %s across %d disk(s)", what, humanBytes(out.CopiedBytes), len(out.Disks)), nil
+	msg := fmt.Sprintf("%s: %s across %d disk(s)", what, humanBytes(out.CopiedBytes), len(out.Disks))
+	/* Said in the message, because it changes what the next step costs.
+
+	   A disk read end to end for the want of change tracking transfers the whole
+	   volume rather than only what is allocated, and there is no marker for a
+	   delta to resume from. An operator sizing the next window needs that, and
+	   the byte count alone does not carry it — a thick disk and a full read of a
+	   thin one look identical. */
+	if out.FullRead {
+		msg += ". This VM has no change tracking, so the disks were read in full rather than only where data is"
+	}
+	return msg, nil
 }
 
 // migrationEnableCBT turns Changed Block Tracking on for the source VM.
@@ -238,6 +281,11 @@ func (r *Reconciler) diskProvisioner() (vmware.Provisioner, error) {
 	}
 	return vmware.HostDisks{PS: ps}, nil
 }
+
+// migrationProgressEvery throttles in-flight progress reports. The copy calls
+// back on every chunk; host status goes out on a heartbeat, so anything faster
+// than that is work nobody ever sees.
+const migrationProgressEvery = 5 * time.Second
 
 /* recordMigrationPass stores the pass so the next status report carries it.
 
