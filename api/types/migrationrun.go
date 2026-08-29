@@ -167,6 +167,32 @@ type MigrationStatus struct {
 	// thing this feature could leave on a system it does not own.
 	SnapshotRef string `json:"snapshotRef,omitempty"`
 
+	/* Whether the snapshot actually came off, and what stopped it if not.
+
+	   The cleanup job runs on the way out of every terminal phase, and it is
+	   deliberately not waited on — a migration that is already Done or Failed
+	   has no phase to move to when the job lands. But not waiting is not the
+	   same as not looking: without these the migration reads "cancelled, the
+	   source VM is untouched" while a Ballast snapshot sits on somebody else's
+	   VM growing until their datastore fills, and nothing anywhere reports it.
+	   The centre knew the job failed and said nothing, which is the failure the
+	   brief calls a defect rather than a runbook step.
+
+	   SnapshotRemoved is a POSITIVE confirmation and is only ever set from the
+	   cleanup job succeeding. False means "not confirmed", which includes "the
+	   job has not finished yet" — it is never read as "there is a snapshot
+	   there", because absent is not the same as zero. */
+	CleanupJobID    string `json:"cleanupJobId,omitempty"`
+	SnapshotRemoved bool   `json:"snapshotRemoved,omitempty"`
+	// SnapshotProblem is the agent's own words when the snapshot did not come
+	// off. Present means a real snapshot is still on the source VM.
+	SnapshotProblem string `json:"snapshotProblem,omitempty"`
+	// SnapshotCleanupRequested is an operator asking to try again. A flag the
+	// controller acts on rather than an action REST takes directly, because the
+	// source credential and the job's parameters are the controller's to
+	// resolve — the same shape as releasing a cutover.
+	SnapshotCleanupRequested bool `json:"snapshotCleanupRequested,omitempty"`
+
 	// CBTEnabledByBallast records that Ballast turned Changed Block Tracking on.
 	// It is left on afterwards — turning it off needs another power cycle, and
 	// doing that to somebody's VM to tidy up a setting is worse than leaving a
