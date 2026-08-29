@@ -1933,6 +1933,69 @@ type ClusterStatus struct {
 	// and the whole cluster went dark to the centre: no nodes, no volumes, three
 	// of seven steps, while two healthy members could see it perfectly.
 	StateUnreadable bool `json:"stateUnreadable,omitempty"`
+
+	/* NoMemberReporting means not one member of this cluster has an agent
+	   checking in, so nothing here is being refreshed by anybody.
+
+	   StateUnreadable is a member that TRIED and could not see the cluster. This
+	   is the case where no member is left to try, and it has to be derived
+	   rather than reported for exactly that reason: the flag that would say so
+	   is set by an agent running a cluster pass, and a powered-off host runs no
+	   passes. Nothing sets it, the last good reading stays on record, and the
+	   console goes on drawing it.
+
+	   That is not hypothetical. Ballast shut down all three members of Primary1
+	   through its own ShutdownHost job, recorded all three as succeeded, watched
+	   every agent go silent — and forty hours later still showed the cluster
+	   Ready with three nodes Up. Every fact needed to know better was in the
+	   store; nothing put them together.
+
+	   Derived by the CENTRE at read time from host liveness, like ObservedAt it
+	   is not carried on the wire and an agent cannot set it. It is not persisted
+	   either: it describes this moment, and a stored copy would be one more
+	   reading going stale on the shelf. */
+	NoMemberReporting bool `json:"noMemberReporting,omitempty"`
+
+	// LastMemberContact is when the most recently heard-from member last checked
+	// in, so "nobody is reporting" can say since when. Zero when no member has
+	// ever reported, which is a cluster that has not come up rather than one
+	// that has gone away. Centre-derived at read time, like NoMemberReporting.
+	LastMemberContact time.Time `json:"lastMemberContact,omitempty"`
+
+	// MemberCount and MembersOnline are the liveness behind the two fields
+	// above, kept so the console can say "0 of 3 members reporting" rather than
+	// recount from a host list it may not have loaded. Centre-derived.
+	MemberCount   int `json:"memberCount,omitempty"`
+	MembersOnline int `json:"membersOnline,omitempty"`
+
+	/* ShutDownFromBallast means every silent member went quiet because Ballast
+	   shut it down, and the cluster is therefore OFF rather than LOST.
+
+	   The distinction is the whole point of reporting it. Both look identical
+	   from the centre — no member answering — and they call for opposite
+	   responses: one is somebody's Tuesday evening and should raise nothing, the
+	   other is an outage. A console that cannot tell them apart either alarms
+	   through every planned shutdown until its alarms mean nothing, or stays
+	   calm through a real one.
+
+	   Derived from JOB HISTORY, not from a flag set when the button was pressed.
+	   The jobs are already durable, already attributed to whoever asked, and
+	   already correlated with the silence they explain by the same rule the host
+	   alarms use — so there is one account of why a host is quiet rather than
+	   two that can disagree. A stored flag would also have to be got right when
+	   a host is shut down some other way, and it would be wrong for every
+	   cluster shut down before the flag existed.
+
+	   Requires ALL of them: a cluster where two members were shut down and a
+	   third simply vanished is not a planned shutdown, and calling it one hides
+	   the member that matters. Centre-derived at read time. */
+	ShutDownFromBallast bool `json:"shutDownFromBallast,omitempty"`
+
+	// ShutDownAt and ShutDownBy are when the LAST member was shut down and who
+	// asked for it, so the console can say whose shutdown this was rather than
+	// only that it was one. Set only alongside ShutDownFromBallast.
+	ShutDownAt time.Time `json:"shutDownAt,omitempty"`
+	ShutDownBy string    `json:"shutDownBy,omitempty"`
 }
 
 // ClusterNetworkStatus is one cluster network: subnet (CIDR), role

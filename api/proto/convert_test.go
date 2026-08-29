@@ -320,6 +320,24 @@ func TestSampleClusterStatusCoversEveryField(t *testing.T) {
 		// agent set it, a host with a skewed or wrong clock could make a stale
 		// snapshot look current and defeat the gate that reads it.
 		"ClusterStatus.ObservedAt": "stamped by the centre on receipt; see ClusterStatus.ObservedAt",
+
+		/* Derived by the centre at read time from host liveness, and derived
+		   rather than reported precisely because no agent could report it: the
+		   case they describe is one where every member is powered off, so there
+		   is nobody left to send anything. Carrying them on the wire would mean
+		   asking a silent host how silent it is. */
+		"ClusterStatus.NoMemberReporting": "centre-derived from host liveness; no member is running to report it",
+		"ClusterStatus.LastMemberContact": "centre-derived from host liveness; see ClusterStatus.NoMemberReporting",
+		"ClusterStatus.MemberCount":       "centre-derived from desired membership; see ClusterStatus.NoMemberReporting",
+		"ClusterStatus.MembersOnline":     "centre-derived from host liveness; see ClusterStatus.NoMemberReporting",
+
+		/* Derived from the centre's own job history: whether every silent member
+		   went quiet because Ballast shut it down. The hosts it describes are
+		   powered off, so there is nobody to report it — and the jobs that
+		   establish it never left the centre in the first place. */
+		"ClusterStatus.ShutDownFromBallast": "centre-derived from job history; the hosts it describes are off",
+		"ClusterStatus.ShutDownAt":          "centre-derived from job history; see ClusterStatus.ShutDownFromBallast",
+		"ClusterStatus.ShutDownBy":          "centre-derived from job history; see ClusterStatus.ShutDownFromBallast",
 	}
 
 	check := func(name string, v reflect.Value) {
