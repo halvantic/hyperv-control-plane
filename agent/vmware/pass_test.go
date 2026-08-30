@@ -328,3 +328,32 @@ func indexOfPrefix(xs []string, prefix string) int {
 	}
 	return -1
 }
+
+/*
+A disk on a snapshot chain is refused before anything is touched.
+
+	The live file is a delta holding only what changed since the snapshot, and
+	one file per disk cannot rebuild a chain. What this replaced was a probe of
+	four candidate filenames and a paragraph of HTTP status codes — true, and no
+	help to the person reading it.
+*/
+func TestASnapshottedSourceIsRefusedBeforeAnythingIsTouched(t *testing.T) {
+	src, prov := onePass()
+	src.info.Disks[0].Snapshotted = true
+
+	_, err := runPass(t.Context(), src, prov, PassRequest{Migration: "m", MoRef: "vm-1", DestDir: `C:\CSV1`}, nil)
+	if err == nil {
+		t.Fatal("a VM running on a snapshot was copied")
+	}
+	if !strings.Contains(err.Error(), "Delete the snapshots") {
+		t.Errorf("the refusal does not name the one step that fixes it: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Hard disk 1") {
+		t.Errorf("the refusal does not say which disk: %v", err)
+	}
+	// Nothing on the source, and nothing at the destination: the refusal comes
+	// before the snapshot, before the resolve and before a VHDX is created.
+	if indexOfPrefix(src.calls, "snapshot:") >= 0 || indexOfPrefix(src.calls, "resolve:") >= 0 {
+		t.Errorf("the source was touched before the refusal: %v", src.calls)
+	}
+}

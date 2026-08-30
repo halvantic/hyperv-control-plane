@@ -95,6 +95,12 @@ type Disk struct {
 	// SizeBytes is the guest-visible capacity, which is what the destination
 	// VHDX is created at.
 	SizeBytes int64
+	// Snapshotted is whether this disk is running on a snapshot chain — its
+	// backing has a parent, so the live file is a delta holding only what has
+	// changed since the snapshot was taken. A pass reads ONE file per disk over
+	// the datastore interface and cannot compose a chain, so this decides
+	// whether the disk can be copied at all.
+	Snapshotted bool
 }
 
 // VMInfo is what a copy needs to know about the source.
@@ -131,8 +137,16 @@ func (v *Client) Inspect(ctx context.Context, moRef string) (VMInfo, error) {
 		if d.DeviceInfo != nil {
 			disk.Label = d.DeviceInfo.GetDescription().Label
 		}
-		if b, ok := d.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok {
+		switch b := d.Backing.(type) {
+		case *types.VirtualDiskFlatVer2BackingInfo:
 			disk.Path = b.FileName
+			// A redo log on VMFS is a flat backing WITH a parent, and the file
+			// it names ("…-000001.vmdk") is the delta, not the disk.
+			disk.Snapshotted = b.Parent != nil
+		case *types.VirtualDiskSeSparseBackingInfo:
+			// SEsparse exists only as a snapshot delta.
+			disk.Path = b.FileName
+			disk.Snapshotted = true
 		}
 		out.Disks = append(out.Disks, disk)
 	}

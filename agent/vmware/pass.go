@@ -184,6 +184,34 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			"neither of which is a workload that can be migrated", info.Name)
 	}
 
+	/* A disk already on a snapshot chain is refused HERE, before change tracking,
+	   before a snapshot of our own, and before anything is created at the
+	   destination.
+
+	   A pass reads one file per disk over the datastore interface. A snapshot
+	   splits a disk into a chain — a frozen base plus a delta holding only what
+	   has changed — and nothing here can compose one. What that produced instead
+	   was a probe of four candidate filenames and a paragraph of HTTP status
+	   codes: true, and no use to anybody. The remedy is one step in vCenter, and
+	   it belongs on screen instead. */
+	var chained []string
+	for _, d := range info.Disks {
+		if d.Snapshotted {
+			chained = append(chained, d.Label)
+		}
+	}
+	if len(chained) > 0 {
+		is := "is"
+		if len(chained) > 1 {
+			is = "are"
+		}
+		return out, fmt.Errorf("%s is running on a snapshot: %s %s a delta file rather than the disk itself, and a copy that "+
+			"reads one file per disk cannot put a snapshot chain back together. Delete the snapshots in vSphere Client "+
+			"(Snapshots → Delete All) so the disks consolidate back to one file each, then retry this migration. Ballast will not "+
+			"delete a snapshot it did not take — the data in it is not ours to discard",
+			info.Name, strings.Join(chained, ", "), is)
+	}
+
 	/* Resolve where each disk's bytes actually live, BEFORE the snapshot and
 	   before a single byte is provisioned at the destination.
 
