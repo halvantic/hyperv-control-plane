@@ -175,6 +175,23 @@ type VMwareBlocker struct {
 	Warm bool `json:"warm,omitempty"`
 }
 
+/*
+MigrationSnapshotName is what Ballast calls the snapshot it takes on a source VM.
+
+	Here, in the shared schema, because BOTH sides construct it: the agent takes
+	and removes the snapshot during a copy, and the centre removes it when the
+	host cannot reach the source at all. Two spellings of this name would mean
+	the centre politely failing to find a snapshot the agent had left, and
+	reporting the source clean while it grew.
+
+	Recognisable on sight in vSphere Client, and carrying the migration's own
+	identity so two migrations of different VMs — or a retry after a failure —
+	never look like each other's leftovers.
+*/
+func MigrationSnapshotName(migration string) string {
+	return "ballast-migration-" + migration
+}
+
 type VMwareDisk struct {
 	Key int32 `json:"key"`
 	// Label is VMware's own ("Hard disk 1"), kept because it is what an

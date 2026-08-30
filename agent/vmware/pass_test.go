@@ -387,3 +387,34 @@ func TestTheLiveMeterNarrowsToWhatThePassActuallyMoves(t *testing.T) {
 		t.Errorf("a finished copy did not read as complete: %d of %d", last[0].CopiedBytes, last[0].SizeBytes)
 	}
 }
+
+/*
+The host is the one that could not reach the source, and says so.
+
+	govmomi's raw "dial tcp: lookup vcsa-02: no such host" says a lookup failed.
+	It does not say who looked — and that is the whole answer: the copy runs on
+	the Hyper-V host and asks the host's own DNS, so a source the centre resolves
+	perfectly well can be unknown there. An operator reading the raw text goes
+	and checks the centre, where everything works.
+*/
+func TestAConnectFailureSaysWhichSideCouldNotReachTheSource(t *testing.T) {
+	got := explainConnect("vcsa-02.nuclear.home",
+		errors.New(`Post "https://vcsa-02.nuclear.home/sdk": dial tcp: lookup vcsa-02.nuclear.home: no such host`))
+	for _, want := range []string{"did not resolve on this Hyper-V host", "this host's own DNS", "by IP address"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the explanation does not carry %q:\n %s", want, got)
+		}
+	}
+
+	// A credential and a certificate are different problems with different
+	// remedies, and neither is a DNS fault.
+	if got := explainConnect("vc", errors.New("ServerFaultCode: Cannot complete login due to an incorrect user name or password.")); !strings.Contains(got, "administrator@vsphere.local") {
+		t.Errorf("a rejected credential is not explained:\n %s", got)
+	}
+	// Anything unrecognised keeps govmomi's own words rather than inventing a
+	// remedy for a failure nobody has seen.
+	raw := "ServerFaultCode: something entirely new"
+	if got := explainConnect("vc", errors.New(raw)); got != raw {
+		t.Errorf("an unknown error was rewritten as %q", got)
+	}
+}

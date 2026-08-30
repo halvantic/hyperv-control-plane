@@ -61,9 +61,44 @@ func Connect(ctx context.Context, e Endpoint) (*Client, error) {
 
 	c, err := govmomi.NewClient(ctx, u, e.InsecureTLS)
 	if err != nil {
-		return nil, fmt.Errorf("vmware: connect %s: %w", u.Host, err)
+		return nil, fmt.Errorf("vmware: connect %s: %s", u.Host, explainConnect(u.Host, err))
 	}
 	return &Client{c: c}, nil
+}
+
+/*
+explainConnect names what went wrong from THIS side of the wire.
+
+	The centre explains its own connection failures and this one did not, so
+	govmomi's raw text reached the console: `dial tcp: lookup vcsa-02: no such
+	host`. That says a lookup failed. It does not say WHO looked, and that is the
+	whole of the answer here — the copy runs on the Hyper-V host and asks the
+	host's own DNS, so a source the centre resolves perfectly well can be
+	unknown on the host that has to fetch from it. An operator reading the raw
+	text goes and checks the centre, where everything works.
+
+	Worded for the host rather than shared with the centre's version: the same
+	condition has a different remedy depending on which machine hit it.
+*/
+func explainConnect(host string, err error) string {
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "no such host") || strings.Contains(s, "server misbehaving"):
+		return host + " did not resolve on this Hyper-V host. The copy runs here and asks this host's own DNS, " +
+			"so a source the centre resolves may still be unknown here — give the host a DNS server that knows the " +
+			"name, add a hosts entry, or register the source by IP address."
+	case strings.Contains(s, "incorrect user name or password") || strings.Contains(s, "cannot complete login"):
+		return "the credential was rejected by " + host + ". For vCenter this is usually an SSO account such as " +
+			"administrator@vsphere.local; a local ESXi account will not authenticate against vCenter."
+	case strings.Contains(s, "certificate") || strings.Contains(s, "x509"):
+		return "the certificate presented by " + host + " is not trusted by this Hyper-V host. Tick “skip certificate " +
+			"verification” on the source if that is what you intend: " + err.Error()
+	case strings.Contains(s, "connection refused"):
+		return "nothing answered on " + host + " port 443. The name resolves from this host, so this is a firewall or the wrong address."
+	case strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded"):
+		return "the connection to " + host + " timed out. This Hyper-V host has no route to it, or a firewall is dropping rather than refusing."
+	}
+	return err.Error()
 }
 
 func (v *Client) Close(ctx context.Context) {

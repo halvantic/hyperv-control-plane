@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/joshua-fourie/ballast/api/types"
 )
 
 /* Moving the bytes.
@@ -202,12 +203,10 @@ func (d Disk) readPath() string {
 // is one implementation of it rather than two that can drift apart.
 const sectorSize int64 = 4096
 
-/* SnapshotName is what Ballast calls its snapshots.
-
-   Recognisable on sight in vSphere Client, and carrying the migration's own
-   identity so two migrations of different VMs — or a retry after a failure —
-   never look like each other's leftovers. Somebody investigating an unexpected
-   snapshot should be able to tell what made it and whether it is still needed. */
+// SnapshotName is what Ballast calls its snapshots. The rule lives in the shared
+// schema because the centre constructs the same name when it has to remove a
+// snapshot a host could not reach; two spellings would mean the centre failing
+// to find one the agent left, and reporting the source clean while it grew.
 func SnapshotName(migration string) string {
-	return "ballast-migration-" + migration
+	return types.MigrationSnapshotName(migration)
 }
