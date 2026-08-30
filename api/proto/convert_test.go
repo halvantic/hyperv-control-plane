@@ -158,6 +158,7 @@ func sampleVM() types.VM {
 			ISOPath:              `C:\ClusterStorage\Volume1\ISOs\boot.iso`,
 			SecureBoot:           "linux",
 			ComputerName:         "WEB01-GUEST",
+			VideoResolution:      "1920x1080",
 			BootOrder:            []string{"DVD", "Drive", "Network"},
 			Replication: &types.VMReplicationSpec{
 				Enabled:            true,

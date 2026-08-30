@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -591,6 +592,31 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
 `, name, psQuote(enable), psQuote(tmpl))
 	}
 
+	/* Console resolution: drive the synthetic video adapter to the declared size.
+
+	   A basic console session shows exactly what the guest's video adapter is
+	   driving, so a bigger browser window scales 1024x768 up rather than showing
+	   more of anything. Set-VMVideo is the only thing that changes it, and it
+	   needs the VM stopped — so, like Secure Boot, it flags $pending while
+	   running and settles on the next power-off.
+
+	   Guarded on the cmdlet existing: Set-VMVideo is absent on some Hyper-V
+	   builds, and a missing cmdlet must not fail a whole reconcile over a console
+	   convenience while power, sizing and networking wait behind it. */
+	video := ""
+	if w, h, ok := parseResolution(s.VideoResolution); ok {
+		video = fmt.Sprintf(`if (Get-Command Set-VMVideo -ErrorAction SilentlyContinue) {
+  $vid = Get-VMVideo -VMName %[1]s -ErrorAction SilentlyContinue
+  if ($vid -and (($vid.ResolutionType -ne 'Single') -or ($vid.HorizontalResolution -ne %[2]d) -or ($vid.VerticalResolution -ne %[3]d))) {
+    if ($running) { $pending = $true; $pendingWhat += ('console resolution (want %[2]dx%[3]d, have ' + [string]$vid.HorizontalResolution + 'x' + [string]$vid.VerticalResolution + ')') } else {
+      Set-VMVideo -VMName %[1]s -ResolutionType Single -HorizontalResolution %[2]d -VerticalResolution %[3]d
+      $changed = $true
+    }
+  }
+}
+`, name, w, h)
+	}
+
 	// Boot order: order the VM's actual boot entries by the declared device-category
 	// priority. Runs after disks/adapters/ISO are attached (below) so the entries it
 	// reorders exist. Like Secure Boot, a firmware/BIOS change needs the VM off, so
@@ -802,9 +828,32 @@ $cur = Get-VM -Name %[1]s -ErrorAction Stop
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
-%[13]s%[6]s%[7]s%[8]s%[9]s%[14]s
+%[13]s%[15]s%[6]s%[7]s%[8]s%[9]s%[14]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; ') } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video)
+}
+
+/*
+parseResolution reads "1920x1080" into its two numbers.
+
+	Refused rather than guessed. A malformed value here would otherwise reach
+	Set-VMVideo as a zero and leave the console at 0x0 — a VM whose screen never
+	comes back, for a typo in a field nobody would think to look at.
+*/
+func parseResolution(v string) (w, h int, ok bool) {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(v)), "x")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	w, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || w < 640 || w > 7680 {
+		return 0, 0, false
+	}
+	h, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || h < 480 || h > 4320 {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 // SetVMPowerState drives the VM to Running (Start-VM) or Off (Stop-VM). It reads

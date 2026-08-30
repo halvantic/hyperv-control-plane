@@ -2718,6 +2718,22 @@ type VMSpec struct {
 	// stopped, so it settles on the next power-off (like processor/memory).
 	SecureBoot string `json:"secureBoot,omitempty"`
 
+	/* VideoResolution is the console resolution the VM's synthetic video adapter
+	   presents, as "1920x1080". Empty leaves it as Hyper-V set it, which is
+	   1024x768 and is why this field exists.
+
+	   It is a property of the VM, not of the viewer. A basic console session
+	   shows exactly what the guest's video adapter is driving, so asking the
+	   browser for a bigger window scales a 1024x768 picture up rather than
+	   showing more of anything — the only thing that changes it is the adapter.
+
+	   Applied with Set-VMVideo, which requires the VM stopped, so like Secure
+	   Boot and processor count it settles on the next power-off and reports
+	   pending until then. Enhanced-session guests (Windows with integration
+	   services) negotiate their own resolution and are unaffected.
+	*/
+	VideoResolution string `json:"videoResolution,omitempty"`
+
 	// ComputerName is the guest OS hostname this VM should have. It is NOT the
 	// VM's name: the Hyper-V object and the operating system inside it are named
 	// separately, they drift the moment anyone renames either, and the one that

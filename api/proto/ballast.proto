@@ -1007,6 +1007,10 @@ message VMSpec {
   repeated string boot_order = 13;
   // computer_name is the guest OS hostname, which is not the VM's name.
   string computer_name = 14;
+  // video_resolution is the console resolution the VM's video adapter presents,
+  // as "1920x1080". Empty leaves Hyper-V's own 1024x768. Applied with
+  // Set-VMVideo, which needs the VM stopped.
+  string video_resolution = 15;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the

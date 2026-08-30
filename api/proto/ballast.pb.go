@@ -6041,9 +6041,13 @@ type VMSpec struct {
 	// leaves the boot order unmanaged.
 	BootOrder []string `protobuf:"bytes,13,rep,name=boot_order,json=bootOrder,proto3" json:"boot_order,omitempty"`
 	// computer_name is the guest OS hostname, which is not the VM's name.
-	ComputerName  string `protobuf:"bytes,14,opt,name=computer_name,json=computerName,proto3" json:"computer_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ComputerName string `protobuf:"bytes,14,opt,name=computer_name,json=computerName,proto3" json:"computer_name,omitempty"`
+	// video_resolution is the console resolution the VM's video adapter presents,
+	// as "1920x1080". Empty leaves Hyper-V's own 1024x768. Applied with
+	// Set-VMVideo, which needs the VM stopped.
+	VideoResolution string `protobuf:"bytes,15,opt,name=video_resolution,json=videoResolution,proto3" json:"video_resolution,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *VMSpec) Reset() {
@@ -6170,6 +6174,13 @@ func (x *VMSpec) GetBootOrder() []string {
 func (x *VMSpec) GetComputerName() string {
 	if x != nil {
 		return x.ComputerName
+	}
+	return ""
+}
+
+func (x *VMSpec) GetVideoResolution() string {
+	if x != nil {
+		return x.VideoResolution
 	}
 	return ""
 }
@@ -7401,7 +7412,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x02VM\x12*\n" +
 	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12&\n" +
 	"\x04spec\x18\x02 \x01(\v2\x12.ballast.v1.VMSpecR\x04spec\x12,\n" +
-	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xe8\x05\n" +
+	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\x93\x06\n" +
 	"\x06VMSpec\x129\n" +
 	"\tplacement\x18\x01 \x01(\v2\x1b.ballast.v1.VMPlacementSpecR\tplacement\x12+\n" +
 	"\x11hyperv_generation\x18\x02 \x01(\x05R\x10hypervGeneration\x12'\n" +
@@ -7419,7 +7430,8 @@ const file_ballast_proto_rawDesc = "" +
 	"secureBoot\x12\x1d\n" +
 	"\n" +
 	"boot_order\x18\r \x03(\tR\tbootOrder\x12#\n" +
-	"\rcomputer_name\x18\x0e \x01(\tR\fcomputerName\"\x8e\x02\n" +
+	"\rcomputer_name\x18\x0e \x01(\tR\fcomputerName\x12)\n" +
+	"\x10video_resolution\x18\x0f \x01(\tR\x0fvideoResolution\"\x8e\x02\n" +
 	"\x11VMReplicationSpec\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vtarget_host\x18\x02 \x01(\tR\n" +

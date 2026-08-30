@@ -366,3 +366,67 @@ func TestProcessorCountStillNeedsThePowerOff(t *testing.T) {
 		t.Error("a processor change no longer defers to a power-off")
 	}
 }
+
+/*
+Console resolution: the one thing that actually changes what a console shows.
+
+	A basic session renders exactly what the guest's video adapter is driving, so
+	a bigger browser window scales 1024x768 up rather than showing more of
+	anything. Set-VMVideo needs the VM stopped, so like Secure Boot it settles on
+	the next power-off and says so meanwhile.
+*/
+func TestEnsureVMScriptDrivesTheConsoleResolution(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{MemoryStartupBytes: 4294967296, VideoResolution: "1920x1080"},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	if !strings.Contains(s, "Set-VMVideo -VMName 'Web01' -ResolutionType Single -HorizontalResolution 1920 -VerticalResolution 1080") {
+		t.Fatalf("script does not drive the video adapter:\n%s", s)
+	}
+	// Only while off, and named when deferred: applying it to a running VM is
+	// refused by Hyper-V, and a change that silently does nothing is worse.
+	if !strings.Contains(s, "if ($running) { $pending = $true") {
+		t.Fatalf("a running VM is not deferred:\n%s", s)
+	}
+	if !strings.Contains(s, "console resolution (want 1920x1080") {
+		t.Fatalf("the pending reason does not say what is waiting:\n%s", s)
+	}
+	// Absent on some builds. A console convenience must not fail a reconcile that
+	// power, sizing and networking are waiting behind.
+	if !strings.Contains(s, "if (Get-Command Set-VMVideo -ErrorAction SilentlyContinue)") {
+		t.Fatalf("the cmdlet is not guarded:\n%s", s)
+	}
+}
+
+// Unmanaged unless declared: an empty value leaves the adapter exactly as
+// Hyper-V set it rather than driving it to something nobody asked for.
+func TestEnsureVMScriptLeavesTheResolutionAloneWhenNotDeclared(t *testing.T) {
+	vm := types.VM{Meta: types.ObjectMeta{Name: "Web01"}, Spec: types.VMSpec{MemoryStartupBytes: 1}}
+	if s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2); strings.Contains(s, "Set-VMVideo") {
+		t.Fatalf("an undeclared resolution was driven anyway:\n%s", s)
+	}
+}
+
+/*
+A malformed resolution is refused, not guessed.
+
+	Reaching Set-VMVideo as a zero would leave the console at 0x0 — a VM whose
+	screen never comes back, for a typo in a field nobody would think to look at.
+*/
+func TestAMalformedResolutionIsRefused(t *testing.T) {
+	for _, bad := range []string{"", "1920", "1920x", "x1080", "1920*1080", "abcxdef", "320x240", "99999x99999", "-1920x1080"} {
+		if _, _, ok := parseResolution(bad); ok {
+			t.Errorf("%q was accepted as a resolution", bad)
+		}
+	}
+	for _, good := range []struct {
+		in   string
+		w, h int
+	}{{"1920x1080", 1920, 1080}, {"1280X800", 1280, 800}, {" 3840 x 2160 ", 3840, 2160}} {
+		w, h, ok := parseResolution(good.in)
+		if !ok || w != good.w || h != good.h {
+			t.Errorf("%q parsed as %dx%d (ok=%v)", good.in, w, h, ok)
+		}
+	}
+}
