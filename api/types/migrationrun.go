@@ -188,6 +188,15 @@ type MigrationStatus struct {
 	// outage, and they can only decide that if they can see it.
 	Passes           int   `json:"passes,omitempty"`
 	OutstandingBytes int64 `json:"outstandingBytes,omitempty"`
+
+	/* NoChangeTracking records that a pass had to read a disk in full because
+	   the source could not answer a change-tracking query.
+
+	   It is the reason a warm migration will not converge, and it is a different
+	   reason from the one everybody assumes. Without it the console had one
+	   explanation for a delta that does not shrink — the guest is writing faster
+	   than the link — and offered it as fact on a VM that was powered off. */
+	NoChangeTracking bool `json:"noChangeTracking,omitempty"`
 	// LastPassBytes is what the previous pass copied, so the trend is legible
 	// without keeping a history.
 	LastPassBytes int64     `json:"lastPassBytes,omitempty"`
@@ -313,6 +322,16 @@ type MigrationPassResult struct {
 	// SourcePoweredOff records that this pass stopped the guest. It is the
 	// moment a production workload stopped, so it belongs in the record.
 	SourcePoweredOff bool `json:"sourcePoweredOff,omitempty"`
+
+	/* FullRead marks a pass that had to read at least one disk END TO END
+	   because the source could not answer a change-tracking query.
+
+	   It reaches the centre because the centre is what decides whether more
+	   passes are worth running, and without it a warm migration converges on
+	   nothing: with no marker to resume from, every "delta" re-reads the whole
+	   disk, the outstanding figure never falls, and the console blames the guest
+	   for writing faster than the link — on a VM that was switched off. */
+	FullRead bool `json:"fullRead,omitempty"`
 
 	Disks       []MigrationPassDisk `json:"disks,omitempty"`
 	CopiedBytes int64               `json:"copiedBytes,omitempty"`

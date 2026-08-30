@@ -142,9 +142,13 @@ func (r *Reconciler) migrationPass(ctx context.Context, job types.Job, onProgres
 		JobID:            job.ID,
 		Final:            req.Final,
 		SourcePoweredOff: out.SourcePoweredOff,
-		CopiedBytes:      out.CopiedBytes,
-		StartedAt:        started,
-		FinishedAt:       time.Now(),
+		// Carried to the centre, not just written into the job message: the
+		// centre is what decides whether another pass is worth running, and a
+		// disk read in full has no marker for a delta to resume from.
+		FullRead:    out.FullRead,
+		CopiedBytes: out.CopiedBytes,
+		StartedAt:   started,
+		FinishedAt:  time.Now(),
 	}
 	for _, d := range out.Disks {
 		res.Disks = append(res.Disks, types.MigrationPassDisk{
