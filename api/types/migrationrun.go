@@ -135,6 +135,13 @@ type MigrationStatus struct {
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
 
+	// RetriedAt and RetriedBy record that a finished migration was started
+	// again, and by whom. Kept because a run that succeeded on its third attempt
+	// is not the same story as one that succeeded outright, and the job list is
+	// the only other place that says so.
+	RetriedAt time.Time `json:"retriedAt,omitempty"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
+
 	/* Copying is per-disk progress for the pass running RIGHT NOW.
 
 	   Its own field rather than folded into Disks, because the two count
@@ -290,6 +297,13 @@ type MigrationPassResult struct {
 
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
+
+	// RetriedAt and RetriedBy record that a finished migration was started
+	// again, and by whom. Kept because a run that succeeded on its third attempt
+	// is not the same story as one that succeeded outright, and the job list is
+	// the only other place that says so.
+	RetriedAt time.Time `json:"retriedAt,omitempty"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
 
 	// Error is the agent's own words when the pass failed. Present with disks
 	// already filled in is normal and useful: a four-disk VM that failed on the
