@@ -273,6 +273,19 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			// The bytes as numbers AND as a sentence. The sentence is the job
 			// message an operator reads; the numbers are what the meter needs.
 			live[i].CopiedBytes = copied
+			/* The denominator is what THIS PASS has to move, not the disk's
+			   capacity.
+
+			   A thin 96GB disk with 29GB written moves 29GB, and measuring that
+			   against 96 had the console read "26 GB of 96 GB · 27%" beside a job
+			   log saying "28.6 GB of 28.9 GB". Both were counting truthfully and
+			   one of them was answering a question nobody asked: the meter is
+			   there to say how far along the copy is, and it would have finished
+			   at 30%. Seeded from the capacity so the first report is not zero,
+			   and narrowed to the truth as each disk's extents come back. */
+			if total > 0 {
+				live[i].SizeBytes = total
+			}
 			report(PassProgress{Note: fmt.Sprintf("%s: %s of %s", d.Label, fmtBytes(copied), fmtBytes(total))})
 		})
 		// Closed before the error is returned, and its failure reported if the

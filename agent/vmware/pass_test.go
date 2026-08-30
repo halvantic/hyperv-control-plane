@@ -357,3 +357,33 @@ func TestASnapshottedSourceIsRefusedBeforeAnythingIsTouched(t *testing.T) {
 		t.Errorf("the source was touched before the refusal: %v", src.calls)
 	}
 }
+
+/*
+The live meter measures the copy, not the disk.
+
+	A thin 96GB disk with 29GB written moves 29GB. Measured against the capacity
+	the console read "26 GB of 96 GB · 27%" while the job log said "28.6 GB of
+	28.9 GB" — both counting truthfully, and the meter answering a question
+	nobody asked. It would have finished at 30%.
+*/
+func TestTheLiveMeterNarrowsToWhatThePassActuallyMoves(t *testing.T) {
+	src, prov := onePass()
+	// A 4 MB disk with one 1 MB extent allocated.
+	src.info.Disks[0].SizeBytes = 4 << 20
+	src.fakeSource.extents = []Extent{{Start: 0, Length: 1 << 20}}
+
+	var last []DiskOutcome
+	if _, err := runPass(t.Context(), src, prov, PassRequest{Migration: "m", MoRef: "vm-1", DestDir: `C:\CSV1`},
+		func(p PassProgress) { last = p.Disks }); err != nil {
+		t.Fatal(err)
+	}
+	if len(last) != 1 {
+		t.Fatalf("no per-disk progress was reported: %+v", last)
+	}
+	if last[0].SizeBytes != 1<<20 {
+		t.Errorf("the meter measured against %d bytes, want the %d this pass had to move", last[0].SizeBytes, 1<<20)
+	}
+	if last[0].CopiedBytes != last[0].SizeBytes {
+		t.Errorf("a finished copy did not read as complete: %d of %d", last[0].CopiedBytes, last[0].SizeBytes)
+	}
+}
