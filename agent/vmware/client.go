@@ -620,9 +620,21 @@ func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe d
 			tried = append(tried, fmt.Sprintf("%s (served %d of %d bytes at offset %d)", cand, n, length, offset))
 		}
 	}
+	/* 404 and 500 are different findings and the difference is the whole
+	   diagnosis: 404 says the candidate is not there, which is ordinary — only
+	   one of the four ever exists. 500 says the file IS there and the host would
+	   not serve it, which on a flat disk means it is in use. Said out loud,
+	   because the list of four candidates otherwise reads as "your disk is
+	   missing" when the disk is present and simply held. */
+	hint := ""
+	if strings.Contains(strings.Join(tried, " "), "500 Internal Server Error") {
+		hint = " One candidate answered 500, which means the file is there and the host would not serve it — usually " +
+			"because it is in use. Ballast reads the frozen base from behind its own snapshot for exactly this reason, " +
+			"so a 500 here points at a lock something else is holding: another backup or copy running against this VM."
+	}
 	return "", fmt.Errorf("vmware: nothing beside %s can serve the end of a %d-byte disk, so there is no file here holding "+
-		"its data. Tried: %s. A disk on vSAN, or on a datastore this host cannot read as files, cannot be copied over the "+
-		"datastore interface", dsPath, capacity, strings.Join(tried, "; "))
+		"its data. Tried: %s.%s A disk on vSAN, or on a datastore this host cannot read as files, cannot be copied over the "+
+		"datastore interface", dsPath, capacity, strings.Join(tried, "; "), hint)
 }
 
 /* PowerOff shuts the source down for a cutover.

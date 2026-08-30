@@ -146,12 +146,20 @@ func TestThePassReadsTheDataFileAndNotTheDescriptor(t *testing.T) {
 	}
 }
 
-/* Resolved BEFORE the snapshot and before anything is provisioned.
+/*
+Resolved AFTER the snapshot, and before anything is provisioned.
 
-   Finding out at the first read means a snapshot has already been taken on
-   somebody else's VM and a VHDX created here — a failure that has already cost
-   something and left something behind. */
-func TestTheDataFileIsResolvedBeforeAnythingIsChanged(t *testing.T) {
+	The snapshot is what makes the base file readable. Asked before it, the probe
+	reads the LIVE flat file of a running guest — held by the host, and answered
+	with `500 Internal Server Error` on a file that plainly exists. A warm
+	migration of a running VM could not get past its own pre-flight, which is the
+	one case warm exists for.
+
+	Nothing is left behind by failing here: the snapshot's cleanup runs on every
+	exit. Nothing is provisioned either, which was the other half of the original
+	reason for asking early.
+*/
+func TestTheDataFileIsResolvedOnTheSnapshotAndBeforeAnythingIsProvisioned(t *testing.T) {
 	src, prov := onePass()
 	src.failResolve = fmt.Errorf("no file beside it is large enough")
 
@@ -160,10 +168,14 @@ func TestTheDataFileIsResolvedBeforeAnythingIsChanged(t *testing.T) {
 	}, nil); err == nil {
 		t.Fatal("a disk whose data file could not be found was copied anyway")
 	}
-	for _, c := range src.calls {
-		if strings.HasPrefix(c, "snapshot:") {
-			t.Error("a snapshot was taken on the source before the disks were known to be readable")
-		}
+	snap, resolve := indexOfPrefix(src.calls, "snapshot:"), indexOfPrefix(src.calls, "resolve:")
+	if snap < 0 || resolve < 0 || snap > resolve {
+		t.Errorf("the data file was not resolved on the snapshot: %v", src.calls)
+	}
+	// And the snapshot still comes off, even though the pass failed straight
+	// after taking it.
+	if len(src.removed) != 1 {
+		t.Errorf("a failed resolve left the snapshot on the source: %v", src.calls)
 	}
 	if len(prov.created) > 0 {
 		t.Errorf("a destination disk was created before the source was known to be readable: %v", prov.created)

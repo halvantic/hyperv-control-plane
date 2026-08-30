@@ -418,3 +418,38 @@ func TestAConnectFailureSaysWhichSideCouldNotReachTheSource(t *testing.T) {
 		t.Errorf("an unknown error was rewritten as %q", got)
 	}
 }
+
+/*
+A 500 is not a missing disk, and saying so is the whole diagnosis.
+
+	404 says a candidate is not there, which is ordinary — only one of the four
+	ever exists. 500 says the file IS there and the host would not serve it,
+	which on a flat disk means it is in use. Without the distinction the failure
+	reads as "your disk is missing" about a disk that is present and held.
+*/
+func TestAServedFileThatIsHeldReadsDifferentlyFromAMissingOne(t *testing.T) {
+	probe := func(_ context.Context, dsPath string, _, _ int64) (int64, error) {
+		if strings.HasSuffix(dsPath, "-flat.vmdk") {
+			return 0, errors.New("the datastore answered 500 Internal Server Error")
+		}
+		return 0, errors.New("the datastore answered 404 Not Found")
+	}
+	_, err := resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, probe)
+	if err == nil {
+		t.Fatal("a disk nothing could serve was accepted")
+	}
+	if !strings.Contains(err.Error(), "the file is there and the host would not serve it") {
+		t.Errorf("a 500 was reported as a missing file:\n %v", err)
+	}
+
+	// Only when a 500 actually happened: four 404s mean the file really is not
+	// beside the descriptor, and inventing a lock would send an operator hunting
+	// for one that does not exist.
+	missing := func(_ context.Context, _ string, _, _ int64) (int64, error) {
+		return 0, errors.New("the datastore answered 404 Not Found")
+	}
+	_, err = resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, missing)
+	if strings.Contains(err.Error(), "would not serve it") {
+		t.Errorf("a missing file was reported as a locked one:\n %v", err)
+	}
+}

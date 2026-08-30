@@ -212,23 +212,6 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			info.Name, strings.Join(chained, ", "), is)
 	}
 
-	/* Resolve where each disk's bytes actually live, BEFORE the snapshot and
-	   before a single byte is provisioned at the destination.
-
-	   VMware's backing names the descriptor, which on VMFS is a few hundred
-	   bytes of text beside the real data. Finding that out at the first read —
-	   after a snapshot has been taken on somebody else's VM and a VHDX created
-	   here — is a failure that has already cost something. Resolving it here
-	   costs one call per disk and fails before anything has been changed. */
-	for i := range info.Disks {
-		d := &info.Disks[i]
-		data, rerr := c.ResolveDiskFile(ctx, d.Path, d.SizeBytes)
-		if rerr != nil {
-			return out, rerr
-		}
-		d.DataPath = data
-	}
-
 	note("taking a snapshot on the source")
 	snapRef, err := c.Snapshot(ctx, req.MoRef, SnapshotName(req.Migration))
 	if err != nil {
@@ -243,6 +226,34 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 			note("the snapshot could not be removed: " + rerr.Error())
 		}
 	}()
+
+	/* Resolve where each disk's bytes actually live — AFTER the snapshot, before
+	   a single byte is provisioned at the destination.
+
+	   VMware's backing names the descriptor, which on VMFS is a few hundred
+	   bytes of text beside the real data, so the file to read has to be found by
+	   asking the datastore which candidate can serve the end of the disk.
+
+	   It used to be asked BEFORE the snapshot, to fail before anything on the
+	   source had been touched. That works only for a source that is switched
+	   off. On a RUNNING VM the flat file is live and held by the host, and the
+	   probe came back `500 Internal Server Error` on a file that plainly exists
+	   — a warm migration of a running guest could not get past its own
+	   pre-flight, which is the one case warm exists for. Taking the snapshot
+	   first is what makes the base file readable: that is the entire purpose of
+	   the snapshot, and the copy has always depended on it. The snapshot's own
+	   cleanup runs on every exit, so failing here still leaves nothing behind.
+
+	   Still before the destination is touched, which was the other half of the
+	   original reason. */
+	for i := range info.Disks {
+		d := &info.Disks[i]
+		data, rerr := c.ResolveDiskFile(ctx, d.Path, d.SizeBytes)
+		if rerr != nil {
+			return out, rerr
+		}
+		d.DataPath = data
+	}
 
 	// Seeded before the first copy so the total is the whole pass from the first
 	// report. A denominator that grows as each disk starts makes a meter run
