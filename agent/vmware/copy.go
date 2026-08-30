@@ -52,6 +52,12 @@ type PassResult struct {
 	// Extents is how many ranges were transferred, which is the number that
 	// says whether a guest is writing scattered or sequentially.
 	Extents int
+	// FullRead records that the whole disk was read because the source could not
+	// answer a change-tracking query. Reported rather than inferred from the
+	// byte count: a thick disk read in full and a thin disk whose every block is
+	// allocated move the same bytes, and the difference matters to an operator
+	// sizing the next window.
+	FullRead bool
 }
 
 // Progress reports how far a pass has got, for the job's live message.
@@ -99,7 +105,24 @@ func CopyDisk(ctx context.Context, src Source, moRef, snapRef string, disk Disk,
 
 	extents, next, err := src.ChangedAreas(ctx, moRef, snapRef, disk.Key, changeID, disk.SizeBytes)
 	if err != nil {
-		return res, err
+		/* A BASE copy does not need change tracking, and refusing one for the
+		   want of it was a real migration failed for no reason.
+
+		   "*" is an optimisation: it reads only the allocated part of a thin
+		   disk, so a 500GB volume with 40GB written moves 40GB. When the source
+		   cannot answer, the correct fallback is to read the whole disk — more
+		   bytes, same result. A DELTA is different: without a marker there is no
+		   "since", and reading in full there would be a silent full re-copy
+		   reported as a delta, so it stays a failure. */
+		if changeID != "" || !errors.Is(err, ErrCBTUnavailable) {
+			return res, err
+		}
+		extents = []Extent{{Start: 0, Length: disk.SizeBytes}}
+		// No marker, because nothing tracked one. A warm migration must not
+		// proceed to deltas on this basis; the caller is what notices, since
+		// only it knows whether more passes are coming.
+		next = ""
+		res.FullRead = true
 	}
 	res.NextChangeID = next
 	res.Extents = len(extents)
@@ -123,7 +146,7 @@ func CopyDisk(ctx context.Context, src Source, moRef, snapRef string, disk Disk,
 			if rem := start + length - off; rem < n {
 				n = rem
 			}
-			if err := copyRange(ctx, src, disk.Path, off, n, dst); err != nil {
+			if err := copyRange(ctx, src, disk.readPath(), off, n, dst); err != nil {
 				return res, err
 			}
 			res.BytesCopied += n
@@ -143,18 +166,35 @@ func copyRange(ctx context.Context, src Source, dsPath string, offset, length in
 	defer rc.Close()
 
 	buf := make([]byte, length)
-	if _, err := io.ReadFull(rc, buf); err != nil {
-		if errors.Is(err, io.ErrUnexpectedEOF) {
-			// Short of what was asked for means the source file is not the size
-			// the configuration claims. Stopping is right: writing the partial
-			// read would leave the rest of the range holding whatever was there
-			// before, silently.
-			return fmt.Errorf("read %s at %d: the datastore returned less than the %d bytes requested, "+
-				"so the disk file is not the size its configuration reports", dsPath, offset, length)
+	n, err := io.ReadFull(rc, buf)
+	if err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			/* Short of what was asked for. Stopping is right — writing the
+			   partial read would leave the rest of the range holding whatever
+			   was there before, silently — but WHAT WAS SEEN is reported rather
+			   than what it was assumed to mean.
+
+			   This message used to conclude "so the disk file is not the size
+			   its configuration reports". That was one explanation of a short
+			   read presented as the finding, and it was the wrong one: the file
+			   being read was the descriptor, not the disk. The byte count is the
+			   fact that tells the two apart, so the byte count is what it says. */
+			return fmt.Errorf("read %s at %d: asked the datastore for %d bytes and it returned %d",
+				dsPath, offset, length, n)
 		}
 		return fmt.Errorf("read %s at %d: %w", dsPath, offset, err)
 	}
 	return dst.WriteAt(buf, offset)
+}
+
+// readPath is the file the bytes come from, falling back to the descriptor when
+// nothing resolved one — a caller that has not resolved gets the old behaviour
+// rather than an empty path and an unreadable error.
+func (d Disk) readPath() string {
+	if d.DataPath != "" {
+		return d.DataPath
+	}
+	return d.Path
 }
 
 // sectorSize mirrors the alignment the destination enforces. Named here so the

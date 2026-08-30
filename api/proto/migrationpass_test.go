@@ -19,6 +19,11 @@ func TestAPassResultSurvivesTheWire(t *testing.T) {
 	started := time.Date(2026, 8, 27, 2, 15, 0, 0, time.UTC)
 	in := types.HostStatus{
 		MigrationPasses: []types.MigrationPassResult{{
+			// In-flight progress crosses the same wire as a finished pass. A
+			// field the proto drops round-trips as its zero value, so this one
+			// would silently turn every live report into a COMPLETED one at the
+			// centre — advancing the pass count on a copy still running.
+			InProgress: true,
 			Migration:        "mig-web01",
 			JobID:            "job-4491",
 			Final:            true,
@@ -62,6 +67,9 @@ func TestAPassResultSurvivesTheWire(t *testing.T) {
 	}
 	if got.Migration != "mig-web01" || got.JobID != "job-4491" {
 		t.Errorf("the pass lost its identity: %+v", got)
+	}
+	if !got.InProgress {
+		t.Error("InProgress did not survive the round trip, so a live report would arrive as a completed pass")
 	}
 	if !got.Final || !got.SourcePoweredOff {
 		t.Error("the cutover pass came back looking like an ordinary delta")

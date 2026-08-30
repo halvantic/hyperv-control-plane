@@ -135,6 +135,22 @@ type MigrationStatus struct {
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
 
+	// RetriedAt and RetriedBy record that a finished migration was started
+	// again, and by whom. Kept because a run that succeeded on its third attempt
+	// is not the same story as one that succeeded outright, and the job list is
+	// the only other place that says so.
+	RetriedAt time.Time `json:"retriedAt,omitempty"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
+
+	/* Copying is per-disk progress for the pass running RIGHT NOW.
+
+	   Its own field rather than folded into Disks, because the two count
+	   different things: Disks accumulates what every pass has copied, and this
+	   is what the current one has moved so far. Adding a live figure into a
+	   running total would make a delta pass appear to have copied the whole disk
+	   again. Replaced on every report and cleared when the pass ends. */
+	Copying []MigrationDisk `json:"copying,omitempty"`
+
 	// Disks carry per-disk progress. A VM with four disks copying at different
 	// rates is normal, and one aggregate percentage hides a disk that has
 	// stalled while the others finish.
@@ -166,6 +182,32 @@ type MigrationStatus struct {
 	// somebody else's VM grows until their datastore fills, which is the worst
 	// thing this feature could leave on a system it does not own.
 	SnapshotRef string `json:"snapshotRef,omitempty"`
+
+	/* Whether the snapshot actually came off, and what stopped it if not.
+
+	   The cleanup job runs on the way out of every terminal phase, and it is
+	   deliberately not waited on — a migration that is already Done or Failed
+	   has no phase to move to when the job lands. But not waiting is not the
+	   same as not looking: without these the migration reads "cancelled, the
+	   source VM is untouched" while a Ballast snapshot sits on somebody else's
+	   VM growing until their datastore fills, and nothing anywhere reports it.
+	   The centre knew the job failed and said nothing, which is the failure the
+	   brief calls a defect rather than a runbook step.
+
+	   SnapshotRemoved is a POSITIVE confirmation and is only ever set from the
+	   cleanup job succeeding. False means "not confirmed", which includes "the
+	   job has not finished yet" — it is never read as "there is a snapshot
+	   there", because absent is not the same as zero. */
+	CleanupJobID    string `json:"cleanupJobId,omitempty"`
+	SnapshotRemoved bool   `json:"snapshotRemoved,omitempty"`
+	// SnapshotProblem is the agent's own words when the snapshot did not come
+	// off. Present means a real snapshot is still on the source VM.
+	SnapshotProblem string `json:"snapshotProblem,omitempty"`
+	// SnapshotCleanupRequested is an operator asking to try again. A flag the
+	// controller acts on rather than an action REST takes directly, because the
+	// source credential and the job's parameters are the controller's to
+	// resolve — the same shape as releasing a cutover.
+	SnapshotCleanupRequested bool `json:"snapshotCleanupRequested,omitempty"`
 
 	// CBTEnabledByBallast records that Ballast turned Changed Block Tracking on.
 	// It is left on afterwards — turning it off needs another power cycle, and
@@ -231,6 +273,19 @@ type MigrationPassResult struct {
 	Migration string `json:"migration"`
 	JobID     string `json:"jobId,omitempty"`
 
+	/* InProgress marks a result reported WHILE the pass is still running.
+
+	   A base copy of half a terabyte takes hours, and until this existed the
+	   only per-disk numbers were written when the pass finished — so the console
+	   showed "nothing copied yet" for the whole of it while the bytes were
+	   plainly moving. The progress meter had nothing to draw.
+
+	   It is display only, and the centre must treat it as such: a partial result
+	   carries no change markers, because the marker for the next pass is not
+	   known until this one has read to the end. Folding one in as though the
+	   pass had finished would resume the next pass from a point never reached. */
+	InProgress bool `json:"inProgress,omitempty"`
+
 	// Final marks the cutover pass, the one that ran with the source stopped.
 	Final bool `json:"final,omitempty"`
 	// SourcePoweredOff records that this pass stopped the guest. It is the
@@ -242,6 +297,13 @@ type MigrationPassResult struct {
 
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	FinishedAt time.Time `json:"finishedAt,omitempty"`
+
+	// RetriedAt and RetriedBy record that a finished migration was started
+	// again, and by whom. Kept because a run that succeeded on its third attempt
+	// is not the same story as one that succeeded outright, and the job list is
+	// the only other place that says so.
+	RetriedAt time.Time `json:"retriedAt,omitempty"`
+	RetriedBy string    `json:"retriedBy,omitempty"`
 
 	// Error is the agent's own words when the pass failed. Present with disks
 	// already filled in is normal and useful: a four-disk VM that failed on the

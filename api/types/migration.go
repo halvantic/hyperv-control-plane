@@ -136,9 +136,11 @@ type VMwareVM struct {
 	Host      string `json:"host,omitempty"`
 	Datastore string `json:"datastore,omitempty"`
 
-	// Snapshots is how many the VM already has. A VM with an existing snapshot
-	// chain is not refused, but the copy reads the flattened current state and
-	// the chain does not come across — so it has to be said.
+	// Snapshots is how many the VM already has, and any at all is a blocker.
+	// The copy reads each disk as a FILE, and a snapshot leaves the disk as a
+	// chain — a frozen base plus a delta — that this path cannot compose. The
+	// earlier note here said the copy read the flattened current state; it does
+	// not, and a migration failed on the delta file to prove it.
 	Snapshots int `json:"snapshots,omitempty"`
 
 	// Blockers are reasons this VM cannot be migrated as it stands, worked out

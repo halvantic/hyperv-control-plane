@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -83,11 +84,23 @@ type Disk struct {
 	Key int32
 	// Label is what an operator sees in vSphere Client.
 	Label string
-	// Path is the datastore path, "[datastore1] Web01/Web01.vmdk".
+	// Path is the datastore path of the DESCRIPTOR, "[datastore1] Web01/Web01.vmdk".
+	// It is what VMware reports as the backing and it is what an operator
+	// recognises, but on VMFS it is a few hundred bytes of text.
 	Path string
+	// DataPath is the file that actually holds the bytes, resolved by asking the
+	// datastore. Usually "[datastore1] Web01/Web01-flat.vmdk"; the same as Path
+	// where the datastore keeps one file. Reads use this; messages use Path.
+	DataPath string
 	// SizeBytes is the guest-visible capacity, which is what the destination
 	// VHDX is created at.
 	SizeBytes int64
+	// Snapshotted is whether this disk is running on a snapshot chain — its
+	// backing has a parent, so the live file is a delta holding only what has
+	// changed since the snapshot was taken. A pass reads ONE file per disk over
+	// the datastore interface and cannot compose a chain, so this decides
+	// whether the disk can be copied at all.
+	Snapshotted bool
 }
 
 // VMInfo is what a copy needs to know about the source.
@@ -124,8 +137,16 @@ func (v *Client) Inspect(ctx context.Context, moRef string) (VMInfo, error) {
 		if d.DeviceInfo != nil {
 			disk.Label = d.DeviceInfo.GetDescription().Label
 		}
-		if b, ok := d.Backing.(*types.VirtualDiskFlatVer2BackingInfo); ok {
+		switch b := d.Backing.(type) {
+		case *types.VirtualDiskFlatVer2BackingInfo:
 			disk.Path = b.FileName
+			// A redo log on VMFS is a flat backing WITH a parent, and the file
+			// it names ("…-000001.vmdk") is the delta, not the disk.
+			disk.Snapshotted = b.Parent != nil
+		case *types.VirtualDiskSeSparseBackingInfo:
+			// SEsparse exists only as a snapshot delta.
+			disk.Path = b.FileName
+			disk.Snapshotted = true
 		}
 		out.Disks = append(out.Disks, disk)
 	}
@@ -310,6 +331,7 @@ func (v *Client) ChangedAreas(ctx context.Context, moRef, snapRef string, device
 }
 
 /* snapshotChangeID reads the change marker VMware stamped on a disk when the
+
    snapshot was taken. It lives on the snapshot's copy of the hardware, not the
    VM's, which is the whole point: it names the exact instant this pass read. */
 func (v *Client) snapshotChangeID(ctx context.Context, snapRef string, deviceKey int32) (string, error) {
@@ -358,12 +380,33 @@ func explainCBTError(err error, changeID string) error {
 			"usually after a storage vMotion or a snapshot consolidation, and the disk has to be read in full again: %w",
 			ErrCBTReset, changeID, err)
 	}
-	if strings.Contains(s, "change tracking is not enabled") || strings.Contains(s, "changetracking") {
-		return fmt.Errorf("changed block tracking is not active on this VM. It takes effect at power-on, so a VM that has "+
-			"not been restarted since it was enabled cannot be copied incrementally: %w", err)
+	/* Change tracking is not available on this disk.
+
+	   VMware reports this two ways and the second is the one that cost a real
+	   migration: a plain FileFault naming the VMDK, with nothing in it about
+	   change tracking at all. Passed through it reads as a damaged disk —
+	   "ServerFaultCode: Error caused by file /vmfs/volumes/…/BSL.vmdk" — when
+	   the disk is perfectly healthy and the VM simply has CBT off.
+
+	   Its own error because the remedy depends on the pass. A BASE copy does not
+	   need change tracking: asking "*" is an optimisation that reads only the
+	   allocated part of a thin disk, and reading the whole disk is the correct
+	   answer when it is unavailable. A DELTA does need it, and there the same
+	   condition is genuinely fatal. */
+	if strings.Contains(s, "change tracking is not enabled") || strings.Contains(s, "changetracking") ||
+		strings.Contains(s, "error caused by file") {
+		return fmt.Errorf("%w: changed block tracking is not active on this VM. It takes effect at power-on, so a VM "+
+			"that has not been restarted since it was enabled cannot be copied incrementally: %w", ErrCBTUnavailable, err)
 	}
 	return err
 }
+
+/* ErrCBTUnavailable reports a disk that cannot answer a change-tracking query.
+
+   Distinct from ErrCBTReset: a reset had tracking and lost its marker, and this
+   never had tracking at all. Both are recovered by reading in full, but only one
+   of them is a surprise. */
+var ErrCBTUnavailable = fmt.Errorf("change tracking is not available")
 
 // ErrCBTReset reports a change marker VMware no longer recognises. Its own error
 // because the remedy is specific and automatic: start again from a full read,
@@ -385,11 +428,53 @@ func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64
 	u := ds.NewURL(path)
 	p := soap.DefaultDownload
 	p.Headers = map[string]string{"Range": rangeHeader(offset, length)}
-	rc, _, err := v.c.Client.Download(ctx, u, &p)
+	/* DownloadRequest, not Download.
+
+	   govmomi's Download accepts only 200 OK and turns anything else into an
+	   error — including 206 Partial Content, which is the CORRECT answer to a
+	   range request and the only answer a ranged read of a real disk ever gets.
+	   Every read here is ranged, so this path could never have copied a byte.
+
+	   It went unnoticed because the failures before it all happened earlier: a
+	   523-byte descriptor fits entirely inside the requested range, so the
+	   server answered 200 with the whole file and the read failed later, on
+	   being short, rather than here on the status. */
+	res, err := v.c.Client.DownloadRequest(ctx, u, &p)
 	if err != nil {
 		return nil, fmt.Errorf("vmware: read %s at %d+%d: %w", dsPath, offset, length, err)
 	}
-	return rc, nil
+	if err := acceptRangedRead(res.StatusCode, res.Status, offset); err != nil {
+		res.Body.Close()
+		return nil, fmt.Errorf("vmware: read %s at %d+%d: %w", dsPath, offset, length, err)
+	}
+	return res.Body, nil
+}
+
+/* acceptRangedRead decides whether a response to a ranged GET can be trusted.
+
+   206 is the answer that means "here is the range you asked for".
+
+   200 means the server IGNORED the range and is sending the file from the
+   beginning. At offset 0 that is harmless — the bytes start where they belong,
+   and a body shorter than asked for is caught by the read itself. Anywhere else
+   it is the worst outcome this code can produce: the start of the disk written
+   over the middle of it, every chunk, with the copy reporting success and the
+   VM booting into a subtly wrong disk. So it is refused, loudly, rather than
+   read. */
+func acceptRangedRead(code int, status string, offset int64) error {
+	switch code {
+	case http.StatusPartialContent:
+		return nil
+	case http.StatusOK:
+		if offset == 0 {
+			return nil
+		}
+		return fmt.Errorf("the datastore answered %s instead of 206 Partial Content, which means it ignored the range and "+
+			"is sending the file from the beginning. Copying that would write the start of the disk over the middle of it, "+
+			"so the read is refused", status)
+	default:
+		return fmt.Errorf("the datastore answered %s", status)
+	}
 }
 
 // rangeHeader builds an HTTP byte range. Inclusive at BOTH ends, which is the
@@ -417,6 +502,92 @@ func (v *Client) datastoreFor(ctx context.Context, dsPath string) (*object.Datas
 		return nil, "", fmt.Errorf("vmware: find datastore %q: %w", p.Datastore, err)
 	}
 	return ds, p.Path, nil
+}
+
+/* ResolveDiskFile finds the file that actually holds a disk's data.
+
+   A VirtualDisk's backing names its DESCRIPTOR — "[datastore1] BSL/BSL.vmdk" —
+   and on VMFS that is a few hundred bytes of text. The data is beside it in
+   BSL-flat.vmdk. Reading the descriptor and expecting the disk is what produced
+
+     read [datastore1] BSL/BSL.vmdk at 0: the datastore returned less than the
+     33554432 bytes requested
+
+   on the first real migration: 32MB asked for, a text file returned.
+
+   ASKED, NOT DERIVED. Appending "-flat" is right for VMFS and wrong elsewhere —
+   NFS keeps a single file, a snapshot delta is "-000001-delta.vmdk", SEsparse is
+   "-sesparse.vmdk", and vSAN has no such file at all. So the datastore is asked
+   how big each candidate is and the one that can actually hold the disk wins.
+   Where nothing does, the failure lists what was found and how big it was,
+   because that is a diagnosis an operator can act on rather than a mystery. */
+func (v *Client) ResolveDiskFile(ctx context.Context, dsPath string, capacity int64) (string, error) {
+	return resolveDiskFile(ctx, dsPath, capacity, v.probeRead)
+}
+
+/* probeRead reports how many bytes the datastore will actually serve.
+
+   Deliberately the SAME channel the copy reads through. The first attempt at
+   this asked the datastore browser for the file size instead, and the browser
+   answers about the VIRTUAL DISK: for "BSL.vmdk" it reports the disk's full
+   capacity, while an HTTP GET on that identical path returns 523 bytes of
+   descriptor text. Both answers are true about different things, and picking
+   the file on the strength of the one the copy does not use chose the
+   descriptor every time. */
+func (v *Client) probeRead(ctx context.Context, dsPath string, offset, length int64) (int64, error) {
+	rc, err := v.ReadAt(ctx, dsPath, offset, length)
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+	n, err := io.Copy(io.Discard, io.LimitReader(rc, length))
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// diskProbe reads a range and reports how many bytes came back.
+type diskProbe func(ctx context.Context, dsPath string, offset, length int64) (int64, error)
+
+/* resolveDiskFile picks the candidate that can serve the END of the disk.
+
+   The end, not the start: a descriptor is a valid file and will happily serve
+   its first few hundred bytes, so a probe at offset 0 cannot tell it from the
+   data. Only the file that actually holds the disk can return a full sector at
+   capacity-1 sector, which makes this a question with one right answer. */
+func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe diskProbe) (string, error) {
+	length := sectorSize
+	if capacity < length {
+		length = capacity
+	}
+	offset := capacity - length
+	if offset < 0 || length <= 0 {
+		return "", fmt.Errorf("vmware: %s reports a capacity of %d bytes, which is not a disk that can be copied", dsPath, capacity)
+	}
+
+	base := strings.TrimSuffix(dsPath, ".vmdk")
+	candidates := []string{dsPath}
+	for _, suffix := range []string{"-flat.vmdk", "-delta.vmdk", "-sesparse.vmdk"} {
+		candidates = append(candidates, base+suffix)
+	}
+
+	var tried []string
+	for _, cand := range candidates {
+		n, err := probe(ctx, cand, offset, length)
+		if err == nil && n == length {
+			return cand, nil
+		}
+		switch {
+		case err != nil:
+			tried = append(tried, fmt.Sprintf("%s (could not be read: %v)", cand, err))
+		default:
+			tried = append(tried, fmt.Sprintf("%s (served %d of %d bytes at offset %d)", cand, n, length, offset))
+		}
+	}
+	return "", fmt.Errorf("vmware: nothing beside %s can serve the end of a %d-byte disk, so there is no file here holding "+
+		"its data. Tried: %s. A disk on vSAN, or on a datastore this host cannot read as files, cannot be copied over the "+
+		"datastore interface", dsPath, capacity, strings.Join(tried, "; "))
 }
 
 /* PowerOff shuts the source down for a cutover.
