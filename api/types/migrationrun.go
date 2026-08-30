@@ -189,6 +189,21 @@ type MigrationStatus struct {
 	Passes           int   `json:"passes,omitempty"`
 	OutstandingBytes int64 `json:"outstandingBytes,omitempty"`
 
+	/* Archived takes a finished migration out of the operations list without
+	   destroying what it knows.
+
+	   "Remove" used to delete the record, and the record is the only thing that
+	   says this VM was ever migrated: the source inventory reads it to mark a VM
+	   as moved, so deleting it made an already-migrated VM look untouched and
+	   invited copying half a terabyte a second time. Tidying the list and losing
+	   the history are different intentions, and only one of them was on offer.
+
+	   Archived records are still listed by the API — the per-VM history depends
+	   on them — and are simply not part of what is in flight. */
+	Archived   bool      `json:"archived,omitempty"`
+	ArchivedAt time.Time `json:"archivedAt,omitempty"`
+	ArchivedBy string    `json:"archivedBy,omitempty"`
+
 	/* NoChangeTracking records that a pass had to read a disk in full because
 	   the source could not answer a change-tracking query.
 
