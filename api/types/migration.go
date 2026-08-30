@@ -166,6 +166,10 @@ type VMwareDisk struct {
 
 type VMwareNIC struct {
 	Key int32 `json:"key"`
+	// Label is VMware's own ("Network adapter 1"). An operator matching what
+	// they see here against what vSphere Client shows them has nothing else to
+	// go on: two adapters on one portgroup are otherwise identical rows.
+	Label string `json:"label,omitempty"`
 	// MAC is recorded but deliberately NOT carried over by default. A migrated
 	// VM keeping its MAC while the original still exists is two machines with
 	// one address; the operator can ask for it, having been told.

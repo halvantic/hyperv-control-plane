@@ -74,11 +74,22 @@ type MigrationSpec struct {
 	// somewhere Ballast also manages.
 	NewName string `json:"newName,omitempty"`
 
-	// NetworkMap points each source portgroup at a Hyper-V switch or
-	// distributed port. A source NIC with no mapping arrives DISCONNECTED
-	// rather than guessing: a VM silently attached to the wrong network is
-	// worse than one that obviously has none.
+	// NetworkMap points each source adapter at a Hyper-V distributed port. A
+	// source NIC with no mapping arrives DISCONNECTED rather than guessing: a VM
+	// silently attached to the wrong network is worse than one that obviously
+	// has none.
 	NetworkMap []MigrationNIC `json:"networkMap,omitempty"`
+
+	/* ProcessorCount and MemoryStartupBytes resize the VM as it arrives. Zero
+	   means "as the source is", read at import time rather than copied from the
+	   plan — a VM given another 8GB in the hours since would otherwise arrive as
+	   the machine it used to be.
+
+	   Offered because migration is the one moment resizing is free: the VM is
+	   being built from nothing and is not running, so a change that would
+	   otherwise need a power cycle costs nothing at all. */
+	ProcessorCount     int    `json:"processorCount,omitempty"`
+	MemoryStartupBytes uint64 `json:"memoryStartupBytes,omitempty"`
 
 	// KeepMAC carries the source's MAC addresses over. Off by default: the
 	// original VM still exists, and two machines with one address is a fault
@@ -95,10 +106,21 @@ type MigrationSpec struct {
 	StartAfterCutover bool `json:"startAfterCutover,omitempty"`
 }
 
-// MigrationNIC maps one source network to a destination.
+// MigrationNIC maps one source adapter, or one source network, to a destination.
 type MigrationNIC struct {
 	// SourceNetwork is the portgroup name as VMware reported it.
 	SourceNetwork string `json:"sourceNetwork"`
+
+	/* DeviceKey binds this mapping to ONE source adapter, by VMware's own device
+	   key. Zero means the mapping applies to every adapter on SourceNetwork,
+	   which is what a batch of ten VMs off the same portgroup wants.
+
+	   Both forms exist because both questions are real. Two adapters of one VM
+	   on the same portgroup — a guest that does its own teaming, or one that
+	   fronts two services — are two different destinations, and a mapping keyed
+	   on the network alone cannot tell them apart. */
+	DeviceKey int32 `json:"deviceKey,omitempty"`
+
 	// Switch and Dvport are the Hyper-V side. Both empty leaves the adapter
 	// disconnected, which is the honest default for an unmapped network.
 	Switch string `json:"switch,omitempty"`
