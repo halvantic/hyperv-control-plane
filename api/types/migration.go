@@ -146,7 +146,33 @@ type VMwareVM struct {
 	// Blockers are reasons this VM cannot be migrated as it stands, worked out
 	// once at inventory time so the console can grey the row rather than
 	// letting somebody select it and fail twenty minutes in.
-	Blockers []string `json:"blockers,omitempty"`
+	Blockers []VMwareBlocker `json:"blockers,omitempty"`
+}
+
+/*
+VMwareBlocker is one reason a VM cannot be migrated as it stands.
+
+	Split into the FACT and the REMEDY because they repeat differently. The fact
+	is about this VM — which disks, how many snapshots — and belongs on its row.
+	The remedy is about the KIND of problem and is word for word the same on
+	every VM that has it: six VMs with change tracking off produced six identical
+	forty-word paragraphs, which is not six times the information. It is said
+	once, and Kind is what lets a console group them.
+*/
+type VMwareBlocker struct {
+	// Kind is the machine-readable class: rdm, sharedDisk, noDisks, snapshot,
+	// cbt, unreadable. Matched on rather than the prose — the console used to
+	// pick the change-tracking blocker out with a regular expression over its
+	// text, so rewording a sentence silently changed which VMs it could offer.
+	Kind string `json:"kind"`
+	// Summary is the fact about THIS VM, short enough to sit in a table cell.
+	Summary string `json:"summary"`
+	// Remedy is what to do about it: the same sentence for every VM of this kind.
+	Remedy string `json:"remedy,omitempty"`
+	// Warm marks a blocker that only stops a WARM migration. Such a VM copies
+	// perfectly well cold, and treating it as a flat refusal hides the path that
+	// works.
+	Warm bool `json:"warm,omitempty"`
 }
 
 type VMwareDisk struct {
