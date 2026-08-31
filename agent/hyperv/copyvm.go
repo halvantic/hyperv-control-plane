@@ -63,23 +63,35 @@ if ($state -ne 'Off') {
 # exactly this one computer account, and taken away again at the end.
 $srcAcct = $env:COMPUTERNAME + '$'
 if ($env:USERDOMAIN -and $env:USERDOMAIN -ne $env:COMPUTERNAME) { $srcAcct = $env:USERDOMAIN + '\' + $env:COMPUTERNAME + '$' }
+# The AGENT's own account too, not only the computer account.
+#
+# Export-VM writes as the computer account, so that one must be granted or the
+# copy is denied. But the agent reads the folder afterwards to find the exported
+# configuration, and a share granted only to the machine account denies its own
+# creator: Test-Path came back "Access is denied" against a share Ballast had
+# just made.
+$agentAcct = $env:USERNAME
+if ($env:USERDOMAIN -and $env:USERDOMAIN -ne $env:COMPUTERNAME) { $agentAcct = $env:USERDOMAIN + '\' + $env:USERNAME }
 $shareName = 'BallastEvac$'
 
-$share = Invoke-Command -ComputerName $dest -ArgumentList $path, $shareName, $srcAcct -ScriptBlock {
-  param($p, $name, $acct)
+$share = Invoke-Command -ComputerName $dest -ArgumentList $path, $shareName, $srcAcct, $agentAcct -ScriptBlock {
+  param($p, $name, $acct, $agent)
+  $grantees = @($acct, $agent) | Where-Object { $_ } | Sort-Object -Unique
   $ErrorActionPreference = 'Stop'
   if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
   # NTFS as well as the share. Granting one and not the other is the half of
   # this that looks configured and still denies the write.
   $acl = Get-Acl -LiteralPath $p
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($acct, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl.AddAccessRule($rule)
+  foreach ($g in $grantees) {
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($g, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+  }
   Set-Acl -LiteralPath $p -AclObject $acl
   $existing = Get-SmbShare -Name $name -ErrorAction SilentlyContinue
   if ($existing) { Remove-SmbShare -Name $name -Force -ErrorAction SilentlyContinue }
   # Temporary: it does not survive a restart, so a host that reboots mid-move
   # is not left permanently sharing a volume nobody meant to share.
-  New-SmbShare -Name $name -Path $p -FullAccess $acct -Temporary | Out-Null
+  New-SmbShare -Name $name -Path $p -FullAccess $grantees -Temporary | Out-Null
   $true
 }
 if (-not $share) { throw ('could not make a share on ' + $dest + ' for ' + $srcAcct + ' to export into') }

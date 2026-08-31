@@ -169,7 +169,7 @@ func TestTheExportGoesThroughAShareGrantedToTheComputerAccount(t *testing.T) {
 	if !strings.Contains(s, "$srcAcct = $env:COMPUTERNAME + '$'") {
 		t.Fatalf("the source computer account is never worked out: %s", s)
 	}
-	if !strings.Contains(s, "New-SmbShare -Name $name -Path $p -FullAccess $acct -Temporary") {
+	if !strings.Contains(s, "New-SmbShare -Name $name -Path $p -FullAccess $grantees -Temporary") {
 		t.Fatalf("no share is made for the export: %s", s)
 	}
 	// The admin share is what failed; the export must not still be aimed at it.
@@ -232,5 +232,38 @@ func TestTheShareUNCIsWellFormed(t *testing.T) {
 		if strings.Contains(s, bad) {
 			t.Errorf("malformed UNC (%s): %s", bad, s)
 		}
+	}
+}
+
+/*
+The share grants BOTH accounts that touch it.
+
+	Export-VM writes as the computer account, so that one must be granted or the
+	copy is denied. But the agent reads the folder afterwards to find the
+	exported configuration, and a share granted only to the machine account
+	denies its own creator:
+
+	  Test-Path : Access is denied
+
+	against a share Ballast had just made. Two different identities do two
+	different halves of this, and granting one of them is the version that looks
+	configured and fails on the other half.
+*/
+func TestBothTheComputerAndTheAgentAccountsAreGranted(t *testing.T) {
+	s := copyScript(t)
+
+	if !strings.Contains(s, "$agentAcct = $env:USERNAME") {
+		t.Fatalf("the agent's own account is never worked out: %s", s)
+	}
+	if !strings.Contains(s, "$grantees = @($acct, $agent)") {
+		t.Fatalf("the share is granted to one account only: %s", s)
+	}
+	if !strings.Contains(s, "New-SmbShare -Name $name -Path $p -FullAccess $grantees") {
+		t.Errorf("the share does not grant both: %s", s)
+	}
+	// NTFS for both as well — granting the share alone is the other half that
+	// looks configured and still denies.
+	if !strings.Contains(s, "foreach ($g in $grantees) {") {
+		t.Errorf("the filesystem is granted to one account only: %s", s)
 	}
 }
