@@ -141,6 +141,8 @@ func RunPass(ctx context.Context, prov Provisioner, req PassRequest, onProgress 
 type passSource interface {
 	Source
 	Inspect(ctx context.Context, moRef string) (VMInfo, error)
+	Export(ctx context.Context, moRef, snapRef string) (Export, error)
+	PinReads(ctx context.Context, moRef, dsPath string) error
 	ResolveDiskFile(ctx context.Context, dsPath string, capacity int64) (string, error)
 	Snapshot(ctx context.Context, moRef, name string) (string, error)
 	RemoveSnapshot(ctx context.Context, moRef, snapRef string) error
@@ -246,10 +248,50 @@ func runPass(ctx context.Context, c passSource, prov Provisioner, req PassReques
 
 	   Still before the destination is touched, which was the other half of the
 	   original reason. */
+	/* A RUNNING source is read over an export lease; a stopped one over the
+	   datastore.
+
+	   Not a preference. A guest holds its own disk file open for as long as it
+	   runs and ESXi will not serve an open file, so the datastore path cannot
+	   read a running VM at all — measured, on a datastore with one host, as
+	   NFC_FILE_LOCKED against a file listed at exactly the disk's size. The
+	   lease can, and cannot seek, which is why it copies a base and never a
+	   delta. The cutover pass stops the guest first and so takes the datastore
+	   path, where change tracking works and only the changed ranges move. */
+	if !req.Final && info.PowerState == poweredOnState {
+		live = make([]DiskOutcome, len(info.Disks))
+		for i, d := range info.Disks {
+			live[i] = DiskOutcome{Key: d.Key, Label: d.Label, SourcePath: d.Path, SizeBytes: d.SizeBytes}
+		}
+		err := copyFromExport(ctx, c, prov, req, info, snapRef, live, report, note, &out)
+		return out, err
+	}
+
+	/* Before the first read of any kind, including the resolve's own probes:
+	   where a datastore is shared, every one of them has to go to the host that
+	   owns the VM, or a refusal cannot be told from a lock. */
+	if err := c.PinReads(ctx, req.MoRef, info.Disks[0].Path); err != nil {
+		return out, err
+	}
+
 	for i := range info.Disks {
 		d := &info.Disks[i]
 		data, rerr := c.ResolveDiskFile(ctx, d.Path, d.SizeBytes)
 		if rerr != nil {
+			/* A locked disk HERE means somebody else holds it.
+
+			   This path only ever runs against a source that is not running: a
+			   running one is read over an export lease and never reaches the
+			   datastore at all. So the guest's own handle — which is what
+			   NFC_FILE_LOCKED meant before warm copies existed — is not the
+			   explanation any more, and repeating that advice would send an
+			   operator to stop a VM that is already stopped. */
+			if errors.Is(rerr, ErrDiskLocked) {
+				return out, fmt.Errorf("%s is not running, so the lock on its disk file is not its own: something else has "+
+					"the file open, and ESXi will not serve a file while it is held. Look for a backup or copy running "+
+					"against this VM, or one that failed and left a transfer open — a lease released late clears on its own "+
+					"within a few minutes. Underlying failure: %w", info.Name, rerr)
+			}
 			return out, rerr
 		}
 		d.DataPath = data
@@ -415,4 +457,153 @@ func (h HostDisks) Create(ctx context.Context, path string, size int64) (Disk2, 
 
 func (h HostDisks) Open(ctx context.Context, path string) (Disk2, error) {
 	return h.PS.MountVHDX(ctx, path)
+}
+
+/*
+copyFromExport is the warm base copy: one sequential read of each disk from
+
+	an NFC export lease, straight into the destination VHDX.
+
+	It differs from the datastore path in what it CANNOT do, and both limits are
+	measured rather than assumed. The lease will not serve a range — no
+	Accept-Ranges, and a range asked at the end of an 80GB disk came back 200 OK
+	with the file from the beginning — so there is no resuming and no delta. And
+	it arrives as a stream-optimised VMDK, so the bytes on the wire are
+	compressed grains that have to be decoded before anything can be written.
+
+	What it gives back is the thing the datastore path cannot do at all: reading
+	a guest that is still running.
+*/
+func copyFromExport(ctx context.Context, c passSource, prov Provisioner, req PassRequest, info VMInfo, snapRef string,
+	live []DiskOutcome, report func(PassProgress), note func(string), out *PassOutcome) error {
+
+	/* A delta cannot be read this way, and saying so beats a silent full
+	   re-copy reported as an increment. The centre should never ask — a warm
+	   migration goes from its base copy to waiting for the cutover — so this is
+	   the check that catches it if the state machine ever changes. */
+	for _, d := range info.Disks {
+		if req.Marker[d.Key] != "" {
+			return fmt.Errorf("%s is running, and a running source can only be read start to finish: the export lease "+
+				"serves no byte ranges, so there is no way to read only what changed. A delta pass needs the guest stopped, "+
+				"which is what the cutover does", info.Name)
+		}
+	}
+
+	note("opening an export lease on the source")
+	exp, err := c.Export(ctx, req.MoRef, snapRef)
+	if err != nil {
+		return err
+	}
+	/* The lease is released on EVERY exit, and a failure ABORTS rather than
+	   completes. A lease left open holds state on somebody else's vCenter until
+	   it times out, and completing a transfer that did not finish tells vCenter
+	   a lie about a disk that is now in Ballast's hands. Its own context: the
+	   job's may already be cancelled, which is exactly when this matters. */
+	var failed error
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		exp.Done(cctx, failed)
+	}()
+
+	if failed = matchExportDisks(info.Disks, exp.Disks()); failed != nil {
+		return failed
+	}
+
+	for i, d := range info.Disks {
+		/* Change tracking is queried even though the lease sends the whole disk
+		   regardless, for the MARKER: it is what the cutover's delta reads
+		   from. Without it the cutover would re-read every byte with the guest
+		   stopped, which is a cold migration wearing a warm one's clothes and
+		   discovered at the worst possible moment. So it is refused here, before
+		   hours of copying, rather than at the cutover.
+
+		   The allocated size it returns is also the honest denominator for the
+		   meter — what this disk actually has to move, not what it claims. */
+		extents, next, cerr := c.ChangedAreas(ctx, req.MoRef, snapRef, d.Key, "*", d.SizeBytes)
+		if cerr != nil {
+			if errors.Is(cerr, ErrCBTUnavailable) {
+				failed = fmt.Errorf("%s cannot answer a change-tracking query, so a warm copy of it would have nothing to "+
+					"cut over from: the whole disk would have to be read again with the guest stopped, which is a cold "+
+					"migration with extra steps. Restart the VM once so change tracking takes effect, or migrate it cold: %w",
+					d.Label, cerr)
+				return failed
+			}
+			failed = cerr
+			return failed
+		}
+		var total int64
+		for _, e := range extents {
+			total += e.Length
+		}
+		if total > 0 {
+			live[i].SizeBytes = total
+		}
+
+		dest := DestPathFor(req.DestDir, info.Name, d)
+		live[i].DestPath = dest
+		note(fmt.Sprintf("creating %s for %s", filepath.Base(dest), d.Label))
+		dst, oerr := prov.Create(ctx, dest, d.SizeBytes)
+		if oerr != nil {
+			failed = oerr
+			return failed
+		}
+
+		copied, cperr := streamOneDisk(ctx, exp, i, d, dst, live, report, total)
+		if cerr := dst.Close(ctx); cerr != nil && cperr == nil {
+			cperr = cerr
+		}
+		if cperr != nil {
+			failed = cperr
+			return failed
+		}
+
+		live[i].CopiedBytes = copied
+		live[i].NextChangeID = next
+		out.Disks = append(out.Disks, live[i])
+		out.CopiedBytes += copied
+	}
+	return nil
+}
+
+// streamOneDisk decodes one disk's lease stream into its destination.
+func streamOneDisk(ctx context.Context, exp Export, i int, d Disk, dst Disk2, live []DiskOutcome,
+	report func(PassProgress), total int64) (int64, error) {
+
+	rc, err := exp.Open(ctx, i)
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+
+	var copied, announced int64
+	n, err := decodeStreamVMDK(rc, func(off int64, data []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := dst.WriteAt(data, off); err != nil {
+			return err
+		}
+		copied += int64(len(data))
+		live[i].CopiedBytes = copied
+		/* The denominator only ever grows. Change tracking's idea of what is
+		   allocated and the stream's can differ, and a meter whose total drops
+		   below what has already been copied reads as a copy losing ground. */
+		if copied > live[i].SizeBytes {
+			live[i].SizeBytes = copied
+		}
+		// Throttled to the same granularity the datastore path reports at. A
+		// grain is 64KB, and a report each would be thousands a second saying
+		// nothing new.
+		if copied-announced >= readChunk {
+			announced = copied
+			exp.Report(ctx, copied, total)
+			report(PassProgress{Note: fmt.Sprintf("%s: %s of %s", d.Label, fmtBytes(copied), fmtBytes(live[i].SizeBytes))})
+		}
+		return nil
+	})
+	if err != nil {
+		return n, err
+	}
+	return n, nil
 }

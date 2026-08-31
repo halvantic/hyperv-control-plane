@@ -219,7 +219,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		if _, derr := r.hv.EnsureMigrationDelegation(ctx, []string{p["destHost"]}); derr != nil {
 			return "", fmt.Errorf("ensure migration delegation to %s: %w", p["destHost"], derr)
 		}
-		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], onProgress)
+		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], onProgress)
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveMgmtVNIC:

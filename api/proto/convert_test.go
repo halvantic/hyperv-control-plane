@@ -26,6 +26,16 @@ func sampleHost() types.Host {
 			FQDN:             "host01.lab.local",
 			EnableHyperVRole: true,
 			RebootPolicy:     types.RebootIfNeeded,
+			// The controller the CENTRE calls to switch this machine on when it
+			// is off. It crosses the wire so the agent's cached desired state is
+			// a complete copy, not because the agent acts on it — and a field
+			// the proto does not carry round-trips perfectly as its zero value,
+			// which is exactly the silence this sample exists to break.
+			BMC: &types.BMCSpec{
+				Address:          "host01-ilo.lab.local",
+				CredentialSecret: "ilo-admin",
+				InsecureTLS:      true,
+			},
 			Networking: types.HostNetworkingSpec{
 				Switches: []types.VirtualSwitchSpec{{
 					Name:              "ConvergedSwitch",
@@ -159,6 +169,11 @@ func sampleVM() types.VM {
 			SecureBoot:           "linux",
 			ComputerName:         "WEB01-GUEST",
 			VideoResolution:      "1920x1080",
+			// Set alongside DynamicMemory, which the centre refuses as a pair.
+			// This sample is maximal for wire coverage, not a valid spec: a field
+			// the sample leaves unset round-trips perfectly as its zero value and
+			// proves nothing.
+			NestedVirtualisation: true,
 			BootOrder:            []string{"DVD", "Drive", "Network"},
 			Replication: &types.VMReplicationSpec{
 				Enabled:            true,

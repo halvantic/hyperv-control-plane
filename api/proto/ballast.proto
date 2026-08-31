@@ -222,6 +222,22 @@ message HostSpec {
   // cluster member's library comes from ClusterSpec instead and is never fanned
   // here, so there is no copy to outlive an eviction.
   ISOLibrarySpec iso_library = 13;
+  // bmc is the host's management controller, used by the CENTRE to switch a
+  // machine on when it is off and no agent can be asked. It crosses the wire so
+  // the agent's cached desired state is a complete copy of what the centre
+  // holds, not because the agent acts on it.
+  BMCSpec bmc = 21;
+}
+
+// BMCSpec is how to reach a host's management controller. Redfish, power-on
+// only: the destructive directions pull power from running workloads.
+message BMCSpec {
+  string address = 1;
+  // credential_secret names the stored credential, never the credential itself.
+  string credential_secret = 2;
+  // insecure_tls accepts the self-signed certificate almost every controller
+  // ships with. An explicit choice rather than a default.
+  bool insecure_tls = 3;
 }
 
 // ISOLibrarySpec is an SMB share holding boot media, referenced rather than
@@ -1011,6 +1027,11 @@ message VMSpec {
   // as "1920x1080". Empty leaves Hyper-V's own 1024x768. Applied with
   // Set-VMVideo, which needs the VM stopped.
   string video_resolution = 15;
+  // nested_virtualisation exposes the host's virtualisation extensions to the
+  // guest AND turns MAC address spoofing on for every one of its adapters —
+  // one field, because nested without spoofing is a guest whose inner VMs have
+  // no network. Extensions apply at power-on; spoofing applies live.
+  bool nested_virtualisation = 16;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the

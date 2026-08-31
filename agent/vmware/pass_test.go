@@ -1,6 +1,7 @@
 package vmware
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -23,6 +24,9 @@ type fakePass struct {
 	failCopy    error
 	failPower   error
 	failResolve error
+	failPin     error
+	failExport  error
+	export      *fakeExport
 	removed     []string
 	resolved    []string
 }
@@ -39,6 +43,53 @@ func (f *fakePass) ResolveDiskFile(_ context.Context, dsPath string, _ int64) (s
 	}
 	f.resolved = append(f.resolved, dsPath)
 	return strings.TrimSuffix(dsPath, ".vmdk") + "-flat.vmdk", nil
+}
+
+func (f *fakePass) Export(_ context.Context, _, snapRef string) (Export, error) {
+	f.calls = append(f.calls, "export:"+snapRef)
+	if f.failExport != nil {
+		return nil, f.failExport
+	}
+	return f.export, nil
+}
+
+/* fakeExport serves streams the test built, and records how the lease ENDED.
+
+   That last part is the point: a lease completed after a failed transfer tells
+   vCenter a disk arrived when it did not, and a lease left open holds state on
+   somebody else's system until it times out. Neither is visible from the
+   outcome of a pass, so it is watched here. */
+type fakeExport struct {
+	disks   []ExportDisk
+	streams [][]byte
+	openErr error
+	opened  []int
+	ended   []string
+}
+
+func (f *fakeExport) Disks() []ExportDisk { return f.disks }
+
+func (f *fakeExport) Open(_ context.Context, i int) (io.ReadCloser, error) {
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	f.opened = append(f.opened, i)
+	return io.NopCloser(bytes.NewReader(f.streams[i])), nil
+}
+
+func (f *fakeExport) Report(context.Context, int64, int64) {}
+
+func (f *fakeExport) Done(_ context.Context, failed error) {
+	if failed != nil {
+		f.ended = append(f.ended, "abort")
+		return
+	}
+	f.ended = append(f.ended, "complete")
+}
+
+func (f *fakePass) PinReads(_ context.Context, _, dsPath string) error {
+	f.calls = append(f.calls, "pin:"+dsPath)
+	return f.failPin
 }
 
 func (f *fakePass) Inspect(context.Context, string) (VMInfo, error) {
@@ -434,7 +485,7 @@ func TestAServedFileThatIsHeldReadsDifferentlyFromAMissingOne(t *testing.T) {
 		}
 		return 0, errors.New("the datastore answered 404 Not Found")
 	}
-	_, err := resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, probe)
+	_, err := resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, probe, datastoreFacts{})
 	if err == nil {
 		t.Fatal("a disk nothing could serve was accepted")
 	}
@@ -448,8 +499,94 @@ func TestAServedFileThatIsHeldReadsDifferentlyFromAMissingOne(t *testing.T) {
 	missing := func(_ context.Context, _ string, _, _ int64) (int64, error) {
 		return 0, errors.New("the datastore answered 404 Not Found")
 	}
-	_, err = resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, missing)
+	_, err = resolveDiskFile(t.Context(), "[datastore1] vm-2/vm-2.vmdk", 85899345920, missing, datastoreFacts{})
 	if strings.Contains(err.Error(), "would not serve it") {
 		t.Errorf("a missing file was reported as a locked one:\n %v", err)
+	}
+}
+
+/* A locked disk file on a source that is NOT running.
+
+   Before warm copies existed this was the running guest holding its own disk,
+   and the message said so. It cannot be that any more: a running source is read
+   over an export lease and never reaches the datastore at all. What is left is
+   a genuine lock held by something else, and the advice has to match — telling
+   this operator to stop the guest would send them to stop a VM that is already
+   stopped. */
+func TestAStoppedSourceWithALockedFileIsToldWhoElseCouldHoldIt(t *testing.T) {
+	src, prov := onePass()
+	src.info.Name = "BallastJumphost"
+	src.info.PowerState = "poweredOff"
+	src.failResolve = diskLocked{errors.New(
+		"vmware: nothing beside [datastore1] vm-2/vm-2.vmdk can serve the end of a 85899345920-byte disk. Tried: " +
+			"[datastore1] vm-2/vm-2-flat.vmdk (the datastore lists it at 85899345920 bytes; could not be read: the " +
+			"datastore answered 500 Internal Server Error: Failed to open disk: NFC_FILE_LOCKED.)")}
+
+	_, err := runPass(t.Context(), src, prov, PassRequest{Migration: "mig-1", MoRef: "vm-2", DestDir: destDir}, nil)
+	if err == nil {
+		t.Fatal("a disk that could not be read was accepted")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"is not running",         // which rules out the guest's own handle
+		"not its own",            // said plainly
+		"backup or copy running", // where to look instead
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the failure does not say %q: %v", want, err)
+		}
+	}
+	if strings.Contains(got, "one copy, source stopped") {
+		t.Errorf("a stopped guest was told to stop the guest: %v", err)
+	}
+	// The full account of what was probed still has to survive, or a support
+	// call has nothing to go on.
+	if !strings.Contains(got, "NFC_FILE_LOCKED") {
+		t.Errorf("the underlying failure was dropped: %v", err)
+	}
+	// And the snapshot still goes, which is the whole point of the defer.
+	if len(src.removed) != 1 {
+		t.Errorf("the snapshot was left on the source: %v", src.calls)
+	}
+}
+
+/*
+Reads are pinned to the VM's host BEFORE anything reads, the resolve's own
+
+	probes included.
+
+	Where a datastore is shared, vCenter proxies a read to a host of its choosing
+	— govmomi's comment on the alternative path says "An host is chosen at
+	random" — and a host that does not own a running VM cannot lock its files. It
+	answers NFC_FILE_LOCKED, which is indistinguishable from the guest holding
+	its own disk, and the operator is told to stop a VM that never needed
+	stopping. Pinning after the first read would leave the resolve making exactly
+	that mistake.
+*/
+func TestReadsArePinnedBeforeAnythingReads(t *testing.T) {
+	src, prov := onePass()
+	if _, err := runPass(t.Context(), src, prov, PassRequest{Migration: "mig-1", MoRef: "vm-1", DestDir: `C:\CSV1`}, nil); err != nil {
+		t.Fatalf("pass failed: %v", err)
+	}
+	pin, resolve := indexOfPrefix(src.calls, "pin:"), indexOfPrefix(src.calls, "resolve:")
+	if pin < 0 {
+		t.Fatalf("reads were never pinned to a host: %v", src.calls)
+	}
+	if resolve < 0 || pin > resolve {
+		t.Errorf("the resolve probed before reads were pinned, which is the read that gets it wrong: %v", src.calls)
+	}
+}
+
+// And a pin that cannot be worked out stops the pass rather than quietly
+// reading through whichever host vCenter picks.
+func TestAPinThatCannotBeWorkedOutStopsThePass(t *testing.T) {
+	src, prov := onePass()
+	src.failPin = errors.New("vm-1 reports no host, and [ds1] is shared by 3 hosts")
+	_, err := runPass(t.Context(), src, prov, PassRequest{Migration: "mig-1", MoRef: "vm-1", DestDir: `C:\CSV1`}, nil)
+	if err == nil {
+		t.Fatal("the pass read on regardless, through a host chosen at random")
+	}
+	if indexOfPrefix(src.calls, "resolve:") >= 0 {
+		t.Errorf("it went on to read anyway: %v", src.calls)
 	}
 }

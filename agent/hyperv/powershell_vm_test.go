@@ -133,7 +133,7 @@ func TestEnsureVMScriptGen1BootOrderMapsBios(t *testing.T) {
 func TestMigrateVMScript(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"PROGRESS 0", "PROGRESS 45", "PROGRESS 100", "DONE migrated Web01 to hvnew02"}}
 	var pct []string
-	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`,
+	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`, "", "",
 		func(note string) { pct = append(pct, note) })
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestMigrateVMScript(t *testing.T) {
 // A failed migration surfaces the streamed error.
 func TestMigrateVMScriptFailure(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"PROGRESS 10"}, streamErr: fmt.Errorf("powershell: exit status 1: (Live migration) transport failed")}
-	_, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", "", nil)
+	_, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", "", "", "", nil)
 	if err == nil || !strings.Contains(err.Error(), "transport failed") {
 		t.Fatalf("expected transport failure, got %v", err)
 	}

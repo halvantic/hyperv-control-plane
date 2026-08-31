@@ -442,6 +442,9 @@ func specToProto(s types.HostSpec) *HostSpec {
 	if d := s.DomainJoin; d != nil {
 		out.DomainJoin = &DomainJoinSpec{DomainName: d.DomainName, OuPath: d.OUPath, CredentialSecret: d.CredentialSecret}
 	}
+	if b := s.BMC; b != nil {
+		out.Bmc = &BMCSpec{Address: b.Address, CredentialSecret: b.CredentialSecret, InsecureTls: b.InsecureTLS}
+	}
 	if m := s.LiveMigration; m != nil {
 		out.LiveMigration = &LiveMigrationSpec{
 			Enabled:            m.Enabled,
@@ -541,6 +544,9 @@ func specFromProto(s *HostSpec) types.HostSpec {
 	}
 	if d := s.GetDomainJoin(); d != nil {
 		out.DomainJoin = &types.DomainJoinSpec{DomainName: d.GetDomainName(), OUPath: d.GetOuPath(), CredentialSecret: d.GetCredentialSecret()}
+	}
+	if b := s.GetBmc(); b != nil {
+		out.BMC = &types.BMCSpec{Address: b.GetAddress(), CredentialSecret: b.GetCredentialSecret(), InsecureTLS: b.GetInsecureTls()}
 	}
 	if m := s.GetLiveMigration(); m != nil {
 		out.LiveMigration = &types.LiveMigrationSpec{
@@ -1358,6 +1364,7 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		BootOrder:            append([]string(nil), s.BootOrder...),
 		ComputerName:         s.ComputerName,
 		VideoResolution:      s.VideoResolution,
+		NestedVirtualisation: s.NestedVirtualisation,
 	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
@@ -1410,6 +1417,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		BootOrder:            append([]string(nil), s.GetBootOrder()...),
 		ComputerName:         s.GetComputerName(),
 		VideoResolution:      s.GetVideoResolution(),
+		NestedVirtualisation: s.GetNestedVirtualisation(),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{

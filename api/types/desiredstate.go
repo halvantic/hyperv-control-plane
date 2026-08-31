@@ -131,6 +131,20 @@ type HostSpec struct {
 	// from a management-vNIC IP, which lives on a vSwitch.
 	ManagementNIC *PhysicalNICConfig `json:"managementNIC,omitempty"`
 
+	/* BMC is the host's baseboard management controller — iLO, iDRAC, XCC — so
+	   a host that is switched OFF can be switched on from the centre.
+
+	   The one thing here that no agent can do. Every other host action goes
+	   through an agent running on that host; this exists precisely for the case
+	   where there is nothing running to ask, and without it a powered-off host
+	   cannot be recovered from the console at all. "Find the iLO address and log
+	   in" is a runbook step, which is the thing this product treats as a defect.
+
+	   The centre makes the call, not a peer host: the BMC is on a management
+	   network and the question of who can reach it is a routing question, not a
+	   Hyper-V one. */
+	BMC *BMCSpec `json:"bmc,omitempty"`
+
 	// DomainJoin, when set, joins the host to an Active Directory domain using
 	// the referenced credential secret. A reboot, governed by RebootPolicy.
 	DomainJoin *DomainJoinSpec `json:"domainJoin,omitempty"`
@@ -428,6 +442,37 @@ type LiveMigrationSpec struct {
 	// Networks restricts migration to these CIDR subnets (e.g. the IPv4
 	// management subnet, avoiding a bad IPv6 listener). Empty means any network.
 	Networks []string `json:"networks,omitempty"`
+}
+
+/* BMCSpec is how to reach a host's management controller.
+
+   Redfish only, and power-ON only. Redfish is the standard every current
+   controller speaks — iLO 5+, iDRAC 8+, Lenovo XCC, Supermicro X11+ — and the
+   older ones that need IPMI are told so plainly rather than failing obscurely.
+
+   Powering a host ON is safe: a machine that is off has nothing running to
+   disturb. The destructive directions — force off, reset — are deliberately NOT
+   here. They pull power from running workloads, and a control plane that can do
+   that from a right-click menu is one misclick from an outage. */
+type BMCSpec struct {
+	// Address is the controller's hostname or IP, e.g. "hv01-ilo.lab.local".
+	// A bare address is reached over HTTPS; a scheme may be given explicitly.
+	Address string `json:"address"`
+
+	// CredentialSecret names the stored Secret holding the controller's
+	// username and password. A reference, never the credential itself: a BMC
+	// account is a keys-to-the-building credential and it does not belong in
+	// desired state that is read by everything.
+	CredentialSecret string `json:"credentialSecret"`
+
+	/* InsecureTLS skips certificate verification.
+
+	   Off by default, and it has to be an explicit choice, because almost every
+	   BMC ships with a self-signed certificate — which means the honest default
+	   produces a failure the first time somebody uses this, and the alternative
+	   is a control plane that silently trusts anything answering on the
+	   management network. The failure names this field. */
+	InsecureTLS bool `json:"insecureTls,omitempty"`
 }
 
 // PhysicalNICConfig is a static IP assignment on a named physical adapter.
@@ -2625,6 +2670,21 @@ const (
 	// error says explicitly.
 	SecretVMwareCredential = "VMwareCredential"
 
+	/* SecretBMCCredential authenticates to a host's management controller —
+	   iLO, iDRAC, XCC — in the same "username" + "password" keys.
+
+	   Its own type for the reason CHAP and vCenter have one: it leaves the
+	   fabric, and it is the most privileged credential in the building. A BMC
+	   account offered in a picker beside domain administrators is one wrong
+	   click from sending a domain password to a device on the management
+	   network — and a controller account has power over the machine itself, not
+	   merely over Windows on it.
+
+	   It is also a different SHAPE of account: local to the controller
+	   (Administrator on iLO, root on iDRAC), authenticating against nothing
+	   else. */
+	SecretBMCCredential = "BMCCredential"
+
 	// SecretLocalCredential is a LOCAL administrator on a host, in the same
 	// "username" + "password" keys.
 	//
@@ -2768,8 +2828,30 @@ type VMSpec struct {
 	MemoryStartupBytes uint64 `json:"memoryStartupBytes"`
 
 	// DynamicMemory, when set, lets the VM's memory float between Min and Max.
-	// Nil means a fixed assignment of MemoryStartupBytes.
+	// Nil means a fixed assignment of MemoryStartupBytes. Cannot be combined
+	// with NestedVirtualisation: Hyper-V refuses to start a nested-enabled VM
+	// whose memory is dynamic.
 	DynamicMemory *DynamicMemorySpec `json:"dynamicMemory,omitempty"`
+
+	/* NestedVirtualisation exposes the host's virtualisation extensions to the
+	   guest, so the guest can itself run Hyper-V.
+
+	   ONE field for two settings, deliberately. It is Set-VMProcessor
+	   -ExposeVirtualizationExtensions AND MAC address spoofing on every one of
+	   the VM's adapters, because a nested guest's inner VMs have MAC addresses
+	   the outer switch has never seen and the switch drops their traffic
+	   otherwise. Split into two knobs, the reachable state "nested on, spoofing
+	   off" is a guest that boots, runs VMs, and has no network — worse than
+	   either setting alone, and diagnosed by nobody.
+
+	   Extensions are exposed at power-on, so like the processor count and Secure
+	   Boot this settles on the next power-off and reports pending until then.
+	   Ballast does not restart somebody's VM to satisfy a checkbox. Spoofing is
+	   a live setting and applies immediately.
+
+	   The host must support it (Intel VT-x/EPT or AMD-V on Hyper-V 2016 or
+	   later), and a nested guest cannot be live-migrated. */
+	NestedVirtualisation bool `json:"nestedVirtualisation,omitempty"`
 
 	// Disks are the virtual hard disks attached to the VM, in attachment order.
 	Disks []VMDiskSpec `json:"disks,omitempty"`

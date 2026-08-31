@@ -617,6 +617,34 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
 `, name, w, h)
 	}
 
+	/* Nested virtualisation: expose the host's virtualisation extensions so the
+	   guest can run Hyper-V itself.
+
+	   Set at power-on, so like the processor count and Secure Boot this flags
+	   $pending while the VM runs and settles on the next power-off. Ballast does
+	   not restart somebody's VM to satisfy a checkbox.
+
+	   Driven in BOTH directions rather than only on: a spec with the box cleared
+	   has to take the extensions away again, or unticking it in the console
+	   would report settled and change nothing. The MAC spoofing half of this is
+	   applied per adapter below, and applies live.
+
+	   Guarded on the property existing: ExposeVirtualizationExtensions is absent
+	   on Hyper-V before 2016, and a missing property must not fail a whole
+	   reconcile — power and networking are queued behind it. */
+	nested := fmt.Sprintf(`$vp = Get-VMProcessor -VMName %[1]s
+if ($null -ne $vp.ExposeVirtualizationExtensions) {
+  if ([bool]$vp.ExposeVirtualizationExtensions -ne $%[2]t) {
+    if ($running) { $pending = $true; $pendingWhat += 'nested virtualisation' } else {
+      Set-VMProcessor -VMName %[1]s -ExposeVirtualizationExtensions $%[2]t
+      $changed = $true
+    }
+  }
+} elseif ($%[2]t) {
+  Write-Warning 'this host does not support nested virtualisation (no ExposeVirtualizationExtensions); the setting was not applied'
+}
+`, name, s.NestedVirtualisation)
+
 	// Boot order: order the VM's actual boot entries by the declared device-category
 	// priority. Runs after disks/adapters/ISO are attached (below) so the entries it
 	// reorders exist. Like Secure Boot, a firmware/BIOS change needs the VM off, so
@@ -727,6 +755,22 @@ if (-not $ad) {
 		if a.MACAddress != "" {
 			adapters += fmt.Sprintf("Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -StaticMacAddress %[3]s\n", name, an, psQuote(a.MACAddress))
 		}
+		/* MAC address spoofing follows nested virtualisation, on every adapter.
+
+		   A nested guest's inner VMs have MAC addresses the outer switch has
+		   never seen, and without spoofing the switch drops their traffic — so
+		   the guest boots, runs VMs, and none of them can reach anything. That is
+		   why this is not a separate checkbox: the state "nested on, spoofing
+		   off" is worse than either setting alone, and it looks like a networking
+		   fault rather than a missing tick.
+
+		   Unlike the extensions this applies to a running VM, and it is driven in
+		   both directions so clearing the box takes it off again. */
+		spoof := "Off"
+		if s.NestedVirtualisation {
+			spoof = "On"
+		}
+		adapters += fmt.Sprintf("Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -MacAddressSpoofing %[3]s\n", name, an, psQuote(spoof))
 	}
 	// Remove any adapter not in the declared set — New-VM always creates a default
 	// "Network Adapter" (unconnected) and the operator should see only the declared
@@ -828,9 +872,9 @@ $cur = Get-VM -Name %[1]s -ErrorAction Stop
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[4]s
 %[5]s
-%[13]s%[15]s%[6]s%[7]s%[8]s%[9]s%[14]s
+%[13]s%[15]s%[16]s%[6]s%[7]s%[8]s%[9]s%[14]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; ') } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video, nested)
 }
 
 /*

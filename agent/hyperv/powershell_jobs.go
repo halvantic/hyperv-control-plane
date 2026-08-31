@@ -666,7 +666,7 @@ Write-Output ('DONE live-migrated ' + $vm + ' to ' + $tn)`, psQuote(vm), psQuote
 // for Kerberos, constrained delegation between the two computer accounts — that is
 // host setup done elsewhere. On failure it folds the recent VMMS event detail into
 // the message so the real cause (transport / delegation / CPU compat) is visible.
-func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath string, onProgress ProgressFunc) (string, error) {
+func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, onProgress ProgressFunc) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $vm = %[1]s; $dest = %[2]s; $path = %[3]s
 if (-not $path) { $path = 'C:\VMs\' + $vm }
@@ -683,10 +683,12 @@ try {
   Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
   Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
 } catch {}
-%[4]s
+%[5]s%[4]s
+%[6]s
 Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 		psQuote(vm), psQuote(destHost), psQuote(destPath),
-		migrateWithProgress("Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path"))
+		migrateWithProgress("Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path"),
+		unclusterScript(vm, sourceCluster), reclusterScript(vm, targetCluster))
 	result := "migrated " + vm + " to " + destHost
 	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
 	if err != nil {
@@ -1208,3 +1210,45 @@ if ($d.PartitionStyle -ne 'RAW') { Clear-Disk -Number $d.Number -RemoveData -Rem
 Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
 $after = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId })
 if ($after.Count -gt 0 -and $after[0].CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }`
+
+/* unclusterScript takes a VM's HA role off the source cluster before it moves.
+
+   Move-VM will not touch a VM the cluster owns, and the failure it gives for
+   trying is about the VM being "clustered" rather than about what to do. Taking
+   the role off leaves the VM registered and running on its current node — the
+   cluster simply stops managing it — which is exactly the state a shared-nothing
+   move needs and is also a state the VM survives if the move then fails.
+
+   Idempotent: a VM with no cluster group is already in the right state, which
+   matters because this runs again on every retry. */
+func unclusterScript(vm, cluster string) string {
+	if strings.TrimSpace(cluster) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`$g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+if ($g) {
+  Write-Output ('PROGRESS taking ' + %[1]s + ' out of cluster ' + %[2]s + ' so it can be moved')
+  Remove-ClusterGroup -Name %[1]s -RemoveResources:$false -Force -ErrorAction Stop
+}
+`, psQuote(vm), psQuote(cluster))
+}
+
+/* reclusterScript makes the VM an HA role on the destination cluster.
+
+   Runs AFTER the move, against the destination — the VM is not here any more,
+   so the cmdlet is aimed at a node of the target cluster. A failure here leaves
+   a VM that moved successfully and is not highly available, which is worth
+   saying plainly rather than failing the whole move: the copy is done and
+   re-running it would move a VM that has already arrived. */
+func reclusterScript(vm, cluster string) string {
+	if strings.TrimSpace(cluster) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`try {
+  Write-Output ('PROGRESS making ' + %[1]s + ' highly available on ' + %[2]s)
+  Add-ClusterVirtualMachineRole -Cluster %[2]s -VirtualMachine %[1]s -ErrorAction Stop | Out-Null
+} catch {
+  Write-Warning ('the VM moved to ' + $dest + ' but could not be made highly available on ' + %[2]s + ': ' + $_.Exception.Message + '. It is running and unclustered; add the role in Failover Cluster Manager or re-run this move')
+}
+`, psQuote(vm), psQuote(cluster))
+}

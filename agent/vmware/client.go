@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ type Endpoint struct {
 // Client is a connection from an agent to one vCenter or ESXi.
 type Client struct {
 	c *govmomi.Client
+	// pin is the ESXi host every datastore read is routed through, or nil to
+	// let vCenter choose one. See PinReads.
+	pin *object.HostSystem
 }
 
 func Connect(ctx context.Context, e Endpoint) (*Client, error) {
@@ -436,6 +440,28 @@ func explainCBTError(err error, changeID string) error {
 	return err
 }
 
+/* ErrDiskLocked reports a disk file the host holds open and will not serve.
+
+   Its own error because the remedy depends on WHO holds it, and only the caller
+   knows: on a powered-off source a lock is somebody else's and worth chasing,
+   and on a running one it is the guest's own and there is nothing to chase.
+   NFC answers both with the same "NFC_FILE_LOCKED", so the distinction cannot
+   be made here. */
+var ErrDiskLocked = fmt.Errorf("the host will not serve the disk file")
+
+// diskLocked carries a resolve failure that ended in a lock without changing a
+// word of it. The message is already the full account of what was tried; this
+// only lets a caller that knows the power state add the remedy.
+type diskLocked struct{ err error }
+
+func (e diskLocked) Error() string { return e.err.Error() }
+func (e diskLocked) Unwrap() error { return e.err }
+func (e diskLocked) Is(target error) bool { return target == ErrDiskLocked }
+
+// poweredOnState is VMware's spelling of a running VM, as a plain string so the
+// pass can test a power state without importing vim25 types.
+const poweredOnState = string(types.VirtualMachinePowerStatePoweredOn)
+
 /* ErrCBTUnavailable reports a disk that cannot answer a change-tracking query.
 
    Distinct from ErrCBTReset: a reset had tracking and lost its marker, and this
@@ -447,6 +473,49 @@ var ErrCBTUnavailable = fmt.Errorf("change tracking is not available")
 // because the remedy is specific and automatic: start again from a full read,
 // and say so, rather than failing a migration that is still perfectly possible.
 var ErrCBTReset = fmt.Errorf("change tracking was reset")
+
+/* PinReads routes datastore reads through the host that is running the VM.
+
+   govmomi's own words for the alternative, on Datastore.ServiceTicket, are "An
+   host is chosen at random". Where several hosts are attached to a datastore,
+   vCenter may proxy a read to one that does not own the VM — and that host
+   cannot take a lock on a running guest's files, so it answers NFC_FILE_LOCKED.
+   Identical to a guest holding its own disk, from an entirely different cause,
+   and the operator is told to stop a VM that never needed stopping.
+
+   Only where there is a choice to make. One host attached means vCenter had
+   nowhere else to send it, and pinning would swap a read through vCenter for a
+   read straight at the ESXi host — so an agent that can reach vCenter but not
+   the host would lose a path that works, to close a hazard that cannot occur.
+   Pinning exactly when there is a decision is the point; doing it always is a
+   different bug waiting on a different network. */
+func (v *Client) PinReads(ctx context.Context, moRef, dsPath string) error {
+	ds, _, err := v.datastoreFor(ctx, dsPath)
+	if err != nil {
+		return err
+	}
+	hosts, err := ds.AttachedHosts(ctx)
+	if err != nil {
+		return fmt.Errorf("vmware: read the hosts attached to %s: %w", dsPath, err)
+	}
+	if len(hosts) < 2 {
+		return nil
+	}
+
+	var m mo.VirtualMachine
+	pc := property.DefaultCollector(v.c.Client)
+	if err := pc.RetrieveOne(ctx, v.vm(moRef).Reference(), []string{"runtime.host"}, &m); err != nil {
+		return fmt.Errorf("vmware: find the host running %s: %w", moRef, err)
+	}
+	if m.Runtime.Host == nil {
+		// Said rather than shrugged off: a VM with no host on a datastore shared
+		// by several is precisely the case a random choice gets wrong.
+		return fmt.Errorf("vmware: %s reports no host, and %s is shared by %d hosts — a read would be sent to one of them "+
+			"at random, and any host but the VM's own will refuse a running guest's disk", moRef, dsPath, len(hosts))
+	}
+	v.pin = object.NewHostSystem(v.c.Client, *m.Runtime.Host)
+	return nil
+}
 
 /* ReadAt reads bytes from a disk file on the datastore.
 
@@ -463,6 +532,15 @@ func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64
 	u := ds.NewURL(path)
 	p := soap.DefaultDownload
 	p.Headers = map[string]string{"Range": rangeHeader(offset, length)}
+	// Pinned, where PinReads found a choice worth making. The ticket is what
+	// authenticates a read that no longer goes through vCenter.
+	if v.pin != nil {
+		tu, ticket, terr := ds.ServiceTicket(ds.HostContext(ctx, v.pin), path, p.Method)
+		if terr != nil {
+			return nil, fmt.Errorf("vmware: get a read ticket for %s on the host running it: %w", dsPath, terr)
+		}
+		u, p.Ticket = tu, ticket
+	}
 	/* DownloadRequest, not Download.
 
 	   govmomi's Download accepts only 200 OK and turns anything else into an
@@ -478,7 +556,7 @@ func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64
 	if err != nil {
 		return nil, fmt.Errorf("vmware: read %s at %d+%d: %w", dsPath, offset, length, err)
 	}
-	if err := acceptRangedRead(res.StatusCode, res.Status, offset); err != nil {
+	if err := acceptRangedRead(res.StatusCode, res.Status, res.Body, offset); err != nil {
 		res.Body.Close()
 		return nil, fmt.Errorf("vmware: read %s at %d+%d: %w", dsPath, offset, length, err)
 	}
@@ -496,7 +574,7 @@ func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64
    over the middle of it, every chunk, with the copy reporting success and the
    VM booting into a subtly wrong disk. So it is refused, loudly, rather than
    read. */
-func acceptRangedRead(code int, status string, offset int64) error {
+func acceptRangedRead(code int, status string, body io.Reader, offset int64) error {
 	switch code {
 	case http.StatusPartialContent:
 		return nil
@@ -508,9 +586,46 @@ func acceptRangedRead(code int, status string, offset int64) error {
 			"is sending the file from the beginning. Copying that would write the start of the disk over the middle of it, "+
 			"so the read is refused", status)
 	default:
+		/* The BODY, not just the status line.
+
+		   A bare "500 Internal Server Error" is a fact about HTTP and says
+		   nothing about the disk. ESXi puts the actual reason in the response —
+		   the file is locked, the datastore cannot be read as files, the path
+		   does not resolve — and throwing it away left the resolver guessing
+		   from status codes and the operator reading the guess. */
+		if reason := serverReason(body); reason != "" {
+			return fmt.Errorf("the datastore answered %s: %s", status, reason)
+		}
 		return fmt.Errorf("the datastore answered %s", status)
 	}
 }
+
+/* serverReason pulls the human part out of an error response.
+
+   ESXi answers a refused file read with an HTML page whose text is the reason.
+   Bounded and flattened to one line, because this ends up in a job message an
+   operator reads, and an unbounded body from a host that is already misbehaving
+   is not something to paste whole. An empty result is normal and means the
+   response carried nothing worth repeating. */
+func serverReason(body io.Reader) string {
+	if body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, 8<<10))
+	if err != nil && len(raw) == 0 {
+		return ""
+	}
+	text := tagText.ReplaceAllString(string(raw), " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 300 {
+		text = text[:300] + "…"
+	}
+	return text
+}
+
+// tagText strips HTML markup so the sentence inside an ESXi error page survives
+// without the page around it.
+var tagText = regexp.MustCompile(`(?s)<[^>]*>`)
 
 // rangeHeader builds an HTTP byte range. Inclusive at BOTH ends, which is the
 // one thing to get right here: off by one re-reads or skips a byte on every
@@ -557,7 +672,49 @@ func (v *Client) datastoreFor(ctx context.Context, dsPath string) (*object.Datas
    Where nothing does, the failure lists what was found and how big it was,
    because that is a diagnosis an operator can act on rather than a mystery. */
 func (v *Client) ResolveDiskFile(ctx context.Context, dsPath string, capacity int64) (string, error) {
-	return resolveDiskFile(ctx, dsPath, capacity, v.probeRead)
+	return resolveDiskFile(ctx, dsPath, capacity, v.probeRead, datastoreFacts{
+		size: v.fileSize,
+		kind: v.datastoreKind,
+	})
+}
+
+/* fileSize asks the datastore browser how big a file is.
+
+   Only ever on a failure path, and only to say what was found. The browser
+   cannot be trusted to CHOOSE the file — for a descriptor it answers with the
+   virtual disk's capacity rather than the 523 bytes of text actually there,
+   which is why the choice is made by reading. But once nothing could be read,
+   "the browser lists this file at exactly the size of the disk" is the fact
+   that separates a file that is missing from one that is being withheld.
+
+   A question the browser cannot answer is reported as unanswered. An absent
+   size is not a size of zero. */
+func (v *Client) fileSize(ctx context.Context, dsPath string) (int64, bool) {
+	ds, path, err := v.datastoreFor(ctx, dsPath)
+	if err != nil {
+		return 0, false
+	}
+	info, err := ds.Stat(ctx, path)
+	if err != nil || info == nil {
+		return 0, false
+	}
+	return info.GetFileInfo().FileSize, true
+}
+
+// datastoreKind reports the datastore's filesystem type — "VMFS", "vsan", "NFS".
+// It is the difference between a disk that is held and one that was never
+// readable as a file, and it is a fact rather than the inference the failure
+// used to offer in its place.
+func (v *Client) datastoreKind(ctx context.Context, dsPath string) string {
+	ds, _, err := v.datastoreFor(ctx, dsPath)
+	if err != nil {
+		return ""
+	}
+	t, err := ds.Type(ctx)
+	if err != nil {
+		return ""
+	}
+	return string(t)
 }
 
 /* probeRead reports how many bytes the datastore will actually serve.
@@ -585,13 +742,29 @@ func (v *Client) probeRead(ctx context.Context, dsPath string, offset, length in
 // diskProbe reads a range and reports how many bytes came back.
 type diskProbe func(ctx context.Context, dsPath string, offset, length int64) (int64, error)
 
+/* datastoreFacts are the two questions a FAILED resolve needs answered, and
+   neither is used to pick the file.
+
+   They exist because the failure this replaced ended in two guesses — that a
+   500 meant somebody else held a lock, and that the datastore might be vSAN —
+   in a product whose standing rule is that a diagnosis it could make and does
+   not is a defect. Both are one call away. Either may be unanswerable, and an
+   unanswered question is left out of the message rather than guessed at. */
+type datastoreFacts struct {
+	// size is what the datastore browser lists for a file, and whether it could
+	// be asked at all.
+	size func(ctx context.Context, dsPath string) (int64, bool)
+	// kind is the filesystem type of the datastore holding dsPath, or "".
+	kind func(ctx context.Context, dsPath string) string
+}
+
 /* resolveDiskFile picks the candidate that can serve the END of the disk.
 
    The end, not the start: a descriptor is a valid file and will happily serve
    its first few hundred bytes, so a probe at offset 0 cannot tell it from the
    data. Only the file that actually holds the disk can return a full sector at
    capacity-1 sector, which makes this a question with one right answer. */
-func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe diskProbe) (string, error) {
+func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe diskProbe, facts datastoreFacts) (string, error) {
 	length := sectorSize
 	if capacity < length {
 		length = capacity
@@ -613,12 +786,23 @@ func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe d
 		if err == nil && n == length {
 			return cand, nil
 		}
+		var why string
 		switch {
 		case err != nil:
-			tried = append(tried, fmt.Sprintf("%s (could not be read: %v)", cand, err))
+			why = fmt.Sprintf("could not be read: %v", err)
 		default:
-			tried = append(tried, fmt.Sprintf("%s (served %d of %d bytes at offset %d)", cand, n, length, offset))
+			why = fmt.Sprintf("served %d of %d bytes at offset %d", n, length, offset)
 		}
+		// The browser's answer beside the read's, because the pair is the
+		// diagnosis: a file the browser cannot see is missing, and a file it
+		// lists at the disk's full size that will not serve a sector is present
+		// and withheld.
+		if facts.size != nil {
+			if sz, ok := facts.size(ctx, cand); ok {
+				why = fmt.Sprintf("the datastore lists it at %d bytes; %s", sz, why)
+			}
+		}
+		tried = append(tried, fmt.Sprintf("%s (%s)", cand, why))
 	}
 	/* 404 and 500 are different findings and the difference is the whole
 	   diagnosis: 404 says the candidate is not there, which is ordinary — only
@@ -628,13 +812,35 @@ func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe d
 	   missing" when the disk is present and simply held. */
 	hint := ""
 	if strings.Contains(strings.Join(tried, " "), "500 Internal Server Error") {
-		hint = " One candidate answered 500, which means the file is there and the host would not serve it — usually " +
-			"because it is in use. Ballast reads the frozen base from behind its own snapshot for exactly this reason, " +
-			"so a 500 here points at a lock something else is holding: another backup or copy running against this VM."
+		hint = " One candidate answered 500, which means the file is there and the host would not serve it. The reason the " +
+			"host gave is quoted above."
 	}
-	return "", fmt.Errorf("vmware: nothing beside %s can serve the end of a %d-byte disk, so there is no file here holding "+
-		"its data. Tried: %s.%s A disk on vSAN, or on a datastore this host cannot read as files, cannot be copied over the "+
-		"datastore interface", dsPath, capacity, strings.Join(tried, "; "), hint)
+	/* The datastore's type, asked rather than offered as a possibility.
+
+	   This sentence used to read "a disk on vSAN … cannot be copied over the
+	   datastore interface" on every failure, whatever the datastore actually
+	   was — a maybe, printed where the operator needed a finding, and one call
+	   away from being known. */
+	where := " A disk on vSAN, or on a datastore this host cannot read as files, cannot be copied over the datastore interface"
+	if facts.kind != nil {
+		if k := facts.kind(ctx, dsPath); k != "" {
+			where = fmt.Sprintf(" The datastore is %s.", k)
+			if strings.EqualFold(k, "vsan") || strings.EqualFold(k, "vvol") {
+				where = fmt.Sprintf(" The datastore is %s, which does not expose disks as files at all, so nothing here can "+
+					"be copied over the datastore interface.", k)
+			}
+		}
+	}
+	err := fmt.Errorf("vmware: nothing beside %s can serve the end of a %d-byte disk, so there is no file here holding "+
+		"its data. Tried: %s.%s%s", dsPath, capacity, strings.Join(tried, "; "), hint, where)
+	/* A lock is marked, not explained, because the explanation needs the power
+	   state and this does not have it. NFC's own word for it is the only
+	   reliable marker: the surrounding text is ESXi's and may be reworded, but
+	   NFC_FILE_LOCKED is the code. */
+	if strings.Contains(strings.Join(tried, " "), "NFC_FILE_LOCKED") {
+		return "", diskLocked{err}
+	}
+	return "", err
 }
 
 /* PowerOff shuts the source down for a cutover.

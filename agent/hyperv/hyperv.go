@@ -585,7 +585,7 @@ type Interface interface {
 	// Msvm_MigrationJob while the move runs.
 	MoveClusterVM(ctx context.Context, vm, node string, onProgress ProgressFunc) error
 
-	// MigrateVM shared-nothing live-migrates a standalone (non-clustered) VM to
+	// MigrateVM shared-nothing live-migrates a VM to
 	// another host with no shared storage: Move-VM -DestinationHost -IncludeStorage
 	// moves the VM and its files to destPath on the target. Run on the source host.
 	// A running VM migrates live; a stopped one moves offline. It enables migration
@@ -593,7 +593,11 @@ type Interface interface {
 	// between the two computer accounts is provisioned by the MigrateVM job (via
 	// EnsureMigrationDelegation) before this runs. onProgress (nil-safe) receives
 	// streamed progress notes. Imperative Job.
-	MigrateVM(ctx context.Context, vm, destHost, destPath string, onProgress ProgressFunc) (string, error)
+	// sourceCluster and targetCluster are the cluster halves of a cross-boundary
+	// move, either or both empty for a standalone end. A clustered VM is owned by
+	// its cluster and Move-VM will not touch it, so the HA role comes off the
+	// source first and goes on at the destination afterwards.
+	MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, onProgress ProgressFunc) (string, error)
 
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive
