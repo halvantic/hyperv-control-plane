@@ -188,7 +188,7 @@ Share permission AND NTFS. Granting one and not the other is the half of this
 */
 func TestBothTheShareAndTheFilesystemAreGranted(t *testing.T) {
 	s := copyScript(t)
-	if !strings.Contains(s, "FileSystemAccessRule($acct, 'Modify'") {
+	if !strings.Contains(s, "FileSystemAccessRule($g, 'Modify'") {
 		t.Fatalf("NTFS is not granted, only the share: %s", s)
 	}
 	if !strings.Contains(s, "Set-Acl -LiteralPath $p") {
