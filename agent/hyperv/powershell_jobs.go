@@ -684,6 +684,18 @@ try {
   Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
 } catch {}
 %[5]s%[4]s
+# Did it actually leave?
+#
+# A move that reported success and did not happen is the worst thing this job
+# can produce: the evacuation records the VM as Moved, stops watching it, and
+# the operator reads a host as empty that is still running everything. It cost
+# two VMs to find, both reported Moved with their disks untouched on the source
+# CSV. Move-VM takes the VM off this host, so it being here afterwards is proof
+# the move did not happen, whatever the exit status said.
+if (Get-VM -Name %[1]s -ErrorAction SilentlyContinue) {
+  throw ('the move reported success but ' + %[1]s + ' is still registered on this host, so nothing was moved. ' +
+    'The VM has not been touched and is where it was')
+}
 %[6]s
 Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 		psQuote(vm), psQuote(destHost), psQuote(destPath),
@@ -702,17 +714,36 @@ Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 // agent streams into progress reports. On failure it folds the recent VMMS event
 // detail into the thrown message so the real cause is visible.
 func migrateWithProgress(moveCmd string) string {
-	return `$job = Start-Job -ScriptBlock { param($vm,$dest,$node,$path,$mt) Import-Module Hyper-V -ErrorAction SilentlyContinue; Import-Module FailoverClusters -ErrorAction SilentlyContinue; ` + moveCmd + ` } -ArgumentList $vm,$dest,$node,$path,$mt
+	/* $ErrorActionPreference INSIDE the job.
+
+	   It is set in the parent script, and a Start-Job child does not inherit it
+	   — it runs at the default Continue. So a NON-TERMINATING Move-VM error left
+	   the job in state Completed, the failure check below never fired, and the
+	   caller wrote "DONE migrated" over a move that had not happened.
+
+	   Measured: HVNew01 and HVNew02, both powered off, were reported Moved by an
+	   evacuation while their disks sat untouched on the source CSV. The one that
+	   did work was the running VM, because a live migration produces the
+	   progress this loop watches and a real result. */
+	return `$job = Start-Job -ScriptBlock { param($vm,$dest,$node,$path,$mt) $ErrorActionPreference = 'Stop'; Import-Module Hyper-V -ErrorAction SilentlyContinue; Import-Module FailoverClusters -ErrorAction SilentlyContinue; ` + moveCmd + ` } -ArgumentList $vm,$dest,$node,$path,$mt
 $last = -1
 while ($job.State -eq 'Running') {
   $mj = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending)[0]
   if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
   Start-Sleep -Seconds 2
 }
-Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-if ($job.State -eq 'Failed') {
-  $reason = ''
-  try { $reason = [string]$job.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
+# The job's own output and errors, KEPT. Piping them to Out-Null discarded the
+# only account of what went wrong, so a failure that did reach here arrived as
+# an empty message.
+$jobErr = ''
+try {
+  $out = @(Receive-Job $job -ErrorAction SilentlyContinue 2>&1)
+  $jobErr = (($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+    ForEach-Object { [string]$_.Exception.Message }) -join ' | ')
+} catch {}
+if ($job.State -eq 'Failed' -or $jobErr) {
+  $reason = $jobErr
+  try { if (-not $reason) { $reason = [string]$job.ChildJobs[0].JobStateInfo.Reason.Message } } catch {}
   $detail = ''
   try {
     $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-VMMS-Admin'; StartTime=(Get-Date).AddMinutes(-5); Level=1,2,3 } -MaxEvents 6 -ErrorAction SilentlyContinue
