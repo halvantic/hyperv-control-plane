@@ -35,12 +35,23 @@ func moveWithNetworkMap(nics []types.EvacuationNIC) string {
 	b.WriteString(`
 $rep = Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
 $fixed = @()
+# What the comparison actually returned, recorded as it is walked.
+#
+# Reasoning about this API has been wrong twice: once about whether the list
+# clears as entries are fixed, once about which entries carry an adapter. So the
+# move now says what it saw — the id, the type of the Source object and whether
+# it looked like an adapter — and carries it into any failure. A guess about
+# somebody else's object model is not something to make a third time.
+$seen = @()
 foreach ($inc in @($rep.Incompatibilities)) {
   $ad = $inc.Source
+  $kind = if ($ad) { $ad.GetType().Name } else { '<none>' }
+  $hasSwitch = [bool]($ad -and ($ad.PSObject.Properties.Name -contains 'SwitchName'))
+  $seen += ('#' + [string]$inc.MessageId + ' source=' + $kind + ' switchName=' + $hasSwitch)
   # Identified by the adapter's own shape rather than by MessageId 33012.
   # The id is right today and is a number in somebody else's product; an object
   # carrying a SwitchName is an adapter whatever the id happens to be.
-  if (-not $ad -or -not ($ad.PSObject.Properties.Name -contains 'SwitchName')) { continue }
+  if (-not $hasSwitch) { continue }
   $from = [string]$ad.SwitchName
   $to = $netMap[$from]
   if ($to) {
@@ -69,9 +80,21 @@ if ($fixed.Count -gt 0) { Write-Output ('PROGRESS networks: ' + ($fixed -join ',
 # specific reason when something genuinely remains, which is the message an
 # operator needs; this only carries the report forward so a failure can be read
 # against what was seen beforehand.
-$left = @($rep.Incompatibilities | ForEach-Object { [string]$_.Message } | Where-Object { $_ })
-if ($left.Count -gt 0) { Write-Output ('PROGRESS the destination reported: ' + ($left -join ' | ')) }
-Move-VM -CompatibilityReport $rep`)
+if ($seen.Count -gt 0) { Write-Output ('PROGRESS the destination objected to: ' + ($seen -join '; ')) }
+
+# The findings ride into the failure, not only into the progress notes.
+#
+# A progress line is gone by the time somebody reads a failed job, and the whole
+# question when this fails is what the comparison offered and what was done with
+# it. Without that the message is Hyper-V's alone and says nothing about whether
+# Ballast even tried.
+try {
+  Move-VM -CompatibilityReport $rep
+} catch {
+  $what = if ($fixed.Count -gt 0) { ($fixed -join ', ') } else { 'nothing - no incompatibility carried an adapter' }
+  throw ([string]$_.Exception.Message + ' -- Ballast saw ' + [string]$seen.Count + ' incompatibilities (' +
+    ($seen -join '; ') + ') and applied: ' + $what)
+}`)
 	return b.String()
 }
 

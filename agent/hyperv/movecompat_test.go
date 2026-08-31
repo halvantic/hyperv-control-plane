@@ -93,8 +93,17 @@ func TestTheCompatibilityReportIsReportedRatherThanJudged(t *testing.T) {
 	}
 	// The report still reaches the operator, so a Move-VM failure can be read
 	// against what the comparison saw beforehand.
-	if !strings.Contains(s, "PROGRESS the destination reported: ") {
+	if !strings.Contains(s, "PROGRESS the destination objected to: ") {
 		t.Errorf("the report is discarded rather than carried forward: %s", s)
+	}
+	/* And it rides into the FAILURE, not only the progress notes. A progress
+	   line is gone by the time somebody reads a failed job, and the whole
+	   question when this fails is what was offered and what was done with it. */
+	if !strings.Contains(s, "Ballast saw ") || !strings.Contains(s, "and applied: ") {
+		t.Errorf("a failed move does not say what Ballast saw or did: %s", s)
+	}
+	if !strings.Contains(s, "no incompatibility carried an adapter") {
+		t.Errorf("a move that matched nothing does not say so: %s", s)
 	}
 	if !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
 		t.Errorf("the move does not go through the report: %s", s)
