@@ -110,3 +110,59 @@ func TestNestedDoesNotInventAnAdapter(t *testing.T) {
 		t.Fatalf("spoofing was driven on a VM with no declared adapters:\n%s", s)
 	}
 }
+
+/*
+Un-clustering a VM before a cross-boundary move.
+
+	The cluster refuses a group that still holds resources — "Group 'HVNew01' is
+	not empty. Please use -RemoveResources" — which is every VM group there has
+	ever been. The resources are the VM's CLUSTERING, not the VM: removing them
+	leaves it registered and running on its node, which is what Failover Cluster
+	Manager's "Remove role" does and what a shared-nothing move needs.
+*/
+func TestUnclusteringRemovesTheRoleAndChecksTheVMSurvived(t *testing.T) {
+	s := unclusterScript("HVNew01", "Secondary")
+
+	if !strings.Contains(s, "-RemoveResources -Force") {
+		t.Fatalf("the group is removed without its resources, which the cluster refuses:\n%s", s)
+	}
+	if strings.Contains(s, "-RemoveResources:$false") {
+		t.Errorf("the refused form is still there:\n%s", s)
+	}
+	/* The guard that matters. If removing the role ever took the VM with it,
+	   the next line would move nothing and report success on a VM that no
+	   longer exists. */
+	if !strings.Contains(s, "if (-not (Get-VM -Name 'HVNew01'") {
+		t.Errorf("nothing checks the VM survived the role removal:\n%s", s)
+	}
+	if !strings.Contains(s, "still on the datastore") {
+		t.Errorf("the refusal does not say the files are recoverable:\n%s", s)
+	}
+}
+
+// A standalone source has no cluster to leave, and must not be sent cluster
+// cmdlets that would fail on a host with no cluster service.
+func TestAStandaloneSourceIsNotUnclustered(t *testing.T) {
+	if s := unclusterScript("Web01", ""); s != "" {
+		t.Fatalf("a standalone VM was sent cluster cmdlets:\n%s", s)
+	}
+	if s := reclusterScript("Web01", ""); s != "" {
+		t.Fatalf("a standalone destination was sent cluster cmdlets:\n%s", s)
+	}
+}
+
+/*
+Failing to make the VM highly available at the destination must NOT fail the
+
+	move. The copy is done and the VM has arrived; re-running it would move a VM
+	that is already there.
+*/
+func TestAFailedReclusterWarnsRatherThanFailingTheMove(t *testing.T) {
+	s := reclusterScript("HVNew01", "Primary")
+	if !strings.Contains(s, "Write-Warning") {
+		t.Fatalf("a failed role addition would fail the whole move:\n%s", s)
+	}
+	if !strings.Contains(s, "add the role in Failover Cluster Manager or re-run this move") {
+		t.Errorf("the warning does not say what to do about it:\n%s", s)
+	}
+}

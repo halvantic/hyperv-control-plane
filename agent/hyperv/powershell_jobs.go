@@ -1225,10 +1225,29 @@ func unclusterScript(vm, cluster string) string {
 	if strings.TrimSpace(cluster) == "" {
 		return ""
 	}
+	/* -RemoveResources, because a VM's group is never empty.
+
+	   Without it the cluster refuses: "Group 'X' is not empty. Please use
+	   -RemoveResources to remove this group and any resources it contains."
+	   The resources in question are the Virtual Machine and Virtual Machine
+	   Configuration cluster resources — the CLUSTERING of the VM, not the VM.
+	   Removing them un-clusters it and leaves it registered and running on its
+	   node, which is exactly what Failover Cluster Manager's "Remove role"
+	   does and exactly the state a shared-nothing move needs.
+
+	   The VM is checked for immediately afterwards. If that reading is ever
+	   wrong the next line moves nothing and the pass would report success on a
+	   VM that no longer exists, so it stops instead — loudly, and while the
+	   files are still on the datastore. */
 	return fmt.Sprintf(`$g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
 if ($g) {
   Write-Output ('PROGRESS taking ' + %[1]s + ' out of cluster ' + %[2]s + ' so it can be moved')
-  Remove-ClusterGroup -Name %[1]s -RemoveResources:$false -Force -ErrorAction Stop
+  Remove-ClusterGroup -Name %[1]s -RemoveResources -Force -ErrorAction Stop
+  if (-not (Get-VM -Name %[1]s -ErrorAction SilentlyContinue)) {
+    throw ('removing the cluster role for ' + %[1]s + ' also removed the VM from this host, which it must not do. ' +
+      'Nothing further has been attempted; the VM files are still on the datastore and the VM can be re-registered from them')
+  }
+  Write-Output ('PROGRESS ' + %[1]s + ' is no longer a cluster role and is still on this host')
 }
 `, psQuote(vm), psQuote(cluster))
 }
