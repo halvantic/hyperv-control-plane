@@ -45,9 +45,12 @@ func TestTheDiskIsCreatedFixedAndLeftOffline(t *testing.T) {
 	}
 }
 
-/* A VHDX larger than the disk it holds boots fine and reports the wrong
-   capacity to the guest for ever — the sort of thing nobody connects back to a
-   migration months later. */
+/*
+A VHDX larger than the disk it holds boots fine and reports the wrong
+
+	capacity to the guest for ever — the sort of thing nobody connects back to a
+	migration months later.
+*/
 func TestASizeHyperVCannotRepresentIsRefused(t *testing.T) {
 	p := newTestPS(&fakeRunner{})
 	_, err := p.CreateAndMountVHDX(t.Context(), `C:\x.vhdx`, 1000)
@@ -62,9 +65,12 @@ func TestASizeHyperVCannotRepresentIsRefused(t *testing.T) {
 	}
 }
 
-/* Widening a changed range is safe; narrowing is not. The extra bytes at each
-   edge come from the same source and go to the same place, so the destination
-   matches either way — but dropping the edges leaves them stale for ever. */
+/*
+Widening a changed range is safe; narrowing is not. The extra bytes at each
+
+	edge come from the same source and go to the same place, so the destination
+	matches either way — but dropping the edges leaves them stale for ever.
+*/
 func TestAChangedRangeIsWidenedToSectors(t *testing.T) {
 	tests := []struct{ off, len, wantOff, wantLen int64 }{
 		// Already aligned: unchanged.
@@ -101,9 +107,12 @@ func TestAnEmptyRangeStaysEmpty(t *testing.T) {
 	}
 }
 
-/* Unaligned writes are refused rather than corrected. Rounding outward writes
-   bytes the caller did not ask to write, over data an earlier pass put there;
-   rounding inward drops the edges of every changed range. */
+/*
+Unaligned writes are refused rather than corrected. Rounding outward writes
+
+	bytes the caller did not ask to write, over data an earlier pass put there;
+	rounding inward drops the edges of every changed range.
+*/
 func TestAnUnalignedWriteIsRefusedWithTheReason(t *testing.T) {
 	d := &RawDisk{path: `C:\x.vhdx`, sizeBytes: 1 << 30}
 	err := d.WriteAt(make([]byte, 100), 0)
@@ -118,8 +127,11 @@ func TestAnUnalignedWriteIsRefusedWithTheReason(t *testing.T) {
 	}
 }
 
-/* A range past the end means the change list no longer describes this image.
-   Growing the disk to fit would produce a VHDX that looks right and is not. */
+/*
+A range past the end means the change list no longer describes this image.
+
+	Growing the disk to fit would produce a VHDX that looks right and is not.
+*/
 func TestAWritePastTheEndStopsTheCopy(t *testing.T) {
 	d := &RawDisk{path: `C:\x.vhdx`, sizeBytes: 8192}
 	err := d.WriteAt(make([]byte, 4096), 8192)
@@ -134,9 +146,12 @@ func TestAWritePastTheEndStopsTheCopy(t *testing.T) {
 	}
 }
 
-/* Dismounting something that is not attached is the normal case on a cleanup
-   path — the caller is tidying after a failure and does not know how far the
-   previous attempt got. It must not read as an error. */
+/*
+Dismounting something that is not attached is the normal case on a cleanup
+
+	path — the caller is tidying after a failure and does not know how far the
+	previous attempt got. It must not read as an error.
+*/
 func TestDismountToleratesADiskThatIsNotAttached(t *testing.T) {
 	p := newTestPS(&fakeRunner{})
 	s := dismountScriptFor(t, p, `C:\x.vhdx`)
@@ -148,9 +163,12 @@ func TestDismountToleratesADiskThatIsNotAttached(t *testing.T) {
 	}
 }
 
-/* fakeRunner already records every script it is handed, so the builders are
-   captured by driving the method against one rather than by adding a second
-   recorder that does the same thing. */
+/*
+fakeRunner already records every script it is handed, so the builders are
+
+	captured by driving the method against one rather than by adding a second
+	recorder that does the same thing.
+*/
 func vhdxCreateScriptFor(t *testing.T, _ *PowerShell, path string, size int64) string {
 	t.Helper()
 	r := &fakeRunner{}

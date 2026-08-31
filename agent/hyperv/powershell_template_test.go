@@ -565,17 +565,20 @@ func TestProgressLinesKeepEveryLine(t *testing.T) {
 	}
 }
 
-/* The script's sysprep deadline and the Go constant the job layer budgets from
-   must be the same number.
+/*
+The script's sysprep deadline and the Go constant the job layer budgets from
 
-   They were written independently once, and that is exactly how generalising
-   captures broke: the script waited sixty minutes for the guest to shut down
-   and the job layer cancelled it at ten. Sysprep ran, the guest stopped as
-   promised, and the job was reported Failed part-way through with no template.
+	must be the same number.
 
-   The script now renders the constant. This proves it still does — and that the
-   message an operator reads quotes the same figure rather than a hardcoded one
-   that drifts from the behaviour it describes. */
+	They were written independently once, and that is exactly how generalising
+	captures broke: the script waited sixty minutes for the guest to shut down
+	and the job layer cancelled it at ten. Sysprep ran, the guest stopped as
+	promised, and the job was reported Failed part-way through with no template.
+
+	The script now renders the constant. This proves it still does — and that the
+	message an operator reads quotes the same figure rather than a hardcoded one
+	that drifts from the behaviour it describes.
+*/
 func TestTheCaptureScriptWaitsExactlyTheDeclaredDeadline(t *testing.T) {
 	s := captureTemplateScript(true, false)
 	mins := strconv.Itoa(int(SysprepDeadline.Minutes()))
@@ -587,9 +590,12 @@ func TestTheCaptureScriptWaitsExactlyTheDeclaredDeadline(t *testing.T) {
 	}
 }
 
-/* The budget must outlast the wait, with room for the copy that follows. This
-   lives here as well as in agent/service because the relationship is a property
-   of these two constants, not of the caller. */
+/*
+The budget must outlast the wait, with room for the copy that follows. This
+
+	lives here as well as in agent/service because the relationship is a property
+	of these two constants, not of the caller.
+*/
 func TestCaptureBudgetOutlastsTheSysprepWait(t *testing.T) {
 	if got := CaptureBudget(true); got <= SysprepDeadline {
 		t.Fatalf("a generalising capture is budgeted %v against its own %v wait", got, SysprepDeadline)
@@ -644,8 +650,11 @@ func TestAGuestNotTalkingAtAllIsCalledThat(t *testing.T) {
 	}
 }
 
-/* The remedy that matters. An operator staring at "a remote session might have
-   ended" has no reason to suspect their VM is sitting at a setup screen. */
+/*
+The remedy that matters. An operator staring at "a remote session might have
+
+	ended" has no reason to suspect their VM is sitting at a setup screen.
+*/
 func TestAnAlreadyGeneralisedGuestIsNamedAsTheLikeliestCause(t *testing.T) {
 	s := captureTemplateScript(true, false)
 	if !strings.Contains(s, "ALREADY BEEN GENERALISED") {
@@ -663,8 +672,11 @@ func TestAnAlreadyGeneralisedGuestIsNamedAsTheLikeliestCause(t *testing.T) {
 	}
 }
 
-/* Windows' own words are kept. An operator searching for the message must still
-   find it, and a support case needs the original text. */
+/*
+Windows' own words are kept. An operator searching for the message must still
+
+	find it, and a support case needs the original text.
+*/
 func TestTheOriginalMessageSurvivesTheDiagnosis(t *testing.T) {
 	s := captureTemplateScript(true, false)
 	// Every throw on this path ends by quoting $why.

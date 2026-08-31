@@ -57,13 +57,20 @@ foreach ($inc in @($rep.Incompatibilities)) {
 }
 if ($fixed.Count -gt 0) { Write-Output ('PROGRESS networks: ' + ($fixed -join ', ')) }
 
-# Anything the destination objects to that is NOT a network is left to stop the
-# move. Processor features, a missing ISO, a shared VHD: none of them are things
-# a mapping can answer, and moving anyway would produce a VM that will not start.
-$unhandled = @($rep.Incompatibilities | Where-Object { -not ($_.Source -and ($_.Source.PSObject.Properties.Name -contains 'SwitchName')) })
-if ($unhandled.Count -gt 0) {
-  throw ('the destination cannot take this VM: ' + (($unhandled | ForEach-Object { [string]$_.Message }) -join ' | '))
-}
+# What was in the report, REPORTED and not judged.
+#
+# Incompatibilities do not clear as they are fixed — the list is a snapshot —
+# and it always carries generic wrappers whose Source is the VM itself:
+# "failed at migration destination", "is not compatible with physical computer".
+# Treating anything that is not an adapter as unhandled therefore threw on those
+# wrappers after the only real problem, a switch name, had just been remapped.
+#
+# So Move-VM decides. It validates again for itself and refuses with the
+# specific reason when something genuinely remains, which is the message an
+# operator needs; this only carries the report forward so a failure can be read
+# against what was seen beforehand.
+$left = @($rep.Incompatibilities | ForEach-Object { [string]$_.Message } | Where-Object { $_ })
+if ($left.Count -gt 0) { Write-Output ('PROGRESS the destination reported: ' + ($left -join ' | ')) }
 Move-VM -CompatibilityReport $rep`)
 	return b.String()
 }

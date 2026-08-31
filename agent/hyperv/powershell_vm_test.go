@@ -326,8 +326,11 @@ func TestDynamicMemoryBandAppliesWithoutStoppingTheVM(t *testing.T) {
 	}
 }
 
-/* Startup and enabling dynamic memory DO need the VM off — Hyper-V refuses
-   both while it runs, so the deferral must survive for exactly those. */
+/*
+Startup and enabling dynamic memory DO need the VM off — Hyper-V refuses
+
+	both while it runs, so the deferral must survive for exactly those.
+*/
 func TestStartupAndEnablingDynamicMemoryStillNeedThePowerOff(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(dynVM(4294967296, 1073741824, 8589934592), 2)
 	if !strings.Contains(s, "(-not $m.DynamicMemoryEnabled) -or ($m.Startup -ne 4294967296)") {
@@ -338,8 +341,11 @@ func TestStartupAndEnablingDynamicMemoryStillNeedThePowerOff(t *testing.T) {
 	}
 }
 
-/* Static memory is fixed at boot, so every change still needs the VM off. The
-   split must not have loosened that by accident. */
+/*
+Static memory is fixed at boot, so every change still needs the VM off. The
+
+	split must not have loosened that by accident.
+*/
 func TestStaticMemoryStillNeedsThePowerOff(t *testing.T) {
 	vm := types.VM{
 		Meta: types.ObjectMeta{Name: "Web01"},
@@ -359,9 +365,12 @@ func TestStaticMemoryStillNeedsThePowerOff(t *testing.T) {
 	}
 }
 
-/* Processor count is unchanged by this: Hyper-V refuses it on a running VM
-   whatever the memory model, and loosening it would leave the VM in a state
-   Set-VMProcessor simply throws on. */
+/*
+Processor count is unchanged by this: Hyper-V refuses it on a running VM
+
+	whatever the memory model, and loosening it would leave the VM in a state
+	Set-VMProcessor simply throws on.
+*/
 func TestProcessorCountStillNeedsThePowerOff(t *testing.T) {
 	vm := types.VM{
 		Meta: types.ObjectMeta{Name: "Web01"},

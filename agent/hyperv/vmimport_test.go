@@ -146,9 +146,12 @@ func TestClusterRoleIsAddedByIDNotName(t *testing.T) {
 	}
 }
 
-/* A failed cluster-role add must not report the whole job as failed: the VM IS
-   imported by then, and "failed" tells an operator to import again — straight
-   into the already-registered refusal. */
+/*
+A failed cluster-role add must not report the whole job as failed: the VM IS
+
+	imported by then, and "failed" tells an operator to import again — straight
+	into the already-registered refusal.
+*/
 func TestAFailedClusterRoleReportsThePartialOutcome(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, Cluster: true})
 	if !strings.Contains(s, "$out.note = 'imported, but adding the clustered role failed: '") {
@@ -167,8 +170,11 @@ func TestSavedStateIsSpentOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-/* Windows gives a code and a sentence. The brief refuses a raw error passed
-   through to an operator when the failure has a known remedy. */
+/*
+Windows gives a code and a sentence. The brief refuses a raw error passed
+
+	through to an operator when the failure has a known remedy.
+*/
 func TestIncompatibilitiesCarryARemedy(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -200,9 +206,12 @@ func TestIncompatibilitiesCarryARemedy(t *testing.T) {
 	}
 }
 
-/* A finding nobody has seen keeps Windows' words and offers NO remedy. Inventing
-   one would be worse than silence: a wrong remedy in an infra console gets
-   followed. */
+/*
+A finding nobody has seen keeps Windows' words and offers NO remedy. Inventing
+
+	one would be worse than silence: a wrong remedy in an infra console gets
+	followed.
+*/
 func TestAnUnknownFindingInventsNothing(t *testing.T) {
 	got := explainIncompatibility(99999, "Something entirely new went wrong.", false)
 	if got.Kind != "Other" {
@@ -224,17 +233,20 @@ func firstLines(s string, n int) string {
 	return strings.Join(parts, "\n")
 }
 
-/* Compare-VM's real output, from the rig 2026-08-25 against a template on
-   SecDS1. Both findings came back under MessageId 40010.
+/*
+Compare-VM's real output, from the rig 2026-08-25 against a template on
 
-   That is the whole problem: 40010 is not "ISO", it is Windows' generic
-   file-not-found for VM media, and it covers a missing DVD image and a missing
-   BOOT DISK alike. Classifying on the code put "Virtual Hard Disk file not
-   found." in the ISO bucket, and the console told the operator "the VM imports
-   and runs without it". It does not — it imports and fails to boot.
+	SecDS1. Both findings came back under MessageId 40010.
 
-   The message was carrying the right answer the whole time. So the message
-   decides and the code is only ever a fallback. */
+	That is the whole problem: 40010 is not "ISO", it is Windows' generic
+	file-not-found for VM media, and it covers a missing DVD image and a missing
+	BOOT DISK alike. Classifying on the code put "Virtual Hard Disk file not
+	found." in the ISO bucket, and the console told the operator "the VM imports
+	and runs without it". It does not — it imports and fails to boot.
+
+	The message was carrying the right answer the whole time. So the message
+	decides and the code is only ever a fallback.
+*/
 func TestRealCompareVMOutputIsClassifiedByMessageNotCode(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -279,9 +291,12 @@ func TestRealCompareVMOutputIsClassifiedByMessageNotCode(t *testing.T) {
 	}
 }
 
-/* "File not found" with nothing naming WHAT gets no confident remedy. A wrong
-   remedy in an infra console gets followed, and this is the shape of message
-   most likely to tempt a guess. */
+/*
+"File not found" with nothing naming WHAT gets no confident remedy. A wrong
+
+	remedy in an infra console gets followed, and this is the shape of message
+	most likely to tempt a guess.
+*/
 func TestAnUnnamedMissingFileGetsNoConfidentRemedy(t *testing.T) {
 	got := explainIncompatibility(40010, "The file could not be found.", true)
 	if strings.Contains(got.Remedy, "runs without it") {
@@ -324,9 +339,12 @@ func TestFindingsAreResolvedWhenTheOperatorAsks(t *testing.T) {
 	}
 }
 
-/* Nothing is changed without being asked. An import that quietly removed a disk
-   reference because the operator clicked Import would be far worse than the
-   refusal it replaced. */
+/*
+Nothing is changed without being asked. An import that quietly removed a disk
+
+	reference because the operator clicked Import would be far worse than the
+	refusal it replaced.
+*/
 func TestNothingIsResolvedWithoutConsent(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`})
 	if !strings.Contains(s, "$fix = $false") {
@@ -339,8 +357,11 @@ func TestNothingIsResolvedWithoutConsent(t *testing.T) {
 	}
 }
 
-/* A finding nothing knows how to resolve must still refuse. Silently importing
-   a VM that cannot run would look like success and fail at first boot. */
+/*
+A finding nothing knows how to resolve must still refuse. Silently importing
+
+	a VM that cannot run would look like success and fail at first boot.
+*/
 func TestAnUnresolvableFindingStillRefuses(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "Ballast does not know how to resolve this") {
@@ -351,9 +372,12 @@ func TestAnUnresolvableFindingStillRefuses(t *testing.T) {
 	}
 }
 
-/* Resolving one finding can expose another, and importing a report that still
-   carries incompatibilities fails with a message far less useful than the ones
-   the script has just assembled. */
+/*
+Resolving one finding can expose another, and importing a report that still
+
+	carries incompatibilities fails with a message far less useful than the ones
+	the script has just assembled.
+*/
 func TestTheReportIsRecheckedAfterFixing(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "$report = Compare-VM -CompatibilityReport $report") {
@@ -369,8 +393,11 @@ func TestTheReportIsRecheckedAfterFixing(t *testing.T) {
 	}
 }
 
-/* Two of the fixes change what the VM IS. An import that made those changes and
-   reported plain success would be worse than the refusal. */
+/*
+Two of the fixes change what the VM IS. An import that made those changes and
+
+	reported plain success would be worse than the refusal.
+*/
 func TestWhatWasChangedIsReported(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "$out.fixed = $fixed") {
@@ -387,8 +414,11 @@ func TestWhatWasChangedIsReported(t *testing.T) {
 	}
 }
 
-/* Saved state keeps its own consent: the cost is the guest's unsaved work, not
-   a configuration change, so ApplyFixes must not spend it. */
+/*
+Saved state keeps its own consent: the cost is the guest's unsaved work, not
+
+	a configuration change, so ApplyFixes must not spend it.
+*/
 func TestApplyFixesDoesNotSpendSavedState(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true, DiscardSavedState: false})
 	if !strings.Contains(s, "$discardSaved = $false") {
@@ -434,9 +464,12 @@ func TestFindingsAreMatchedOnHyperVsRealTypeNames(t *testing.T) {
 	}
 }
 
-/* A refusal after the operator ticked "apply these changes" must say whether
-   the fix was refused, attempted, or never understood. "cannot run as
-   configured" alone says none of those. */
+/*
+A refusal after the operator ticked "apply these changes" must say whether
+
+	the fix was refused, attempted, or never understood. "cannot run as
+	configured" alone says none of those.
+*/
 func TestAnUnresolvableFindingNamesTheTypeItSaw(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "Ballast does not know how to resolve this: the report offered ") {
@@ -447,8 +480,11 @@ func TestAnUnresolvableFindingNamesTheTypeItSaw(t *testing.T) {
 	}
 }
 
-/* Listing only the failures made a partial success read as nothing having
-   happened — on the rig it hid that the network fix HAD worked. */
+/*
+Listing only the failures made a partial success read as nothing having
+
+	happened — on the rig it hid that the network fix HAD worked.
+*/
 func TestAPartialResolutionSaysWhatItDidResolve(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "$head = ('resolved ' + ($fixed -join '; ') + ', but this VM still cannot run on this host')") {
@@ -456,12 +492,15 @@ func TestAPartialResolutionSaysWhatItDidResolve(t *testing.T) {
 	}
 }
 
-/* Compare-VM REGISTERS a planned VM; it does not merely inspect. Import-VM
-   consumes it. Throwing without consuming it leaves it registered and holding
-   the configuration open, and the next Compare-VM on the same files fails with
-   "the process cannot access the file because it is being used by another
-   process" — which reads as another host running the VM when it is this host's
-   own leftover. */
+/*
+Compare-VM REGISTERS a planned VM; it does not merely inspect. Import-VM
+
+	consumes it. Throwing without consuming it leaves it registered and holding
+	the configuration open, and the next Compare-VM on the same files fails with
+	"the process cannot access the file because it is being used by another
+	process" — which reads as another host running the VM when it is this host's
+	own leftover.
+*/
 func TestEveryRefusalDiscardsThePlannedVM(t *testing.T) {
 	s := importVMScript(VMImport{ConfigPath: `D:\VM\Virtual Machines\x.vmcx`, ApplyFixes: true})
 	if !strings.Contains(s, "function Discard-BallastPlanned") {

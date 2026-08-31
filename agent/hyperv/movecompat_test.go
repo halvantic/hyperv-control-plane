@@ -72,21 +72,32 @@ func TestAVLANIsAppliedOnlyWhenGiven(t *testing.T) {
 	}
 }
 
-/*
-An incompatibility that is NOT a network stops the move.
+/* The report is carried forward, not judged.
 
-	Processor features, a missing ISO, a shared VHD: none of them are things a
-	network mapping can answer, and moving anyway produces a VM at the
-	destination that will not start.
-*/
-func TestANonNetworkIncompatibilityStopsTheMove(t *testing.T) {
+   Incompatibilities do not clear as they are fixed — the list is a snapshot —
+   and it always carries generic wrappers whose Source is the VM itself. A check
+   that treated anything not an adapter as unhandled threw on those wrappers
+   after the only real problem, a switch name, had just been remapped:
+
+     the destination cannot take this VM: Virtual machine migration operation
+     for 'HVNew01' failed at migration destination | The virtual machine
+     'HVNew01' is not compatible with physical computer 'HVNEW06'
+
+   Two sentences with no cause in either. Move-VM validates again for itself and
+   refuses with the specific reason, which is the message worth having. */
+func TestTheCompatibilityReportIsReportedRatherThanJudged(t *testing.T) {
 	s := moveWithNetworkMap([]types.EvacuationNIC{{SourceSwitch: "A", TargetSwitch: "B"}})
-	if !strings.Contains(s, "the destination cannot take this VM") {
-		t.Fatalf("a non-network objection would be moved past: %s", s)
+
+	if strings.Contains(s, "the destination cannot take this VM") {
+		t.Fatalf("the script still refuses on its own reading of the report: %s", s)
 	}
-	// And the destination's own words survive, rather than a count.
-	if !strings.Contains(s, "[string]$_.Message") {
-		t.Errorf("the incompatibility messages are dropped: %s", s)
+	// The report still reaches the operator, so a Move-VM failure can be read
+	// against what the comparison saw beforehand.
+	if !strings.Contains(s, "PROGRESS the destination reported: ") {
+		t.Errorf("the report is discarded rather than carried forward: %s", s)
+	}
+	if !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
+		t.Errorf("the move does not go through the report: %s", s)
 	}
 }
 

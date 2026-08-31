@@ -1285,16 +1285,18 @@ Reset-PhysicalDisk -UniqueId $pd.UniqueId -ErrorAction SilentlyContinue
 $after = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.UniqueId -eq [string]$pd.UniqueId })
 if ($after.Count -gt 0 -and $after[0].CanPool) { 'RESULT=WIPED' } else { 'RESULT=WIPED_NOPOOL' }`
 
-/* unclusterScript takes a VM's HA role off the source cluster before it moves.
+/*
+unclusterScript takes a VM's HA role off the source cluster before it moves.
 
-   Move-VM will not touch a VM the cluster owns, and the failure it gives for
-   trying is about the VM being "clustered" rather than about what to do. Taking
-   the role off leaves the VM registered and running on its current node — the
-   cluster simply stops managing it — which is exactly the state a shared-nothing
-   move needs and is also a state the VM survives if the move then fails.
+	Move-VM will not touch a VM the cluster owns, and the failure it gives for
+	trying is about the VM being "clustered" rather than about what to do. Taking
+	the role off leaves the VM registered and running on its current node — the
+	cluster simply stops managing it — which is exactly the state a shared-nothing
+	move needs and is also a state the VM survives if the move then fails.
 
-   Idempotent: a VM with no cluster group is already in the right state, which
-   matters because this runs again on every retry. */
+	Idempotent: a VM with no cluster group is already in the right state, which
+	matters because this runs again on every retry.
+*/
 func unclusterScript(vm, cluster string) string {
 	if strings.TrimSpace(cluster) == "" {
 		return ""
@@ -1326,13 +1328,15 @@ if ($g) {
 `, psQuote(vm), psQuote(cluster))
 }
 
-/* reclusterScript makes the VM an HA role on the destination cluster.
+/*
+reclusterScript makes the VM an HA role on the destination cluster.
 
-   Runs AFTER the move, against the destination — the VM is not here any more,
-   so the cmdlet is aimed at a node of the target cluster. A failure here leaves
-   a VM that moved successfully and is not highly available, which is worth
-   saying plainly rather than failing the whole move: the copy is done and
-   re-running it would move a VM that has already arrived. */
+	Runs AFTER the move, against the destination — the VM is not here any more,
+	so the cmdlet is aimed at a node of the target cluster. A failure here leaves
+	a VM that moved successfully and is not highly available, which is worth
+	saying plainly rather than failing the whole move: the copy is done and
+	re-running it would move a VM that has already arrived.
+*/
 func reclusterScript(vm, cluster string) string {
 	if strings.TrimSpace(cluster) == "" {
 		return ""
