@@ -571,14 +571,26 @@ if ($csv) {
     [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace); shared = $true }
   })
 }
-# Exclude the OS/system volume: collect boot/system disk drive letters so they
-# are not offered as VM storage locations (the agent can't create VHDXs there
-# without risking the OS partition). The C drive is skipped even if detection
-# fails — it is always the Windows system volume on these hosts.
+# Exclude the OS volume, and ONLY the OS volume: it is not somewhere the agent
+# can create VHDXs without risking the Windows partition.
+#
+# Asked of the PARTITION, not the disk. Disk-level IsBoot/IsSystem marks a disk
+# that carries a boot or system partition, and taking every lettered partition
+# on such a disk excludes far more than the OS. Measured on HVNEW06: Windows put
+# the 16MB system partition on disk 1 and the boot volume on disk 0, so disk 1
+# was IsSystem — and its other partition, a 3.8TB data volume the operator had
+# formatted for Hyper-V, was swept up with it. I: existed, was Fixed and NTFS,
+# and Ballast reported "no volumes on this host".
+#
+# The partition flags mark the specific partition instead, and ESP/MSR/recovery
+# partitions carry no drive letter, so they are already excluded by the letter
+# test. $env:SystemDrive covers a Windows that is not on C; the literal C stays
+# as a fallback for a host where detection fails.
 $osDriveLetters = @('C')
 try {
-  $osDriveLetters += @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } |
-    Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } |
+  if ($env:SystemDrive) { $osDriveLetters += [string]($env:SystemDrive -replace ':', '') }
+  $osDriveLetters += @(Get-Partition -ErrorAction SilentlyContinue |
+    Where-Object { ($_.IsBoot -or $_.IsSystem) -and $_.DriveLetter } |
     ForEach-Object { [string]$_.DriveLetter })
   $osDriveLetters = @($osDriveLetters | Sort-Object -Unique)
 } catch {}

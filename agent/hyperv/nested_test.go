@@ -49,10 +49,12 @@ func TestNestedExposesTheExtensionsAndSpoofsEveryAdapter(t *testing.T) {
 	}
 }
 
-/* The extensions need the VM stopped, so a running one is DEFERRED and says so.
+/*
+The extensions need the VM stopped, so a running one is DEFERRED and says so.
 
-   Ballast does not restart somebody's VM to satisfy a checkbox, and a setting
-   that silently did nothing would be worse than either. */
+	Ballast does not restart somebody's VM to satisfy a checkbox, and a setting
+	that silently did nothing would be worse than either.
+*/
 func TestNestedIsDeferredOnARunningVMAndNamed(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(nestedVM(true), 2)
 	if !strings.Contains(s, "$pendingWhat += 'nested virtualisation'") {
@@ -65,11 +67,13 @@ func TestNestedIsDeferredOnARunningVMAndNamed(t *testing.T) {
 	}
 }
 
-/* Unticking the box has to take both settings away again.
+/*
+Unticking the box has to take both settings away again.
 
-   Driving only the "on" direction is the classic half of this: the console
-   reports the change settled, the VM keeps its extensions and its spoofing, and
-   the next person to look cannot tell why. */
+	Driving only the "on" direction is the classic half of this: the console
+	reports the change settled, the VM keeps its extensions and its spoofing, and
+	the next person to look cannot tell why.
+*/
 func TestClearingNestedTakesBothSettingsBack(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(nestedVM(false), 2)
 
@@ -84,11 +88,13 @@ func TestClearingNestedTakesBothSettingsBack(t *testing.T) {
 	}
 }
 
-/* A host too old to support it must not fail the whole reconcile.
+/*
+A host too old to support it must not fail the whole reconcile.
 
-   ExposeVirtualizationExtensions is absent before Hyper-V 2016, and power,
-   sizing and networking are all queued behind this script. The same guard the
-   video adapter gets, for the same reason. */
+	ExposeVirtualizationExtensions is absent before Hyper-V 2016, and power,
+	sizing and networking are all queued behind this script. The same guard the
+	video adapter gets, for the same reason.
+*/
 func TestAnUnsupportedHostWarnsRatherThanFailing(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(nestedVM(true), 2)
 	if !strings.Contains(s, "if ($null -ne $vp.ExposeVirtualizationExtensions)") {
@@ -164,5 +170,60 @@ func TestAFailedReclusterWarnsRatherThanFailingTheMove(t *testing.T) {
 	}
 	if !strings.Contains(s, "add the role in Failover Cluster Manager or re-run this move") {
 		t.Errorf("the warning does not say what to do about it:\n%s", s)
+	}
+}
+
+/*
+Which volumes a host offers as VM storage.
+
+	Measured on HVNEW06, where Ballast reported "no volumes on this host" while
+	the OS had a 3.8TB NTFS volume at I: that the operator had formatted for
+	Hyper-V. Windows had put the 16MB system partition on disk 1 and the boot
+	volume on disk 0, so disk 1 was IsSystem — and the exclusion, which asked the
+	DISK, took every lettered partition on it.
+*/
+func TestTheOSExclusionAsksThePartitionNotTheDisk(t *testing.T) {
+	s := resourcesScript
+
+	// Partition-level flags. A disk carrying a system partition is not itself
+	// off limits: its other partitions are ordinary storage.
+	if !strings.Contains(s, "Get-Partition -ErrorAction SilentlyContinue |") ||
+		!strings.Contains(s, "($_.IsBoot -or $_.IsSystem) -and $_.DriveLetter") {
+		t.Fatalf("the exclusion does not ask the partition:\n%s", s)
+	}
+	if strings.Contains(s, "Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem }") {
+		t.Errorf("the disk-level exclusion is still there, which hides every volume sharing a disk with the ESP:\n%s", s)
+	}
+	// Windows is not always on C.
+	if !strings.Contains(s, "$env:SystemDrive") {
+		t.Errorf("a Windows installed somewhere other than C would not be excluded:\n%s", s)
+	}
+	// And C stays as the fallback for a host where detection fails entirely.
+	if !strings.Contains(s, `$osDriveLetters = @('C')`) {
+		t.Errorf("the C fallback was dropped:\n%s", s)
+	}
+}
+
+/*
+A cluster member reports its CSVs AND its own volumes.
+
+	This was an either/or, so a member's local drives were invisible everywhere
+	Ballast offers storage — no placement, no evacuation destination, nothing in
+	the tree. Which kind a volume is decides what is safe to put on it, and that
+	is expressed by tagging them, not by leaving half of them out.
+*/
+func TestAMemberReportsBothKindsOfVolume(t *testing.T) {
+	s := resourcesScript
+
+	if !strings.Contains(s, "$vols += @(Get-Volume") {
+		t.Fatalf("local volumes are not added alongside the CSVs:\n%s", s)
+	}
+	if strings.Contains(s, "} else {\n  # Exclude the OS/system volume") {
+		t.Errorf("the either/or is still there:\n%s", s)
+	}
+	for _, want := range []string{"shared = $true", "shared = $false"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("volumes are not tagged with %q, so nothing can tell a CSV from a local disk:\n%s", want, s)
+		}
 	}
 }
