@@ -24,56 +24,54 @@ func TestAMappedSwitchIsReconnectedAtTheDestination(t *testing.T) {
 	if !strings.Contains(s, `$netMap = @{'ConvergedSwitch2' = 'Converged'}`) {
 		t.Fatalf("the mapping is not rendered: %s", s)
 	}
-	/* By switch OBJECT from the destination, not by name.
+	/* Disconnect for the move, reconnect on the other side.
 
-	   -SwitchName resolves on the host running the cmdlet, which is the source.
-	   Mapping to the destination's Converged failed with "Hyper-V was unable to
-	   find a virtual switch with name Converged" — true of the source host, and
-	   beside the point. */
-	if !strings.Contains(s, "Connect-VMNetworkAdapter -VMNetworkAdapter $ad -VMSwitch $swCache[$to]") {
-		t.Errorf("a mapped adapter is not reconnected by object: %s", s)
+	   Reconnecting inside the compatibility report does not take: four adapters
+	   matched, Connect-VMNetworkAdapter returned no error for any of them, and
+	   Move-VM still refused with "Could not find Ethernet switch
+	   ConvergedSwitch2" four times. Disconnecting IS documented to work on a
+	   report, and the switch name resolves at the destination where the host
+	   actually has it. */
+	if !strings.Contains(s, "Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad") {
+		t.Fatalf("adapters are not disconnected before the move: %s", s)
 	}
-	if !strings.Contains(s, "Get-VMSwitch -ComputerName $dest -Name $to") {
-		t.Errorf("the switch is not fetched from the destination: %s", s)
+	if !strings.Contains(s, "Get-VMNetworkAdapter -ComputerName $dest -VMName $vm") {
+		t.Errorf("the adapters are not picked up at the destination: %s", s)
 	}
-	// One lookup per distinct switch, not one per adapter.
-	if !strings.Contains(s, "if (-not $swCache.ContainsKey($to))") {
-		t.Errorf("the destination is asked once per adapter: %s", s)
+	if !strings.Contains(s, "Connect-VMNetworkAdapter -VMNetworkAdapter $ad -SwitchName $p.To") {
+		t.Errorf("the mapped switch is not applied at the destination: %s", s)
 	}
-	// And a destination that has no such switch says what it does have.
-	if !strings.Contains(s, "has no virtual switch called ") || !strings.Contains(s, "It has: ") {
-		t.Errorf("a missing destination switch does not list the alternatives: %s", s)
+	// The reconnect must come AFTER the move, or it is the thing that just
+	// failed to work.
+	move, connect := strings.Index(s, "Move-VM -CompatibilityReport"), strings.Index(s, "-SwitchName $p.To")
+	if move < 0 || connect < move {
+		t.Errorf("the reconnect does not come after the move: %s", s)
 	}
-	// Hyper-V's own mechanism: compare, fix the report, move against it.
-	if !strings.Contains(s, "Compare-VM -Name $vm") || !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
+	if !strings.Contains(s, "Compare-VM -Name $vm") {
 		t.Errorf("the move does not go through a compatibility report: %s", s)
 	}
 }
 
-/*
-An UNMAPPED network arrives disconnected, deliberately.
+/* An adapter is matched back to its switch by MAC, which survives the move.
 
-	Attaching it to whichever switch happens to be there would put a VM on a
-	network nobody chose — silently, and possibly one it can reach production
-	from. A disconnected adapter is noticed in seconds; a wrong one is noticed
-	when it matters.
-*/
-func TestAnUnmappedNetworkArrivesDisconnectedRatherThanGuessed(t *testing.T) {
-	s := moveWithNetworkMap(nil)
+   A VM that has never started has no MAC yet. Where every adapter is going to
+   the same switch that ambiguity has no consequence, so it takes the next one
+   still disconnected rather than refusing over a distinction that does not
+   matter — and says so plainly when it genuinely cannot tell. */
+func TestAdaptersAreMatchedBackByMACWithAnHonestFallback(t *testing.T) {
+	s := moveWithNetworkMap([]types.EvacuationNIC{{SourceSwitch: "A", TargetSwitch: "B"}})
 
-	if !strings.Contains(s, "Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad") {
-		t.Fatalf("an unmapped adapter is not disconnected: %s", s)
+	if !strings.Contains(s, "[string]$_.MacAddress -eq $p.Mac") {
+		t.Fatalf("adapters are not matched by MAC: %s", s)
 	}
-	if !strings.Contains(s, "disconnected (no mapping given)") {
-		t.Errorf("a disconnected adapter is not reported: %s", s)
+	if !strings.Contains(s, "$p.Mac -ne '000000000000'") {
+		t.Errorf("an unassigned MAC would be matched against: %s", s)
 	}
-	/* And nothing invents a destination. The connect is guarded on a mapping
-	   existing; there is no branch that picks a switch when none was given. */
-	if !strings.Contains(s, "if ($to) {") {
-		t.Errorf("the connect is not guarded on a mapping: %s", s)
+	if !strings.Contains(s, "$targets.Count -eq 1") {
+		t.Errorf("there is no fallback for a VM that has never started: %s", s)
 	}
-	if strings.Contains(s, "Select-Object -First 1") {
-		t.Errorf("the script falls back to whichever switch is first: %s", s)
+	if !strings.Contains(s, "left disconnected") {
+		t.Errorf("an adapter that could not be matched is not reported: %s", s)
 	}
 }
 
@@ -84,7 +82,7 @@ func TestAVLANIsAppliedOnlyWhenGiven(t *testing.T) {
 	if !strings.Contains(with, `$vlanMap = @{'A' = 40}`) {
 		t.Fatalf("the VLAN is not carried: %s", with)
 	}
-	if !strings.Contains(with, "if ($v -and [int]$v -gt 0)") {
+	if !strings.Contains(with, "if ($p.Vlan -gt 0)") {
 		t.Errorf("a zero VLAN would be applied as a tag: %s", with)
 	}
 	without := moveWithNetworkMap([]types.EvacuationNIC{{SourceSwitch: "A", TargetSwitch: "B"}})
@@ -125,6 +123,9 @@ func TestTheCompatibilityReportIsReportedRatherThanJudged(t *testing.T) {
 	}
 	if !strings.Contains(s, "no incompatibility carried an adapter") {
 		t.Errorf("a move that matched nothing does not say so: %s", s)
+	}
+	if !strings.Contains(s, "disconnected ") {
+		t.Errorf("a failure does not say how many adapters were taken off: %s", s)
 	}
 	if !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
 		t.Errorf("the move does not go through the report: %s", s)

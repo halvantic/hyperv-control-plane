@@ -34,87 +34,77 @@ func moveWithNetworkMap(nics []types.EvacuationNIC) string {
 	b.WriteString(psSwitchMap(nics))
 	b.WriteString(`
 $rep = Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
-$fixed = @()
-# One lookup per distinct destination switch, not one per adapter: a four-NIC VM
-# on one switch should not ask the destination the same question four times.
-$swCache = @{}
-# What the comparison actually returned, recorded as it is walked.
+
+# DISCONNECT for the move, reconnect at the destination afterwards.
 #
-# Reasoning about this API has been wrong twice: once about whether the list
-# clears as entries are fixed, once about which entries carry an adapter. So the
-# move now says what it saw — the id, the type of the Source object and whether
-# it looked like an adapter — and carries it into any failure. A guess about
-# somebody else's object model is not something to make a third time.
+# Reconnecting the adapters inside the compatibility report does not take.
+# Measured: four adapters matched, Connect-VMNetworkAdapter returned no error
+# for any of them, and Move-VM still refused with "Could not find Ethernet
+# switch ConvergedSwitch2" four times. The connect reached the object and never
+# reached the report Move-VM validates.
+#
+# Disconnecting IS documented to work on a report, and a VM crossing hosts is
+# off its network for the duration regardless. So the switch it should end up on
+# is remembered here and applied on the other side, where the name resolves
+# against the host that actually has it.
+$plan = @()
 $seen = @()
 foreach ($inc in @($rep.Incompatibilities)) {
   $ad = $inc.Source
   $kind = if ($ad) { $ad.GetType().Name } else { '<none>' }
   $hasSwitch = [bool]($ad -and ($ad.PSObject.Properties.Name -contains 'SwitchName'))
   $seen += ('#' + [string]$inc.MessageId + ' source=' + $kind + ' switchName=' + $hasSwitch)
-  # Identified by the adapter's own shape rather than by MessageId 33012.
-  # The id is right today and is a number in somebody else's product; an object
-  # carrying a SwitchName is an adapter whatever the id happens to be.
   if (-not $hasSwitch) { continue }
   $from = [string]$ad.SwitchName
-  $to = $netMap[$from]
-  if ($to) {
-    # By SWITCH OBJECT from the destination, not by name.
-    #
-    # -SwitchName resolves on the host running the cmdlet, which is the SOURCE:
-    # the adapter belongs to a compatibility report for somewhere else, but the
-    # name lookup does not follow it there. Mapping ConvergedSwitch2 to the
-    # destination's Converged failed with "Hyper-V was unable to find a virtual
-    # switch with name Converged" — perfectly true of HVNEW04, and beside the
-    # point. A switch object fetched from the destination carries its host.
-    if (-not $swCache.ContainsKey($to)) {
-      $found = Get-VMSwitch -ComputerName $dest -Name $to -ErrorAction SilentlyContinue
-      if (-not $found) {
-        $have = @(Get-VMSwitch -ComputerName $dest -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-        throw ($dest + ' has no virtual switch called ' + $to + '. It has: ' +
-          $(if ($have.Count -gt 0) { $have -join ', ' } else { 'none that could be read' }) +
-          '. Change the network mapping on the evacuation to one of those, or create the switch on ' + $dest)
-      }
-      $swCache[$to] = @($found)[0]
-    }
-    Connect-VMNetworkAdapter -VMNetworkAdapter $ad -VMSwitch $swCache[$to]
-    $v = $vlanMap[$from]
-    if ($v -and [int]$v -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $ad -Access -VlanId ([int]$v) }
-    $fixed += ($from + ' -> ' + $to)
-  } else {
-    # Deliberate, and said out loud. Arriving on the wrong network is the one
-    # outcome worse than arriving on none.
-    Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad
-    $fixed += ($from + ' -> disconnected (no mapping given)')
+  $plan += [pscustomobject]@{
+    From = $from
+    To   = [string]$netMap[$from]
+    Vlan = [int]$vlanMap[$from]
+    Mac  = [string]$ad.MacAddress
   }
+  Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad
 }
-if ($fixed.Count -gt 0) { Write-Output ('PROGRESS networks: ' + ($fixed -join ', ')) }
-
-# What was in the report, REPORTED and not judged.
-#
-# Incompatibilities do not clear as they are fixed — the list is a snapshot —
-# and it always carries generic wrappers whose Source is the VM itself:
-# "failed at migration destination", "is not compatible with physical computer".
-# Treating anything that is not an adapter as unhandled therefore threw on those
-# wrappers after the only real problem, a switch name, had just been remapped.
-#
-# So Move-VM decides. It validates again for itself and refuses with the
-# specific reason when something genuinely remains, which is the message an
-# operator needs; this only carries the report forward so a failure can be read
-# against what was seen beforehand.
 if ($seen.Count -gt 0) { Write-Output ('PROGRESS the destination objected to: ' + ($seen -join '; ')) }
 
-# The findings ride into the failure, not only into the progress notes.
-#
-# A progress line is gone by the time somebody reads a failed job, and the whole
-# question when this fails is what the comparison offered and what was done with
-# it. Without that the message is Hyper-V's alone and says nothing about whether
-# Ballast even tried.
 try {
   Move-VM -CompatibilityReport $rep
 } catch {
-  $what = if ($fixed.Count -gt 0) { ($fixed -join ', ') } else { 'nothing - no incompatibility carried an adapter' }
+  $what = if ($plan.Count -gt 0) { 'disconnected ' + [string]$plan.Count + ' adapter(s) first' } else { 'nothing - no incompatibility carried an adapter' }
   throw ([string]$_.Exception.Message + ' -- Ballast saw ' + [string]$seen.Count + ' incompatibilities (' +
     ($seen -join '; ') + ') and applied: ' + $what)
+}
+
+# On the other side now. The VM is here, its adapters are disconnected, and the
+# switch names resolve against the host that actually has them.
+$wanted = @($plan | Where-Object { $_.To })
+if ($wanted.Count -gt 0) {
+  $dstAds = @(Get-VMNetworkAdapter -ComputerName $dest -VMName $vm -ErrorAction SilentlyContinue)
+  $targets = @($wanted | ForEach-Object { $_.To } | Sort-Object -Unique)
+  $done = @()
+  foreach ($p in $wanted) {
+    $ad = $null
+    # By MAC where there is one to match on: it survives the move and is the
+    # only thing that ties an adapter to the switch it came off.
+    if ($p.Mac -and $p.Mac -ne '000000000000') {
+      $ad = @($dstAds | Where-Object { [string]$_.MacAddress -eq $p.Mac })[0]
+    }
+    # A VM that has never started has no MAC yet. Where every adapter is going
+    # to the SAME switch that ambiguity does not matter, so take the next one
+    # still disconnected rather than refusing over a distinction with no
+    # consequence.
+    if (-not $ad -and $targets.Count -eq 1) {
+      $ad = @($dstAds | Where-Object { -not $_.SwitchName -and $done -notcontains $_.Id })[0]
+    }
+    if (-not $ad) {
+      Write-Warning ('could not work out which adapter on ' + $dest + ' came off ' + $p.From +
+        ', so it has been left disconnected. Attach it to ' + $p.To + ' by hand, or re-run with one network at a time')
+      continue
+    }
+    $done += $ad.Id
+    Connect-VMNetworkAdapter -VMNetworkAdapter $ad -SwitchName $p.To
+    if ($p.Vlan -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $ad -Access -VlanId $p.Vlan }
+  }
+  Write-Output ('PROGRESS networks on ' + $dest + ': ' + (($wanted | ForEach-Object { $_.From + ' -> ' + $_.To }) -join ', '))
 }`)
 	return b.String()
 }
