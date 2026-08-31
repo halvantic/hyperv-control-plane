@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/joshua-fourie/ballast/api/types"
 )
@@ -111,8 +112,63 @@ if (Test-Path -LiteralPath $target) {
     'import it if it is complete, before copying again')
 }
 
-Write-Output ('PROGRESS exporting ' + $vm + ' to ' + $dest)
-Export-VM -Name $vm -Path $unc -ErrorAction Stop
+# What the export has to move, so progress has a denominator. The file length,
+# not Get-VHD's virtual size: a dynamic 500GB disk holding 40GB copies 40GB, and
+# reporting it against 500 would read as stalled for the whole run.
+$totalBytes = 0
+foreach ($hd in @(Get-VMHardDiskDrive -VMName $vm -ErrorAction SilentlyContinue)) {
+  $f = Get-Item -LiteralPath $hd.Path -ErrorAction SilentlyContinue
+  if ($f) { $totalBytes += [int64]$f.Length }
+}
+$totalGB = [math]::Round($totalBytes / 1GB, 1)
+Write-Output ('PROGRESS exporting ' + $vm + ' to ' + $dest +
+  $(if ($totalBytes -gt 0) { ' (' + [string]$totalGB + ' GB)' } else { '' }))
+
+# The export runs in a child so this one can WATCH it.
+#
+# Export-VM is synchronous and says nothing until it finishes, so a copy of any
+# real size looked identical to a hung one: one line, then silence, then -- for
+# the ten minutes the budget used to allow -- a failure that named a time limit
+# and not a single byte. An operator could not tell a slow link from a stuck
+# job, which is the difference that decides whether to wait or intervene.
+#
+# $ErrorActionPreference is set INSIDE the block on purpose. A child job does
+# not inherit it, and this package has already shipped one bug where a job
+# swallowed its own errors and the caller reported success.
+$job = Start-Job -ArgumentList $vm, $unc -ScriptBlock {
+  param($v, $u)
+  $ErrorActionPreference = 'Stop'
+  Export-VM -Name $v -Path $u
+}
+try {
+  $lastBytes = -1
+  $lastSaid = [datetime]::MinValue
+  while ($job.State -eq 'Running') {
+    Start-Sleep -Seconds 5
+    $done = 0
+    if (Test-Path -LiteralPath $target) {
+      $m = Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.PSIsContainer } | Measure-Object -Property Length -Sum
+      if ($m -and $m.Sum) { $done = [int64]$m.Sum }
+    }
+    # Every 30s, and only when it has actually moved. A line repeating the same
+    # number is what makes a console look busy while nothing happens.
+    if ($done -ne $lastBytes -and ([datetime]::UtcNow - $lastSaid).TotalSeconds -ge 30) {
+      $doneGB = [math]::Round($done / 1GB, 1)
+      $pct = ''
+      if ($totalBytes -gt 0) { $pct = ' (' + [string][math]::Round(100.0 * $done / $totalBytes) + '%%)' }
+      Write-Output ('PROGRESS copied ' + [string]$doneGB + ' GB of ' + [string]$totalGB + ' GB' + $pct)
+      $lastBytes = $done; $lastSaid = [datetime]::UtcNow
+    }
+  }
+  # Receive-Job is what re-throws the child's failure here. Without it the job
+  # ends Failed, the loop exits, and the copy carries on to an import with
+  # nothing to import.
+  Receive-Job -Job $job -Wait -ErrorAction Stop | Out-Null
+  if ($job.State -ne 'Completed') { throw ('the export of ' + $vm + ' ended ' + [string]$job.State) }
+} finally {
+  Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+}
 
 # The configuration, as the DESTINATION will see it: a local path, because that
 # is where the import runs.
@@ -240,6 +296,19 @@ if ($importOut -and $importOut.id) {
 }
 `, cluster)
 }
+
+/* CopyBudget is how long a whole-VM storage copy may run.
+
+   Twelve hours, deliberately generous, for the same reason a VMware migration
+   pass gets twelve: the operation is bounded by somebody's disk and somebody's
+   link, and a copy cut short at hour four wastes every byte of it. It lives
+   here, beside the operation, so the budget and the work cannot drift apart the
+   way the capture budget once did.
+
+   Long is safe only because the copy now REPORTS. An export that has stopped
+   moving is visible in the console within a minute; without that, a generous
+   budget would just be a longer wait before the same unexplained failure. */
+const CopyBudget = 12 * time.Hour
 
 // CopyVM exports a VM to the destination, imports it there and removes the
 // original. Run on the source host.

@@ -49,8 +49,28 @@ func jobTimeoutFor(job types.Job) time.Duration {
 	switch job.Kind {
 	case types.JobVMCaptureTemplate:
 		return hyperv.CaptureBudget(job.Params["generalise"] == "true")
-	case types.JobRebuildPool, types.JobRepairPool, types.JobMigrateVM, types.JobClusterMoveVM, types.JobFetchISO, types.JobVMExport:
+	case types.JobRebuildPool, types.JobRepairPool, types.JobClusterMoveVM, types.JobFetchISO, types.JobVMExport:
 		return 30 * time.Minute
+	case types.JobMigrateVM, types.JobCopyVM:
+		/* Both of these copy a VM's ENTIRE STORAGE across a network link, so
+		   their duration is set by disk size and link speed and by nothing on
+		   this host. Half a terabyte over a gigabit link is an hour and a quarter
+		   at the theoretical rate, and evacuations are exactly when a link is
+		   busiest.
+
+		   CopyVM was not listed here at all and took the ten-minute default,
+		   which is the same mistake the capture comment above describes: a kind
+		   the function did not recognise, killed part-way through. Observed
+		   2026-09-01 copying HVNew01 to HVNEW06. MigrateVM's thirty minutes was
+		   the same bug one step less obvious — enough for a small VM, and short
+		   for the ones that most need moving.
+
+		   Cutting either short wastes every byte already copied: the export or
+		   the move restarts from nothing, and CopyVM additionally leaves a part
+		   file on the destination that blocks the retry until somebody removes
+		   it. A copy that is genuinely stuck shows as progress that has stopped
+		   moving, which is a signal an operator can act on long before this. */
+		return hyperv.CopyBudget
 	case types.JobMigrationPass:
 		/* A VMware copy pass is bounded by somebody else's disk and somebody
 		   else's link, not by anything on this host. A terabyte at a plausible

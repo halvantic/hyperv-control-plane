@@ -217,7 +217,11 @@ func TestTheShareIsRemovedOnEveryExit(t *testing.T) {
 	}
 	// And the removal must come after the source is taken away, or a failure
 	// there would leave the share behind.
-	fin, rm := strings.Index(s, "} finally {"), strings.Index(s, "Remove-VM -Name $vm -Force")
+	//
+	// LastIndex, not Index: the export now has a finally of its own to clean up
+	// the job it watches, and that one is nested INSIDE this block. The share's
+	// is the outermost, so it is the last to open.
+	fin, rm := strings.LastIndex(s, "} finally {"), strings.Index(s, "Remove-VM -Name $vm -Force")
 	if rm < 0 || fin < rm {
 		t.Errorf("the finally block does not wrap the whole move: %s", s)
 	}
@@ -265,5 +269,64 @@ func TestBothTheComputerAndTheAgentAccountsAreGranted(t *testing.T) {
 	// looks configured and still denies.
 	if !strings.Contains(s, "foreach ($g in $grantees) {") {
 		t.Errorf("the filesystem is granted to one account only: %s", s)
+	}
+}
+
+/* The export has to report while it runs.
+
+   Export-VM is synchronous and silent, so a copy of any real size looked
+   exactly like a hung one: "exporting HVNew01 to HVNEW06", then nothing, then a
+   failure naming a time limit and not a single byte. An operator could not tell
+   a slow link from a stuck job — the one distinction that decides whether to
+   wait or intervene. */
+func TestTheExportReportsProgressWhileItRuns(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "D:\\VMs", "", "", nil)
+
+	// Watched, not awaited. A synchronous Export-VM cannot report anything.
+	if !strings.Contains(s, "Start-Job -ArgumentList $vm, $unc") {
+		t.Fatalf("the export is not run as a child, so nothing can watch it:\n%s", s)
+	}
+	if !strings.Contains(s, "PROGRESS copied ") {
+		t.Errorf("no bytes are ever reported:\n%s", s)
+	}
+	if !strings.Contains(s, "Measure-Object -Property Length -Sum") {
+		t.Errorf("progress is not measured from what has landed on the destination:\n%s", s)
+	}
+
+	/* A child job does not inherit $ErrorActionPreference. This package has
+	   already shipped one bug where a job swallowed its own errors and the
+	   caller reported success, so both halves are pinned: set inside the block,
+	   and received afterwards. */
+	if !strings.Contains(s, "param($v, $u)\n  $ErrorActionPreference = 'Stop'") {
+		t.Errorf("the child job does not set its own error preference, so a failed export reports success:\n%s", s)
+	}
+	if !strings.Contains(s, "Receive-Job -Job $job -Wait -ErrorAction Stop") {
+		t.Errorf("the child's failure is never re-thrown, so the copy imports nothing:\n%s", s)
+	}
+	if !strings.Contains(s, "Remove-Job -Job $job -Force") {
+		t.Errorf("the job is not cleaned up:\n%s", s)
+	}
+}
+
+/* The denominator is the file length, not the virtual size.
+
+   A dynamic 500GB disk holding 40GB copies 40GB. Reported against 500 it would
+   sit near eight percent for the whole run and read as stalled — a progress bar
+   that lies is worse than none, because it is the thing being used to decide
+   whether the job is stuck. */
+func TestProgressIsMeasuredAgainstWhatIsActuallyCopied(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "D:\\VMs", "", "", nil)
+	if !strings.Contains(s, "$totalBytes += [int64]$f.Length") {
+		t.Fatalf("the total is not taken from the file length:\n%s", s)
+	}
+	// The call, not the word: the comment above the total names Get-VHD to say
+	// what it deliberately does NOT use.
+	if strings.Contains(s, "Get-VHD -") {
+		t.Errorf("the total comes from the virtual size, so a dynamic disk reports as stalled:\n%s", s)
+	}
+	// A line repeating the same number makes a console look busy while nothing
+	// is happening, which is the failure this whole change exists to end.
+	if !strings.Contains(s, "$done -ne $lastBytes") {
+		t.Errorf("progress is reported even when it has not moved:\n%s", s)
 	}
 }

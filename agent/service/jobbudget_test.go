@@ -79,7 +79,10 @@ func TestAnUnreadableGeneraliseFlagDoesNotShortenTheBudget(t *testing.T) {
 }
 
 func TestOtherLongJobsKeepTheirBudget(t *testing.T) {
-	for _, k := range []string{types.JobRebuildPool, types.JobMigrateVM, types.JobVMExport} {
+	// MigrateVM is deliberately NOT here any more: it copies a VM's whole
+	// storage across a link, so it belongs with CopyVM on the data-copy budget.
+	// See TestAWholeVMCopyIsNotCutShortByADefaultBudget.
+	for _, k := range []string{types.JobRebuildPool, types.JobClusterMoveVM, types.JobVMExport} {
 		if got := jobTimeoutFor(types.Job{Kind: k}); got != 30*time.Minute {
 			t.Errorf("%s = %v, want 30m", k, got)
 		}
@@ -149,5 +152,35 @@ func TestAnOrdinaryFailureIsReportedAsItself(t *testing.T) {
 	got := describeJobFailure(capture(true), context.Background(), real)
 	if got != real.Error() {
 		t.Fatalf("an ordinary failure was rewritten as %q", got)
+	}
+}
+
+/* A whole-VM copy is bounded by disk size and link speed, not by this host.
+
+   CopyVM was not in jobTimeoutFor at all, so it took the ten-minute default and
+   was killed part-way through copying HVNew01 to HVNEW06 on 2026-09-01 — the
+   same shape as the capture bug the function's own comment describes. MigrateVM
+   was listed but at thirty minutes, which is the same mistake one step less
+   obvious: half a terabyte over a gigabit link is an hour and a quarter at the
+   theoretical rate, and an evacuation is exactly when the link is busiest. */
+func TestAWholeVMCopyIsNotCutShortByADefaultBudget(t *testing.T) {
+	for _, kind := range []string{types.JobCopyVM, types.JobMigrateVM} {
+		got := jobTimeoutFor(types.Job{Kind: kind})
+		if got == jobTimeout {
+			t.Errorf("%s takes the default %v budget, so a copy of any real size is killed part-way through", kind, got)
+		}
+		// An hour is not the bar; a slow terabyte is the case that matters, and
+		// cutting one short wastes every byte already copied.
+		if got < 4*time.Hour {
+			t.Errorf("%s gets %v, which a large VM on a busy link will exceed", kind, got)
+		}
+	}
+}
+
+// The budget lives beside the operation so the two cannot drift apart, which is
+// exactly how the capture budget once went wrong.
+func TestTheCopyBudgetComesFromTheHypervPackage(t *testing.T) {
+	if jobTimeoutFor(types.Job{Kind: types.JobCopyVM}) != hyperv.CopyBudget {
+		t.Error("the copy budget is duplicated rather than taken from hyperv.CopyBudget")
 	}
 }
