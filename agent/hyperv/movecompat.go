@@ -33,49 +33,81 @@ func moveWithNetworkMap(nics []types.EvacuationNIC) string {
 	var b strings.Builder
 	b.WriteString(psSwitchMap(nics))
 	b.WriteString(`
-$rep = Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
-
-# DISCONNECT for the move, reconnect at the destination afterwards.
+# Compare first, for DIAGNOSIS only. The report is never mutated and never
+# handed to Move-VM.
 #
-# Reconnecting the adapters inside the compatibility report does not take.
-# Measured: four adapters matched, Connect-VMNetworkAdapter returned no error
-# for any of them, and Move-VM still refused with "Could not find Ethernet
-# switch ConvergedSwitch2" four times. The connect reached the object and never
-# reached the report Move-VM validates.
+# Fixing adapters inside a compatibility report does not take. Measured three
+# times over: connect by name, connect by switch object, and finally disconnect
+# — the documented example — each returning no error and each leaving Move-VM
+# refusing with "Could not find Ethernet switch ConvergedSwitch2" exactly as
+# before. Whatever the report is, it is not what Move-VM validates.
 #
-# Disconnecting IS documented to work on a report, and a VM crossing hosts is
-# off its network for the duration regardless. So the switch it should end up on
-# is remembered here and applied on the other side, where the name resolves
-# against the host that actually has it.
-$plan = @()
+# So the work happens on the real VM with ordinary cmdlets, and the comparison
+# is kept only for what it is good at: saying what ELSE the destination objects
+# to, early, in its own words.
 $seen = @()
-foreach ($inc in @($rep.Incompatibilities)) {
-  $ad = $inc.Source
-  $kind = if ($ad) { $ad.GetType().Name } else { '<none>' }
-  $hasSwitch = [bool]($ad -and ($ad.PSObject.Properties.Name -contains 'SwitchName'))
-  $seen += ('#' + [string]$inc.MessageId + ' source=' + $kind + ' switchName=' + $hasSwitch)
-  if (-not $hasSwitch) { continue }
-  $from = [string]$ad.SwitchName
-  $plan += [pscustomobject]@{
-    From = $from
-    To   = [string]$netMap[$from]
-    Vlan = [int]$vlanMap[$from]
-    Mac  = [string]$ad.MacAddress
+try {
+  $rep = Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
+  foreach ($inc in @($rep.Incompatibilities)) {
+    $src = $inc.Source
+    $kind = if ($src) { $src.GetType().Name } else { '<none>' }
+    $seen += ('#' + [string]$inc.MessageId + ' ' + $kind + ': ' + [string]$inc.Message)
   }
-  Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad
+} catch {
+  $seen += ('the comparison itself failed: ' + [string]$_.Exception.Message)
 }
 if ($seen.Count -gt 0) { Write-Output ('PROGRESS the destination objected to: ' + ($seen -join '; ')) }
 
-try {
-  Move-VM -CompatibilityReport $rep
-} catch {
-  $what = if ($plan.Count -gt 0) { 'disconnected ' + [string]$plan.Count + ' adapter(s) first' } else { 'nothing - no incompatibility carried an adapter' }
-  throw ([string]$_.Exception.Message + ' -- Ballast saw ' + [string]$seen.Count + ' incompatibilities (' +
-    ($seen -join '; ') + ') and applied: ' + $what)
+# The adapters the destination cannot match, taken off the SOURCE VM.
+#
+# Only the ones being remapped. An adapter on a switch the destination also has
+# is left connected and never notices this happened — there is no reason to
+# interrupt it. For the rest, a moment disconnected is strictly better than a
+# move that fails, which is the only other outcome available.
+$plan = @()
+foreach ($ad in @(Get-VMNetworkAdapter -VMName $vm -ErrorAction SilentlyContinue)) {
+  $from = [string]$ad.SwitchName
+  if (-not $from -or -not $netMap.ContainsKey($from)) { continue }
+  $oldVlan = 0
+  try { $oldVlan = [int](Get-VMNetworkAdapterVlan -VMNetworkAdapter $ad -ErrorAction SilentlyContinue).AccessVlanId } catch {}
+  $plan += [pscustomobject]@{
+    Name = [string]$ad.Name; Mac = [string]$ad.MacAddress
+    From = $from; To = [string]$netMap[$from]
+    Vlan = [int]$vlanMap[$from]; OldVlan = $oldVlan
+  }
+  Disconnect-VMNetworkAdapter -VMNetworkAdapter $ad
+}
+if ($plan.Count -gt 0) {
+  Write-Output ('PROGRESS taking ' + [string]$plan.Count + ' adapter(s) off ' +
+    ((@($plan | ForEach-Object { $_.From }) | Sort-Object -Unique) -join ', ') + ' for the move')
 }
 
-# On the other side now. The VM is here, its adapters are disconnected, and the
-# switch names resolve against the host that actually has them.
+try {
+  Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
+} catch {
+  # Put the source VM back as it was found. A failed move that also left the VM
+  # off its network would turn a move that did not happen into an outage that
+  # did.
+  foreach ($p in $plan) {
+    $back = @(Get-VMNetworkAdapter -VMName $vm -ErrorAction SilentlyContinue |
+      Where-Object { $p.Mac -and [string]$_.MacAddress -eq $p.Mac })[0]
+    if (-not $back) { $back = @(Get-VMNetworkAdapter -VMName $vm -Name $p.Name -ErrorAction SilentlyContinue)[0] }
+    if ($back) {
+      try {
+        Connect-VMNetworkAdapter -VMNetworkAdapter $back -SwitchName $p.From
+        if ($p.OldVlan -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $back -Access -VlanId $p.OldVlan }
+      } catch {
+        Write-Warning ('the move failed AND ' + $p.Name + ' could not be put back on ' + $p.From + ': ' + $_.Exception.Message)
+      }
+    }
+  }
+  $what = if ($plan.Count -gt 0) { 'took ' + [string]$plan.Count + ' adapter(s) off first and put them back' } else { 'no adapter needed remapping' }
+  throw ([string]$_.Exception.Message + ' -- Ballast ' + $what + '. The destination objected to: ' +
+    $(if ($seen.Count -gt 0) { ($seen -join '; ') } else { 'nothing the comparison could name' }))
+}
+
+# On the other side. The VM is here and the switch names resolve against the
+# host that actually has them.
 $wanted = @($plan | Where-Object { $_.To })
 if ($wanted.Count -gt 0) {
   $dstAds = @(Get-VMNetworkAdapter -ComputerName $dest -VMName $vm -ErrorAction SilentlyContinue)
@@ -83,28 +115,26 @@ if ($wanted.Count -gt 0) {
   $done = @()
   foreach ($p in $wanted) {
     $ad = $null
-    # By MAC where there is one to match on: it survives the move and is the
-    # only thing that ties an adapter to the switch it came off.
+    # By MAC, which survives the move and is the only thing tying an adapter to
+    # the switch it came off.
     if ($p.Mac -and $p.Mac -ne '000000000000') {
       $ad = @($dstAds | Where-Object { [string]$_.MacAddress -eq $p.Mac })[0]
     }
     # A VM that has never started has no MAC yet. Where every adapter is going
-    # to the SAME switch that ambiguity does not matter, so take the next one
-    # still disconnected rather than refusing over a distinction with no
-    # consequence.
+    # to the same switch that ambiguity has no consequence.
     if (-not $ad -and $targets.Count -eq 1) {
       $ad = @($dstAds | Where-Object { -not $_.SwitchName -and $done -notcontains $_.Id })[0]
     }
     if (-not $ad) {
-      Write-Warning ('could not work out which adapter on ' + $dest + ' came off ' + $p.From +
-        ', so it has been left disconnected. Attach it to ' + $p.To + ' by hand, or re-run with one network at a time')
+      Write-Warning ('the VM moved, but which adapter on ' + $dest + ' came off ' + $p.From +
+        ' could not be worked out, so it is disconnected. Attach it to ' + $p.To + ' by hand')
       continue
     }
     $done += $ad.Id
     Connect-VMNetworkAdapter -VMNetworkAdapter $ad -SwitchName $p.To
     if ($p.Vlan -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $ad -Access -VlanId $p.Vlan }
   }
-  Write-Output ('PROGRESS networks on ' + $dest + ': ' + (($wanted | ForEach-Object { $_.From + ' -> ' + $_.To }) -join ', '))
+  Write-Output ('PROGRESS networks on ' + $dest + ': ' + ((@($wanted | ForEach-Object { $_.From + ' -> ' + $_.To }) | Sort-Object -Unique) -join ', '))
 }`)
 	return b.String()
 }

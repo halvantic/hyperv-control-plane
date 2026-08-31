@@ -158,8 +158,8 @@ func TestMigrateVMScript(t *testing.T) {
 	if !strings.Contains(s, "Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
 		t.Fatalf("script missing the shared-nothing compatibility check: %s", s)
 	}
-	if !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
-		t.Fatalf("script does not move against the report it just fixed: %s", s)
+	if !strings.Contains(s, "Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
+		t.Fatalf("script missing the shared-nothing Move-VM: %s", s)
 	}
 	if !strings.Contains(s, "Start-Job") || !strings.Contains(s, "Msvm_MigrationJob") {
 		t.Fatalf("script missing background-job progress poll:\n%s", s)

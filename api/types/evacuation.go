@@ -112,6 +112,18 @@ type EvacuationSpec struct {
    what Hyper-V compares. A dvport chosen in the console resolves to its switch
    and VLAN before it gets here, the same way a VMware migration's does. */
 type EvacuationNIC struct {
+	/* VM binds this mapping to ONE virtual machine. Empty applies it to every VM
+	   on SourceSwitch, which is what forty VMs off one switch want — that is one
+	   decision, not forty.
+
+	   Both forms exist because both questions are real. A pair of VMs on the same
+	   switch can belong on different networks at the other end: one fronting a
+	   service, one that should land somewhere isolated until it is checked. A
+	   mapping keyed on the switch alone cannot tell them apart, and making an
+	   operator answer per VM to express the rare case would make the ordinary
+	   case forty times harder. */
+	VM string `json:"vm,omitempty"`
+
 	// SourceSwitch is the vSwitch name the VM's adapter is attached to now.
 	SourceSwitch string `json:"sourceSwitch"`
 	// TargetSwitch is the vSwitch on the destination. Empty means the adapter
