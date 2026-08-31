@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -219,7 +220,17 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		if _, derr := r.hv.EnsureMigrationDelegation(ctx, []string{p["destHost"]}); derr != nil {
 			return "", fmt.Errorf("ensure migration delegation to %s: %w", p["destHost"], derr)
 		}
-		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], onProgress)
+		/* The network map rides on the job as JSON. A source switch with no
+		   entry arrives disconnected, which is what an empty map means and is a
+		   deliberate answer rather than a missing one. */
+		var netMap []types.EvacuationNIC
+		if raw := p["networkMap"]; strings.TrimSpace(raw) != "" {
+			if err := json.Unmarshal([]byte(raw), &netMap); err != nil {
+				return "", fmt.Errorf("the network mapping on this job could not be read, so the VM would arrive on "+
+					"whatever the destination happened to offer: %w", err)
+			}
+		}
+		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], netMap, onProgress)
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveMgmtVNIC:

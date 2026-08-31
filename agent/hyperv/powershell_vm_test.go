@@ -133,7 +133,7 @@ func TestEnsureVMScriptGen1BootOrderMapsBios(t *testing.T) {
 func TestMigrateVMScript(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"PROGRESS 0", "PROGRESS 45", "PROGRESS 100", "DONE migrated Web01 to hvnew02"}}
 	var pct []string
-	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`, "", "",
+	out, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `C:\VMs\Web01`, "", "", nil,
 		func(note string) { pct = append(pct, note) })
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +152,14 @@ func TestMigrateVMScript(t *testing.T) {
 		}
 	}
 	s := f.streamScript
-	if !strings.Contains(s, "Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
-		t.Fatalf("script missing shared-nothing Move-VM:\n%s", s)
+	/* Compare first, then move against that report — Hyper-V's own mechanism for
+	   a destination that objects. The shared-nothing arguments live on the
+	   Compare-VM now; Move-VM takes the report it produced. */
+	if !strings.Contains(s, "Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path") {
+		t.Fatalf("script missing the shared-nothing compatibility check: %s", s)
+	}
+	if !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
+		t.Fatalf("script does not move against the report it just fixed: %s", s)
 	}
 	if !strings.Contains(s, "Start-Job") || !strings.Contains(s, "Msvm_MigrationJob") {
 		t.Fatalf("script missing background-job progress poll:\n%s", s)
@@ -171,7 +177,7 @@ func TestMigrateVMScript(t *testing.T) {
 // A failed migration surfaces the streamed error.
 func TestMigrateVMScriptFailure(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"PROGRESS 10"}, streamErr: fmt.Errorf("powershell: exit status 1: (Live migration) transport failed")}
-	_, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", "", "", "", nil)
+	_, err := newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", "", "", "", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "transport failed") {
 		t.Fatalf("expected transport failure, got %v", err)
 	}

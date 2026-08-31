@@ -597,7 +597,11 @@ type Interface interface {
 	// move, either or both empty for a standalone end. A clustered VM is owned by
 	// its cluster and Move-VM will not touch it, so the HA role comes off the
 	// source first and goes on at the destination afterwards.
-	MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, onProgress ProgressFunc) (string, error)
+	// networkMap points each source vSwitch at one on the destination. Without
+	// it a move onto a host that names its switches differently fails outright
+	// on compatibility, which is most of what an evacuation into a new
+	// environment meets. A source network with no entry arrives DISCONNECTED.
+	MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, networkMap []types.EvacuationNIC, onProgress ProgressFunc) (string, error)
 
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive

@@ -8,18 +8,20 @@ import (
 	"testing"
 )
 
-/* `(if ...)` without the $ sigil PARSES and fails at runtime.
+/*
+`(if ...)` without the $ sigil PARSES and fails at runtime.
 
-   PowerShell reads "(if (...) {...} else {...})" as a command invocation named
-   "if", so the parser accepts it and the host dies with "The term 'if' is not
-   recognized as a name of a cmdlet". Confirmed on both Windows PowerShell 5.1
-   and PowerShell 7.
+	PowerShell reads "(if (...) {...} else {...})" as a command invocation named
+	"if", so the parser accepts it and the host dies with "The term 'if' is not
+	recognized as a name of a cmdlet". Confirmed on both Windows PowerShell 5.1
+	and PowerShell 7.
 
-   That makes it invisible to the parse checks used elsewhere in this package —
-   two of these shipped, one of them in 0.4.146's duplicate-vNIC detection,
-   where it would have failed on the host the first time a duplicate was found.
+	That makes it invisible to the parse checks used elsewhere in this package —
+	two of these shipped, one of them in 0.4.146's duplicate-vNIC detection,
+	where it would have failed on the host the first time a duplicate was found.
 
-   An if-expression must be $(if ...). */
+	An if-expression must be $(if ...).
+*/
 func TestNoUnsigiledIfExpressions(t *testing.T) {
 	// A "(if (" not preceded by $, and not inside a PowerShell comment.
 	bad := regexp.MustCompile(`[^$]\(if \(`)

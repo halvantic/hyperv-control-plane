@@ -926,7 +926,7 @@ func (s *Stub) MoveClusterVM(_ context.Context, _, _ string, onProgress Progress
 	onProgress.emit("live migration 100%")
 	return nil
 }
-func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _, _, _ string, onProgress ProgressFunc) (string, error) {
+func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _, _, _ string, _ []types.EvacuationNIC, onProgress ProgressFunc) (string, error) {
 	onProgress.emit("live migration 100%")
 	return "migrated " + vm + " to " + destHost + " (stub)", nil
 }

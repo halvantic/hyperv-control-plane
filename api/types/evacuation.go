@@ -70,6 +70,22 @@ type EvacuationSpec struct {
 	   an operator drains a host gradually, or retries the three that failed. */
 	VMs []string `json:"vms,omitempty"`
 
+	/* NetworkMap points each source switch at one on the destination.
+
+	   Without it a move fails on compatibility rather than on anything to do
+	   with the copy:
+
+	     The virtual machine 'HVNew01' is not compatible with physical computer
+	     'HVNEW06'. Could not find Ethernet switch 'ConvergedSwitch2'.
+
+	   A VM carries the NAME of the switch its adapters are on, and two hosts
+	   built separately do not agree on names — which is most of why an
+	   evacuation exists at all: moving into a new environment. So the mapping is
+	   asked for rather than guessed, and a source network with no entry is
+	   ARRIVED DISCONNECTED rather than attached to whatever happens to be there.
+	   A VM silently on the wrong network is worse than one obviously on none. */
+	NetworkMap []EvacuationNIC `json:"networkMap,omitempty"`
+
 	/* Concurrency is how many VMs move at once. Zero means one.
 
 	   Deliberately conservative. Every concurrent move is a full copy of a VM's
@@ -88,6 +104,21 @@ type EvacuationSpec struct {
 	   thirty-nine identical failures and an operator who has to read all of
 	   them to learn one thing. */
 	ContinueOnFailure bool `json:"continueOnFailure,omitempty"`
+}
+
+/* EvacuationNIC maps one source switch to a destination.
+
+   By switch NAME on both sides, because that is what a VM's adapter carries and
+   what Hyper-V compares. A dvport chosen in the console resolves to its switch
+   and VLAN before it gets here, the same way a VMware migration's does. */
+type EvacuationNIC struct {
+	// SourceSwitch is the vSwitch name the VM's adapter is attached to now.
+	SourceSwitch string `json:"sourceSwitch"`
+	// TargetSwitch is the vSwitch on the destination. Empty means the adapter
+	// arrives disconnected, which is a deliberate answer and not a gap.
+	TargetSwitch string `json:"targetSwitch,omitempty"`
+	// VLANID retags the adapter on arrival. Zero leaves the tag alone.
+	VLANID int `json:"vlanId,omitempty"`
 }
 
 // Evacuation phases.

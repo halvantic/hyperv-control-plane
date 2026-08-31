@@ -68,8 +68,11 @@ func TestWipeAndAdoptSaysWhatItDid(t *testing.T) {
 	}
 }
 
-/* Neither, or both, is refused rather than defaulted. Formatting a LUN because
-   a parameter was missing is not a mistake that can be walked back. */
+/*
+Neither, or both, is refused rather than defaulted. Formatting a LUN because
+
+	a parameter was missing is not a mistake that can be walked back.
+*/
 func TestAdoptRefusesAnAmbiguousMode(t *testing.T) {
 	for _, a := range []ISCSIAdoption{
 		{Name: "DS1"},
@@ -88,9 +91,12 @@ func TestAdoptRefusesAnAmbiguousMode(t *testing.T) {
 	}
 }
 
-/* A filesystem that could not be READ is not adoptable as-is: keeping what is
-   there is a promise nothing can verify. Wiping stays available, because that is
-   an explicit decision to lose it. */
+/*
+A filesystem that could not be READ is not adoptable as-is: keeping what is
+
+	there is a promise nothing can verify. Wiping stays available, because that is
+	an explicit decision to lose it.
+*/
 func TestTheRefusalOffersBothWaysOutButNotForAnUnreadableDisk(t *testing.T) {
 	s := adoptScript
 	if !strings.Contains(s, `"Adopt as is" brings the existing volume into the cluster untouched`) {

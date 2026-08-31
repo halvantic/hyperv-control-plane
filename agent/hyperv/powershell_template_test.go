@@ -599,7 +599,6 @@ func TestCaptureBudgetOutlastsTheSysprepWait(t *testing.T) {
 	}
 }
 
-
 /* Seen on the rig 2026-08-25, capturing WindowsServer2025 with generalise
    ticked. It failed in seven seconds at the credential probe with:
 

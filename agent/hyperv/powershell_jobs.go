@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/joshua-fourie/ballast/api/types"
 )
 
 // PowerShell backing for imperative Jobs. These run locally on the host (the
@@ -666,7 +668,7 @@ Write-Output ('DONE live-migrated ' + $vm + ' to ' + $tn)`, psQuote(vm), psQuote
 // for Kerberos, constrained delegation between the two computer accounts — that is
 // host setup done elsewhere. On failure it folds the recent VMMS event detail into
 // the message so the real cause (transport / delegation / CPU compat) is visible.
-func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, onProgress ProgressFunc) (string, error) {
+func (p *PowerShell) MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, networkMap []types.EvacuationNIC, onProgress ProgressFunc) (string, error) {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $vm = %[1]s; $dest = %[2]s; $path = %[3]s
 if (-not $path) { $path = 'C:\VMs\' + $vm }
@@ -740,7 +742,7 @@ if (Get-VM -Name %[1]s -ErrorAction SilentlyContinue) {
 %[6]s
 Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 		psQuote(vm), psQuote(destHost), psQuote(destPath),
-		migrateWithProgress("Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path"),
+		migrateWithProgress(moveWithNetworkMap(networkMap)),
 		unclusterScript(vm, sourceCluster), reclusterScript(vm, targetCluster), restoreClusterScript(vm, sourceCluster))
 	result := "migrated " + vm + " to " + destHost
 	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))

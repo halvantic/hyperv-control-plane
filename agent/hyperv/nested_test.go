@@ -243,7 +243,7 @@ Shared-nothing migration rests on SMB between the two hosts, and the failure
 */
 func TestTheMoveChecksSMBBeforeTouchingAnything(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
-	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil)
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil, nil)
 	s := f.streamScript
 
 	if !strings.Contains(s, `$destShare = '\\' + $dest`) {
@@ -289,7 +289,7 @@ A failed move must put the cluster role back.
 */
 func TestAFailedMovePutsTheClusterRoleBack(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
-	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil)
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil, nil)
 	s := f.streamScript
 
 	if !strings.Contains(s, "} catch {") || !strings.Contains(s, "putting ") {
@@ -311,7 +311,7 @@ func TestAFailedMovePutsTheClusterRoleBack(t *testing.T) {
 // A standalone source has no role to remove, so nothing to put back either.
 func TestAStandaloneMoveHasNoRoleToRestore(t *testing.T) {
 	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
-	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "", "", nil)
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "", "", nil, nil)
 	if s := f.streamScript; strings.Contains(s, "Add-ClusterVirtualMachineRole") {
 		t.Fatalf("a standalone VM was sent cluster cmdlets:\n%s", s)
 	}

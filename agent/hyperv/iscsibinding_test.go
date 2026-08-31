@@ -166,15 +166,17 @@ func TestAFailureToMakeASessionPersistentKeepsItsReason(t *testing.T) {
 	}
 }
 
-/* The empty-discovery diagnosis has to tell the truth about CHAP.
+/*
+The empty-discovery diagnosis has to tell the truth about CHAP.
 
-   It branches on $usedChap, and NOTHING EVER SET IT. An undefined variable is
-   $null in PowerShell, which is falsy — so every host on every pass was told
-   "this spec sets NO CHAP credential", whether one was declared or not.
-   Primary1 declared one throughout and all three members were sent to add what
-   was already there (2026-08-24). The true branch had never been reached.
+	It branches on $usedChap, and NOTHING EVER SET IT. An undefined variable is
+	$null in PowerShell, which is falsy — so every host on every pass was told
+	"this spec sets NO CHAP credential", whether one was declared or not.
+	Primary1 declared one throughout and all three members were sent to add what
+	was already there (2026-08-24). The true branch had never been reached.
 
-   A diagnosis that states a fact about the spec must read the spec. */
+	A diagnosis that states a fact about the spec must read the spec.
+*/
 func TestTheCHAPDiagnosisReflectsTheSpec(t *testing.T) {
 	withChap := fannedSpec()
 	withChap.CredentialSecret = "ballast"
@@ -200,19 +202,21 @@ func TestTheCHAPDiagnosisReflectsTheSpec(t *testing.T) {
 	}
 }
 
-/* Making an existing session persistent carries the credential.
+/*
+Making an existing session persistent carries the credential.
 
-   Register-IscsiSession takes -ChapUsername and -ChapSecret and writes the
-   persistent entry with whatever it is handed. Called without them it writes an
-   EMPTY secret, and Windows checks that against its own rule: "Target CHAP
-   secret given is invalid. Maximum size of CHAP secret is 16 bytes. Minimum size
-   is 12 bytes if IPSec is not used." The complaint is about the nothing we
-   passed, and it reads exactly like a bad credential.
+	Register-IscsiSession takes -ChapUsername and -ChapSecret and writes the
+	persistent entry with whatever it is handed. Called without them it writes an
+	EMPTY secret, and Windows checks that against its own rule: "Target CHAP
+	secret given is invalid. Maximum size of CHAP secret is 16 bytes. Minimum size
+	is 12 bytes if IPSec is not used." The complaint is about the nothing we
+	passed, and it reads exactly like a bad credential.
 
-   HVNEW01 and HVNEW02 failed here on 2026-08-25 with a credential that logs in
-   perfectly. HVNEW03 was clean for the reason that proves the diagnosis: its
-   session had been made FRESH by Connect-IscsiTarget, which carries
-   IsPersistent and CHAP together and never needs this call. */
+	HVNEW01 and HVNEW02 failed here on 2026-08-25 with a credential that logs in
+	perfectly. HVNEW03 was clean for the reason that proves the diagnosis: its
+	session had been made FRESH by Connect-IscsiTarget, which carries
+	IsPersistent and CHAP together and never needs this call.
+*/
 func TestMakingASessionPersistentCarriesTheCredential(t *testing.T) {
 	spec := fannedSpec()
 	spec.CredentialSecret = "nas-chap"
@@ -240,15 +244,17 @@ func TestMakingASessionPersistentCarriesTheCredential(t *testing.T) {
 	}
 }
 
-/* A slow iSCSI step has to name the cmdlet, not just the step.
+/*
+A slow iSCSI step has to name the cmdlet, not just the step.
 
-   The pass timer reported "clusterReconcile 4m15s (iscsi 4m3s)" on both members
-   of Secondary, 2026-08-25. Enough to know the cluster never formed because the
-   pass was cut off at five minutes; not enough to know which call blocked.
-   Several of these cmdlets hang for minutes against a portal that answers on
-   3260 but does not complete the operation, and the TCP probe cannot tell those
-   apart. Guessing which one has been wrong repeatedly, so the script times
-   itself. */
+	The pass timer reported "clusterReconcile 4m15s (iscsi 4m3s)" on both members
+	of Secondary, 2026-08-25. Enough to know the cluster never formed because the
+	pass was cut off at five minutes; not enough to know which call blocked.
+	Several of these cmdlets hang for minutes against a portal that answers on
+	3260 but does not complete the operation, and the TCP probe cannot tell those
+	apart. Guessing which one has been wrong repeatedly, so the script times
+	itself.
+*/
 func TestASlowISCSIStepNamesItsPhases(t *testing.T) {
 	got := slowISCSIPhases(map[string]int{"portals": 243000, "logins": 4000, "report": 200}, 247000)
 	if got == "" {

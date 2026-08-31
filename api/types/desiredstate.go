@@ -2374,7 +2374,7 @@ const (
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
 	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
-	JobMigrateVM        = "MigrateVM"        // params: vm, destHost, destPath — shared-nothing live migration of a standalone VM to another host (run on the source host)
+	JobMigrateVM        = "MigrateVM"        // params: vm, destHost, destPath, sourceCluster/targetCluster (optional, the cluster halves of a cross-boundary move), networkMap (optional JSON [{sourceSwitch,targetSwitch,vlanId}]) — shared-nothing live migration to another host (run on the source host)
 
 	// JobVMMoveStorage relocates a VM's files to another datastore WITHOUT moving
 	// the VM itself — Hyper-V storage migration, which runs live. The centre

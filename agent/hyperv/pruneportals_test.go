@@ -46,9 +46,12 @@ func TestPruningWithNothingDeclaredIsRefused(t *testing.T) {
 	}
 }
 
-/* The safety rule. An undeclared portal CARRYING A SESSION is either a spec
-   missing a portal the host really uses, or a session nobody declared — both
-   for a person to resolve. Guessing either way drops a live storage path. */
+/*
+The safety rule. An undeclared portal CARRYING A SESSION is either a spec
+
+	missing a portal the host really uses, or a session nobody declared — both
+	for a person to resolve. Guessing either way drops a live storage path.
+*/
 func TestAnUndeclaredPortalCarryingASessionIsRefusedNotRemoved(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={"removed":["10.0.60.54:3260"],"kept":["10.0.60.53:3260"],"failed":[],"left":["10.0.60.52"]}`)
 	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52", "10.0.61.52"}, []string{"iqn.x:t"})
@@ -111,14 +114,16 @@ func TestPruningRefreshesDiscovery(t *testing.T) {
 	}
 }
 
-/* Stale FAVOURITE TARGETS are what actually drag.
+/*
+Stale FAVOURITE TARGETS are what actually drag.
 
-   Pruning discovery portals alone was not enough. A persistent login outlives
-   the portal it was made through: the initiator retries a target that no longer
-   exists, once a minute, for ever, and each one costs time on every pass. On
-   Secondary 2026-08-25 the iSCSI step took 3m43s of a 5m pass, and the operator
-   found the cause in iscsicpl — a pile of old entries — after this button had
-   already claimed to tidy up. */
+	Pruning discovery portals alone was not enough. A persistent login outlives
+	the portal it was made through: the initiator retries a target that no longer
+	exists, once a minute, for ever, and each one costs time on every pass. On
+	Secondary 2026-08-25 the iSCSI step took 3m43s of a 5m pass, and the operator
+	found the cause in iscsicpl — a pile of old entries — after this button had
+	already claimed to tidy up.
+*/
 func TestPruningAlsoRemovesStaleFavouriteTargets(t *testing.T) {
 	p, seen := prunePS(t, `RESULT={"removed":[],"kept":[],"failed":[],"left":[],"persistRemoved":["iqn.old:dead via 10.0.60.53"],"persistKept":["iqn.live:x"]}`)
 	note, err := p.PruneISCSIPortals(context.Background(), []string{"10.0.60.52"}, []string{"iqn.2000-01.com.synology:target-2"})

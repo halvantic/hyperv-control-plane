@@ -251,17 +251,19 @@ func TestASessionThatWillNotDisconnectSaysWhy(t *testing.T) {
 	}
 }
 
-/* iSCSI target names are CASE-SENSITIVE, and the session reports them lowercased.
+/*
+iSCSI target names are CASE-SENSITIVE, and the session reports them lowercased.
 
-   Disconnect-IscsiTarget was given -NodeAddress $s.TargetNodeAddress.
-   Get-IscsiSession echoes the name lowercased while the initiator holds the
-   array's own capitalisation — "…:Xpenology.default-target…" against
-   "…:xpenology.default-target…" — so per RFC 3720 the initiator found no such
-   target and refused with "The parameter is incorrect", while the session it was
-   looking at sat there connected. HVNEW04 and HVNEW05, 2026-08-25.
+	Disconnect-IscsiTarget was given -NodeAddress $s.TargetNodeAddress.
+	Get-IscsiSession echoes the name lowercased while the initiator holds the
+	array's own capitalisation — "…:Xpenology.default-target…" against
+	"…:xpenology.default-target…" — so per RFC 3720 the initiator found no such
+	target and refused with "The parameter is incorrect", while the session it was
+	looking at sat there connected. HVNEW04 and HVNEW05, 2026-08-25.
 
-   This repo already recorded that these names are case-sensitive, for the LOGIN
-   path. The disconnect kept rebuilding the key anyway. */
+	This repo already recorded that these names are case-sensitive, for the LOGIN
+	path. The disconnect kept rebuilding the key anyway.
+*/
 func TestTheDisconnectDoesNotRebuildTheTargetName(t *testing.T) {
 	var p PowerShell
 	var seen string
