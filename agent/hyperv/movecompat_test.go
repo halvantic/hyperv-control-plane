@@ -24,8 +24,25 @@ func TestAMappedSwitchIsReconnectedAtTheDestination(t *testing.T) {
 	if !strings.Contains(s, `$netMap = @{'ConvergedSwitch2' = 'Converged'}`) {
 		t.Fatalf("the mapping is not rendered: %s", s)
 	}
-	if !strings.Contains(s, "Connect-VMNetworkAdapter -VMNetworkAdapter $ad -SwitchName $to") {
-		t.Errorf("a mapped adapter is not reconnected: %s", s)
+	/* By switch OBJECT from the destination, not by name.
+
+	   -SwitchName resolves on the host running the cmdlet, which is the source.
+	   Mapping to the destination's Converged failed with "Hyper-V was unable to
+	   find a virtual switch with name Converged" — true of the source host, and
+	   beside the point. */
+	if !strings.Contains(s, "Connect-VMNetworkAdapter -VMNetworkAdapter $ad -VMSwitch $swCache[$to]") {
+		t.Errorf("a mapped adapter is not reconnected by object: %s", s)
+	}
+	if !strings.Contains(s, "Get-VMSwitch -ComputerName $dest -Name $to") {
+		t.Errorf("the switch is not fetched from the destination: %s", s)
+	}
+	// One lookup per distinct switch, not one per adapter.
+	if !strings.Contains(s, "if (-not $swCache.ContainsKey($to))") {
+		t.Errorf("the destination is asked once per adapter: %s", s)
+	}
+	// And a destination that has no such switch says what it does have.
+	if !strings.Contains(s, "has no virtual switch called ") || !strings.Contains(s, "It has: ") {
+		t.Errorf("a missing destination switch does not list the alternatives: %s", s)
 	}
 	// Hyper-V's own mechanism: compare, fix the report, move against it.
 	if !strings.Contains(s, "Compare-VM -Name $vm") || !strings.Contains(s, "Move-VM -CompatibilityReport $rep") {
@@ -50,9 +67,13 @@ func TestAnUnmappedNetworkArrivesDisconnectedRatherThanGuessed(t *testing.T) {
 	if !strings.Contains(s, "disconnected (no mapping given)") {
 		t.Errorf("a disconnected adapter is not reported: %s", s)
 	}
-	// And nothing invents a destination.
-	if strings.Contains(s, "Get-VMSwitch") {
-		t.Errorf("the script looks for a switch to attach to on its own: %s", s)
+	/* And nothing invents a destination. The connect is guarded on a mapping
+	   existing; there is no branch that picks a switch when none was given. */
+	if !strings.Contains(s, "if ($to) {") {
+		t.Errorf("the connect is not guarded on a mapping: %s", s)
+	}
+	if strings.Contains(s, "Select-Object -First 1") {
+		t.Errorf("the script falls back to whichever switch is first: %s", s)
 	}
 }
 

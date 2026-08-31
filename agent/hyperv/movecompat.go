@@ -35,6 +35,9 @@ func moveWithNetworkMap(nics []types.EvacuationNIC) string {
 	b.WriteString(`
 $rep = Compare-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path
 $fixed = @()
+# One lookup per distinct destination switch, not one per adapter: a four-NIC VM
+# on one switch should not ask the destination the same question four times.
+$swCache = @{}
 # What the comparison actually returned, recorded as it is walked.
 #
 # Reasoning about this API has been wrong twice: once about whether the list
@@ -55,7 +58,25 @@ foreach ($inc in @($rep.Incompatibilities)) {
   $from = [string]$ad.SwitchName
   $to = $netMap[$from]
   if ($to) {
-    Connect-VMNetworkAdapter -VMNetworkAdapter $ad -SwitchName $to
+    # By SWITCH OBJECT from the destination, not by name.
+    #
+    # -SwitchName resolves on the host running the cmdlet, which is the SOURCE:
+    # the adapter belongs to a compatibility report for somewhere else, but the
+    # name lookup does not follow it there. Mapping ConvergedSwitch2 to the
+    # destination's Converged failed with "Hyper-V was unable to find a virtual
+    # switch with name Converged" — perfectly true of HVNEW04, and beside the
+    # point. A switch object fetched from the destination carries its host.
+    if (-not $swCache.ContainsKey($to)) {
+      $found = Get-VMSwitch -ComputerName $dest -Name $to -ErrorAction SilentlyContinue
+      if (-not $found) {
+        $have = @(Get-VMSwitch -ComputerName $dest -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        throw ($dest + ' has no virtual switch called ' + $to + '. It has: ' +
+          $(if ($have.Count -gt 0) { $have -join ', ' } else { 'none that could be read' }) +
+          '. Change the network mapping on the evacuation to one of those, or create the switch on ' + $dest)
+      }
+      $swCache[$to] = @($found)[0]
+    }
+    Connect-VMNetworkAdapter -VMNetworkAdapter $ad -VMSwitch $swCache[$to]
     $v = $vlanMap[$from]
     if ($v -and [int]$v -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $ad -Access -VlanId ([int]$v) }
     $fixed += ($from + ' -> ' + $to)
