@@ -1,8 +1,8 @@
 package ballastpb
 
 import (
-	"testing"
 	"reflect"
+	"testing"
 	"time"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -64,9 +64,12 @@ func TestImportScanRoundTrip(t *testing.T) {
 	}
 }
 
-/* Absent must stay absent. A scan that never ran and a scan that found nothing
-   are the distinction ImportScanStatus exists to make, and a converter that
-   turned nil into an empty struct would erase it. */
+/*
+Absent must stay absent. A scan that never ran and a scan that found nothing
+
+	are the distinction ImportScanStatus exists to make, and a converter that
+	turned nil into an empty struct would erase it.
+*/
 func TestImportScanAbsentStaysAbsent(t *testing.T) {
 	if got := importScanFromProto(importScanToProto(nil)); got != nil {
 		t.Fatalf("a scan that never ran came back as %+v, which reads as one that found nothing", got)
@@ -76,9 +79,12 @@ func TestImportScanAbsentStaysAbsent(t *testing.T) {
 	}
 }
 
-/* The whole HostStatus path, not just the helper. The helper being correct and
-   the field never being wired into HostStatusToProto is exactly the silent
-   failure the brief describes. */
+/*
+The whole HostStatus path, not just the helper. The helper being correct and
+
+	the field never being wired into HostStatusToProto is exactly the silent
+	failure the brief describes.
+*/
 func TestHostStatusCarriesImportableVMs(t *testing.T) {
 	in := types.HostStatus{
 		ImportableVMs: []types.ImportableVM{{

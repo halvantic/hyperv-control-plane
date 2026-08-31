@@ -754,6 +754,18 @@ type StorageVolume struct {
 	// SizeBytes / UsedBytes are the volume's capacity and usage. Best effort.
 	SizeBytes uint64 `json:"sizeBytes,omitempty"`
 	UsedBytes uint64 `json:"usedBytes,omitempty"`
+
+	/* Shared is true for a Cluster Shared Volume: every member reaches it, and
+	   a VM placed there can fail over.
+
+	   A member's LOCAL volumes are reported too, and the difference decides what
+	   is safe to put on one. A clustered VM whose disk sits on a local volume
+	   cannot fail over to any other node — the role comes online nowhere — so a
+	   console that could not tell the two apart could only ever offer one kind
+	   or refuse to answer. It used to do the latter: a host with CSVs reported
+	   only its CSVs, and a drive somebody had formatted for Hyper-V was
+	   invisible everywhere. */
+	Shared bool `json:"shared,omitempty"`
 }
 
 // HostMetrics is observed, dynamic host utilisation. All fields are best-effort;

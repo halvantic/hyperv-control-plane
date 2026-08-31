@@ -494,6 +494,10 @@ message StorageVolume {
   string path = 2;
   uint64 size_bytes = 3;
   uint64 used_bytes = 4;
+  // shared marks a Cluster Shared Volume. A member's local volumes are reported
+  // alongside them, and only this tells them apart — a clustered VM on a local
+  // volume cannot fail over anywhere.
+  bool shared = 5;
 }
 
 message HostInventory {

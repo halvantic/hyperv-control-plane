@@ -18,8 +18,14 @@ func sampleResources() types.HostResources {
 			AllowManagementOS: true,
 			VLANID:            10,
 		}},
+		/* Both kinds, because a cluster member reports both and only Shared
+		   tells them apart. A clustered VM placed on a local volume cannot fail
+		   over anywhere, so a wire that dropped the flag would have every volume
+		   read as ordinary storage. */
 		Volumes: []types.StorageVolume{{
-			Name: "Volume1", Path: `C:\ClusterStorage\Volume1`, SizeBytes: 1 << 40, UsedBytes: 1 << 39,
+			Name: "Volume1", Path: `C:\ClusterStorage\Volume1`, SizeBytes: 1 << 40, UsedBytes: 1 << 39, Shared: true,
+		}, {
+			Name: "I:", Path: `I:\`, SizeBytes: 2 << 40, UsedBytes: 512 << 30,
 		}},
 		ISOs: []string{`C:\ClusterStorage\Volume1\ISOs\w2025.iso`},
 		ManagementVNICs: []types.ManagementVNICInfo{{

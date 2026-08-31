@@ -3271,11 +3271,15 @@ func (x *VirtualSwitchInfo) GetVlanId() int32 {
 }
 
 type StorageVolume struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
-	SizeBytes     uint64                 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	UsedBytes     uint64                 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Path      string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	SizeBytes uint64                 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	UsedBytes uint64                 `protobuf:"varint,4,opt,name=used_bytes,json=usedBytes,proto3" json:"used_bytes,omitempty"`
+	// shared marks a Cluster Shared Volume. A member's local volumes are reported
+	// alongside them, and only this tells them apart — a clustered VM on a local
+	// volume cannot fail over anywhere.
+	Shared        bool `protobuf:"varint,5,opt,name=shared,proto3" json:"shared,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3336,6 +3340,13 @@ func (x *StorageVolume) GetUsedBytes() uint64 {
 		return x.UsedBytes
 	}
 	return 0
+}
+
+func (x *StorageVolume) GetShared() bool {
+	if x != nil {
+		return x.Shared
+	}
+	return false
 }
 
 type HostInventory struct {
@@ -7243,14 +7254,15 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fnet_adapters\x18\x02 \x03(\tR\vnetAdapters\x12.\n" +
 	"\x13allow_management_os\x18\x03 \x01(\bR\x11allowManagementOs\x12\x17\n" +
-	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"u\n" +
+	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"\x8d\x01\n" +
 	"\rStorageVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
-	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\"\xb8\x02\n" +
+	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\x12\x16\n" +
+	"\x06shared\x18\x05 \x01(\bR\x06shared\"\xb8\x02\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +

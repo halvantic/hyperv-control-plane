@@ -555,29 +555,38 @@ $switchDetails = @(Get-VMSwitch | ForEach-Object {
   [pscustomobject]@{ name = [string]$sw.Name; netAdapters = @($nics); allowManagementOS = [bool]$sw.AllowManagementOS; vlanId = [int]$vlan }
 })
 $switches = @($switchDetails | ForEach-Object { $_.name } | Where-Object { $_ })
+# Cluster Shared Volumes AND the host's own volumes, not one or the other.
+#
+# This used to be an either/or: a host with CSVs reported only its CSVs, and its
+# local data volumes were invisible to the centre. A member with a drive
+# formatted for Hyper-V could not be offered it anywhere — a VM could not be
+# placed on it, and an evacuation had nothing to put in its destination picker,
+# so the path had to be typed from memory. Which kind a volume IS matters and is
+# carried on each one; leaving half of them out is not how to express it.
 $vols = @()
 $csv = Get-ClusterSharedVolume 2>$null
 if ($csv) {
   $vols = @($csv | ForEach-Object {
     $p = $_.SharedVolumeInfo.Partition
-    [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace) }
-  })
-} else {
-  # Exclude the OS/system volume: collect boot/system disk drive letters so they
-  # are not offered as VM storage locations (the agent can't create VHDXs there
-  # without risking the OS partition). The C drive is skipped even if detection
-  # fails — it is always the Windows system volume on these hosts.
-  $osDriveLetters = @('C')
-  try {
-    $osDriveLetters += @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } |
-      Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } |
-      ForEach-Object { [string]$_.DriveLetter })
-    $osDriveLetters = @($osDriveLetters | Sort-Object -Unique)
-  } catch {}
-  $vols = @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
-    [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining) }
+    [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace); shared = $true }
   })
 }
+# Exclude the OS/system volume: collect boot/system disk drive letters so they
+# are not offered as VM storage locations (the agent can't create VHDXs there
+# without risking the OS partition). The C drive is skipped even if detection
+# fails — it is always the Windows system volume on these hosts.
+$osDriveLetters = @('C')
+try {
+  $osDriveLetters += @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } |
+    Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } |
+    ForEach-Object { [string]$_.DriveLetter })
+  $osDriveLetters = @($osDriveLetters | Sort-Object -Unique)
+} catch {}
+# A CSV mount lives under C:\ClusterStorage, and C is excluded already, so
+# there is no way for one to be reported twice.
+$vols += @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
+  [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining); shared = $false }
+})
 $roots = @($vols | ForEach-Object { Join-Path $_.path 'ISOs' }) + 'C:\ISOs'
 $isos = @()
 foreach ($r in $roots) {

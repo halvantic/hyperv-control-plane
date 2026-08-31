@@ -7,14 +7,16 @@ import (
 	"github.com/joshua-fourie/ballast/api/types"
 )
 
-/* The change markers have to survive the wire.
+/*
+The change markers have to survive the wire.
 
-   A field the proto does not carry round-trips perfectly as its zero value, so
-   the failure is silent: the agent copies a delta, reports the marker, the
-   centre stores an empty one, and the next pass reads the whole disk again
-   while the console says "delta". This is the test that stops that, and it
-   asserts on the marker specifically because that is the field with no
-   plausible zero value. */
+	A field the proto does not carry round-trips perfectly as its zero value, so
+	the failure is silent: the agent copies a delta, reports the marker, the
+	centre stores an empty one, and the next pass reads the whole disk again
+	while the console says "delta". This is the test that stops that, and it
+	asserts on the marker specifically because that is the field with no
+	plausible zero value.
+*/
 func TestAPassResultSurvivesTheWire(t *testing.T) {
 	started := time.Date(2026, 8, 27, 2, 15, 0, 0, time.UTC)
 	in := types.HostStatus{
@@ -23,7 +25,7 @@ func TestAPassResultSurvivesTheWire(t *testing.T) {
 			// field the proto drops round-trips as its zero value, so this one
 			// would silently turn every live report into a COMPLETED one at the
 			// centre — advancing the pass count on a copy still running.
-			InProgress: true,
+			InProgress:       true,
 			Migration:        "mig-web01",
 			JobID:            "job-4491",
 			Final:            true,

@@ -663,7 +663,7 @@ func observedVMsFromJSON(in []string) []types.ObservedVM {
 func resourcesToProto(r types.HostResources) *HostResources {
 	out := &HostResources{Switches: r.Switches, Isos: r.ISOs}
 	for _, v := range r.Volumes {
-		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path, SizeBytes: v.SizeBytes, UsedBytes: v.UsedBytes})
+		out.Volumes = append(out.Volumes, &StorageVolume{Name: v.Name, Path: v.Path, SizeBytes: v.SizeBytes, UsedBytes: v.UsedBytes, Shared: v.Shared})
 	}
 	for _, s := range r.SwitchDetails {
 		out.SwitchDetails = append(out.SwitchDetails, &VirtualSwitchInfo{
@@ -686,7 +686,7 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 	}
 	out := types.HostResources{Switches: r.GetSwitches(), ISOs: r.GetIsos()}
 	for _, v := range r.GetVolumes() {
-		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath(), SizeBytes: v.GetSizeBytes(), UsedBytes: v.GetUsedBytes()})
+		out.Volumes = append(out.Volumes, types.StorageVolume{Name: v.GetName(), Path: v.GetPath(), SizeBytes: v.GetSizeBytes(), UsedBytes: v.GetUsedBytes(), Shared: v.GetShared()})
 	}
 	for _, s := range r.GetSwitchDetails() {
 		out.SwitchDetails = append(out.SwitchDetails, types.VirtualSwitchInfo{
