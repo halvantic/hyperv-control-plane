@@ -683,7 +683,26 @@ try {
   Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
   Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
 } catch {}
-%[5]s%[4]s
+# Can this host reach the destination over SMB, BEFORE anything is touched.
+#
+# A shared-nothing migration copies through an administrative share the
+# destination publishes for it (\\HVNEW06\HVNEW04.905057643$), so the whole move
+# rests on plain SMB between the two hosts. Without it Move-VM gets most of the
+# way in and fails with 0x80070035 - having already stunned the guest and,
+# before this check existed, having un-clustered it.
+#
+# admin$ is the closest thing testable in advance: same protocol, same
+# authentication, present on any host that could publish the migration share.
+$destShare = '\\' + $dest + '\admin$'
+if (-not (Test-Path $destShare -ErrorAction SilentlyContinue)) {
+  throw ('this host cannot reach ' + $destShare + ' over SMB, and a shared-nothing migration copies through an ' +
+    'administrative share on the destination. Nothing has been changed here. On ' + $dest + ', allow File and ' +
+    'Printer Sharing through the firewall (Enable-NetFirewallRule -DisplayGroup ''File and Printer Sharing'') ' +
+    'and check this host can resolve and reach its name')
+}
+%[5]s
+try {
+%[4]s
 # Did it actually leave?
 #
 # A move that reported success and did not happen is the worst thing this job
@@ -696,11 +715,14 @@ if (Get-VM -Name %[1]s -ErrorAction SilentlyContinue) {
   throw ('the move reported success but ' + %[1]s + ' is still registered on this host, so nothing was moved. ' +
     'The VM has not been touched and is where it was')
 }
+} catch {
+%[7]s  throw
+}
 %[6]s
 Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 		psQuote(vm), psQuote(destHost), psQuote(destPath),
 		migrateWithProgress("Move-VM -Name $vm -DestinationHost $dest -IncludeStorage -DestinationStoragePath $path"),
-		unclusterScript(vm, sourceCluster), reclusterScript(vm, targetCluster))
+		unclusterScript(vm, sourceCluster), reclusterScript(vm, targetCluster), restoreClusterScript(vm, sourceCluster))
 	result := "migrated " + vm + " to " + destHost
 	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
 	if err != nil {
@@ -1300,5 +1322,32 @@ func reclusterScript(vm, cluster string) string {
 } catch {
   Write-Warning ('the VM moved to ' + $dest + ' but could not be made highly available on ' + %[2]s + ': ' + $_.Exception.Message + '. It is running and unclustered; add the role in Failover Cluster Manager or re-run this move')
 }
+`, psQuote(vm), psQuote(cluster))
+}
+
+/*
+restoreClusterScript puts a VM's HA role back when a move fails.
+
+	The role has to come off before Move-VM will touch a clustered VM, and it is
+	removed before the copy starts. So a move that fails leaves the VM where it
+	was and NOT highly available — running, reachable, and quietly no longer
+	protected. Nobody would notice until a node went down.
+
+	Best effort, and it never masks the real failure: the original error is what
+	the operator needs, and a problem re-adding the role is reported beside it
+	rather than instead of it.
+*/
+func restoreClusterScript(vm, cluster string) string {
+	if strings.TrimSpace(cluster) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`  if (Get-VM -Name %[1]s -ErrorAction SilentlyContinue) {
+    try {
+      Write-Output ('PROGRESS the move failed; putting ' + %[1]s + ' back into cluster ' + %[2]s)
+      Add-ClusterVirtualMachineRole -Cluster %[2]s -VirtualMachine %[1]s -ErrorAction Stop | Out-Null
+    } catch {
+      Write-Warning ('the move failed AND ' + %[1]s + ' could not be put back into ' + %[2]s + ': ' + $_.Exception.Message + '. It is running on this host and is no longer highly available; add the role in Failover Cluster Manager')
+    }
+  }
 `, psQuote(vm), psQuote(cluster))
 }

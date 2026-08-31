@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -225,5 +226,76 @@ func TestAMemberReportsBothKindsOfVolume(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("volumes are not tagged with %q, so nothing can tell a CSV from a local disk:\n%s", want, s)
 		}
+	}
+}
+
+/*
+Shared-nothing migration rests on SMB between the two hosts, and the failure
+
+	when it is missing is expensive.
+
+	  Failed to create folder '\HVNEW06\HVNEW04.905057643$\I\Virtual Hard Disks':
+	  'The network path was not found.' (0x80070035)
+
+	Move-VM gets most of the way in before that: the guest has been stunned and,
+	with the role removed first, the VM was left un-clustered. Tested up front,
+	before anything is touched.
+*/
+func TestTheMoveChecksSMBBeforeTouchingAnything(t *testing.T) {
+	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil)
+	s := f.streamScript
+
+	if !strings.Contains(s, `$destShare = '\\' + $dest`) {
+		t.Fatalf("nothing tests SMB to the destination:\n%s", s)
+	}
+	// Before the role comes off, or the check is worth nothing — the VM would
+	// already be un-clustered by the time it fired.
+	pre, uncluster := strings.Index(s, "$destShare"), strings.Index(s, "Remove-ClusterGroup")
+	if uncluster >= 0 && pre > uncluster {
+		t.Errorf("the SMB check runs after the VM is un-clustered:\n%s", s)
+	}
+	if !strings.Contains(s, "File and Printer Sharing") {
+		t.Errorf("the refusal does not name the remedy:\n%s", s)
+	}
+	if !strings.Contains(s, "Nothing has been changed here") {
+		t.Errorf("the refusal does not say the VM is untouched:\n%s", s)
+	}
+}
+
+/*
+A failed move must put the cluster role back.
+
+	The role comes off before the copy, so a move that fails leaves the VM where
+	it was and NOT highly available — running, reachable, and quietly no longer
+	protected. Nobody notices until a node goes down.
+*/
+func TestAFailedMovePutsTheClusterRoleBack(t *testing.T) {
+	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "Secondary", "", nil)
+	s := f.streamScript
+
+	if !strings.Contains(s, "} catch {") || !strings.Contains(s, "putting ") {
+		t.Fatalf("a failed move does not restore the role:\n%s", s)
+	}
+	if !strings.Contains(s, "Add-ClusterVirtualMachineRole -Cluster 'Secondary' -VirtualMachine 'Web01'") {
+		t.Errorf("the restore does not re-add the role to the source cluster:\n%s", s)
+	}
+	// And the original failure still surfaces: a restore problem is reported
+	// beside it, never instead of it.
+	if !strings.Contains(s, "  throw\n}") {
+		t.Errorf("the original error is swallowed by the restore:\n%s", s)
+	}
+	if !strings.Contains(s, "no longer highly available") {
+		t.Errorf("a failed restore does not say what state the VM is in:\n%s", s)
+	}
+}
+
+// A standalone source has no role to remove, so nothing to put back either.
+func TestAStandaloneMoveHasNoRoleToRestore(t *testing.T) {
+	f := &fakeRunner{streamLines: []string{"DONE migrated Web01 to hvnew02"}}
+	newTestPS(f).MigrateVM(context.Background(), "Web01", "hvnew02", `I:\`, "", "", nil)
+	if s := f.streamScript; strings.Contains(s, "Add-ClusterVirtualMachineRole") {
+		t.Fatalf("a standalone VM was sent cluster cmdlets:\n%s", s)
 	}
 }
