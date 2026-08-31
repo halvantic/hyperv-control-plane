@@ -56,10 +56,13 @@ func TestAnUnrelatedFailureIsNotDressedUp(t *testing.T) {
 	}
 }
 
-/* Removing a snapshot that has already gone is the normal case on a cleanup
-   path — the caller is tidying after a failure and does not know how far the
-   previous attempt got. Every phrasing govmomi and vCenter use for it must read
-   as success, or cleanup reports a failure that is not one. */
+/*
+Removing a snapshot that has already gone is the normal case on a cleanup
+
+	path — the caller is tidying after a failure and does not know how far the
+	previous attempt got. Every phrasing govmomi and vCenter use for it must read
+	as success, or cleanup reports a failure that is not one.
+*/
 func TestASnapshotThatHasAlreadyGoneIsNotAFailure(t *testing.T) {
 	gone := []string{
 		`snapshot "snapshot-4021" not found`,
@@ -77,18 +80,24 @@ func TestASnapshotThatHasAlreadyGoneIsNotAFailure(t *testing.T) {
 	}
 }
 
-/* Consolidation is bounded, and the timeout has to be long enough that a normal
-   merge on busy storage is not cut short. Cutting one short is worse than
-   waiting: it leaves the snapshot in place AND fails the pass. */
+/*
+Consolidation is bounded, and the timeout has to be long enough that a normal
+
+	merge on busy storage is not cut short. Cutting one short is worse than
+	waiting: it leaves the snapshot in place AND fails the pass.
+*/
 func TestTheConsolidationWaitIsNotImpatient(t *testing.T) {
 	if consolidateWait.Minutes() < 5 {
 		t.Errorf("waiting only %s for a consolidation would cut normal merges short", consolidateWait)
 	}
 }
 
-/* A read is a range request, and HTTP byte ranges are inclusive at both ends.
-   Off by one re-reads or skips a byte on every chunk of every disk, and the
-   result still looks like a completed copy. */
+/*
+A read is a range request, and HTTP byte ranges are inclusive at both ends.
+
+	Off by one re-reads or skips a byte on every chunk of every disk, and the
+	result still looks like a completed copy.
+*/
 func TestARangeCoversExactlyTheBytesAskedFor(t *testing.T) {
 	tests := []struct {
 		offset, length int64

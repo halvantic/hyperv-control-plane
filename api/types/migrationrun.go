@@ -302,16 +302,18 @@ type MigrationDisk struct {
 	Message string `json:"message,omitempty"`
 }
 
-/* MigrationPassResult is what one copy pass on a host actually did.
+/*
+MigrationPassResult is what one copy pass on a host actually did.
 
-   Reported in HostStatus rather than returned in the job's message, because the
-   centre needs the per-disk change markers to run the NEXT pass and a job
-   message is prose for a person to read. Parsing numbers back out of a sentence
-   is how a migration ends up resuming from a marker nobody checked.
+	Reported in HostStatus rather than returned in the job's message, because the
+	centre needs the per-disk change markers to run the NEXT pass and a job
+	message is prose for a person to read. Parsing numbers back out of a sentence
+	is how a migration ends up resuming from a marker nobody checked.
 
-   Kept only while the migration is live. A host does not carry the history of
-   every VM it has ever pulled off VMware; the Migration object is where that
-   lives. */
+	Kept only while the migration is live. A host does not carry the history of
+	every VM it has ever pulled off VMware; the Migration object is where that
+	lives.
+*/
 type MigrationPassResult struct {
 	// Migration is the object this pass belongs to, and JobID the job that ran
 	// it — so a result from a job the centre has already given up on is

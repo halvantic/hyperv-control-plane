@@ -46,9 +46,12 @@ func TestNoMarkersIsABaseCopyNotAFailure(t *testing.T) {
 	}
 }
 
-/* A missing credential and a missing address are different problems with
-   different fixes, and an operator told to check a hostname that is perfectly
-   correct will check it twice before doubting the message. */
+/*
+A missing credential and a missing address are different problems with
+
+	different fixes, and an operator told to check a hostname that is perfectly
+	correct will check it twice before doubting the message.
+*/
 func TestAMissingCredentialIsNamedSeparatelyFromAMissingAddress(t *testing.T) {
 	if _, err := migrationEndpoint(map[string]string{"username": "u", "password": "p"}); err == nil ||
 		!strings.Contains(err.Error(), "address") {
@@ -84,8 +87,11 @@ func TestTheEndpointCarriesWhatTheJobSent(t *testing.T) {
 	}
 }
 
-/* Only the LAST pass per migration is kept. A host that has migrated two
-   hundred VMs must not report two hundred results on every heartbeat. */
+/*
+Only the LAST pass per migration is kept. A host that has migrated two
+
+	hundred VMs must not report two hundred results on every heartbeat.
+*/
 func TestOnlyTheLatestPassPerMigrationIsReported(t *testing.T) {
 	r := &Reconciler{}
 	r.recordMigrationPass(types.MigrationPassResult{Migration: "mig-a", CopiedBytes: 10})

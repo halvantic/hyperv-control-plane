@@ -211,7 +211,7 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.RebuildStoragePool(ctx)
 	case types.JobClusterMoveVM:
 		return done(r.hv.MoveClusterVM(ctx, p["vm"], p["node"], onProgress), "live-migrated "+p["vm"]+" to "+p["node"])
-	case types.JobMigrateVM:
+	case types.JobMigrateVM, types.JobCopyVM:
 		// Auto-provision Kerberos constrained delegation between this (source) host
 		// and the destination so shared-nothing migration works without a manual AD
 		// step. EnsureMigrationDelegation includes the local host, so passing just
@@ -229,6 +229,9 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 				return "", fmt.Errorf("the network mapping on this job could not be read, so the VM would arrive on "+
 					"whatever the destination happened to offer: %w", err)
 			}
+		}
+		if job.Kind == types.JobCopyVM {
+			return r.hv.CopyVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], netMap, onProgress)
 		}
 		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], netMap, onProgress)
 	case types.JobRemoveSwitch:

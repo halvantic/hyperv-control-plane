@@ -2374,7 +2374,20 @@ const (
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
 	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
 	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
-	JobMigrateVM        = "MigrateVM"        // params: vm, destHost, destPath, sourceCluster/targetCluster (optional, the cluster halves of a cross-boundary move), networkMap (optional JSON [{sourceSwitch,targetSwitch,vlanId}]) — shared-nothing live migration to another host (run on the source host)
+	/* JobCopyVM moves a VM by EXPORTING it to the destination's storage and
+	   importing it there, then removing the original. params: vm, destHost,
+	   destPath, sourceCluster/targetCluster (optional), networkMap (optional
+	   JSON). Runs on the source host.
+
+	   The heavy path, and the one that asks least of the two hosts. Move-VM
+	   needs live migration configured at both ends, Kerberos delegation between
+	   the computer accounts and a compatible destination; this needs the guest
+	   stopped and somewhere to write. Which is the right trade depends entirely
+	   on whether the two hosts were built to know about each other, and a new
+	   environment by definition was not. */
+	JobCopyVM = "CopyVM"
+
+	JobMigrateVM = "MigrateVM" // params: vm, destHost, destPath, sourceCluster/targetCluster (optional, the cluster halves of a cross-boundary move), networkMap (optional JSON [{sourceSwitch,targetSwitch,vlanId}]) — shared-nothing live migration to another host (run on the source host)
 
 	// JobVMMoveStorage relocates a VM's files to another datastore WITHOUT moving
 	// the VM itself — Hyper-V storage migration, which runs live. The centre

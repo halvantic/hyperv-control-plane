@@ -48,12 +48,15 @@ func migrationEndpoint(p map[string]string) (vmware.Endpoint, error) {
 	return e, nil
 }
 
-/* migrationPass runs one pass: base copy, delta, or the final one after the
-   source is stopped.
+/*
+migrationPass runs one pass: base copy, delta, or the final one after the
 
-   The result is recorded in status BEFORE any error is returned. A pass that
-   copied three disks of four and then failed still moved those three, and their
-   markers are the difference between the retry copying 40GB and copying 1.5TB. */
+	source is stopped.
+
+	The result is recorded in status BEFORE any error is returned. A pass that
+	copied three disks of four and then failed still moved those three, and their
+	markers are the difference between the retry copying 40GB and copying 1.5TB.
+*/
 func (r *Reconciler) migrationPass(ctx context.Context, job types.Job, onProgress hyperv.ProgressFunc) (string, error) {
 	p := job.Params
 	name := strings.TrimSpace(p["migration"])
@@ -214,12 +217,14 @@ func (r *Reconciler) migrationEnableCBT(ctx context.Context, p map[string]string
 	return "changed block tracking is on, so later passes copy only what changed", nil
 }
 
-/* migrationCleanup removes the snapshot Ballast left on the source.
+/*
+migrationCleanup removes the snapshot Ballast left on the source.
 
-   Runs on the way out of every terminal phase, failure included. It also
-   tolerates finding nothing: on a cleanup path the caller does not know how far
-   a failed attempt got, and reporting "there was no snapshot" as a failure would
-   leave an operator chasing a problem that has already resolved itself. */
+	Runs on the way out of every terminal phase, failure included. It also
+	tolerates finding nothing: on a cleanup path the caller does not know how far
+	a failed attempt got, and reporting "there was no snapshot" as a failure would
+	leave an operator chasing a problem that has already resolved itself.
+*/
 func (r *Reconciler) migrationCleanup(ctx context.Context, p map[string]string) (string, error) {
 	ep, err := migrationEndpoint(p)
 	if err != nil {
@@ -247,11 +252,13 @@ func (r *Reconciler) migrationCleanup(ctx context.Context, p map[string]string) 
 	return "the source VM has no Ballast snapshot left on it", nil
 }
 
-/* parseMarkers reads the per-disk change markers the previous pass reported.
+/*
+parseMarkers reads the per-disk change markers the previous pass reported.
 
-   Malformed is a refusal, not an empty map. An unreadable marker treated as
-   "none" silently turns a delta into a full re-copy — which finishes, looks
-   right, and costs hours nobody accounted for. */
+	Malformed is a refusal, not an empty map. An unreadable marker treated as
+	"none" silently turns a delta into a full re-copy — which finishes, looks
+	right, and costs hours nobody accounted for.
+*/
 func parseMarkers(s string) (map[int32]string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "{}" {
@@ -273,11 +280,13 @@ func parseMarkers(s string) (map[int32]string, error) {
 	return out, nil
 }
 
-/* diskProvisioner is the host's ability to create and attach destination disks.
+/*
+diskProvisioner is the host's ability to create and attach destination disks.
 
-   A type assertion rather than another dozen methods on hyperv.Interface: this
-   needs a real PowerShell host and nothing else can stand in for one. The
-   refusal says so plainly instead of failing later with a nil dereference. */
+	A type assertion rather than another dozen methods on hyperv.Interface: this
+	needs a real PowerShell host and nothing else can stand in for one. The
+	refusal says so plainly instead of failing later with a nil dereference.
+*/
 func (r *Reconciler) diskProvisioner() (vmware.Provisioner, error) {
 	ps, ok := r.hv.(*hyperv.PowerShell)
 	if !ok {
@@ -291,12 +300,14 @@ func (r *Reconciler) diskProvisioner() (vmware.Provisioner, error) {
 // than that is work nobody ever sees.
 const migrationProgressEvery = 5 * time.Second
 
-/* recordMigrationPass stores the pass so the next status report carries it.
+/*
+recordMigrationPass stores the pass so the next status report carries it.
 
-   Keyed by migration: only the LAST pass for each is kept. A host does not
-   carry the history of every VM it has pulled off VMware — the Migration object
-   at the centre is where that lives — and an unbounded list on a host that has
-   migrated two hundred VMs would be reported in full on every heartbeat. */
+	Keyed by migration: only the LAST pass for each is kept. A host does not
+	carry the history of every VM it has pulled off VMware — the Migration object
+	at the centre is where that lives — and an unbounded list on a host that has
+	migrated two hundred VMs would be reported in full on every heartbeat.
+*/
 func (r *Reconciler) recordMigrationPass(res types.MigrationPassResult) {
 	r.migrationMu.Lock()
 	defer r.migrationMu.Unlock()

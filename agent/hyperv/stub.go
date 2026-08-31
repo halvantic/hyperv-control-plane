@@ -930,6 +930,11 @@ func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _, _, _ string, _ []ty
 	onProgress.emit("live migration 100%")
 	return "migrated " + vm + " to " + destHost + " (stub)", nil
 }
+
+func (s *Stub) CopyVM(_ context.Context, vm, destHost, _, _, _ string, _ []types.EvacuationNIC, onProgress ProgressFunc) (string, error) {
+	onProgress.emit("exporting 100%")
+	return "copied " + vm + " to " + destHost + " (stub)", nil
+}
 func (s *Stub) ValidateCluster(_ context.Context, _, _ []string) (string, error) {
 	return "validation ok (stub)", nil
 }

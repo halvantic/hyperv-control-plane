@@ -70,6 +70,25 @@ type EvacuationSpec struct {
 	   an operator drains a host gradually, or retries the three that failed. */
 	VMs []string `json:"vms,omitempty"`
 
+	/* Strategy is how the VMs get there: "move" or "copy". Empty means move.
+
+	   MOVE is Move-VM with its storage — one operation, no downtime for a
+	   running guest, and it depends on the destination being compatible: live
+	   migration enabled both ends, Kerberos delegation between the computer
+	   accounts, SMB reachable, processors that match.
+
+	   COPY exports each VM to the destination's storage and imports it there,
+	   then removes the original. It needs the guest stopped and it writes every
+	   byte twice, but it asks almost nothing of the two hosts — which is what a
+	   move into a NEW environment usually looks like. It is also the path whose
+	   compatibility fixing is known to work: Compare-VM's report can be resolved
+	   on the host holding the files, which is how Ballast already imports a VM
+	   whose switch does not exist here.
+
+	   Neither is the default for all time. Move is the optimisation; copy is the
+	   one that works when the two ends have nothing arranged between them. */
+	Strategy string `json:"strategy,omitempty"`
+
 	/* NetworkMap points each source switch at one on the destination.
 
 	   Without it a move fails on compatibility rather than on anything to do
@@ -131,6 +150,20 @@ type EvacuationNIC struct {
 	TargetSwitch string `json:"targetSwitch,omitempty"`
 	// VLANID retags the adapter on arrival. Zero leaves the tag alone.
 	VLANID int `json:"vlanId,omitempty"`
+}
+
+// Evacuation strategies.
+const (
+	EvacMove = "move"
+	EvacCopy = "copy"
+)
+
+// EvacuationStrategy is the strategy with its default applied.
+func (s EvacuationSpec) EvacuationStrategy() string {
+	if s.Strategy == EvacCopy {
+		return EvacCopy
+	}
+	return EvacMove
 }
 
 // Evacuation phases.

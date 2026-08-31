@@ -100,12 +100,14 @@ func TestAnUndeclaredClusterIPIsLeftAlone(t *testing.T) {
 	}
 }
 
-/* The refusal has to reach the operator.
+/*
+The refusal has to reach the operator.
 
-   Re-addressing fails for reasons they must act on — the new address is also in
-   use, or no cluster network covers it. Swallowing that would reproduce the
-   original bug in a new place: a setting stored, apparently accepted, and not in
-   effect. */
+	Re-addressing fails for reasons they must act on — the new address is also in
+	use, or no cluster network covers it. Swallowing that would reproduce the
+	original bug in a new place: a setting stored, apparently accepted, and not in
+	effect.
+*/
 func TestARefusedReAddressIsReported(t *testing.T) {
 	stub := &hyperv.Stub{
 		ClusterIP:    "192.168.1.40",

@@ -39,10 +39,13 @@ func TestAFileFaultIsRecognisedAsChangeTrackingBeingOff(t *testing.T) {
 	}
 }
 
-/* A reset must not be swallowed by the new case. Both mention a disk, both are
-   recovered by reading in full, and only one of them means the marker is dead —
-   classified the wrong way round, a reset would be reported as a VM that never
-   had tracking and the operator would go and enable something already on. */
+/*
+A reset must not be swallowed by the new case. Both mention a disk, both are
+
+	recovered by reading in full, and only one of them means the marker is dead —
+	classified the wrong way round, a reset would be reported as a VM that never
+	had tracking and the operator would go and enable something already on.
+*/
 func TestAResetIsStillClassifiedAsAResetAndNotAsMissingTracking(t *testing.T) {
 	err := explainCBTError(fmt.Errorf("ServerFaultCode: InvalidChangeId: the change id is invalid"), "52 de/7")
 	if !errors.Is(err, ErrCBTReset) {
@@ -83,9 +86,12 @@ func TestABaseCopyWithoutChangeTrackingReadsTheWholeDisk(t *testing.T) {
 	}
 }
 
-/* A DELTA is a different question. Without a marker there is no "since", and
-   reading in full there would be a silent full re-copy reported as a delta —
-   hours of transfer while the console says the outstanding change is small. */
+/*
+A DELTA is a different question. Without a marker there is no "since", and
+
+	reading in full there would be a silent full re-copy reported as a delta —
+	hours of transfer while the console says the outstanding change is small.
+*/
 func TestADeltaWithoutChangeTrackingStillFails(t *testing.T) {
 	const size = 1 << 20
 	src := &fakeSource{
@@ -104,9 +110,12 @@ func TestADeltaWithoutChangeTrackingStillFails(t *testing.T) {
 	}
 }
 
-/* The fallback is only for change tracking. A genuine failure — no route, a
-   rejected session, a snapshot that has gone — must still fail rather than
-   turning into a full read of a disk nothing can reach. */
+/*
+The fallback is only for change tracking. A genuine failure — no route, a
+
+	rejected session, a snapshot that has gone — must still fail rather than
+	turning into a full read of a disk nothing can reach.
+*/
 func TestAnUnrelatedFailureIsNotTreatedAsMissingTracking(t *testing.T) {
 	src := &fakeSource{image: pattern(1 << 20), err: fmt.Errorf("Post \"https://vcsa-02/sdk\": dial tcp: i/o timeout")}
 	dst := &fakeSink{buf: make([]byte, 1<<20)}

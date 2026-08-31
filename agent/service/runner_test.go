@@ -219,11 +219,13 @@ func TestVMBusyClaimAndRelease(t *testing.T) {
 	}
 }
 
-/* A VMware copy pass gets hours, not the default ten minutes.
+/*
+A VMware copy pass gets hours, not the default ten minutes.
 
-   The default would kill a base copy in its first pass, dismount the disk
-   mid-write, and the retry would start again from nothing — for ever, on any
-   VM big enough to matter. */
+	The default would kill a base copy in its first pass, dismount the disk
+	mid-write, and the retry would start again from nothing — for ever, on any
+	VM big enough to matter.
+*/
 func TestACopyPassIsNotHeldToTheDefaultBudget(t *testing.T) {
 	pass := jobTimeoutFor(types.Job{Kind: types.JobMigrationPass})
 	if pass <= jobTimeout {

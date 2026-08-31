@@ -454,8 +454,8 @@ var ErrDiskLocked = fmt.Errorf("the host will not serve the disk file")
 // only lets a caller that knows the power state add the remedy.
 type diskLocked struct{ err error }
 
-func (e diskLocked) Error() string { return e.err.Error() }
-func (e diskLocked) Unwrap() error { return e.err }
+func (e diskLocked) Error() string        { return e.err.Error() }
+func (e diskLocked) Unwrap() error        { return e.err }
 func (e diskLocked) Is(target error) bool { return target == ErrDiskLocked }
 
 // poweredOnState is VMware's spelling of a running VM, as a plain string so the

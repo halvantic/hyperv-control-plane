@@ -603,6 +603,18 @@ type Interface interface {
 	// environment meets. A source network with no entry arrives DISCONNECTED.
 	MigrateVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, networkMap []types.EvacuationNIC, onProgress ProgressFunc) (string, error)
 
+	/* CopyVM moves a VM by exporting it to the destination's storage, importing
+	   it there and removing the original. Run on the source host; the guest must
+	   be off.
+
+	   The path that asks least of the two hosts. Move-VM needs live migration
+	   configured at both ends, Kerberos delegation between the computer accounts
+	   and a compatible destination; this needs SMB and somewhere to write. It is
+	   also the form whose compatibility fixing works — Compare-VM's report is
+	   resolvable on the host holding the files, which a report from
+	   Compare-VM -DestinationHost is not. */
+	CopyVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, networkMap []types.EvacuationNIC, onProgress ProgressFunc) (string, error)
+
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive
 	// default) and returns a short result summary. Imperative Job.
