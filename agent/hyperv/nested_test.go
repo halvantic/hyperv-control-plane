@@ -255,8 +255,25 @@ func TestTheMoveChecksSMBBeforeTouchingAnything(t *testing.T) {
 	if uncluster >= 0 && pre > uncluster {
 		t.Errorf("the SMB check runs after the VM is un-clustered:\n%s", s)
 	}
-	if !strings.Contains(s, "File and Printer Sharing") {
-		t.Errorf("the refusal does not name the remedy:\n%s", s)
+	/* And Ballast opens the firewall ITSELF rather than naming it as homework.
+
+	   Both ends are hosts it runs an agent on, and the job already reaches the
+	   destination for the migration settings. "Go and run this on the other
+	   host" is the defect, not the remedy. */
+	if !strings.Contains(s, "Enable-NetFirewallRule -CimSession $fwSession -DisplayGroup 'File and Printer Sharing'") {
+		t.Errorf("the agent does not open the firewall on the destination: %s", s)
+	}
+	// Only when something is actually off, and said out loud when it acts: a
+	// firewall Ballast opened outlives this job.
+	if !strings.Contains(s, "if ($fwOff.Count -gt 0)") {
+		t.Errorf("it enables rules that are already enabled: %s", s)
+	}
+	if !strings.Contains(s, "PROGRESS enabled File and Printer Sharing on") {
+		t.Errorf("a firewall change is made silently: %s", s)
+	}
+	// Once the firewall is dealt with, the refusal points at what is left.
+	if !strings.Contains(s, "resolve and reach") {
+		t.Errorf("the refusal does not say what to check once the firewall is on: %s", s)
 	}
 	if !strings.Contains(s, "Nothing has been changed here") {
 		t.Errorf("the refusal does not say the VM is untouched:\n%s", s)

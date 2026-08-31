@@ -683,22 +683,41 @@ try {
   Enable-VMMigration -ComputerName $dest -ErrorAction Stop | Out-Null
   Set-VMHost -ComputerName $dest -VirtualMachineMigrationAuthenticationType Kerberos -UseAnyNetworkForMigration $true -ErrorAction Stop
 } catch {}
-# Can this host reach the destination over SMB, BEFORE anything is touched.
+# The copy goes through an administrative share the DESTINATION publishes for
+# this host, so the move rests on plain SMB between the two. Ballast turns File
+# and Printer Sharing on there itself rather than failing and asking somebody to
+# do it: both ends are hosts it runs an agent on, and telling an operator to open
+# a PowerShell session on the destination is the defect, not the remedy.
 #
-# A shared-nothing migration copies through an administrative share the
-# destination publishes for it (\\HVNEW06\HVNEW04.905057643$), so the whole move
-# rests on plain SMB between the two hosts. Without it Move-VM gets most of the
-# way in and fails with 0x80070035 - having already stunned the guest and,
-# before this check existed, having un-clustered it.
+# It reaches the destination the same way the migration settings above do — one
+# Kerberos hop as a domain admin. Idempotent, and SAID OUT LOUD when it changes
+# anything: a firewall that Ballast opened is a change to the host that outlives
+# this job, and the operator should not have to infer it.
+$fwNote = ''
+try {
+  $fwSession = New-CimSession -ComputerName $dest -ErrorAction Stop
+  $fwOff = @(Get-NetFirewallRule -CimSession $fwSession -DisplayGroup 'File and Printer Sharing' -ErrorAction Stop |
+    Where-Object { -not $_.Enabled -or [string]$_.Enabled -eq 'False' })
+  if ($fwOff.Count -gt 0) {
+    Enable-NetFirewallRule -CimSession $fwSession -DisplayGroup 'File and Printer Sharing' -ErrorAction Stop
+    Write-Output ('PROGRESS enabled File and Printer Sharing on ' + $dest + ' so the migration share can be reached')
+  }
+  Remove-CimSession $fwSession -ErrorAction SilentlyContinue
+} catch {
+  $fwNote = ' Ballast could not open the firewall on ' + $dest + ' itself: ' + $_.Exception.Message + '.'
+}
+
+# Then check it, BEFORE anything is touched. Without SMB, Move-VM gets most of
+# the way in and fails with 0x80070035 - having already stunned the guest and,
+# with the role removed first, having left the VM un-clustered.
 #
 # admin$ is the closest thing testable in advance: same protocol, same
 # authentication, present on any host that could publish the migration share.
 $destShare = '\\' + $dest + '\admin$'
 if (-not (Test-Path $destShare -ErrorAction SilentlyContinue)) {
   throw ('this host cannot reach ' + $destShare + ' over SMB, and a shared-nothing migration copies through an ' +
-    'administrative share on the destination. Nothing has been changed here. On ' + $dest + ', allow File and ' +
-    'Printer Sharing through the firewall (Enable-NetFirewallRule -DisplayGroup ''File and Printer Sharing'') ' +
-    'and check this host can resolve and reach its name')
+    'administrative share on the destination. Nothing has been changed here.' + $fwNote + ' File and Printer Sharing is ' +
+    'on, so what is left is the network between the two hosts: check this host can resolve and reach ' + $dest + ' on 445')
 }
 %[5]s
 try {
