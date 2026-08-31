@@ -103,7 +103,7 @@ A leftover from an attempt that failed part way is exactly what would be in
 */
 func TestALeftoverExportIsNamedRatherThanOverwritten(t *testing.T) {
 	s := copyScript(t)
-	if !strings.Contains(s, "already exists on ") || !strings.Contains(s, "A previous copy of ") {
+	if !strings.Contains(s, "already exists under ") || !strings.Contains(s, "A previous copy was left there") {
 		t.Fatalf("a leftover export is not detected: %s", s)
 	}
 }
@@ -148,5 +148,89 @@ func TestACopyToAClusterAddsTheRoleAtTheDestination(t *testing.T) {
 	// A standalone destination is sent no cluster cmdlets at all.
 	if plain := copyVMScript("v", "d", `I:\`, "", "", nil); strings.Contains(plain, "'Primary1'") {
 		t.Errorf("a standalone destination carries a cluster name: %s", plain)
+	}
+}
+
+/*
+Export-VM writes as the COMPUTER ACCOUNT, not as the agent.
+
+	VMMS runs as LocalSystem and reaches the network as this host's machine
+	account, which is not a local administrator on the destination — so the admin
+	share refuses it:
+
+	  Failed to copy file ... to '\HVNEW06\I$\...': Access is denied. (0x80070005)
+
+	The same trap the ISO library carries a note about: a share has to grant the
+	node, not the operator.
+*/
+func TestTheExportGoesThroughAShareGrantedToTheComputerAccount(t *testing.T) {
+	s := copyScript(t)
+
+	if !strings.Contains(s, "$srcAcct = $env:COMPUTERNAME + '$'") {
+		t.Fatalf("the source computer account is never worked out: %s", s)
+	}
+	if !strings.Contains(s, "New-SmbShare -Name $name -Path $p -FullAccess $acct -Temporary") {
+		t.Fatalf("no share is made for the export: %s", s)
+	}
+	// The admin share is what failed; the export must not still be aimed at it.
+	if strings.Contains(s, `$unc   = '\\' + $dest + '\' + $drive + '$'`) {
+		t.Errorf("the export still writes to the admin share: %s", s)
+	}
+	if !strings.Contains(s, `$unc = '\\' + $dest + '\' + $shareName`) {
+		t.Errorf("the export does not use the share it just made: %s", s)
+	}
+}
+
+/*
+Share permission AND NTFS. Granting one and not the other is the half of this
+
+	that looks configured and still denies the write.
+*/
+func TestBothTheShareAndTheFilesystemAreGranted(t *testing.T) {
+	s := copyScript(t)
+	if !strings.Contains(s, "FileSystemAccessRule($acct, 'Modify'") {
+		t.Fatalf("NTFS is not granted, only the share: %s", s)
+	}
+	if !strings.Contains(s, "Set-Acl -LiteralPath $p") {
+		t.Errorf("the filesystem ACL is never applied: %s", s)
+	}
+}
+
+/*
+The share comes down on every exit, including a failed one.
+
+	A volume left shared to a computer account is a thing nobody would think to
+	look for. Temporary as well, so a host that restarts mid-move is not left
+	sharing a volume nobody meant to share.
+*/
+func TestTheShareIsRemovedOnEveryExit(t *testing.T) {
+	s := copyScript(t)
+
+	if !strings.Contains(s, "} finally {") {
+		t.Fatalf("the share is not removed on a failed export: %s", s)
+	}
+	if !strings.Contains(s, "Remove-SmbShare -Force") {
+		t.Errorf("the share is never removed: %s", s)
+	}
+	if !strings.Contains(s, "-Temporary") {
+		t.Errorf("the share would survive a restart: %s", s)
+	}
+	// And the removal must come after the source is taken away, or a failure
+	// there would leave the share behind.
+	fin, rm := strings.Index(s, "} finally {"), strings.Index(s, "Remove-VM -Name $vm -Force")
+	if rm < 0 || fin < rm {
+		t.Errorf("the finally block does not wrap the whole move: %s", s)
+	}
+}
+
+// The UNC is built the way the rest of this package builds one: '\' + host,
+// then single separators. Getting that wrong produces a path that looks almost
+// right and resolves to nothing.
+func TestTheShareUNCIsWellFormed(t *testing.T) {
+	s := copyScript(t)
+	for _, bad := range []string{`'\\\\' + $dest`, `+ '\\' + $shareName`} {
+		if strings.Contains(s, bad) {
+			t.Errorf("malformed UNC (%s): %s", bad, s)
+		}
 	}
 }

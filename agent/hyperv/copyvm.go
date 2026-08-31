@@ -50,20 +50,52 @@ if ($state -ne 'Off') {
 
 %[5]s
 
-# Where the files go: the destination's own storage, reached over its
-# administrative share. The same SMB the firewall check above just made sure of.
-$drive = ($path -replace ':.*$', '')
-$rest  = ($path -replace '^[A-Za-z]:', '').TrimStart('\')
-$unc   = '\\' + $dest + '\' + $drive + '$'
-if ($rest) { $unc = $unc + '\' + $rest }
-$unc = $unc.TrimEnd('\')
-if (-not (Test-Path -LiteralPath $unc)) { New-Item -ItemType Directory -Path $unc -Force | Out-Null }
+# Where the files go, and WHO writes them.
+#
+# Export-VM copies as VMMS, which runs as LocalSystem and reaches the network as
+# this host's COMPUTER ACCOUNT. The admin share is administrators-only and a
+# computer account is not one, so exporting to \dest\I$ fails with
+#
+#   Failed to copy file ... to '\HVNEW06\I$\...': Access is denied. (0x80070005)
+#
+# The same trap the ISO library carries a note about: the share has to grant the
+# node, not the operator. So a share is made for exactly this move, granted to
+# exactly this one computer account, and taken away again at the end.
+$srcAcct = $env:COMPUTERNAME + '$'
+if ($env:USERDOMAIN -and $env:USERDOMAIN -ne $env:COMPUTERNAME) { $srcAcct = $env:USERDOMAIN + '\' + $env:COMPUTERNAME + '$' }
+$shareName = 'BallastEvac$'
+
+$share = Invoke-Command -ComputerName $dest -ArgumentList $path, $shareName, $srcAcct -ScriptBlock {
+  param($p, $name, $acct)
+  $ErrorActionPreference = 'Stop'
+  if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+  # NTFS as well as the share. Granting one and not the other is the half of
+  # this that looks configured and still denies the write.
+  $acl = Get-Acl -LiteralPath $p
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($acct, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $p -AclObject $acl
+  $existing = Get-SmbShare -Name $name -ErrorAction SilentlyContinue
+  if ($existing) { Remove-SmbShare -Name $name -Force -ErrorAction SilentlyContinue }
+  # Temporary: it does not survive a restart, so a host that reboots mid-move
+  # is not left permanently sharing a volume nobody meant to share.
+  New-SmbShare -Name $name -Path $p -FullAccess $acct -Temporary | Out-Null
+  $true
+}
+if (-not $share) { throw ('could not make a share on ' + $dest + ' for ' + $srcAcct + ' to export into') }
+Write-Output ('PROGRESS made a temporary share on ' + $dest + ' for ' + $srcAcct)
+
+$unc = '\\' + $dest + '\' + $shareName
+
+# From here on the share must come down whatever happens: a volume left shared
+# to a computer account is a thing nobody would think to look for.
+try {
 
 # Export refuses to write into a folder that already holds this VM, and a
 # leftover from an attempt that failed part way is exactly what would be there.
 $target = Join-Path $unc $vm
 if (Test-Path -LiteralPath $target) {
-  throw ($target + ' already exists on ' + $dest + '. A previous copy of ' + $vm + ' was left there; remove it, or ' +
+  throw ($vm + ' already exists under ' + $path + ' on ' + $dest + '. A previous copy was left there; remove it, or ' +
     'import it if it is complete, before copying again')
 }
 
@@ -91,6 +123,13 @@ if (-not $imported) { throw ('the import on ' + $dest + ' did not report success
 
 %[7]s
 Remove-VM -Name $vm -Force -ErrorAction Stop
+
+} finally {
+  Invoke-Command -ComputerName $dest -ArgumentList $shareName -ScriptBlock {
+    param($name)
+    Get-SmbShare -Name $name -ErrorAction SilentlyContinue | Remove-SmbShare -Force -ErrorAction SilentlyContinue
+  } -ErrorAction SilentlyContinue
+}
 Write-Output ('DONE copied ' + $vm + ' to ' + $dest)`,
 		psQuote(vm), psQuote(destHost), psQuote(destPath),
 		psSwitchMap(nics),

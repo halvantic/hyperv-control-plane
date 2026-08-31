@@ -316,3 +316,39 @@ func TestAStandaloneMoveHasNoRoleToRestore(t *testing.T) {
 		t.Fatalf("a standalone VM was sent cluster cmdlets:\n%s", s)
 	}
 }
+
+/* Powering a VM on a host that has no Failover Clustering.
+
+     Get-ClusterGroup : The term 'Get-ClusterGroup' is not recognized as the
+     name of a cmdlet...
+
+   -ErrorAction SilentlyContinue does not suppress a CommandNotFoundException:
+   the failure happens at command resolution, before a parameter is bound, and
+   under $ErrorActionPreference='Stop' it terminates. A standalone host has no
+   such cmdlet at all.
+
+   Found the moment a VM was evacuated onto HVNEW06, which is not a coincidence:
+   the destination of an evacuation is the host least likely to be a cluster
+   member. */
+func TestPoweringAVMOnAStandaloneHostDoesNotNeedClusterCmdlets(t *testing.T) {
+	s := newTestPS(&fakeRunner{}).vmPowerScript("HVNew03", types.VMPowerRunning)
+
+	if !strings.Contains(s, "if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue)") {
+		t.Fatalf("the power script calls a cluster cmdlet that may not exist: %s", s)
+	}
+	// And it still uses the cluster path where clustering IS present, because a
+	// clustered VM is powered through its group from any member.
+	if !strings.Contains(s, "Get-ClusterGroup -Name 'HVNew03'") {
+		t.Errorf("the cluster path was removed rather than guarded: %s", s)
+	}
+}
+
+func TestRestartingAVMOnAStandaloneHostDoesNotNeedClusterCmdlets(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte(``)}}
+	newTestPS(f).RestartVM(context.Background(), "HVNew03")
+	s := strings.Join(f.calls, "\n")
+
+	if !strings.Contains(s, "if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue)") {
+		t.Fatalf("restart calls a cluster cmdlet that may not exist: %s", s)
+	}
+}

@@ -932,7 +932,21 @@ func (p *PowerShell) vmPowerScript(name string, desired types.VMPowerState) stri
 	}
 	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+# Guarded on the CMDLET existing, not on the call failing quietly.
+#
+# -ErrorAction SilentlyContinue does not suppress a CommandNotFoundException:
+# the failure happens at command resolution, before any parameter is bound, and
+# under $ErrorActionPreference='Stop' it terminates the script. A standalone
+# host with no Failover Clustering feature has no Get-ClusterGroup at all, so
+# powering a VM on one died with "The term 'Get-ClusterGroup' is not recognized"
+# — a message about a missing cmdlet, on a host that was never meant to have it.
+#
+# Seen on HVNEW06 the moment a VM was evacuated onto it: the destination of an
+# evacuation is exactly the host least likely to be a cluster member.
+$grp = $null
+if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue) {
+  $grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+}
 if ($grp) {
   if ([string]$grp.State -eq '%[4]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 } else {
@@ -1069,7 +1083,21 @@ func clusterGroupState(desired types.VMPowerState) string {
 // requests a guest OS restart; -Force skips the confirmation prompt.
 func (p *PowerShell) RestartVM(ctx context.Context, name string) error {
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+# Guarded on the CMDLET existing, not on the call failing quietly.
+#
+# -ErrorAction SilentlyContinue does not suppress a CommandNotFoundException:
+# the failure happens at command resolution, before any parameter is bound, and
+# under $ErrorActionPreference='Stop' it terminates the script. A standalone
+# host with no Failover Clustering feature has no Get-ClusterGroup at all, so
+# powering a VM on one died with "The term 'Get-ClusterGroup' is not recognized"
+# — a message about a missing cmdlet, on a host that was never meant to have it.
+#
+# Seen on HVNEW06 the moment a VM was evacuated onto it: the destination of an
+# evacuation is exactly the host least likely to be a cluster member.
+$grp = $null
+if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue) {
+  $grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+}
 if ($grp) {
   if ([string]$grp.State -ne 'Online') { throw ('cluster role is ' + $grp.State + '; only a running VM can be restarted') }
   Restart-VM -Name %[1]s -ComputerName $grp.OwnerNode.Name -Force -ErrorAction Stop | Out-Null
