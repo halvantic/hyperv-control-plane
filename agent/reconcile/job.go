@@ -250,7 +250,10 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobRemoveReplicaBroker:
 		return r.hv.RemoveReplicaBroker(ctx, p["group"])
 	case types.JobRemoveCSV:
-		return done(r.hv.RemoveCSV(ctx, p["volume"]), "removed volume "+p["volume"])
+		// The agent's own words, not a sentence composed here from the fact that
+		// no error came back. What it removed -- and what it could not -- depends
+		// on what backed the volume, and only the agent knows that.
+		return r.hv.RemoveCSV(ctx, p["volume"])
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
 	case types.JobFormatDiskDrive:

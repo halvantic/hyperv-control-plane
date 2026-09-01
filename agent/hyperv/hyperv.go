@@ -311,7 +311,7 @@ type Interface interface {
 	// the given name from the S2D pool (Remove-VirtualDisk, which also removes its
 	// cluster resource). Destructive imperative Job run on the former; a no-op
 	// (no error) when no such volume exists.
-	RemoveCSV(ctx context.Context, name string) error
+	RemoveCSV(ctx context.Context, name string) (string, error)
 
 	// RepairStoragePool retires and removes disks that are no longer Healthy from
 	// the S2D pool so it returns to Healthy (e.g. a departed node's orphaned disks

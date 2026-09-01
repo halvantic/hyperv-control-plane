@@ -572,17 +572,8 @@ func (s *Stub) EnsureCSV(_ context.Context, spec CSVProvision) (Outcome, error) 
 	return OutcomeCreated, nil
 }
 
-func (s *Stub) RemoveCSV(_ context.Context, name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.CSVs[:0]
-	for _, v := range s.CSVs {
-		if v != name {
-			out = append(out, v)
-		}
-	}
-	s.CSVs = out
-	return nil
+func (s *Stub) RemoveCSV(_ context.Context, name string) (string, error) {
+	return "removed volume " + name + " and the storage behind it (stub)", nil
 }
 
 func (s *Stub) RepairStoragePool(_ context.Context) (string, error) {

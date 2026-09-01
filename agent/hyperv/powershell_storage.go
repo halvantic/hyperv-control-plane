@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -154,23 +155,84 @@ func (p *PowerShell) EnsureCSV(ctx context.Context, spec CSVProvision) (Outcome,
 	}
 }
 
-// RemoveCSV deletes the Cluster Shared Volume backed by the virtual disk of the
-// given name. On an S2D cluster Remove-VirtualDisk also removes the associated
-// cluster physical-disk resource, taking the CSV offline and out of the cluster.
-// A no-op (no error) when no virtual disk of that name exists, so the job is
-// idempotent and safe to retry.
-func (p *PowerShell) RemoveCSV(ctx context.Context, name string) error {
+/*
+RemoveCSV takes a Cluster Shared Volume out of the cluster.
+
+	It used to be one line of S2D: find a Storage Spaces virtual disk of that name
+	and Remove-VirtualDisk it, treating "no such virtual disk" as nothing to do.
+	That reasoning holds on S2D, where a missing virtual disk really does mean the
+	volume is already gone. It is wrong everywhere else.
+
+	On an iSCSI-backed cluster there IS no virtual disk — the CSV sits on a LUN
+	from an array. So Get-VirtualDisk found nothing, the script returned NOOP, the
+	function returned nil, and the job reported "removed volume DS1". Twice, on
+	Primary1, 2026-09-01, against a CSV the cluster was reporting Online and 1 TB
+	in a reading twenty-four seconds old.
+
+	"I cannot see it" and "it is not there" are not the same answer. The script had
+	always distinguished them and nothing read the result.
+
+	What it does now depends on what actually backs the volume, because the two
+	are different operations with different owners:
+
+	  - A Storage Spaces virtual disk is ours end to end: removing it removes the
+	    CSV and the storage together.
+	  - A CSV on an array LUN is only half ours. Ballast can take it out of the
+	    cluster, which is its own domain. It cannot delete the LUN — that lives on
+	    a NAS or SAN it has no presence on — so it says so and names where the
+	    remaining step has to happen, rather than half-doing the job silently.
+	  - Nothing of that name anywhere is reported as nothing, not as a removal.
+*/
+func (p *PowerShell) RemoveCSV(ctx context.Context, name string) (string, error) {
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
+Import-Module FailoverClusters -ErrorAction SilentlyContinue
+
 $vd = Get-VirtualDisk -FriendlyName %[1]s -ErrorAction SilentlyContinue
-if (-not $vd) { 'RESULT=NOOP'; return }
-$vd | Remove-VirtualDisk -Confirm:$false
-'RESULT=REMOVED'
+if ($vd) {
+  # S2D: the virtual disk IS the storage, so this removes the CSV and the volume
+  # together and the cluster physical-disk resource with them.
+  $vd | Remove-VirtualDisk -Confirm:$false
+  'RESULT=removed volume ' + %[1]s + ' and the storage behind it'
+  return
+}
+
+# Not a virtual disk. Before concluding there is nothing here, ASK THE CLUSTER —
+# which is the step whose absence made this report success against a volume that
+# was plainly online.
+$csv = $null
+if (Get-Command Get-ClusterSharedVolume -ErrorAction SilentlyContinue) {
+  $csv = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq %[1]s -or ($_.SharedVolumeInfo.FriendlyVolumeName -like ('*' + %[1]s)) })[0]
+}
+if (-not $csv) {
+  'RESULT=NOTHING there is no virtual disk or cluster shared volume called ' + %[1]s + ' on this cluster'
+  return
+}
+
+# A CSV on storage Ballast does not own. Taking it out of the cluster is ours;
+# the LUN behind it is not.
+$path = [string]$csv.SharedVolumeInfo.FriendlyVolumeName
+Remove-ClusterSharedVolume -InputObject $csv -ErrorAction Stop | Out-Null
+'RESULT=took ' + %[1]s + ' out of the cluster. It is now Available Storage rather than a shared volume, and ' +
+  'the disk behind it (' + $path + ') still holds its data. Ballast does not administer the array that serves ' +
+  'this LUN, so deleting it has to be done there.'
 `, psQuote(name))
-	if err := p.run2(ctx, script); err != nil {
-		return fmt.Errorf("remove CSV %q: %w", name, err)
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("remove CSV %q: %w", name, err)
 	}
-	return nil
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	// Nothing found is reported as nothing found. Reporting it as a removal is
+	// exactly the bug this replaces.
+	if rest, found := strings.CutPrefix(msg, "NOTHING "); found {
+		return "", errors.New(rest + ". Nothing has been changed")
+	}
+	return msg, nil
 }
 
 // RepairStoragePool returns a degraded S2D pool to Healthy by retiring and
