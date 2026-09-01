@@ -1324,7 +1324,21 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 			// minutes so a pass already walking the old set cannot resurrect it
 			// either. Deleting is the centre's intent; honouring it immediately is
 			// the same contract as any other desired-state change.
-			if job.Kind == types.JobRemoveVM {
+			/* CopyVM belongs here for the same reason, and was missing.
+
+			   A copy exports the VM to another host, imports it there and then
+			   removes the original — so on THIS host it ends as a delete, and the
+			   cached desired set still names the VM until the next pull. Without
+			   the same stand-off the reconcile loop simply put it back: measured
+			   2026-09-01, HVNew01 and HVNew02 both observed on their source host
+			   AND on HVNEW06, twenty seconds apart, no replication relationship on
+			   either. One of those copies reported Succeeded.
+
+			   Two live registrations of one VM over one set of files is worse than
+			   a failed copy: whichever is started second finds its disks in use,
+			   and an operator looking at Failover Cluster Manager sees the VM
+			   apparently still where it was. */
+			if job.Kind == types.JobRemoveVM || job.Kind == types.JobCopyVM {
 				if vmName := job.Params["vm"]; vmName != "" {
 					r.noteVMRemoved(vmName)
 					if derr := r.st.DropDesiredVM(vmName); derr != nil {
@@ -1769,7 +1783,11 @@ func jobHoldsVM(kind string) bool {
 		// pass still holding the VM in its cached desired set recreated it and
 		// re-registered the role. Observed on 'Tes', 2026-08-20: gone from Failover
 		// Cluster Manager, back in the cluster a couple of minutes later.
-		types.JobRemoveVM:
+		types.JobRemoveVM,
+		// And CopyVM, which ends as a delete on this host for exactly that
+		// reason. It was absent, so the same race ran again on 2026-09-01 and
+		// left HVNew01 and HVNew02 registered on BOTH hosts at once.
+		types.JobCopyVM:
 		return true
 	}
 	return false
