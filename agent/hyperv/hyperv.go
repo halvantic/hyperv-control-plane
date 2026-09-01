@@ -717,6 +717,10 @@ type Interface interface {
 	// Narrow: a binding to an address the host DOES have is deliberate and is
 	// left alone.
 	RepairISCSIPortals(ctx context.Context) (string, error)
+
+	// RediscoverISCSI clears every discovery portal so the reconcile rebuilds
+	// them from the spec. Leaves sessions and persistent logins alone.
+	RediscoverISCSI(ctx context.Context) (string, error)
 	// PruneISCSIPortals removes discovery portals the declared list does not name.
 	PruneISCSIPortals(ctx context.Context, declared, declaredTargets []string) (string, error)
 	// AdoptISCSIDiskWithContents adopts a LUN the reconcile refused because it

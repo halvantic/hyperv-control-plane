@@ -123,6 +123,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return r.hv.DisconnectISCSITarget(ctx, p["target"])
 	case types.JobRepairISCSIPortals:
 		return r.hv.RepairISCSIPortals(ctx)
+	case types.JobISCSIRediscover:
+		return r.hv.RediscoverISCSI(ctx)
 	case types.JobAdoptISCSIDisk:
 		// The volume's source LUN comes from the CLUSTER spec, not the job: the job
 		// says which volume and what to do about its contents, and the serial that

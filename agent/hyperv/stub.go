@@ -999,6 +999,10 @@ func (s *Stub) DisconnectISCSITarget(_ context.Context, targetIQN string) (strin
 	return "disconnected 1 session(s) from " + targetIQN + " (stub)", nil
 }
 
+func (s *Stub) RediscoverISCSI(_ context.Context) (string, error) {
+	return "cleared 2 discovery portal(s) (stub)", nil
+}
+
 func (s *Stub) RepairISCSIPortals(_ context.Context) (string, error) {
 	return "checked 0 discovery portals; none was pinned to a missing address (stub)", nil
 }

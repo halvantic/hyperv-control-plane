@@ -934,6 +934,74 @@ func (p *PowerShell) EnsureISCSI(ctx context.Context, spec types.ISCSIStorageSpe
 // choice about which path reaches the array, and is left exactly alone. It never
 // disconnects a session; removing a discovery portal does not drop existing
 // logins, and the reconcile re-registers anything the spec still wants.
+/*
+RediscoverISCSI clears this host's discovery portals so the reconcile rebuilds
+them from the spec.
+
+	Windows keeps its OWN discovered-target database alongside the portals, and it
+	goes stale: an entry that no longer matches what the array advertises makes
+	Connect-IscsiTarget refuse with "The target name is not found or is marked as
+	hidden from login" — a message that reads like the array refusing the node,
+	and is not.
+
+	On the rig, 2026-09-01, that message had two of three nodes on one path each
+	and the third on two. Deleting every discovery portal in iscsicpl and letting
+	the next reconcile re-add them fixed it outright; the array was never touched.
+	That is a recovery an operator had to reach by opening a GUI on the host,
+	which CLAUDE.md calls a defect in Ballast rather than a runbook step — and it
+	is the messy-recovery-after-something-went-wrong case the brief warns is
+	hardest to be disciplined about.
+
+	Distinct from RepairISCSIPortals, which is narrow BY DESIGN because it runs
+	inside the reconcile loop: it touches only portals bound to an address the
+	host does not have, since a binding to a present NIC is somebody's deliberate
+	choice about which path reaches the array. That narrowness is right for an
+	automatic pass and wrong as the only thing an operator can reach for.
+
+	Distinct also from ResetISCSIInitiator, which disconnects sessions and drops
+	persistent logins. This does neither: removing a discovery portal does not
+	drop an existing session, so a node keeps its disks throughout and the worst
+	case is that the next reconcile re-adds exactly what was there.
+*/
+func (p *PowerShell) RediscoverISCSI(ctx context.Context) (string, error) {
+	script := `$ErrorActionPreference = 'Stop'
+$before = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue)
+$targetsBefore = @(Get-IscsiTarget -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.NodeAddress })
+if ($before.Count -eq 0) {
+  'RESULT=there are no discovery portals on this host to clear. The spec adds them on the next reconcile.'
+  return
+}
+$removed = @(); $failed = @()
+foreach ($h in $before) {
+  $addr = [string]$h.TargetPortalAddress
+  # Piped, never named. -TargetPortalPortNumber fails with "Type mismatch for
+  # parameter" on this cmdlet whatever is put in it, and the object carries the
+  # identity the initiator itself assigned.
+  try { $h | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop; $removed += $addr }
+  catch { $failed += ($addr + ': ' + ([string]$_.Exception.Message).Trim()) }
+}
+# Sessions are deliberately left alone. Removing a discovery portal does not drop
+# one, so the node keeps its disks while this runs.
+$sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue).Count
+if ($removed.Count -eq 0) {
+  throw ('none of the ' + [string]$before.Count + ' discovery portal(s) could be removed: ' + ($failed -join '; '))
+}
+$msg = 'cleared ' + [string]$removed.Count + ' discovery portal(s) (' + ($removed -join ', ') + ')'
+if ($failed.Count -gt 0) { $msg += '; ' + [string]$failed.Count + ' could not be removed: ' + ($failed -join '; ') }
+$msg += '. ' + [string]$sessions + ' existing session(s) left connected. The next reconcile re-adds the portals from the spec and logs in again'
+'RESULT=' + $msg`
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("rediscover iSCSI: %w", err)
+	}
+	msg := strings.TrimSpace(string(out))
+	if i := strings.Index(msg, "RESULT="); i >= 0 {
+		msg = strings.TrimSpace(msg[i+len("RESULT="):])
+	}
+	return msg, nil
+}
+
 func (p *PowerShell) RepairISCSIPortals(ctx context.Context) (string, error) {
 	script := `$ErrorActionPreference = 'Stop'
 $myIPs = @()

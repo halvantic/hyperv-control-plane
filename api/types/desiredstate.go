@@ -2456,6 +2456,21 @@ const (
 	// detects and reports it but cannot fix it — fixing means REMOVING a portal
 	// entry, and the iSCSI reconcile is strictly additive.
 	JobRepairISCSIPortals = "RepairISCSIPortals" // params: none — re-register discovery portals bound to an address this host no longer has
+
+	/* JobISCSIRediscover clears every discovery portal on a host so the reconcile
+	   rebuilds them from the spec. params: none.
+
+	   Windows keeps its own discovered-target database, and a stale entry makes
+	   Connect-IscsiTarget refuse with "The target name is not found or is marked
+	   as hidden from login" — a message that reads like the array refusing the
+	   node and is not. Clearing the portals fixed exactly that on the rig on
+	   2026-09-01, from iscsicpl, by hand, on the host: the defect CLAUDE.md names.
+
+	   Wider than JobRepairISCSIPortals, which touches only portals bound to an
+	   absent address because it runs inside the reconcile loop. Narrower than
+	   JobResetISCSIInitiator, which drops sessions and persistent logins; this
+	   drops neither, so the node keeps its disks while it runs. */
+	JobISCSIRediscover = "ISCSIRediscover"
 	// JobPruneISCSIPortals removes discovery portals the spec does not declare.
 	// The reconcile is strictly additive — it cannot tell a portal an operator
 	// retired from one something else on the host depends on — so a portal added
