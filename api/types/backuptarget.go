@@ -61,6 +61,14 @@ const (
 	ShareUnreachable ShareFault = "Unreachable"
 	// ShareAuthFailed — the server answered and rejected the credential.
 	ShareAuthFailed ShareFault = "AuthFailed"
+	/* ShareNotFound — the server or the SHARE NAME in the UNC could not be
+	   found. Distinct from SharePathMissing, which is a folder inside a share
+	   that does exist. Windows says "The network path was not found" for this,
+	   and Go maps it onto fs.ErrNotExist alongside a genuinely missing folder —
+	   so the two arrive looking identical and mean different things. Reporting
+	   this one as a missing folder tells an operator the share is reachable,
+	   which is precisely what has not been established. */
+	ShareNotFound ShareFault = "ShareNotFound"
 	// SharePathMissing — the server and share are fine; the folder is not there.
 	SharePathMissing ShareFault = "PathMissing"
 	// ShareWriteDenied — reachable, authenticated, and the account may not write.
@@ -89,6 +97,8 @@ func (f ShareFault) Remedy(path string) string {
 		return "The name resolves but nothing answered on port 445. Check the share is running and that a firewall between the centre and it is not blocking SMB."
 	case ShareAuthFailed:
 		return "The share rejected the credential. If it is domain-joined, the centre's own identity needs access; if it is a standalone NAS, give Ballast a stored credential for it — the centre cannot authenticate as a computer account to a NAS that is not in the domain."
+	case ShareNotFound:
+		return "Windows could not find " + path + ". That is the server or the share name, not a folder inside it — check the share exists and is spelled right, and that the centre can reach it. It is a different answer from a missing folder, and Ballast cannot tell you the share is reachable because that is what has not been established."
 	case SharePathMissing:
 		return "The share is reachable but " + path + " does not exist on it. Create the folder, or correct the path."
 	case ShareWriteDenied:
