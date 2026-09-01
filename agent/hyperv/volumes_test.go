@@ -63,3 +63,44 @@ func TestALetterlessVolumeIsNamedByItsLabel(t *testing.T) {
 		t.Errorf("a PowerShell 7 ternary will not parse on 5.1:\n%s", s)
 	}
 }
+
+/* A CSV must not arrive twice.
+
+   The letter-less pass was added after the lettered one and inherited none of
+   its protection. The old comment there said a CSV "cannot be reported twice"
+   because its mount lives under C: and C is excluded — true of a query that
+   requires a drive letter, and a CSV has none of its own. So every CSV came back
+   a second time under its raw volume name: DS1 at C:\ClusterStorage\DS1, and
+   "Cluster Disk 1" at the same GUID path with identical size and usage.
+   Observed on Primary1 and Secondary, 2026-09-02, as a nameless extra row under
+   each cluster's Storage. */
+func TestAVolumeAlreadyReportedIsNotCollectedAgain(t *testing.T) {
+	s := resourcesScript
+
+	if !strings.Contains(s, "$claimedPaths = @{}") {
+		t.Fatalf("nothing tracks which volumes have already been reported:\n%s", s)
+	}
+	// A CSV claims its partition's GUID path as it is collected.
+	if !strings.Contains(s, "$claimedPaths[([string]$p.Name)") {
+		t.Errorf("a CSV does not claim its own volume path, so it is collected twice:\n%s", s)
+	}
+	// So does a lettered volume, or the same disk arrives as both I: and a GUID.
+	if !strings.Contains(s, "if ($_.Path) { $claimedPaths[([string]$_.Path)") {
+		t.Errorf("a lettered volume does not claim its path:\n%s", s)
+	}
+	// And the letter-less pass skips anything already claimed.
+	if !strings.Contains(s, "(-not $claimedPaths.ContainsKey(") {
+		t.Fatalf("the letter-less pass reports volumes already collected above it:\n%s", s)
+	}
+}
+
+/* Matched case-insensitively and without a trailing separator, because the two
+   sources spell the same volume differently: a CSV partition reports
+   \\?\Volume{guid} and Get-Volume reports \\?\Volume{guid}\. Comparing them
+   literally would claim nothing and the duplicate would survive the fix. */
+func TestTheClaimIsNormalisedBeforeComparing(t *testing.T) {
+	s := resourcesScript
+	if strings.Count(s, ".TrimEnd('\\').ToLower()") < 3 {
+		t.Errorf("paths are compared without normalising, so the claim never matches:\n%s", s)
+	}
+}

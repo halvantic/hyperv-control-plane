@@ -564,10 +564,15 @@ $switches = @($switchDetails | ForEach-Object { $_.name } | Where-Object { $_ })
 # so the path had to be typed from memory. Which kind a volume IS matters and is
 # carried on each one; leaving half of them out is not how to express it.
 $vols = @()
+# The GUID paths already accounted for, so nothing is reported twice. A CSV has
+# no drive letter of its own, so the letter-less pass below would otherwise
+# collect every one of them a second time under its raw volume name.
+$claimedPaths = @{}
 $csv = Get-ClusterSharedVolume 2>$null
 if ($csv) {
   $vols = @($csv | ForEach-Object {
     $p = $_.SharedVolumeInfo.Partition
+    if ($p -and $p.Name) { $claimedPaths[([string]$p.Name).TrimEnd('\').ToLower()] = $true }
     [pscustomobject]@{ name = [string]$_.Name; path = [string]$_.SharedVolumeInfo.FriendlyVolumeName; sizeBytes = [uint64]$p.Size; usedBytes = [uint64]($p.Size - $p.FreeSpace); shared = $true }
   })
 }
@@ -597,6 +602,8 @@ try {
 # A CSV mount lives under C:\ClusterStorage, and C is excluded already, so
 # there is no way for one to be reported twice.
 $vols += @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
+  # Claimed too, so a lettered volume cannot also arrive as a letter-less one.
+  if ($_.Path) { $claimedPaths[([string]$_.Path).TrimEnd('\').ToLower()] = $true }
   [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining); shared = $false }
 })
 
@@ -616,8 +623,18 @@ $vols += @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLet
 # Still excluded: the reserved and recovery partitions Windows makes for itself.
 # They are fixed volumes with no letter too, and listing them would bury the one
 # volume this exists to show under three nobody asked about.
+# NOT one already reported above.
+#
+# The old comment here said a CSV "cannot be reported twice" because its mount
+# lives under C: and C is excluded — true of the LETTERED query and not of this
+# one, which was added afterwards and inherited none of that protection. A CSV
+# has no drive letter of its own, so every one of them came back a second time
+# under its raw volume name: DS1 at C:\ClusterStorage\DS1, and "Cluster Disk 1"
+# at the same GUID path with identical size and usage. Observed on Primary1 and
+# Secondary, 2026-09-02, as a nameless extra row under each cluster's Storage.
 $vols += @(Get-Volume | Where-Object {
   $_.DriveType -eq 'Fixed' -and -not $_.DriveLetter -and $_.Path -and
+  (-not $claimedPaths.ContainsKey(([string]$_.Path).TrimEnd('\').ToLower())) -and
   $_.FileSystemType -and $_.FileSystemType -ne 'Unknown' -and
   ([string]$_.FileSystemLabel -notmatch '^(Recovery|System Reserved|EFI system partition)$') -and
   ([uint64]$_.Size -gt 1073741824)
