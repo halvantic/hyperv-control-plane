@@ -179,7 +179,15 @@ if (-not $cfgUnc) { throw ('the export produced no configuration file under ' + 
 # ternary - the ternary is PowerShell 7 and the agent runs 5.1, so it would have
 # failed to parse on every host it ever ran on.
 $rel = $cfgUnc.FullName.Substring($unc.Length).TrimStart('\')
-$cfgLocal = Join-Path $path $rel
+# Join-Path is wrong for this one. It resolves the drive qualifier against the
+# machine running it, and $path is the DESTINATION's drive: on a source host
+# with no I:, "Join-Path 'I:\' 'x'" throws "Cannot find drive. A drive with the
+# name 'I' does not exist." Observed copying HVNew01 to HVNEW06, whose storage
+# is I: and whose source host's is not.
+#
+# So this is string work, not path work. Nothing here may touch the local
+# filesystem: the path is for somebody else's.
+$cfgLocal = $path.TrimEnd('\') + '\' + $rel
 
 Write-Output ('PROGRESS importing ' + $vm + ' on ' + $dest)
 %[6]s

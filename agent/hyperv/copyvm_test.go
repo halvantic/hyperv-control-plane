@@ -330,3 +330,29 @@ func TestProgressIsMeasuredAgainstWhatIsActuallyCopied(t *testing.T) {
 		t.Errorf("progress is reported even when it has not moved:\n%s", s)
 	}
 }
+
+/* The destination's path is text here, not a path.
+
+   Join-Path resolves the drive qualifier against the machine RUNNING it, and
+   this script runs on the source. Copying HVNew01 to HVNEW06, whose storage is
+   I: and whose source host's is not, it threw:
+
+     Join-Path : Cannot find drive. A drive with the name 'I' does not exist.
+
+   The whole point of the copy strategy is that the two hosts share nothing, so
+   assuming the destination's drives exist here is the one assumption it cannot
+   make. */
+func TestTheDestinationPathIsNeverResolvedLocally(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "", nil)
+
+	if strings.Contains(s, "Join-Path $path") {
+		t.Fatalf("the destination path is joined locally, so any drive this host lacks fails the copy:\n%s", s)
+	}
+	if !strings.Contains(s, "$cfgLocal = $path.TrimEnd('\\') + '\\' + $rel") {
+		t.Errorf("the destination path is not built as a string:\n%s", s)
+	}
+	// A UNC has no drive to resolve, so the share side may keep using Join-Path.
+	if !strings.Contains(s, "$target = Join-Path $unc $vm") {
+		t.Errorf("the share path stopped using Join-Path, which was not the problem:\n%s", s)
+	}
+}
