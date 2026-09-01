@@ -356,3 +356,64 @@ func TestTheDestinationPathIsNeverResolvedLocally(t *testing.T) {
 		t.Errorf("the share path stopped using Join-Path, which was not the problem:\n%s", s)
 	}
 }
+
+/* A compatibility report is a snapshot, so fixing it settles nothing until it
+   is asked again.
+
+   The import disconnected all four of HVNew01's adapters successfully and then
+   read the ORIGINAL report, which still listed the four problems the disconnect
+   had just solved:
+
+     this host cannot take the VM even with its networks disconnected:
+     Could not find Ethernet switch 'ConvergedSwitch2'. | ... (x4)
+
+   Compare-VM -CompatibilityReport is the documented way to ask again. This is
+   also the one real difference from the MOVE path, where fixing a report does
+   not take at all -- see movecompat.go. */
+func TestTheImportAsksTheReportAgainAfterFixingIt(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "",
+		[]types.EvacuationNIC{{SourceSwitch: "ConvergedSwitch2", TargetSwitch: "Converged"}})
+
+	if !strings.Contains(s, "$report = Compare-VM -CompatibilityReport $report") {
+		t.Fatalf("the report is never refreshed, so every fixed problem still reads as a problem:\n%s", s)
+	}
+	// Order matters: refreshed AFTER the disconnects, and read BEFORE the throw.
+	dis := strings.Index(s, "Disconnect-VMNetworkAdapter -VMNetworkAdapter $src")
+	again := strings.Index(s, "$report = Compare-VM -CompatibilityReport $report")
+	// The throw, not the phrase: the comment above the refresh quotes the
+	// failure it explains, and that copy of the words comes first in the file.
+	refuse := strings.Index(s, "throw ('this host cannot take the VM")
+	if dis < 0 || again < dis {
+		t.Errorf("the report is refreshed before the adapters are fixed, which asks the same question twice:\n%s", s)
+	}
+	if refuse < 0 || refuse < again {
+		t.Errorf("the refusal is decided on the stale report:\n%s", s)
+	}
+}
+
+/* Progress notes: a bare percentage is decorated, prose is not.
+
+   The handler was written when the only payload was a number polled out of a
+   Move-VM job, so it wrapped every line as "live migration N%". Three
+   operations share it now and most emit prose, which reached the console as
+
+     live migration copied 50 GB of 50 GB (100%)%
+
+   The stray percent is the visible half. The damaging half is calling a COPY a
+   live migration: they are different operations with different costs, and the
+   copy says so itself by refusing to run unless the guest is off. Telling an
+   operator their stopped guest is live-migrating is the console contradicting
+   the thing it just did. */
+func TestOnlyABarePercentageIsDecorated(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"42", "live migration 42%"},
+		{"100", "live migration 100%"},
+		{"copied 50 GB of 50 GB (100%)", "copied 50 GB of 50 GB (100%)"},
+		{"exporting HVNew01 to HVNEW06 (50 GB)", "exporting HVNew01 to HVNEW06 (50 GB)"},
+		{"made a temporary share on HVNEW06", "made a temporary share on HVNEW06"},
+	} {
+		if got := progressNote(c.in); got != c.want {
+			t.Errorf("progressNote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

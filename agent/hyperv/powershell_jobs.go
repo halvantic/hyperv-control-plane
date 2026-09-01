@@ -800,16 +800,51 @@ Remove-Job $job -Force -ErrorAction SilentlyContinue`
 
 // migrationLineHandler parses the streamed migration output: PROGRESS lines
 // become progress notes; a DONE line overrides the result message.
+/*
+migrationLineHandler turns a script's PROGRESS lines into progress notes.
+
+	It was written when the only payload was a bare number polled out of a
+	Move-VM job, so it wrapped every line as "live migration N%%". Three
+	operations share it now and most of them emit prose, which came out as
+
+	  live migration copied 50 GB of 50 GB (100%%)%%
+
+	— a trailing percent sign on a sentence, and a COPY described to the operator
+	as a live migration. The second is the part that matters: the two are
+	different operations with different costs, and the copy says so itself by
+	refusing to run unless the guest is off. Telling someone their stopped guest
+	is live-migrating is the console contradicting the thing it just did.
+
+	So a bare number is still decorated, and anything else is passed through as
+	written. A script that has something to say says it.
+*/
 func migrationLineHandler(onProgress ProgressFunc, result *string) func(string) {
 	return func(line string) {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "PROGRESS "):
-			onProgress.emit("live migration " + strings.TrimPrefix(line, "PROGRESS ") + "%")
+			onProgress.emit(progressNote(strings.TrimPrefix(line, "PROGRESS ")))
 		case strings.HasPrefix(line, "DONE "):
 			*result = strings.TrimPrefix(line, "DONE ")
 		}
 	}
+}
+
+// progressNote decorates a bare percentage and leaves prose alone.
+func progressNote(payload string) string {
+	if p := strings.TrimSpace(payload); p != "" && isAllDigits(p) {
+		return "live migration " + p + "%"
+	}
+	return strings.TrimSpace(payload)
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests

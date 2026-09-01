@@ -278,7 +278,22 @@ $importOut = Invoke-Command -ComputerName $dest -ArgumentList $cfgLocal, $netMap
     $wanted[[string]$src.Id] = [string]$src.SwitchName
     Disconnect-VMNetworkAdapter -VMNetworkAdapter $src -ErrorAction Stop
   }
-  if ($report.Incompatibilities.Count -gt 0) {
+  # Re-compare, because a report is a SNAPSHOT.
+  #
+  # Disconnecting the adapters does not edit the list the report is holding, so
+  # checking the original after fixing it re-reads the problems that were just
+  # solved. That is what refused a copy whose networks had all four been
+  # disconnected successfully:
+  #
+  #   this host cannot take the VM even with its networks disconnected:
+  #   Could not find Ethernet switch 'ConvergedSwitch2'. | ... (x4)
+  #
+  # Compare-VM -CompatibilityReport is the documented way to ask again, and it
+  # is the answer to that question that decides whether the import can go ahead.
+  if (@($report.Incompatibilities).Count -gt 0) {
+    $report = Compare-VM -CompatibilityReport $report -ErrorAction Stop
+  }
+  if (@($report.Incompatibilities).Count -gt 0) {
     throw ('this host cannot take the VM even with its networks disconnected: ' +
       ((@($report.Incompatibilities | ForEach-Object { [string]$_.Message })) -join ' | '))
   }
