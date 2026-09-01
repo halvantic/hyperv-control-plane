@@ -153,8 +153,25 @@ func TestAFailureToMakeASessionPersistentKeepsItsReason(t *testing.T) {
 	if strings.Contains(s, "-ErrorAction Stop; $changed = $true } catch {}") {
 		t.Fatal("the reason must not be swallowed by a bare catch")
 	}
-	if !strings.Contains(s, "$persistErrs += ") {
+	// Keyed by target, because the verdict is taken at the END of the pass and
+	// has to be matched back to the session it was about.
+	if !strings.Contains(s, "$persistErrs[([string]$s.TargetNodeAddress).ToLower()] = ") {
 		t.Fatalf("the registration failure must be collected:\n%s", s)
+	}
+
+	/* And resolved against the END state, not the attempt.
+
+	   Register-IscsiSession is tried on a session that is not persistent; if the
+	   same pass then makes a FRESH session through Connect-IscsiTarget, that one
+	   carries IsPersistent itself and the target ends up exactly as asked. The
+	   note used to be composed from the attempt, two lines before the sessions
+	   were re-read. HVNEW03, 2026-09-01: two paths, persistent true, and "a
+	   session could not be made persistent" -- both from the same pass. */
+	if !strings.Contains(s, "if ($now -and $now.persistent) { continue }") {
+		t.Errorf("a superseded registration failure is still reported as a fault:\n%s", s)
+	}
+	if strings.Index(s, "$out.sessions = @(Get-IscsiSession") > strings.Index(s, "$stillNotPersistent = @()") {
+		t.Errorf("the verdict is taken before the sessions are re-read:\n%s", s)
 	}
 	// Reported even when the logins all worked — otherwise it is invisible until
 	// the reboot that costs the node its storage.

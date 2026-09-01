@@ -81,7 +81,7 @@ func iscsiScript(spec types.ISCSIStorageSpec, wantMPIO, shared bool, storageAddr
 	b.WriteString(`$ErrorActionPreference = 'Stop'
 $out = [ordered]@{ initiatorIQN=''; serviceRunning=$false; portals=@(); sessions=@(); mpioInstalled=$false; mpioClaimed=$false; mpioEffective=$false; disks=@(); rebootRequired=$false; message='' }
 $pathErrs = @()
-$persistErrs = @()
+$persistErrs = @{}   # keyed by target IQN, resolved against the END state
 $changed = $false
 
 # WHERE THE TIME WENT, inside this script.
@@ -122,6 +122,7 @@ if ($svc) {
 # returns nothing without it. The registry holds it either way, so fall back
 # there rather than reporting nothing: this is the value an operator needs
 # BEFORE anything can work, so it must survive the case where nothing works yet.
+
 try { $out.initiatorIQN = [string]@(Get-InitiatorPort -ErrorAction Stop | Where-Object { $_.ConnectionType -eq 'iSCSI' })[0].NodeAddress } catch {}
 if (-not $out.initiatorIQN) {
   try { $out.initiatorIQN = [string](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\iSCSI' -ErrorAction Stop).NodeName } catch {}
@@ -601,7 +602,7 @@ foreach ($t in $wanted) {
       if ($s.IsMultipathEnabled) { $reg['IsMultipathEnabled'] = $true }
       $reg += $sessionChap
       try { Register-IscsiSession @reg -ErrorAction Stop; $changed = $true }
-      catch { $persistErrs += ([string]$s.TargetNodeAddress + ': ' + ([string]$_.Exception.Message).Trim()) }
+      catch { $persistErrs[([string]$s.TargetNodeAddress).ToLower()] = ([string]$_.Exception.Message).Trim() }
     }
   }
   # Which portals already carry a session, taken through the session's own
@@ -681,12 +682,8 @@ foreach ($t in $wanted) {
 if ($pathErrs.Count -gt 0 -and -not $out.message) {
   $out.message = 'could not log in through ' + ($pathErrs -join '; ')
 }
-# Reported even when everything else worked. A session that is up but not
-# registered is invisible until the node reboots and its disks do not come back.
-if ($persistErrs.Count -gt 0) {
-  $note = 'a session could not be made persistent, so it will not be restored at boot: ' + ($persistErrs -join '; ')
-  if ($out.message) { $out.message = $out.message + '. ' + $note } else { $out.message = $note }
-}
+# The persistence note is composed AFTER the sessions are re-read, below, and
+# only for targets that are STILL not persistent. See there for why.
 `)
 
 	b.WriteString(`
@@ -708,6 +705,29 @@ foreach ($t in @(Get-IscsiTarget -ErrorAction SilentlyContinue)) {
   if (-not ($out.sessions | Where-Object { $_.targetIQN -eq $iqn })) {
     $out.sessions += [pscustomobject]@{ targetIQN = $iqn; connected = $false; persistent = $false; paths = 0 }
   }
+}
+# A registration that FAILED and was then superseded is not a fault.
+#
+# Register-IscsiSession is tried on a session that is not persistent; if the same
+# pass then makes a fresh session through Connect-IscsiTarget, that one carries
+# IsPersistent itself and the target ends up persistent regardless. The old code
+# composed the note from the ATTEMPT, before re-reading the sessions two lines
+# later, so a node that had ended in exactly the state asked of it reported a
+# fault it no longer had.
+#
+# HVNEW03, 2026-09-01: two paths, persistent true, and "a session could not be
+# made persistent, so it will not be restored at boot". Both from the same pass.
+# On the same fleet HVNEW01 and HVNEW02 were genuinely affected, so the note is
+# not noise to suppress — it is a verdict that has to be taken at the end.
+$stillNotPersistent = @()
+foreach ($k in @($persistErrs.Keys)) {
+  $now = @($out.sessions | Where-Object { ([string]$_.targetIQN).ToLower() -eq $k })[0]
+  if ($now -and $now.persistent) { continue }   # superseded; the end state is right
+  $stillNotPersistent += ($k + ': ' + [string]$persistErrs[$k])
+}
+if ($stillNotPersistent.Count -gt 0) {
+  $note = 'a session could not be made persistent, so it will not be restored at boot: ' + ($stillNotPersistent -join '; ')
+  if ($out.message) { $out.message = $out.message + '. ' + $note } else { $out.message = $note }
 }
 
 # Disks arriving over iSCSI. The SERIAL is what identifies a LUN cluster-wide;
