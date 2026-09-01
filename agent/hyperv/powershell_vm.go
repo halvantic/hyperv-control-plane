@@ -770,7 +770,30 @@ if (-not $ad) {
 		if s.NestedVirtualisation {
 			spoof = "On"
 		}
-		adapters += fmt.Sprintf("Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -MacAddressSpoofing %[3]s\n", name, an, psQuote(spoof))
+		/* MAC spoofing is a PORT feature, so it needs a port.
+
+		   An adapter that is not connected to a switch has none, and Hyper-V
+		   refuses with a sentence naming neither the adapter nor the reason:
+
+		     Set-VMNetworkAdapter : Modifying features of the Ethernet connection
+		     failed. The operation cannot be performed while the object is in its
+		     current state.
+
+		   That failed the whole VM reconcile, every pass, on HVNew01 after a copy
+		   landed it with its adapters disconnected: a VM otherwise exactly as
+		   declared, held Degraded by a setting that cannot apply yet and will apply
+		   itself the moment the adapter is connected.
+
+		   So it is skipped while disconnected and SAID, which is the difference
+		   between a fault and a fact. */
+		adapters += fmt.Sprintf(`$ad = @(Get-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction SilentlyContinue)[0]
+if ($ad -and $ad.SwitchName) {
+  Set-VMNetworkAdapter -VMNetworkAdapter $ad -MacAddressSpoofing %[3]s
+} elseif ($ad) {
+  Write-Output ('NOTE ' + %[2]s + ' on ' + %[1]s + ' is not connected to a switch, so MAC address spoofing cannot be set yet. ' +
+    'It is a port setting and there is no port until the adapter is connected; Ballast applies it on the pass after that.')
+}
+`, name, an, psQuote(spoof))
 	}
 	// Remove any adapter not in the declared set — New-VM always creates a default
 	// "Network Adapter" (unconnected) and the operator should see only the declared

@@ -38,15 +38,27 @@ func TestNestedExposesTheExtensionsAndSpoofsEveryAdapter(t *testing.T) {
 	if !strings.Contains(s, "Set-VMProcessor -VMName 'Web01' -ExposeVirtualizationExtensions $true") {
 		t.Fatalf("the extensions are not exposed:\n%s", s)
 	}
-	// EVERY adapter, not the first: an inner VM on the second NIC would lose its
-	// traffic exactly as silently.
+	/* EVERY adapter, not the first: an inner VM on the second NIC would lose
+	   its traffic exactly as silently.
+
+	   Set through the adapter OBJECT now, and only when it has a switch. MAC
+	   spoofing is a port feature and an unconnected adapter has no port, so
+	   Hyper-V refuses -- which held a whole VM Degraded after a copy landed it
+	   with its networks disconnected. */
 	for _, want := range []string{
-		"Set-VMNetworkAdapter -VMName 'Web01' -Name 'net0' -MacAddressSpoofing 'On'",
-		"Set-VMNetworkAdapter -VMName 'Web01' -Name 'net1' -MacAddressSpoofing 'On'",
+		"@(Get-VMNetworkAdapter -VMName 'Web01' -Name 'net0' -ErrorAction SilentlyContinue)[0]",
+		"@(Get-VMNetworkAdapter -VMName 'Web01' -Name 'net1' -ErrorAction SilentlyContinue)[0]",
+		"Set-VMNetworkAdapter -VMNetworkAdapter $ad -MacAddressSpoofing 'On'",
+		"if ($ad -and $ad.SwitchName) {",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q:\n%s", want, s)
 		}
+	}
+	// And it says so rather than failing: a setting that cannot apply yet is a
+	// fact about the adapter, not a fault in the VM.
+	if !strings.Contains(s, "is not connected to a switch, so MAC address spoofing cannot be set yet") {
+		t.Errorf("a disconnected adapter fails the reconcile instead of being explained:\n%s", s)
 	}
 }
 

@@ -157,12 +157,35 @@ try {
   $startedAt = [datetime]::UtcNow
   while ($job.State -eq 'Running') {
     Start-Sleep -Seconds 5
+    # Ask HYPER-V how far the export has got, not the filesystem.
+    #
+    # The destination's file length is the ALLOCATED size, not the bytes
+    # written: SMB sets end-of-file before it copies, so a 50 GB disk reads as
+    # 50 GB within seconds of starting. Measured on the rig -- 'copied 50 GB of
+    # 50 GB (100%%)' eleven seconds in, then eight minutes of export still to
+    # run. A progress figure that reaches 100 and stays there while the work
+    # continues is worse than none: it is the number an operator uses to decide
+    # whether to wait, and it says finished when nothing is finished.
+    #
+    # Msvm_ConcreteJob is what Hyper-V Manager's own "Exporting (45%%)" reads,
+    # so it is the same answer the operator would get by looking.
+    $pctDone = -1
+    try {
+      $cj = @(Get-WmiObject -Namespace 'rootirtualization2' -Class Msvm_ConcreteJob -ErrorAction SilentlyContinue |
+        Where-Object { $_.JobState -eq 4 -and [string]$_.Caption -match 'Export' })
+      if ($cj.Count -gt 0) { $pctDone = [int]$cj[0].PercentComplete }
+    } catch {}
+
+    # Bytes only as a fallback, and only to show movement: with a pre-allocated
+    # destination the total is reached immediately, so it is never reported as a
+    # percentage.
     $done = 0
-    if (Test-Path -LiteralPath $target) {
+    if ($pctDone -lt 0 -and (Test-Path -LiteralPath $target)) {
       $m = Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue |
         Where-Object { -not $_.PSIsContainer } | Measure-Object -Property Length -Sum
       if ($m -and $m.Sum) { $done = [int64]$m.Sum }
     }
+    if ($pctDone -ge 0) { $done = $pctDone }
     # Moving: every 30s. Not moving: every 60s, WITH how long it has been
     # still.
     #
@@ -174,10 +197,15 @@ try {
     $moved = ($done -ne $lastBytes)
     $quiet = ([datetime]::UtcNow - $lastSaid).TotalSeconds
     if (($moved -and $quiet -ge 30) -or (-not $moved -and $quiet -ge 60)) {
-      $doneGB = [math]::Round($done / 1GB, 1)
-      $pct = ''
-      if ($totalBytes -gt 0) { $pct = ' (' + [string][math]::Round(100.0 * $done / $totalBytes) + '%%)' }
-      $note = 'copied ' + [string]$doneGB + ' GB of ' + [string]$totalGB + ' GB' + $pct
+      if ($pctDone -ge 0) {
+        $note = 'exporting ' + $vm + ' to ' + $dest + ', ' + [string]$pctDone + '%% of ' + [string]$totalGB + ' GB'
+      } else {
+        # No percentage here on purpose. The denominator is reached the moment
+        # the destination file is allocated, so a percentage built from it would
+        # be the same lie in a different shape; the figure is offered as
+        # movement, which is all it honestly is.
+        $note = 'exporting ' + $vm + ' to ' + $dest + ', ' + [string][math]::Round($done / 1GB, 1) + ' GB present of ' + [string]$totalGB + ' GB'
+      }
       if (-not $moved) {
         $stillFor = [int]([datetime]::UtcNow - $startedAt).TotalSeconds
         $note += ' -- unchanged, still exporting (' + [string]([int]($stillFor / 60)) + 'm' + [string]($stillFor %% 60) + 's)'

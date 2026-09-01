@@ -289,13 +289,24 @@ func TestTheExportReportsProgressWhileItRuns(t *testing.T) {
 	if !strings.Contains(s, "Start-Job -ArgumentList $vm, $unc") {
 		t.Fatalf("the export is not run as a child, so nothing can watch it:\n%s", s)
 	}
-	// The note is assembled first so a stalled figure can have "unchanged" added
-	// to it, so the literal is the assembly, not the emission.
-	if !strings.Contains(s, "$note = 'copied ' + [string]$doneGB + ' GB of '") {
-		t.Errorf("no bytes are ever reported:\n%s", s)
+	/* Progress comes from HYPER-V, not from the destination's file length.
+
+	   A file length is the ALLOCATED size: SMB sets end-of-file before it
+	   copies, so a 50 GB disk reads as 50 GB seconds after the export starts.
+	   Measured twice on the rig -- "50 GB of 50 GB (100%)" eleven seconds in,
+	   with eight minutes of export still to run. Msvm_ConcreteJob is what
+	   Hyper-V Manager's own "Exporting (45%)" reads. */
+	if !strings.Contains(s, "Msvm_ConcreteJob") || !strings.Contains(s, "$pctDone = [int]$cj[0].PercentComplete") {
+		t.Fatalf("the export's progress is not read from Hyper-V:\n%s", s)
 	}
-	if !strings.Contains(s, "Measure-Object -Property Length -Sum") {
-		t.Errorf("progress is not measured from what has landed on the destination:\n%s", s)
+	if !strings.Contains(s, "$pctDone -lt 0 -and (Test-Path -LiteralPath $target)") {
+		t.Errorf("the byte count is not confined to the fallback:\n%s", s)
+	}
+	// And when it IS the fallback it is offered as movement, never as a
+	// percentage: the denominator is reached the instant the file is allocated,
+	// so a percentage built from it is the same lie in a different shape.
+	if !strings.Contains(s, "' GB present of '") {
+		t.Errorf("the fallback does not say what its figure actually is:\n%s", s)
 	}
 
 	/* A child job does not inherit $ErrorActionPreference. This package has
