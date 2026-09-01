@@ -498,6 +498,11 @@ message StorageVolume {
   // alongside them, and only this tells them apart — a clustered VM on a local
   // volume cannot fail over anywhere.
   bool shared = 5;
+  // unlettered marks a volume with no drive letter — a disk mounted into a
+  // folder, or one handed to a cluster. Stated this way round so an older agent,
+  // which sends nothing here, is read as "has a letter" rather than having every
+  // volume it reports look letter-less.
+  bool unlettered = 6;
 }
 
 message HostInventory {

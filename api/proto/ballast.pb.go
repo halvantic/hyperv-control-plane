@@ -3279,7 +3279,12 @@ type StorageVolume struct {
 	// shared marks a Cluster Shared Volume. A member's local volumes are reported
 	// alongside them, and only this tells them apart — a clustered VM on a local
 	// volume cannot fail over anywhere.
-	Shared        bool `protobuf:"varint,5,opt,name=shared,proto3" json:"shared,omitempty"`
+	Shared bool `protobuf:"varint,5,opt,name=shared,proto3" json:"shared,omitempty"`
+	// unlettered marks a volume with no drive letter — a disk mounted into a
+	// folder, or one handed to a cluster. Stated this way round so an older agent,
+	// which sends nothing here, is read as "has a letter" rather than having every
+	// volume it reports look letter-less.
+	Unlettered    bool `protobuf:"varint,6,opt,name=unlettered,proto3" json:"unlettered,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3345,6 +3350,13 @@ func (x *StorageVolume) GetUsedBytes() uint64 {
 func (x *StorageVolume) GetShared() bool {
 	if x != nil {
 		return x.Shared
+	}
+	return false
+}
+
+func (x *StorageVolume) GetUnlettered() bool {
+	if x != nil {
+		return x.Unlettered
 	}
 	return false
 }
@@ -7254,7 +7266,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fnet_adapters\x18\x02 \x03(\tR\vnetAdapters\x12.\n" +
 	"\x13allow_management_os\x18\x03 \x01(\bR\x11allowManagementOs\x12\x17\n" +
-	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"\x8d\x01\n" +
+	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"\xad\x01\n" +
 	"\rStorageVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +
@@ -7262,7 +7274,10 @@ const file_ballast_proto_rawDesc = "" +
 	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
 	"used_bytes\x18\x04 \x01(\x04R\tusedBytes\x12\x16\n" +
-	"\x06shared\x18\x05 \x01(\bR\x06shared\"\xb8\x02\n" +
+	"\x06shared\x18\x05 \x01(\bR\x06shared\x12\x1e\n" +
+	"\n" +
+	"unlettered\x18\x06 \x01(\bR\n" +
+	"unlettered\"\xb8\x02\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +

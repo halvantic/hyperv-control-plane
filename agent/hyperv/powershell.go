@@ -599,6 +599,37 @@ try {
 $vols += @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
   [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining); shared = $false }
 })
+
+# A formatted volume with NO drive letter is still a volume.
+#
+# The filter above requires one, which was true of every volume Ballast could
+# create until it learned to format without a letter. Now the console offers
+# that deliberately — for a disk destined to be mounted into a folder or handed
+# to a cluster — and the volume it makes was invisible the moment it existed,
+# appearing only as "1 disk with no drive letter". Offering an operator a way to
+# create something the inventory then drops is worse than not offering it.
+#
+# Identified by its GUID path, which is what it HAS in place of a letter and
+# what mounts it. The label leads when there is one, because an operator named
+# it for a reason and a bare GUID is not a name anybody recognises.
+#
+# Still excluded: the reserved and recovery partitions Windows makes for itself.
+# They are fixed volumes with no letter too, and listing them would bury the one
+# volume this exists to show under three nobody asked about.
+$vols += @(Get-Volume | Where-Object {
+  $_.DriveType -eq 'Fixed' -and -not $_.DriveLetter -and $_.Path -and
+  $_.FileSystemType -and $_.FileSystemType -ne 'Unknown' -and
+  ([string]$_.FileSystemLabel -notmatch '^(Recovery|System Reserved|EFI system partition)$') -and
+  ([uint64]$_.Size -gt 1073741824)
+} | ForEach-Object {
+  $label = [string]$_.FileSystemLabel
+  $shown = if ($label) { $label } else { 'unlettered volume' }
+  [pscustomobject]@{
+    name = $shown; path = [string]$_.Path
+    sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining)
+    shared = $false; unlettered = $true
+  }
+})
 $roots = @($vols | ForEach-Object { Join-Path $_.path 'ISOs' }) + 'C:\ISOs'
 $isos = @()
 foreach ($r in $roots) {

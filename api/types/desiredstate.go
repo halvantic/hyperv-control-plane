@@ -766,6 +766,20 @@ type StorageVolume struct {
 	   only its CSVs, and a drive somebody had formatted for Hyper-V was
 	   invisible everywhere. */
 	Shared bool `json:"shared,omitempty"`
+
+	/* Unlettered marks a volume with no drive letter.
+
+	   Stated this way round on purpose: false is "has a letter", which is what
+	   every volume Ballast could make had until it learned to format without
+	   one. So an older agent, which reports nothing here, is read correctly
+	   rather than having every volume it reports look letter-less.
+
+	   A letter-less volume is a deliberate arrangement — a disk to be mounted
+	   into a folder, or handed to a cluster — reached by its GUID path instead.
+	   It was invisible until now: the inventory only collected volumes that had
+	   a letter, which made the option that creates one a way to produce
+	   something the inventory then dropped. */
+	Unlettered bool `json:"unlettered,omitempty"`
 }
 
 // HostMetrics is observed, dynamic host utilisation. All fields are best-effort;

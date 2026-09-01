@@ -23,9 +23,23 @@ func sampleResources() types.HostResources {
 		   over anywhere, so a wire that dropped the flag would have every volume
 		   read as ordinary storage. */
 		Volumes: []types.StorageVolume{{
-			Name: "Volume1", Path: `C:\ClusterStorage\Volume1`, SizeBytes: 1 << 40, UsedBytes: 1 << 39, Shared: true,
+			/* Unlettered as well as Shared, and both are true of it: a CSV is
+			   reached through C:\ClusterStorage and has no drive letter of its
+			   own. The coverage check below requires the FIRST volume to set
+			   every field, so the one element has to be a volume for which every
+			   field is honestly set rather than a shape the agent never sends. */
+			Name: "Volume1", Path: `C:\ClusterStorage\Volume1`, SizeBytes: 1 << 40, UsedBytes: 1 << 39,
+			Shared: true, Unlettered: true,
 		}, {
 			Name: "I:", Path: `I:\`, SizeBytes: 2 << 40, UsedBytes: 512 << 30,
+		}, {
+			/* A volume with NO drive letter, which the console now offers to
+			   create. A field the proto does not carry round-trips perfectly as
+			   its zero value, so a wire that dropped this would have every
+			   letter-less volume arrive looking ordinary — and the console would
+			   address it by a letter it does not have. */
+			Name: "vmdata", Path: `\?\Volume{6b29fc40-ca47-1067-b31d-00dd010662da}\`,
+			SizeBytes: 4 << 40, UsedBytes: 1 << 40, Unlettered: true,
 		}},
 		ISOs: []string{`C:\ClusterStorage\Volume1\ISOs\w2025.iso`},
 		ManagementVNICs: []types.ManagementVNICInfo{{
