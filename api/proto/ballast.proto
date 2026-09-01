@@ -1041,6 +1041,10 @@ message VMSpec {
   // one field, because nested without spoofing is a guest whose inner VMs have
   // no network. Extensions apply at power-on; spoofing applies live.
   bool nested_virtualisation = 16;
+  // tpm gives the VM a software-emulated TPM 2.0 — what Windows 11 requires to
+  // install and what BitLocker binds to. Generation 2 only, and it needs a key
+  // protector before Hyper-V will enable it.
+  bool tpm = 17;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the

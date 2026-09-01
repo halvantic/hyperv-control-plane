@@ -6151,8 +6151,12 @@ type VMSpec struct {
 	// one field, because nested without spoofing is a guest whose inner VMs have
 	// no network. Extensions apply at power-on; spoofing applies live.
 	NestedVirtualisation bool `protobuf:"varint,16,opt,name=nested_virtualisation,json=nestedVirtualisation,proto3" json:"nested_virtualisation,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// tpm gives the VM a software-emulated TPM 2.0 — what Windows 11 requires to
+	// install and what BitLocker binds to. Generation 2 only, and it needs a key
+	// protector before Hyper-V will enable it.
+	Tpm           bool `protobuf:"varint,17,opt,name=tpm,proto3" json:"tpm,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VMSpec) Reset() {
@@ -6293,6 +6297,13 @@ func (x *VMSpec) GetVideoResolution() string {
 func (x *VMSpec) GetNestedVirtualisation() bool {
 	if x != nil {
 		return x.NestedVirtualisation
+	}
+	return false
+}
+
+func (x *VMSpec) GetTpm() bool {
+	if x != nil {
+		return x.Tpm
 	}
 	return false
 }
@@ -7533,7 +7544,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x02VM\x12*\n" +
 	"\x04meta\x18\x01 \x01(\v2\x16.ballast.v1.ObjectMetaR\x04meta\x12&\n" +
 	"\x04spec\x18\x02 \x01(\v2\x12.ballast.v1.VMSpecR\x04spec\x12,\n" +
-	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xc8\x06\n" +
+	"\x06status\x18\x03 \x01(\v2\x14.ballast.v1.VMStatusR\x06status\"\xda\x06\n" +
 	"\x06VMSpec\x129\n" +
 	"\tplacement\x18\x01 \x01(\v2\x1b.ballast.v1.VMPlacementSpecR\tplacement\x12+\n" +
 	"\x11hyperv_generation\x18\x02 \x01(\x05R\x10hypervGeneration\x12'\n" +
@@ -7553,7 +7564,8 @@ const file_ballast_proto_rawDesc = "" +
 	"boot_order\x18\r \x03(\tR\tbootOrder\x12#\n" +
 	"\rcomputer_name\x18\x0e \x01(\tR\fcomputerName\x12)\n" +
 	"\x10video_resolution\x18\x0f \x01(\tR\x0fvideoResolution\x123\n" +
-	"\x15nested_virtualisation\x18\x10 \x01(\bR\x14nestedVirtualisation\"\x8e\x02\n" +
+	"\x15nested_virtualisation\x18\x10 \x01(\bR\x14nestedVirtualisation\x12\x10\n" +
+	"\x03tpm\x18\x11 \x01(\bR\x03tpm\"\x8e\x02\n" +
 	"\x11VMReplicationSpec\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vtarget_host\x18\x02 \x01(\tR\n" +

@@ -2920,6 +2920,32 @@ type VMSpec struct {
 	   later), and a nested guest cannot be live-migrated. */
 	NestedVirtualisation bool `json:"nestedVirtualisation,omitempty"`
 
+	/* TPM gives the VM a software-emulated TPM 2.0, which Windows 11 requires to
+	   install and which BitLocker binds to.
+
+	   Generation 2 only. A Gen 1 VM has no UEFI firmware to present one, so the
+	   setting is refused there rather than accepted and silently ignored — a
+	   checkbox that stays ticked and does nothing is how somebody spends an
+	   afternoon on a Windows 11 installer that will not proceed.
+
+	   IT NEEDS MORE THAN Enable-VMTPM. A vTPM is sealed to key protectors, and a
+	   VM with no key protector cannot have one enabled: Hyper-V refuses with "A
+	   key protector cannot be found". So the reconcile creates a local key
+	   protector first when the VM has none. That is the step every runbook on
+	   this subject spells out and no console does for you.
+
+	   The consequence of the sealing is worth stating because it is not
+	   reversible by wishing: the protector belongs to THIS host's guardian. A VM
+	   with a vTPM cannot simply be exported and imported elsewhere — the
+	   destination cannot unseal it — so moving one needs the key protector
+	   carrying too, or the guest's BitLocker recovery key to hand. Ballast says
+	   so rather than letting an operator discover it during a migration.
+
+	   Settled at power-off like Secure Boot and the extensions: adding a TPM to a
+	   running VM is refused by Hyper-V, and Ballast does not restart somebody's
+	   VM to satisfy a checkbox. It reports pending until then. */
+	TPM bool `json:"tpm,omitempty"`
+
 	// Disks are the virtual hard disks attached to the VM, in attachment order.
 	Disks []VMDiskSpec `json:"disks,omitempty"`
 

@@ -1365,6 +1365,7 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		ComputerName:         s.ComputerName,
 		VideoResolution:      s.VideoResolution,
 		NestedVirtualisation: s.NestedVirtualisation,
+		Tpm:                  s.TPM,
 	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
@@ -1418,6 +1419,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		ComputerName:         s.GetComputerName(),
 		VideoResolution:      s.GetVideoResolution(),
 		NestedVirtualisation: s.GetNestedVirtualisation(),
+		TPM:                  s.GetTpm(),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{

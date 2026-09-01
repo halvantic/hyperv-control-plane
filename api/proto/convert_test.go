@@ -174,7 +174,12 @@ func sampleVM() types.VM {
 			// the sample leaves unset round-trips perfectly as its zero value and
 			// proves nothing.
 			NestedVirtualisation: true,
-			BootOrder:            []string{"DVD", "Drive", "Network"},
+			// A field the proto does not carry round-trips perfectly as its zero
+			// value, so a wire that dropped this would have the centre store a
+			// vTPM the agent never hears about — and Windows 11 refuse to install
+			// on a VM the console says has one.
+			TPM:       true,
+			BootOrder: []string{"DVD", "Drive", "Network"},
 			Replication: &types.VMReplicationSpec{
 				Enabled:            true,
 				TargetHost:         "host04",

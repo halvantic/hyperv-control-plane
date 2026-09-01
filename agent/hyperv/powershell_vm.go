@@ -590,6 +590,70 @@ if ((($wantSb -eq 'On') -ne $isOn) -or ($wantSb -eq 'On' -and [string]$fw.Secure
   }
 }
 `, name, psQuote(enable), psQuote(tmpl))
+
+		/* A software-emulated TPM 2.0 — what Windows 11 requires to install and
+		   what BitLocker binds to.
+
+		   Enable-VMTPM alone is not enough and this is the whole reason the
+		   feature is worth having in a console. A vTPM is SEALED to key
+		   protectors, and Hyper-V refuses to enable one on a VM that has none:
+		   "A key protector cannot be found for the virtual machine." So a local
+		   key protector is created first when the VM has no usable one. That is
+		   the step every runbook on the subject spells out and no console does.
+
+		   Set-VMKeyProtector -NewLocalKeyProtector is the local-guardian form,
+		   which is the right one for a VM that lives on this host. A shielded VM
+		   with an HGS guardian is a different arrangement entirely, and one
+		   Ballast does not pretend to configure from a checkbox.
+
+		   Read back rather than assumed: Get-VMSecurity reports TpmEnabled, so
+		   the reconcile compares against what the VM HAS instead of tracking
+		   whether it once ran the command. */
+		tpmWant := "$false"
+		if s.TPM {
+			tpmWant = "$true"
+		}
+		firmware += fmt.Sprintf(`$sec = Get-VMSecurity -VMName %[1]s -ErrorAction SilentlyContinue
+$tpmIs = [bool]($sec -and $sec.TpmEnabled)
+$tpmWant = %[2]s
+if ($tpmIs -ne $tpmWant) {
+  if ($running) {
+    # Hyper-V refuses to add or remove a TPM on a running VM, and Ballast does
+    # not restart somebody's VM to satisfy a checkbox.
+    $pending = $true
+    $pendingWhat += ('a TPM (want ' + [string]$tpmWant + ', have ' + [string]$tpmIs + ')')
+  } else {
+    if ($tpmWant) {
+      # The key protector FIRST, or Enable-VMTPM fails with "A key protector
+      # cannot be found for the virtual machine".
+      $hasKp = $false
+      try {
+        $kp = Get-VMKeyProtector -VMName %[1]s -ErrorAction Stop
+        # An unconfigured VM returns a short placeholder rather than nothing, so
+        # length is what distinguishes "has one" from "has the default".
+        $hasKp = ($kp -and $kp.Length -gt 4)
+      } catch {}
+      if (-not $hasKp) {
+        Set-VMKeyProtector -VMName %[1]s -NewLocalKeyProtector
+        Write-Output ('NOTE created a local key protector for ' + %[1]s + '. The vTPM is sealed to it, so this VM cannot simply be exported and imported on another host — that host cannot unseal it. Moving it needs the key protector carried across, or the guest BitLocker recovery key to hand.')
+      }
+      Enable-VMTPM -VMName %[1]s
+    } else {
+      Disable-VMTPM -VMName %[1]s
+    }
+    $changed = $true
+  }
+}
+`, name, tpmWant)
+	} else if s.TPM {
+		/* Refused on Generation 1 rather than silently ignored.
+
+		   A Gen 1 VM has no UEFI firmware to present a TPM, so the setting can
+		   never take. A checkbox that stays ticked and does nothing is how
+		   somebody spends an afternoon on a Windows 11 installer that will not
+		   proceed, blaming the installer. */
+		firmware = fmt.Sprintf(`throw ('%%s is Generation 1, which has no UEFI firmware and therefore cannot have a TPM. Windows 11 needs one, so a Generation 2 VM is required — generation is fixed when the VM is created and cannot be changed afterwards.' -f %[1]s)
+`, name)
 	}
 
 	/* Console resolution: drive the synthetic video adapter to the declared size.
