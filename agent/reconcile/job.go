@@ -259,6 +259,11 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 	case types.JobFormatDisk:
 		return done(r.hv.FormatDisk(ctx, p["deviceId"]), "formatted disk "+p["deviceId"])
 	case types.JobFormatDiskDrive:
+		// No drive letter is a deliberate choice, not a missing parameter, so the
+		// result says which was asked for rather than reporting "as :".
+		if p["driveLetter"] == "" {
+			return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], ""), "formatted disk "+p["deviceId"]+" with no drive letter")
+		}
 		return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], p["driveLetter"]), "formatted disk "+p["deviceId"]+" as "+p["driveLetter"]+":")
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])

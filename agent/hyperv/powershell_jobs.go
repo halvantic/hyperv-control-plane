@@ -501,31 +501,68 @@ $msg`, psQuote(deviceID))
 }
 
 // FormatDiskDrive initialises a physical disk to GPT, creates a single
-// max-size partition, formats it NTFS and assigns a drive letter. Refuses the
-// OS/boot disk. Idempotent: if the disk already has a partition with the
-// requested drive letter the operation is a no-op.
+// max-size partition and formats it NTFS. Refuses the OS/boot disk.
+//
+// driveLetter is optional. A volume with no letter is a deliberate arrangement
+// — it is what a disk destined for a folder mount point or for a cluster wants
+// — and assigning a letter nobody asked for is a change to the host that was
+// not requested.
 func (p *PowerShell) FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error {
-	id := psQuote(deviceID)
-	letter := psQuote(driveLetter)
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; "+
-		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq %[1]s }; "+
-		"if (-not $pd) { throw 'no physical disk with DeviceId ' + %[1]s }; "+
-		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; "+
-		"if (-not $disk) { throw 'disk not reachable via Get-Disk' }; "+
-		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "+
-		"$existing = $disk | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq %[2]s }; "+
-		"if ($existing) { 'RESULT=NOOP'; return }; "+
-		"Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; "+
-		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; "+
-		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false }; "+
-		"Initialize-Disk -Number $disk.Number -PartitionStyle GPT; "+
-		"New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter %[2]s | Out-Null; "+
-		"Format-Volume -DriveLetter %[2]s -FileSystem NTFS -Confirm:$false | Out-Null; "+
-		"'RESULT=FORMATTED'", id, letter)
-	if err := p.run2(ctx, script); err != nil {
+	if err := p.run2(ctx, formatDiskDriveScript(deviceID, driveLetter)); err != nil {
+		if driveLetter == "" {
+			return fmt.Errorf("format disk %q with no drive letter: %w", deviceID, err)
+		}
 		return fmt.Errorf("format disk drive %q → %s: %w", deviceID, driveLetter, err)
 	}
 	return nil
+}
+
+// formatDiskDriveScript builds the format script. Split out so the two paths —
+// with a letter and without — are testable without a host.
+//
+// Idempotent on both paths, and the check differs because the evidence differs:
+// with a letter, a partition already holding it is the proof; without one, the
+// disk already carrying a formatted partition with no letter is, since there is
+// no letter to look for.
+func formatDiskDriveScript(deviceID, driveLetter string) string {
+	id := psQuote(deviceID)
+	preamble := "$ErrorActionPreference='Stop'; " +
+		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq " + id + " }; " +
+		"if (-not $pd) { throw 'no physical disk with DeviceId ' + " + id + " }; " +
+		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; " +
+		"if (-not $disk) { throw 'disk not reachable via Get-Disk' }; " +
+		"if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing to format the OS/boot disk' }; "
+	prepare := "Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction SilentlyContinue; " +
+		"Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction SilentlyContinue; " +
+		"if ($disk.PartitionStyle -ne 'RAW') { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false }; " +
+		"Initialize-Disk -Number $disk.Number -PartitionStyle GPT; "
+
+	if driveLetter == "" {
+		return preamble +
+			// A Basic partition with no letter that already has a file system is
+			// this job's own previous run. Reserved/system partitions are excluded
+			// by type so they are never mistaken for it.
+			"$existing = $disk | Get-Partition -ErrorAction SilentlyContinue | " +
+			"Where-Object { $_.Type -eq 'Basic' -and -not $_.DriveLetter -and " +
+			"($_ | Get-Volume -ErrorAction SilentlyContinue).FileSystem }; " +
+			"if ($existing) { 'RESULT=NOOP'; return }; " +
+			prepare +
+			// No -DriveLetter and no -AssignDriveLetter: New-Partition leaves the
+			// partition without one, and Format-Volume takes the partition itself
+			// rather than a letter it does not have.
+			"$part = New-Partition -DiskNumber $disk.Number -UseMaximumSize; " +
+			"$part | Format-Volume -FileSystem NTFS -Confirm:$false | Out-Null; " +
+			"'RESULT=FORMATTED'"
+	}
+
+	letter := psQuote(driveLetter)
+	return preamble +
+		"$existing = $disk | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq " + letter + " }; " +
+		"if ($existing) { 'RESULT=NOOP'; return }; " +
+		prepare +
+		"New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter " + letter + " | Out-Null; " +
+		"Format-Volume -DriveLetter " + letter + " -FileSystem NTFS -Confirm:$false | Out-Null; " +
+		"'RESULT=FORMATTED'"
 }
 
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster

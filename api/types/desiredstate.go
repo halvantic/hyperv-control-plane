@@ -2576,7 +2576,7 @@ const (
 	JobDestroyS2D = "DestroyS2D" // run on a member: DESTRUCTIVE — params: wipeDisks ("true" to return the disks to raw)
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
-	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter — initialise, partition, format NTFS and assign a drive letter
+	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter (optional — empty leaves the volume with no letter) — initialise, partition, format NTFS
 
 	JobRepairHostDNS  = "RepairHostDNS"  // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 	JobResetPoolDisks = "ResetPoolDisks" // no params — wipe local non-OS, non-pooled disks so S2D can claim them (adding a node's capacity)
