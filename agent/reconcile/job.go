@@ -234,6 +234,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			return r.hv.CopyVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], netMap, onProgress)
 		}
 		return r.hv.MigrateVM(ctx, p["vm"], p["destHost"], p["destPath"], p["sourceCluster"], p["targetCluster"], netMap, onProgress)
+	case types.JobClearVMExport:
+		return r.hv.ClearVMExport(ctx, p["vm"], p["destHost"], p["destPath"])
 	case types.JobRemoveSwitch:
 		return done(r.hv.RemoveSwitch(ctx, p["switch"]), "removed switch "+p["switch"])
 	case types.JobRemoveMgmtVNIC:

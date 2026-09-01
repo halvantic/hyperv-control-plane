@@ -108,8 +108,19 @@ try {
 # leftover from an attempt that failed part way is exactly what would be there.
 $target = Join-Path $unc $vm
 if (Test-Path -LiteralPath $target) {
-  throw ($vm + ' already exists under ' + $path + ' on ' + $dest + '. A previous copy was left there; remove it, or ' +
-    'import it if it is complete, before copying again')
+  # Say WHAT is there, not just that something is. Whether the leftover holds a
+  # finished export decides whether discarding it costs the operator the whole
+  # copy again, and that is their call to make, not a detail to withhold.
+  $leftSize = 0
+  $m = Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.PSIsContainer } | Measure-Object -Property Length -Sum
+  if ($m -and $m.Sum) { $leftSize = [int64]$m.Sum }
+  $hasCfg = @(Get-ChildItem -LiteralPath $target -Recurse -Filter *.vmcx -ErrorAction SilentlyContinue).Count -gt 0
+  $what = if ($hasCfg) { 'a complete export' } else { 'a part-written export' }
+  throw ($vm + ' already exists under ' + $path + ' on ' + $dest + ' -- ' + $what + ', ' +
+    [string][math]::Round($leftSize / 1GB, 1) + ' GB, left by an earlier copy. Writing a second export over it is how a ' +
+    'half-copy becomes an unreadable one, so this one has not started. Clear it from the console (Clear leftover export) ' +
+    'and run the evacuation again')
 }
 
 # What the export has to move, so progress has a denominator. The file length,
@@ -241,6 +252,78 @@ if (-not (Test-Path $destShare -ErrorAction SilentlyContinue)) {
     $dest + ' on 445')
 }
 `
+}
+
+/*
+ClearVMExport removes an export a failed copy left on the destination.
+
+	Run on the SOURCE host, because that is the one already arranged to reach the
+	destination: the same single Kerberos hop the import uses. Removing the files
+	happens INSIDE that session, on the destination's own local path, so nothing
+	needs a share and nothing reaches a third machine.
+
+	It refuses to remove anything a VM is registered against. A leftover export
+	and an imported VM look identical on disk, and deleting the second is not a
+	cleanup — it is deleting somebody's VM.
+*/
+func (p *PowerShell) ClearVMExport(ctx context.Context, vm, destHost, destPath string) (string, error) {
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+$vm = %[1]s; $dest = %[2]s; $path = %[3]s
+
+$work = {
+  param($v, $root)
+  $ErrorActionPreference = 'Stop'
+  Import-Module Hyper-V -ErrorAction SilentlyContinue
+  # String work, not Join-Path: a drive qualifier is resolved by whoever joins
+  # it, and this path was composed elsewhere.
+  $target = $root.TrimEnd('') + '' + $v
+
+  if (-not (Test-Path -LiteralPath $target)) {
+    return [pscustomobject]@{ removed = $false; why = 'there is nothing at ' + $target + ' on ' + $env:COMPUTERNAME }
+  }
+
+  # A registered VM is NOT a leftover.
+  #
+  # Matched on the files, because a VM imported from this very export is the
+  # case that looks most like rubbish on disk and is the one thing here that
+  # must never be deleted. Refusing costs a retry; being wrong costs a VM.
+  foreach ($existing in @(Get-VM -ErrorAction SilentlyContinue)) {
+    $paths = @([string]$existing.Path) +
+      @(Get-VMHardDiskDrive -VM $existing -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Path })
+    foreach ($q in $paths) {
+      if ($q -and $q.ToLower().StartsWith($target.ToLower())) {
+        return [pscustomobject]@{ removed = $false
+          why = 'the VM ' + $existing.Name + ' on ' + $env:COMPUTERNAME + ' is registered against the files under ' + $target +
+                ', so they are not a leftover export. If that VM really is unwanted, remove it first' }
+      }
+    }
+  }
+
+  $m = Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.PSIsContainer } | Measure-Object -Property Length -Sum
+  $gb = 0
+  if ($m -and $m.Sum) { $gb = [math]::Round($m.Sum / 1GB, 1) }
+  Remove-Item -LiteralPath $target -Recurse -Force
+  [pscustomobject]@{ removed = $true; why = 'removed ' + [string]$gb + ' GB from ' + $target + ' on ' + $env:COMPUTERNAME }
+}
+
+# The files are local to the DESTINATION, so run there. When this agent IS the
+# destination that means running here: a hop to oneself needs WinRM, rights and
+# a working loopback to do nothing, and it is the arrangement most likely to be
+# missing on the host that was just built.
+if ($dest -and $dest.ToLower() -ne $env:COMPUTERNAME.ToLower() -and $dest -ne '.') {
+  $out = Invoke-Command -ComputerName $dest -ArgumentList $vm, $path -ScriptBlock $work
+} else {
+  $out = & $work $vm $path
+}
+if (-not $out.removed) { throw ([string]$out.why) }
+Write-Output ([string]$out.why)`, psQuote(vm), psQuote(destHost), psQuote(destPath))
+
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("clear the export of %q left on %q: %w", vm, destHost, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 /*

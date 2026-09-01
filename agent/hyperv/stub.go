@@ -931,6 +931,10 @@ func (s *Stub) MigrateVM(_ context.Context, vm, destHost, _, _, _ string, _ []ty
 	return "migrated " + vm + " to " + destHost + " (stub)", nil
 }
 
+func (s *Stub) ClearVMExport(_ context.Context, vm, destHost, _ string) (string, error) {
+	return "removed the leftover export of " + vm + " from " + destHost + " (stub)", nil
+}
+
 func (s *Stub) CopyVM(_ context.Context, vm, destHost, _, _, _ string, _ []types.EvacuationNIC, onProgress ProgressFunc) (string, error) {
 	onProgress.emit("exporting 100%")
 	return "copied " + vm + " to " + destHost + " (stub)", nil

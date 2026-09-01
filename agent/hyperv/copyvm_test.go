@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -103,7 +104,9 @@ A leftover from an attempt that failed part way is exactly what would be in
 */
 func TestALeftoverExportIsNamedRatherThanOverwritten(t *testing.T) {
 	s := copyScript(t)
-	if !strings.Contains(s, "already exists under ") || !strings.Contains(s, "A previous copy was left there") {
+	// The wording moved on: it now says what the leftover IS and names the
+	// action that clears it. See TestTheRefusalNamesWhatIsThereAndWhatToDo.
+	if !strings.Contains(s, "already exists under ") || !strings.Contains(s, "left by an earlier copy") {
 		t.Fatalf("a leftover export is not detected: %s", s)
 	}
 }
@@ -415,5 +418,58 @@ func TestOnlyABarePercentageIsDecorated(t *testing.T) {
 		if got := progressNote(c.in); got != c.want {
 			t.Errorf("progressNote(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+/* Clearing a leftover export.
+
+   The copy refuses to write a second export over a first, because that is how a
+   half-copy becomes an unreadable one. Until now the refusal ended at "remove
+   it" — an instruction to open a session on the destination, which the brief
+   calls a defect rather than a runbook step, and which lands at the worst
+   moment: mid-evacuation, over a mess that is Ballast's own. */
+func TestTheRefusalNamesWhatIsThereAndWhatToDo(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "I:", "", "", nil)
+
+	// Complete or part-written decides whether discarding costs the whole copy
+	// again, and that is the operator's call, not a detail to withhold.
+	if !strings.Contains(s, "'a complete export'") || !strings.Contains(s, "'a part-written export'") {
+		t.Errorf("the refusal does not say whether the leftover is finished:\n%s", s)
+	}
+	if !strings.Contains(s, "Clear leftover export") {
+		t.Errorf("the refusal does not name the action that fixes it:\n%s", s)
+	}
+	// Named exactly as the console names it, because the message is the only
+	// thing telling an operator where to look.
+	if !strings.Contains(s, "left by an earlier copy") {
+		t.Errorf("the console cannot recognise this failure from its message:\n%s", s)
+	}
+}
+
+func TestClearingRefusesFilesAVMIsRegisteredAgainst(t *testing.T) {
+	p := &PowerShell{}
+	var script string
+	p.run = func(_ context.Context, s string) ([]byte, error) { script = s; return []byte("removed 1 GB"), nil }
+
+	if _, err := p.ClearVMExport(context.Background(), "HVNew01", "HVNEW06", "I:"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	/* A VM imported from this very export looks exactly like rubbish on disk and
+	   is the one thing here that must never be deleted. Refusing costs a retry;
+	   being wrong costs a VM. */
+	if !strings.Contains(script, "foreach ($existing in @(Get-VM -ErrorAction SilentlyContinue))") {
+		t.Fatalf("nothing checks whether a VM owns these files:\n%s", script)
+	}
+	if !strings.Contains(script, "is registered against the files under") {
+		t.Errorf("the refusal does not say why it will not delete them:\n%s", script)
+	}
+	if !strings.Contains(script, "Remove-Item -LiteralPath $target -Recurse -Force") {
+		t.Errorf("nothing is ever removed:\n%s", script)
+	}
+	/* The files are local to the destination, so the work runs there. A hop to
+	   oneself needs WinRM, rights and a working loopback to do nothing, and that
+	   is the arrangement most likely to be missing on a host just built. */
+	if !strings.Contains(script, "$dest.ToLower() -ne $env:COMPUTERNAME.ToLower()") {
+		t.Errorf("the agent hops to itself when it IS the destination:\n%s", script)
 	}
 }

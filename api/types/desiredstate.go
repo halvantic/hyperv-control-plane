@@ -2387,6 +2387,19 @@ const (
 	   environment by definition was not. */
 	JobCopyVM = "CopyVM"
 
+	/* JobClearVMExport removes an export CopyVM left on a destination.
+	   params: vm, destHost, destPath. Runs on the source host, which is the one
+	   that can already reach the destination.
+
+	   A copy that fails after the export has written refuses to start again,
+	   because writing a second export over a first is how a half-copy becomes an
+	   unreadable one. That refusal used to end at "remove it, or import it if it
+	   is complete" — an instruction to open a session on the destination, which
+	   the brief calls a defect in Ballast rather than a runbook step. It is
+	   worst exactly here: the operator is mid-evacuation, something has already
+	   gone wrong, and the leftover is Ballast's own. */
+	JobClearVMExport = "ClearVMExport"
+
 	JobMigrateVM = "MigrateVM" // params: vm, destHost, destPath, sourceCluster/targetCluster (optional, the cluster halves of a cross-boundary move), networkMap (optional JSON [{sourceSwitch,targetSwitch,vlanId}]) — shared-nothing live migration to another host (run on the source host)
 
 	// JobVMMoveStorage relocates a VM's files to another datastore WITHOUT moving

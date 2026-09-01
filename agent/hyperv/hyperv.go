@@ -615,6 +615,11 @@ type Interface interface {
 	   Compare-VM -DestinationHost is not. */
 	CopyVM(ctx context.Context, vm, destHost, destPath, sourceCluster, targetCluster string, networkMap []types.EvacuationNIC, onProgress ProgressFunc) (string, error)
 
+	// ClearVMExport removes an export a failed CopyVM left on the destination,
+	// which otherwise refuses every retry. Run on the source host. Refuses to
+	// touch files a VM is registered against.
+	ClearVMExport(ctx context.Context, vm, destHost, destPath string) (string, error)
+
 	// ValidateCluster runs Test-Cluster over the given nodes (empty = all
 	// members) for the named test categories (empty = a safe non-disruptive
 	// default) and returns a short result summary. Imperative Job.
