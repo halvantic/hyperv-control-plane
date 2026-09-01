@@ -289,7 +289,9 @@ func TestTheExportReportsProgressWhileItRuns(t *testing.T) {
 	if !strings.Contains(s, "Start-Job -ArgumentList $vm, $unc") {
 		t.Fatalf("the export is not run as a child, so nothing can watch it:\n%s", s)
 	}
-	if !strings.Contains(s, "PROGRESS copied ") {
+	// The note is assembled first so a stalled figure can have "unchanged" added
+	// to it, so the literal is the assembly, not the emission.
+	if !strings.Contains(s, "$note = 'copied ' + [string]$doneGB + ' GB of '") {
 		t.Errorf("no bytes are ever reported:\n%s", s)
 	}
 	if !strings.Contains(s, "Measure-Object -Property Length -Sum") {
@@ -471,5 +473,60 @@ func TestClearingRefusesFilesAVMIsRegisteredAgainst(t *testing.T) {
 	   is the arrangement most likely to be missing on a host just built. */
 	if !strings.Contains(script, "$dest.ToLower() -ne $env:COMPUTERNAME.ToLower()") {
 		t.Errorf("the agent hops to itself when it IS the destination:\n%s", script)
+	}
+}
+
+/* Every path this script builds keeps its separator.
+
+   Shipped once without one: "$root.TrimEnd('') + '' + $v" renders I:HVNew01,
+   which resolves to nothing, so clearing a leftover would have reported there
+   was nothing there. It is invisible in review — the line reads correctly at a
+   glance and the missing character is the whole meaning. */
+func TestBuiltPathsKeepTheirSeparator(t *testing.T) {
+	sep := "\\"
+	copyScript := copyVMScript("HVNew01", "HVNEW06", "I:"+sep, "", "", nil)
+	if !strings.Contains(copyScript, "$cfgLocal = $path.TrimEnd('"+sep+"') + '"+sep+"' + $rel") {
+		t.Errorf("the destination config path is built without a separator:\n%s", copyScript)
+	}
+
+	p := &PowerShell{}
+	var clear string
+	p.run = func(_ context.Context, s string) ([]byte, error) { clear = s; return []byte("ok"), nil }
+	if _, err := p.ClearVMExport(context.Background(), "HVNew01", "HVNEW06", "I:"+sep); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if !strings.Contains(clear, "$target = $root.TrimEnd('"+sep+"') + '"+sep+"' + $v") {
+		t.Errorf("the target path is built without a separator, so it resolves to nothing:\n%s", clear)
+	}
+}
+
+/* Silence and work look the same, so the copy says which it is.
+
+   Reporting only movement was half right: it stops a console looking busy while
+   nothing happens, and it also makes "finished the bytes, now doing something
+   else" indistinguishable from "wedged". Observed: 50 GB of 50 GB eleven
+   seconds in, then six and a half minutes of nothing, with the import running
+   silently the whole time. */
+func TestTheCopySaysSomethingWhileItIsQuiet(t *testing.T) {
+	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "", nil)
+
+	// A stalled figure is still reported, with how long it has been still.
+	if !strings.Contains(s, "unchanged, still exporting") {
+		t.Errorf("a copy that stops moving goes silent:\n%s", s)
+	}
+	if !strings.Contains(s, "(-not $moved -and $quiet -ge 60)") {
+		t.Errorf("the quiet heartbeat is not on its own longer interval:\n%s", s)
+	}
+	// The end of the export is an event worth naming: it is the moment the
+	// bytes stop and the silent phase begins.
+	if !strings.Contains(s, "PROGRESS export finished, ") {
+		t.Errorf("nothing marks the end of the copy:\n%s", s)
+	}
+	// And the import, which reports nothing of its own at all.
+	if !strings.Contains(s, "PROGRESS still importing on ") {
+		t.Errorf("the import phase is silent, which is where the copy was last seen sitting:\n%s", s)
+	}
+	if !strings.Contains(s, "$importJob = Start-Job") {
+		t.Errorf("the import is awaited rather than watched, so it cannot report:\n%s", s)
 	}
 }

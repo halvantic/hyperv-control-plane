@@ -154,6 +154,7 @@ $job = Start-Job -ArgumentList $vm, $unc -ScriptBlock {
 try {
   $lastBytes = -1
   $lastSaid = [datetime]::MinValue
+  $startedAt = [datetime]::UtcNow
   while ($job.State -eq 'Running') {
     Start-Sleep -Seconds 5
     $done = 0
@@ -162,13 +163,28 @@ try {
         Where-Object { -not $_.PSIsContainer } | Measure-Object -Property Length -Sum
       if ($m -and $m.Sum) { $done = [int64]$m.Sum }
     }
-    # Every 30s, and only when it has actually moved. A line repeating the same
-    # number is what makes a console look busy while nothing happens.
-    if ($done -ne $lastBytes -and ([datetime]::UtcNow - $lastSaid).TotalSeconds -ge 30) {
+    # Moving: every 30s. Not moving: every 60s, WITH how long it has been
+    # still.
+    #
+    # Reporting only movement was half right. It stops a console looking busy
+    # while nothing happens -- and it also makes "finished the bytes, now doing
+    # something else" and "wedged" look exactly alike. Observed: a copy reported
+    # 50 GB of 50 GB eleven seconds in and then said nothing for six and a half
+    # minutes, with no way to tell which of the two it was.
+    $moved = ($done -ne $lastBytes)
+    $quiet = ([datetime]::UtcNow - $lastSaid).TotalSeconds
+    if (($moved -and $quiet -ge 30) -or (-not $moved -and $quiet -ge 60)) {
       $doneGB = [math]::Round($done / 1GB, 1)
       $pct = ''
       if ($totalBytes -gt 0) { $pct = ' (' + [string][math]::Round(100.0 * $done / $totalBytes) + '%%)' }
-      Write-Output ('PROGRESS copied ' + [string]$doneGB + ' GB of ' + [string]$totalGB + ' GB' + $pct)
+      $note = 'copied ' + [string]$doneGB + ' GB of ' + [string]$totalGB + ' GB' + $pct
+      if (-not $moved) {
+        $stillFor = [int]([datetime]::UtcNow - $startedAt).TotalSeconds
+        $note += ' -- unchanged, still exporting (' + [string]([int]($stillFor / 60)) + 'm' + [string]($stillFor %% 60) + 's)'
+      } else {
+        $startedAt = [datetime]::UtcNow
+      }
+      Write-Output ('PROGRESS ' + $note)
       $lastBytes = $done; $lastSaid = [datetime]::UtcNow
     }
   }
@@ -177,6 +193,7 @@ try {
   # nothing to import.
   Receive-Job -Job $job -Wait -ErrorAction Stop | Out-Null
   if ($job.State -ne 'Completed') { throw ('the export of ' + $vm + ' ended ' + [string]$job.State) }
+  Write-Output ('PROGRESS export finished, ' + [string]$totalGB + ' GB written to ' + $dest)
 } finally {
   Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 }
@@ -276,7 +293,7 @@ $work = {
   Import-Module Hyper-V -ErrorAction SilentlyContinue
   # String work, not Join-Path: a drive qualifier is resolved by whoever joins
   # it, and this path was composed elsewhere.
-  $target = $root.TrimEnd('') + '' + $v
+  $target = $root.TrimEnd('\') + '\' + $v
 
   if (-not (Test-Path -LiteralPath $target)) {
     return [pscustomobject]@{ removed = $false; why = 'there is nothing at ' + $target + ' on ' + $env:COMPUTERNAME }
@@ -344,7 +361,16 @@ func remoteImport(targetCluster string, nics []types.EvacuationNIC) string {
 		cluster = psQuote(targetCluster)
 	}
 	return fmt.Sprintf(`$imported = $false
-$importOut = Invoke-Command -ComputerName $dest -ArgumentList $cfgLocal, $netMap, $vlanMap, %[1]s -ScriptBlock {
+# Watched, like the export, and for the same reason: an Invoke-Command that
+# takes minutes is indistinguishable from one that will never return. Import-VM
+# registers files already on the destination's disk, so it is normally quick --
+# which is exactly why a long one is worth saying out loud rather than sitting
+# on.
+$importStarted = [datetime]::UtcNow
+$importJob = Start-Job -ArgumentList $dest, $cfgLocal, $netMap, $vlanMap, %[1]s -ScriptBlock {
+  param($d, $c, $nm, $vm2, $cn)
+  $ErrorActionPreference = 'Stop'
+  Invoke-Command -ComputerName $d -ArgumentList $c, $nm, $vm2, $cn -ScriptBlock {
   param($cfg, $map, $vlans, $clusterName)
   $ErrorActionPreference = 'Stop'
   Import-Module Hyper-V -ErrorAction SilentlyContinue
@@ -394,7 +420,26 @@ $importOut = Invoke-Command -ComputerName $dest -ArgumentList $cfgLocal, $netMap
     if ($v -and [int]$v -gt 0) { Set-VMNetworkAdapterVlan -VMNetworkAdapter $ad -Access -VlanId ([int]$v) }
   }
   if ($clusterName) { Add-ClusterVirtualMachineRole -Cluster $clusterName -VirtualMachine $vmObj.Name -ErrorAction Stop | Out-Null }
-  [pscustomobject]@{ name = [string]$vmObj.Name; id = [string]$vmObj.Id }
+    [pscustomobject]@{ name = [string]$vmObj.Name; id = [string]$vmObj.Id }
+  }
+}
+# Waited on with a heartbeat, because Import-VM says nothing until it is done
+# and an Invoke-Command that takes minutes reads exactly like one that will
+# never return.
+$importSaid = [datetime]::UtcNow
+while ($importJob.State -eq 'Running') {
+  Start-Sleep -Seconds 5
+  if (([datetime]::UtcNow - $importSaid).TotalSeconds -ge 60) {
+    $waited = [int]([datetime]::UtcNow - $importStarted).TotalSeconds
+    Write-Output ('PROGRESS still importing on ' + $dest + ' (' +
+      [string]([int]($waited / 60)) + 'm' + [string]($waited %% 60) + 's)')
+    $importSaid = [datetime]::UtcNow
+  }
+}
+try {
+  $importOut = Receive-Job -Job $importJob -Wait -ErrorAction Stop
+} finally {
+  Remove-Job -Job $importJob -Force -ErrorAction SilentlyContinue
 }
 if ($importOut -and $importOut.id) {
   $imported = $true
