@@ -277,7 +277,21 @@ func (p *PowerShell) RemoveMgmtVNIC(ctx context.Context, name string) error {
 func (p *PowerShell) RemoveVM(ctx context.Context, name string) error {
 	q := psQuote(name)
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
-$g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+# A standalone host has no Get-ClusterGroup AT ALL, and -ErrorAction does not
+# help: parameter binding never happens for a command that does not exist, so
+# the CommandNotFoundException is raised before the parameter is read and
+# $ErrorActionPreference='Stop' aborts the script. Deleting a VM on a host with
+# no Failover Clustering feature therefore failed with "The term
+# 'Get-ClusterGroup' is not recognized" — a cluster error for an operation with
+# no cluster in it, on a host that has none.
+#
+# The power path met this first and was fixed the same way (see vmPowerScript);
+# this one was missed. Get-Command is the check that works, because it asks
+# whether the cmdlet exists instead of asking the cmdlet.
+$g = $null
+if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue) {
+  $g = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
+}
 if ($g) {
   # Take the group offline by TURNING THE VM OFF, not by saving it.
   #

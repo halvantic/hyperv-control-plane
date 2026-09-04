@@ -288,3 +288,45 @@ func TestFetchISOLocalSourceUsesCopy(t *testing.T) {
 		t.Errorf("UNC source should branch to Copy-Item:\n%s", f.calls[0])
 	}
 }
+
+/*
+Deleting a VM on a host that is not in a cluster.
+
+	-ErrorAction SilentlyContinue reads like it covers this and does not. For a
+	command that does not exist, PowerShell raises CommandNotFoundException before
+	it ever binds parameters, so the -ErrorAction on the call is never consulted
+	and $ErrorActionPreference='Stop' aborts the script. A standalone host has no
+	Failover Clustering feature and therefore no Get-ClusterGroup, so every VM
+	delete on one failed with "The term 'Get-ClusterGroup' is not recognized" — a
+	cluster error, for an operation with no cluster in it, on a host that has none.
+
+	The power path met this first and was fixed with Get-Command, which asks
+	whether the cmdlet exists rather than asking the cmdlet. This path was missed.
+*/
+func TestRemoveVMGuardsTheClusterLookupForAStandaloneHost(t *testing.T) {
+	f := &fakeRunner{responses: [][]byte{[]byte("")}}
+	if err := newTestPS(f).RemoveVM(context.Background(), "Standalone VM"); err != nil {
+		t.Fatal(err)
+	}
+	s := f.calls[0]
+
+	guard := strings.Index(s, "Get-Command Get-ClusterGroup")
+	if guard == -1 {
+		t.Fatal("the cluster lookup must be guarded by Get-Command: -ErrorAction cannot suppress a command that does not exist")
+	}
+	if use := strings.Index(s, "Get-ClusterGroup -Name"); use == -1 || use < guard {
+		t.Fatal("the guard must come before the cluster lookup it protects")
+	}
+	// Every other cluster cmdlet has to sit inside the guarded branch too — one
+	// of them reached on a standalone host fails the delete just as completely.
+	for _, cmd := range []string{"Stop-ClusterGroup", "Remove-ClusterGroup", "Get-ClusterResource", "Set-ClusterParameter"} {
+		if i := strings.Index(s, cmd); i != -1 && i < guard {
+			t.Errorf("%s is reached before the guard that checks Failover Clustering is present", cmd)
+		}
+	}
+	// The removal itself must still be there: guarding the cluster half must not
+	// have made the delete conditional on clustering.
+	if !strings.Contains(s, "Remove-VM -Name") {
+		t.Error("the VM removal must run regardless of whether this host is clustered")
+	}
+}
