@@ -76,6 +76,17 @@ const (
 	ShareWriteDenied ShareFault = "WriteDenied"
 	// ShareNoSpace — the write started and the volume is full.
 	ShareNoSpace ShareFault = "NoSpace"
+	/* ShareUNCUnsupported — a \\server\share path given to a centre that is not
+	   Windows.
+
+	   Not a reachability problem and not a permissions one: that path form is a
+	   Windows convention, and on Linux the whole string is one filename. The
+	   open fails with ENOENT, which classified as PathMissing and sent an
+	   operator to check whether a share that exists exists. The target was
+	   configured while the centre WAS a Windows binary and kept working right up
+	   until the centre moved, which is exactly when nobody re-tests a backup
+	   setting. */
+	ShareUNCUnsupported ShareFault = "UNCUnsupported"
 	// ShareUnknown — none of the above. Reported AS unknown, with the original
 	// message, rather than guessed into one of the others.
 	ShareUnknown ShareFault = "Unknown"
@@ -105,6 +116,8 @@ func (f ShareFault) Remedy(path string) string {
 		return "The share can be reached and read, and this account may not write to it. Grant it write on the share AND on the folder's permissions — a read-only share passes every connection test and fails every backup. That is on the share itself, which Ballast does not administer."
 	case ShareNoSpace:
 		return "The share is out of space. Free some, or point the target somewhere with room."
+	case ShareUNCUnsupported:
+		return "This centre does not run on Windows, and " + path + " is a Windows \\\\server\\share path — so nothing was tried. Mount the share on the appliance and set the target to the mount point instead (for example /mnt/ballast-backup). The share itself is almost certainly fine; it is the path form this centre cannot use."
 	}
 	return "The share could not be written to and the reason was not one Ballast recognises. The message it returned is above; it comes from the share, not from Ballast."
 }
