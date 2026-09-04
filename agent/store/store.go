@@ -75,7 +75,77 @@ var (
 	keyPruned = []byte("journalPruned")
 	// bucketResults holds terminal job results the centre has not accepted yet.
 	bucketResults = []byte("results")
+
+	// bucketObserved holds the last generation the agent actually HONOURED, for
+	// the host and per VM. Separate from bucketDesired because it is not intent:
+	// it is what this agent has done about the intent, and the two have different
+	// authors. The centre writes desired; only the agent can say what it honoured.
+	bucketObserved = []byte("observed")
+	// keyObserved is the single key in that bucket. Host and VM generations are
+	// written together because they are saved on the same edge (a reconcile pass
+	// that honoured something) and a torn pair would be worse than either alone.
+	keyObserved = []byte("generations")
 )
+
+// Observed is the set of generations this agent has fully honoured.
+//
+// WHY THIS IS PERSISTED.
+//
+// It was an in-memory map for a long time, with a comment claiming it survived
+// "cycles and autonomy windows". True, and beside the point: it did not survive
+// a process restart, which is the event that matters. On restart every entry
+// returned to zero, the agent reported zero, and the centre's status UPDATE
+// wrote zero over the real history without noticing the number had gone
+// backwards.
+//
+// For a VM that reconciles normally the damage lasted one pass. For a VM HELD
+// on something an operator must do first — RequiresPowerOff, say — "fully
+// honoured" is precisely the thing that can never happen, so the zero was
+// permanent, and the console reported a VM it reads every single pass as one
+// nothing had ever looked at.
+//
+// The last generation honoured is a historical fact, not a live reading. Facts
+// belong in the store.
+type Observed struct {
+	// Host is the last Host generation fully honoured.
+	Host int64 `json:"host"`
+	// VMs maps VM name to the last generation fully honoured for it.
+	VMs map[string]int64 `json:"vms,omitempty"`
+}
+
+// SaveObserved records the generations this agent has honoured, replacing any
+// previous copy.
+func (s *Store) SaveObserved(o Observed) error {
+	data, err := json.Marshal(o)
+	if err != nil {
+		return fmt.Errorf("marshal observed generations: %w", err)
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketObserved).Put(keyObserved, data)
+	})
+}
+
+// LoadObserved returns the generations this agent has honoured. ok is false
+// when nothing has ever been recorded, which is the genuine never-honoured case
+// and is why it is reported separately from a zero generation.
+func (s *Store) LoadObserved() (o Observed, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketObserved)
+		if b == nil {
+			return nil
+		}
+		data := b.Get(keyObserved)
+		if data == nil {
+			return nil
+		}
+		if err := json.Unmarshal(data, &o); err != nil {
+			return fmt.Errorf("unmarshal observed generations: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	return o, ok, err
+}
 
 // Store is the agent's embedded store. Safe for concurrent use: bbolt
 // serialises writes and allows concurrent reads.
@@ -134,7 +204,7 @@ func openAt(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bbolt at %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketDesired, bucketJournal, bucketResults} {
+		for _, b := range [][]byte{bucketDesired, bucketJournal, bucketResults, bucketObserved} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}

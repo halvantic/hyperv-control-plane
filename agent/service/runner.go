@@ -325,9 +325,10 @@ type runner struct {
 	// loop, so reconcile and status journalling proceed regardless.
 	registered bool
 
-	// observedGen is the last desired Generation the agent fully honoured. It
-	// persists across cycles and across autonomy windows, and is what the agent
-	// reports as Status.ObservedGeneration.
+	// observedGen is the last desired Generation the agent fully honoured. It is
+	// what the agent reports as Status.ObservedGeneration, and it is durable:
+	// loaded from the store on boot and written back on the pass that changes it.
+	// See store.Observed for why in-memory was not enough.
 	observedGen int64
 
 	// isoLib is the ISO library that currently applies to this host — the
@@ -353,8 +354,8 @@ type runner struct {
 	clusterISCSI *types.ISCSIStatus
 
 	// vmObservedGen tracks, per VM name, the last desired Generation fully
-	// honoured for that VM. Like observedGen it persists across cycles and
-	// autonomy windows. Lazily initialised.
+	// honoured for that VM. Durable alongside observedGen, and pruned to the
+	// cached desired set so a deleted VM does not linger in the store for ever.
 	vmObservedGen map[string]int64
 
 	// jobsInflight dedups jobs that are executing in the background so a later
@@ -675,6 +676,21 @@ func (r *runner) maintainStore(ctx context.Context) {
 // so the agent can operate (and, once reconcile exists, enforce) without first
 // reaching the centre.
 func (r *runner) adoptCachedState() {
+	// The generations already honoured, before anything else: a restart must not
+	// look like a host that has never enforced its spec. Loaded independently of
+	// the desired state below, which has its own reasons to be absent.
+	if o, ok, err := r.st.LoadObserved(); err != nil {
+		r.log.Error("read observed generations failed", "err", err)
+	} else if ok {
+		r.observedGen = o.Host
+		r.vmObservedGen = o.VMs
+		if r.vmObservedGen == nil {
+			r.vmObservedGen = make(map[string]int64)
+		}
+		r.log.Info("adopted observed generations",
+			"generation", r.observedGen, "vms", len(r.vmObservedGen))
+	}
+
 	cached, ok, err := r.st.LoadDesiredHost()
 	if err != nil {
 		r.log.Error("read cached desired state failed", "err", err)
@@ -1084,6 +1100,7 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 		if res.Honoured && r.observedGen != cached.Meta.Generation {
 			r.observedGen = cached.Meta.Generation
 			r.log.Info("generation honoured", "generation", r.observedGen)
+			r.persistObserved()
 		}
 		// A switch that cannot be built is usually a switch whose team members have
 		// been renamed, and the console explains that by comparing the spec's
@@ -1433,12 +1450,22 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 	for _, vm := range cached {
 		byName[vm.Meta.Name] = vm
 	}
+	// Drop VMs the centre no longer places here. Harmless while this map lived
+	// only in memory; in a file it would grow for the life of the host.
+	observedChanged := false
+	for name := range r.vmObservedGen {
+		if _, still := byName[name]; !still {
+			delete(r.vmObservedGen, name)
+			observedChanged = true
+		}
+	}
 
 	var reports []*ballastpb.VMStatusReport
 	for _, res := range results {
 		gen := byName[res.Name].Meta.Generation
 		if res.Honoured && r.vmObservedGen[res.Name] != gen {
 			r.vmObservedGen[res.Name] = gen
+			observedChanged = true
 			r.log.Info("vm generation honoured", "vm", res.Name, "generation", gen)
 		}
 		st := r.buildVMStatus(res)
@@ -1472,6 +1499,12 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 		})
 	}
 
+	// Written before the autonomy check on purpose: an agent enforcing cached
+	// state with no centre to tell is exactly when this must not be lost.
+	if observedChanged {
+		r.persistObserved()
+	}
+
 	if autonomous || len(reports) == 0 {
 		return
 	}
@@ -1484,9 +1517,24 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 	}
 }
 
+// persistObserved writes the honoured generations to the local store.
+//
+// Best effort, and deliberately not fatal: failing to record what was honoured
+// must never stop the agent honouring it. A failure here costs accuracy in the
+// console after a restart, which is worth a warning and nothing more.
+func (r *runner) persistObserved() {
+	if err := r.st.SaveObserved(store.Observed{
+		Host: r.observedGen,
+		VMs:  r.vmObservedGen,
+	}); err != nil {
+		r.log.Warn("persist observed generations failed", "err", err)
+	}
+}
+
 // buildVMStatus assembles a VM's reported status from its reconcile result. The
 // reported ObservedGeneration is the last generation fully honoured for that VM,
-// held in vmObservedGen so it survives an autonomy window.
+// held in vmObservedGen so it survives an autonomy window and, since it is
+// written to the store, a restart of this process too.
 func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 	return types.VMStatus{
 		Phase:               res.Phase,
