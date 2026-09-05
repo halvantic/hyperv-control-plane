@@ -213,14 +213,12 @@ func TestEmptySpaceIsNeverSent(t *testing.T) {
 	}
 }
 
-/*
-THE test. A download cut short must not decode as a finished disk.
+/* THE test. A download cut short must not decode as a finished disk.
 
-	Everything before the cut is real data at real offsets, so the destination
-	looks correct and is missing its tail. The footer is written after every
-	grain, so its absence is the only reliable evidence that the stream did not
-	finish.
-*/
+   Everything before the cut is real data at real offsets, so the destination
+   looks correct and is missing its tail. The footer is written after every
+   grain, so its absence is the only reliable evidence that the stream did not
+   finish. */
 func TestATruncatedStreamIsNotASuccess(t *testing.T) {
 	const capacity = 64 * testGrainSectors
 	full := buildStream(capacity, []builtGrain{
@@ -260,12 +258,9 @@ func TestAnEndOfStreamWithoutAFooterIsRefused(t *testing.T) {
 	}
 }
 
-/*
-A sparse VMDK that is not stream-optimised has no markers, so reading it this
-
-	way would decode its grain directory as data and write it somewhere plausible.
-	Refused on the header rather than discovered as corruption.
-*/
+/* A sparse VMDK that is not stream-optimised has no markers, so reading it this
+   way would decode its grain directory as data and write it somewhere plausible.
+   Refused on the header rather than discovered as corruption. */
 func TestAPlainSparseVMDKIsRefusedRatherThanMisread(t *testing.T) {
 	stream := buildStream(64*testGrainSectors, nil, func(b *streamBuild) { b.flags = 1 })
 	_, _, err := collect(t, stream)
@@ -303,13 +298,10 @@ func TestAGrainPastTheEndOfTheDiskIsRefused(t *testing.T) {
 	}
 }
 
-/*
-The last grain of a disk whose capacity is not a whole number of grains is
-
-	trimmed to the disk, not written past it. Capacity stays a whole number of
-	destination sectors, so the trim still lands on a boundary a block device
-	will take.
-*/
+/* The last grain of a disk whose capacity is not a whole number of grains is
+   trimmed to the disk, not written past it. Capacity stays a whole number of
+   destination sectors, so the trim still lands on a boundary a block device
+   will take. */
 func TestTheFinalGrainIsTrimmedToTheDisk(t *testing.T) {
 	// Half a grain short of three full ones.
 	capacity := uint64(2*testGrainSectors + testGrainSectors/2)
@@ -367,18 +359,15 @@ func TestAGrainSizeTheDestinationCannotTakeIsRefusedUpFront(t *testing.T) {
 	}
 }
 
-/*
-The padding between the descriptor and the data, which is where the first
+/* The padding between the descriptor and the data, which is where the first
+   real warm migration ended.
 
-	real warm migration ended.
-
-	vCenter sends descriptorOffset=1, descriptorSize=1 and overHead=128: the
-	descriptor ends at sector 2 and the data starts at sector 128. Sectors 2 to
-	127 are zeros, and a zero sector is a structurally valid end-of-stream
-	marker — so a decoder that trusted the descriptor arithmetic stopped at
-	sector 2, having copied nothing, and said so in the language of a stream that
-	had finished. Measured on BallastJumphost, not read off a specification.
-*/
+   vCenter sends descriptorOffset=1, descriptorSize=1 and overHead=128: the
+   descriptor ends at sector 2 and the data starts at sector 128. Sectors 2 to
+   127 are zeros, and a zero sector is a structurally valid end-of-stream
+   marker — so a decoder that trusted the descriptor arithmetic stopped at
+   sector 2, having copied nothing, and said so in the language of a stream that
+   had finished. Measured on BallastJumphost, not read off a specification. */
 func TestTheDataStartsAtOverHeadNotAfterTheDescriptor(t *testing.T) {
 	const capacity = 64 * testGrainSectors
 	stream := buildStream(capacity, []builtGrain{

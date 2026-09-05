@@ -98,12 +98,9 @@ func TestAWarmCopyWithoutChangeTrackingIsRefusedUpFront(t *testing.T) {
 	}
 }
 
-/*
-A delta cannot be read from a lease — it serves no byte ranges — and asking
-
-	for one must be refused rather than quietly re-copying the whole disk and
-	reporting it as an increment.
-*/
+/* A delta cannot be read from a lease — it serves no byte ranges — and asking
+   for one must be refused rather than quietly re-copying the whole disk and
+   reporting it as an increment. */
 func TestADeltaIsNeverAttemptedOverTheLease(t *testing.T) {
 	src, prov := warmPass()
 	req := PassRequest{Migration: "mig-1", MoRef: "vm-1", DestDir: destDir, Marker: map[int32]string{2000: "52 aa/2"}}
@@ -120,13 +117,11 @@ func TestADeltaIsNeverAttemptedOverTheLease(t *testing.T) {
 	}
 }
 
-/*
-The lease is released on every exit, and a FAILED transfer aborts it.
+/* The lease is released on every exit, and a FAILED transfer aborts it.
 
-	Completing a lease whose disk did not arrive tells vCenter something untrue
-	about a copy Ballast now owns; leaving it open holds state on somebody else's
-	system until it times out.
-*/
+   Completing a lease whose disk did not arrive tells vCenter something untrue
+   about a copy Ballast now owns; leaving it open holds state on somebody else's
+   system until it times out. */
 func TestTheLeaseIsAbortedWhenTheCopyFails(t *testing.T) {
 	src, prov := warmPass()
 	// A stream cut short: everything before the cut is real data at real
@@ -157,13 +152,10 @@ func TestTheLeaseIsCompletedWhenTheCopySucceeds(t *testing.T) {
 	}
 }
 
-/*
-The lease names its disks "disk-0.vmdk", which says nothing about which
-
-	VirtualDisk it is. Order is how VMware presents them, and a two-disk VM whose
-	order is wrong gets its data and its log swapped — each copy internally
-	consistent, the pair useless. The sizes have to agree.
-*/
+/* The lease names its disks "disk-0.vmdk", which says nothing about which
+   VirtualDisk it is. Order is how VMware presents them, and a two-disk VM whose
+   order is wrong gets its data and its log swapped — each copy internally
+   consistent, the pair useless. The sizes have to agree. */
 func TestDisksThatDoNotLineUpAreRefusedRatherThanGuessedAt(t *testing.T) {
 	src, prov := warmPass()
 	src.export.disks = []ExportDisk{{Path: "disk-0.vmdk", Size: 40 << 30}}

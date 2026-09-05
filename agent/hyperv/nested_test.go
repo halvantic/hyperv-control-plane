@@ -329,21 +329,19 @@ func TestAStandaloneMoveHasNoRoleToRestore(t *testing.T) {
 	}
 }
 
-/*
-Powering a VM on a host that has no Failover Clustering.
+/* Powering a VM on a host that has no Failover Clustering.
 
-	  Get-ClusterGroup : The term 'Get-ClusterGroup' is not recognized as the
-	  name of a cmdlet...
+     Get-ClusterGroup : The term 'Get-ClusterGroup' is not recognized as the
+     name of a cmdlet...
 
-	-ErrorAction SilentlyContinue does not suppress a CommandNotFoundException:
-	the failure happens at command resolution, before a parameter is bound, and
-	under $ErrorActionPreference='Stop' it terminates. A standalone host has no
-	such cmdlet at all.
+   -ErrorAction SilentlyContinue does not suppress a CommandNotFoundException:
+   the failure happens at command resolution, before a parameter is bound, and
+   under $ErrorActionPreference='Stop' it terminates. A standalone host has no
+   such cmdlet at all.
 
-	Found the moment a VM was evacuated onto HVNEW06, which is not a coincidence:
-	the destination of an evacuation is the host least likely to be a cluster
-	member.
-*/
+   Found the moment a VM was evacuated onto HVNEW06, which is not a coincidence:
+   the destination of an evacuation is the host least likely to be a cluster
+   member. */
 func TestPoweringAVMOnAStandaloneHostDoesNotNeedClusterCmdlets(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).vmPowerScript("HVNew03", types.VMPowerRunning)
 

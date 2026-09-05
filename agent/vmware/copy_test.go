@@ -76,11 +76,8 @@ func pattern(n int) []byte {
 	return b
 }
 
-/*
-What lands at the destination must be what was at the same offset in the
-
-	source, and only the changed extents may move.
-*/
+/* What lands at the destination must be what was at the same offset in the
+   source, and only the changed extents may move. */
 func TestOnlyTheChangedRangesMoveAndTheyLandWhereTheyCameFrom(t *testing.T) {
 	const size = 1 << 20
 	src := &fakeSource{
@@ -113,11 +110,8 @@ func TestOnlyTheChangedRangesMoveAndTheyLandWhereTheyCameFrom(t *testing.T) {
 	}
 }
 
-/*
-A range VMware reports off a sector boundary is widened, not narrowed — and
-
-	the widened read must still land at the offset it was read from.
-*/
+/* A range VMware reports off a sector boundary is widened, not narrowed — and
+   the widened read must still land at the offset it was read from. */
 func TestARaggedRangeIsWidenedAndStillLandsCorrectly(t *testing.T) {
 	const size = 1 << 20
 	src := &fakeSource{image: pattern(size), extents: []Extent{{Start: 5000, Length: 100}}, next: "x/1"}
@@ -135,11 +129,8 @@ func TestARaggedRangeIsWidenedAndStillLandsCorrectly(t *testing.T) {
 	}
 }
 
-/*
-A single extent larger than one request is split, and the pieces must be
-
-	contiguous and cover it exactly. A gap here is a hole in the guest's disk.
-*/
+/* A single extent larger than one request is split, and the pieces must be
+   contiguous and cover it exactly. A gap here is a hole in the guest's disk. */
 func TestALargeExtentIsSplitWithoutGapsOrOverlap(t *testing.T) {
 	const size = 96 << 20
 	src := &fakeSource{image: pattern(size), extents: []Extent{{Start: 0, Length: 80 << 20}}, next: "x/1"}
@@ -170,11 +161,8 @@ func TestALargeExtentIsSplitWithoutGapsOrOverlap(t *testing.T) {
 	}
 }
 
-/*
-Progress is reported against the total for the pass, not the disk. A delta
-
-	of 200MB shown as "200MB of 500GB" reads as barely started.
-*/
+/* Progress is reported against the total for the pass, not the disk. A delta
+   of 200MB shown as "200MB of 500GB" reads as barely started. */
 func TestProgressIsReportedAgainstThePassNotTheDisk(t *testing.T) {
 	const size = 96 << 20
 	src := &fakeSource{image: pattern(size), extents: []Extent{{Start: 0, Length: 64 << 20}}, next: "x/1"}
@@ -195,12 +183,9 @@ func TestProgressIsReportedAgainstThePassNotTheDisk(t *testing.T) {
 	}
 }
 
-/*
-A source disk bigger than the destination means it grew in VMware after the
-
-	destination was created. Copying what fits would produce a VM that boots and
-	is missing the end of its disk.
-*/
+/* A source disk bigger than the destination means it grew in VMware after the
+   destination was created. Copying what fits would produce a VM that boots and
+   is missing the end of its disk. */
 func TestASourceLargerThanTheDestinationIsRefusedBeforeAnythingMoves(t *testing.T) {
 	src := &fakeSource{image: pattern(1 << 20)}
 	dst := &fakeSink{buf: make([]byte, 8192)}
@@ -216,12 +201,9 @@ func TestASourceLargerThanTheDestinationIsRefusedBeforeAnythingMoves(t *testing.
 	}
 }
 
-/*
-The last sector of a disk whose size is not a whole number of sectors cannot
-
-	be written aligned. Finding that out after hours of copying is the worst
-	possible moment, so it is refused before the first read.
-*/
+/* The last sector of a disk whose size is not a whole number of sectors cannot
+   be written aligned. Finding that out after hours of copying is the worst
+   possible moment, so it is refused before the first read. */
 func TestASizeThatCannotBeWrittenAlignedIsRefusedUpFront(t *testing.T) {
 	src := &fakeSource{image: pattern(1 << 20), extents: []Extent{{Start: 0, Length: 512}}}
 	dst := &fakeSink{buf: make([]byte, 1<<20)}
@@ -237,17 +219,14 @@ func TestASizeThatCannotBeWrittenAlignedIsRefusedUpFront(t *testing.T) {
 	}
 }
 
-/*
-A short read stops the copy: writing the partial read would leave the rest of
+/* A short read stops the copy: writing the partial read would leave the rest of
+   that range holding whatever was there before, with nothing reporting it.
 
-	that range holding whatever was there before, with nothing reporting it.
-
-	What it must NOT do is explain itself. This message used to conclude "the disk
-	file is not the size its configuration reports", which was one cause of a
-	short read stated as the finding — and on the first real migration it was the
-	wrong one: the file being read was the descriptor, not the disk. The byte
-	count is what tells those apart, so the byte count is what it reports.
-*/
+   What it must NOT do is explain itself. This message used to conclude "the disk
+   file is not the size its configuration reports", which was one cause of a
+   short read stated as the finding — and on the first real migration it was the
+   wrong one: the file being read was the descriptor, not the disk. The byte
+   count is what tells those apart, so the byte count is what it reports. */
 func TestAShortReadStopsTheCopyRatherThanWritingPartOfIt(t *testing.T) {
 	src := &shortSource{fakeSource{image: pattern(1 << 20), extents: []Extent{{Start: 0, Length: 8192}}, next: "x/1"}}
 	dst := &fakeSink{buf: make([]byte, 1<<20)}
@@ -290,11 +269,8 @@ func TestCancellationStopsTheCopy(t *testing.T) {
 	}
 }
 
-/*
-A pass that copied nothing still returns the new marker. Storing the old one
-
-	would leave the next pass re-copying the same window for ever.
-*/
+/* A pass that copied nothing still returns the new marker. Storing the old one
+   would leave the next pass re-copying the same window for ever. */
 func TestAPassWithNoChangesStillAdvancesTheMarker(t *testing.T) {
 	src := &fakeSource{image: pattern(1 << 20), next: "52 de/9"}
 	dst := &fakeSink{buf: make([]byte, 1<<20)}
@@ -310,11 +286,8 @@ func TestAPassWithNoChangesStillAdvancesTheMarker(t *testing.T) {
 	}
 }
 
-/*
-Snapshot names carry the migration's identity, so a leftover one can be
-
-	traced back to what made it instead of looking like anybody's.
-*/
+/* Snapshot names carry the migration's identity, so a leftover one can be
+   traced back to what made it instead of looking like anybody's. */
 func TestASnapshotNameNamesItsMigration(t *testing.T) {
 	n := SnapshotName("mig-7f2c")
 	if !strings.HasPrefix(n, "ballast-") || !strings.Contains(n, "mig-7f2c") {

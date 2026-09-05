@@ -5,16 +5,14 @@ import (
 	"testing"
 )
 
-/*
-A volume with no drive letter is still a volume.
+/* A volume with no drive letter is still a volume.
 
-	The inventory only collected volumes that HAD a letter, which was true of
-	every volume Ballast could make until it learned to format without one. The
-	console now offers that deliberately — for a disk to be mounted into a folder
-	or handed to a cluster — and the volume it made was invisible the moment it
-	existed, showing only as "1 disk with no drive letter". Offering a way to
-	create something the inventory then drops is worse than not offering it.
-*/
+   The inventory only collected volumes that HAD a letter, which was true of
+   every volume Ballast could make until it learned to format without one. The
+   console now offers that deliberately — for a disk to be mounted into a folder
+   or handed to a cluster — and the volume it made was invisible the moment it
+   existed, showing only as "1 disk with no drive letter". Offering a way to
+   create something the inventory then drops is worse than not offering it. */
 func TestLetterlessVolumesAreCollected(t *testing.T) {
 	s := resourcesScript
 
@@ -31,12 +29,9 @@ func TestLetterlessVolumesAreCollected(t *testing.T) {
 	}
 }
 
-/*
-Windows makes its own letter-less fixed volumes — recovery, system reserved,
-
-	EFI. Listing those would bury the one volume this exists to show under three
-	nobody asked about, which is its own kind of hiding.
-*/
+/* Windows makes its own letter-less fixed volumes — recovery, system reserved,
+   EFI. Listing those would bury the one volume this exists to show under three
+   nobody asked about, which is its own kind of hiding. */
 func TestWindowsOwnPartitionsAreNotListedAsVolumes(t *testing.T) {
 	s := resourcesScript
 	for _, want := range []string{"Recovery", "System Reserved", "EFI system partition"} {
@@ -69,18 +64,16 @@ func TestALetterlessVolumeIsNamedByItsLabel(t *testing.T) {
 	}
 }
 
-/*
-A CSV must not arrive twice.
+/* A CSV must not arrive twice.
 
-	The letter-less pass was added after the lettered one and inherited none of
-	its protection. The old comment there said a CSV "cannot be reported twice"
-	because its mount lives under C: and C is excluded — true of a query that
-	requires a drive letter, and a CSV has none of its own. So every CSV came back
-	a second time under its raw volume name: DS1 at C:\ClusterStorage\DS1, and
-	"Cluster Disk 1" at the same GUID path with identical size and usage.
-	Observed on Primary1 and Secondary, 2026-09-02, as a nameless extra row under
-	each cluster's Storage.
-*/
+   The letter-less pass was added after the lettered one and inherited none of
+   its protection. The old comment there said a CSV "cannot be reported twice"
+   because its mount lives under C: and C is excluded — true of a query that
+   requires a drive letter, and a CSV has none of its own. So every CSV came back
+   a second time under its raw volume name: DS1 at C:\ClusterStorage\DS1, and
+   "Cluster Disk 1" at the same GUID path with identical size and usage.
+   Observed on Primary1 and Secondary, 2026-09-02, as a nameless extra row under
+   each cluster's Storage. */
 func TestAVolumeAlreadyReportedIsNotCollectedAgain(t *testing.T) {
 	s := resourcesScript
 
@@ -101,13 +94,10 @@ func TestAVolumeAlreadyReportedIsNotCollectedAgain(t *testing.T) {
 	}
 }
 
-/*
-Matched case-insensitively and without a trailing separator, because the two
-
-	sources spell the same volume differently: a CSV partition reports
-	\\?\Volume{guid} and Get-Volume reports \\?\Volume{guid}\. Comparing them
-	literally would claim nothing and the duplicate would survive the fix.
-*/
+/* Matched case-insensitively and without a trailing separator, because the two
+   sources spell the same volume differently: a CSV partition reports
+   \\?\Volume{guid} and Get-Volume reports \\?\Volume{guid}\. Comparing them
+   literally would claim nothing and the duplicate would survive the fix. */
 func TestTheClaimIsNormalisedBeforeComparing(t *testing.T) {
 	s := resourcesScript
 	if strings.Count(s, ".TrimEnd('\\').ToLower()") < 3 {

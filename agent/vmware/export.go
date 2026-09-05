@@ -48,14 +48,12 @@ type ExportDisk struct {
 	Size int64
 }
 
-/*
-Export is a sequential read of a VM's disks from an NFC lease.
+/* Export is a sequential read of a VM's disks from an NFC lease.
 
-	An interface so a pass can be driven without a vCenter. What is worth testing
-	about it is the ORDER — that the lease is finished exactly once, that a
-	failure aborts rather than completes — and an order can only be tested by
-	watching the calls.
-*/
+   An interface so a pass can be driven without a vCenter. What is worth testing
+   about it is the ORDER — that the lease is finished exactly once, that a
+   failure aborts rather than completes — and an order can only be tested by
+   watching the calls. */
 type Export interface {
 	// Disks are what the lease offers, in the order VMware lists them.
 	Disks() []ExportDisk
@@ -160,18 +158,15 @@ func (e *leaseExport) Done(ctx context.Context, failed error) {
 	}
 }
 
-/*
-matchExportDisks pairs the lease's disks with the VM's, by ORDER and then by
+/* matchExportDisks pairs the lease's disks with the VM's, by ORDER and then by
+   SIZE.
 
-	SIZE.
-
-	The lease names its disks "disk-0.vmdk", which says nothing about which
-	VirtualDisk key it is. Order is how VMware presents them and is almost
-	certainly right — but "almost certainly" is how a two-disk VM ends up with
-	its data and its log swapped, each copy internally consistent and the pair
-	useless. So the sizes have to agree, and where they do not this refuses
-	rather than picking one.
-*/
+   The lease names its disks "disk-0.vmdk", which says nothing about which
+   VirtualDisk key it is. Order is how VMware presents them and is almost
+   certainly right — but "almost certainly" is how a two-disk VM ends up with
+   its data and its log swapped, each copy internally consistent and the pair
+   useless. So the sizes have to agree, and where they do not this refuses
+   rather than picking one. */
 func matchExportDisks(disks []Disk, offered []ExportDisk) error {
 	if len(offered) != len(disks) {
 		return fmt.Errorf("the export lease offers %d disk(s) and the VM has %d. Ballast will not guess which is which",

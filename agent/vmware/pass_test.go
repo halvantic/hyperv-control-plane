@@ -53,14 +53,12 @@ func (f *fakePass) Export(_ context.Context, _, snapRef string) (Export, error) 
 	return f.export, nil
 }
 
-/*
-fakeExport serves streams the test built, and records how the lease ENDED.
+/* fakeExport serves streams the test built, and records how the lease ENDED.
 
-	That last part is the point: a lease completed after a failed transfer tells
-	vCenter a disk arrived when it did not, and a lease left open holds state on
-	somebody else's system until it times out. Neither is visible from the
-	outcome of a pass, so it is watched here.
-*/
+   That last part is the point: a lease completed after a failed transfer tells
+   vCenter a disk arrived when it did not, and a lease left open holds state on
+   somebody else's system until it times out. Neither is visible from the
+   outcome of a pass, so it is watched here. */
 type fakeExport struct {
 	disks   []ExportDisk
 	streams [][]byte
@@ -507,16 +505,14 @@ func TestAServedFileThatIsHeldReadsDifferentlyFromAMissingOne(t *testing.T) {
 	}
 }
 
-/*
-A locked disk file on a source that is NOT running.
+/* A locked disk file on a source that is NOT running.
 
-	Before warm copies existed this was the running guest holding its own disk,
-	and the message said so. It cannot be that any more: a running source is read
-	over an export lease and never reaches the datastore at all. What is left is
-	a genuine lock held by something else, and the advice has to match — telling
-	this operator to stop the guest would send them to stop a VM that is already
-	stopped.
-*/
+   Before warm copies existed this was the running guest holding its own disk,
+   and the message said so. It cannot be that any more: a running source is read
+   over an export lease and never reaches the datastore at all. What is left is
+   a genuine lock held by something else, and the advice has to match — telling
+   this operator to stop the guest would send them to stop a VM that is already
+   stopped. */
 func TestAStoppedSourceWithALockedFileIsToldWhoElseCouldHoldIt(t *testing.T) {
 	src, prov := onePass()
 	src.info.Name = "BallastJumphost"

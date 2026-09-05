@@ -95,11 +95,8 @@ func TestScanningOneVolumeScansOnlyThatOne(t *testing.T) {
 	}
 }
 
-/*
-"Walk this path" is not a capability this feature needs, and a job that
-
-	accepted one would let anything that can enqueue a job walk the whole box.
-*/
+/* "Walk this path" is not a capability this feature needs, and a job that
+   accepted one would let anything that can enqueue a job walk the whole box. */
 func TestScanRefusesAPathTheHostDoesNotReport(t *testing.T) {
 	hv := &importStubHV{scan: &types.ImportScanStatus{}}
 	r := recWithRoots(hv, `C:\ClusterStorage\DS1`)
@@ -112,12 +109,9 @@ func TestScanRefusesAPathTheHostDoesNotReport(t *testing.T) {
 	}
 }
 
-/*
-A scan that FAILED must not report as a scan that found nothing. This is the
-
-	single most important assertion in the file: the answer decides whether an
-	operator reformats a volume.
-*/
+/* A scan that FAILED must not report as a scan that found nothing. This is the
+   single most important assertion in the file: the answer decides whether an
+   operator reformats a volume. */
 func TestAFailedScanIsAnError(t *testing.T) {
 	hv := &importStubHV{scan: &types.ImportScanStatus{
 		Roots:   []string{`C:\ClusterStorage\DS1`},
@@ -162,13 +156,10 @@ func TestTruncationIsReportedRatherThanImplied(t *testing.T) {
 	}
 }
 
-/*
-An imported VM must stop being offered immediately. Leaving it means the
-
-	console offers Import for a VM that now exists, and the second attempt is
-	refused — correctly — with a message about corrupting disks. Correct refusals
-	for actions the console should not have offered still read as breakage.
-*/
+/* An imported VM must stop being offered immediately. Leaving it means the
+   console offers Import for a VM that now exists, and the second attempt is
+   refused — correctly — with a message about corrupting disks. Correct refusals
+   for actions the console should not have offered still read as breakage. */
 func TestAnImportedVMStopsBeingOffered(t *testing.T) {
 	path := `C:\ClusterStorage\DS1\DC01\Virtual Machines\a.vmcx`
 	hv := &importStubHV{
@@ -199,12 +190,9 @@ func TestAnImportedVMStopsBeingOffered(t *testing.T) {
 	}
 }
 
-/*
-A FAILED import must leave the VM on the list. Dropping it would hide a VM
-
-	that is still sitting on the storage unimported — the exact thing the feature
-	exists to surface.
-*/
+/* A FAILED import must leave the VM on the list. Dropping it would hide a VM
+   that is still sitting on the storage unimported — the exact thing the feature
+   exists to surface. */
 func TestAFailedImportLeavesTheVMOffered(t *testing.T) {
 	path := `D:\DC01\Virtual Machines\a.vmcx`
 	hv := &importStubHV{
@@ -228,11 +216,8 @@ func TestAFailedImportLeavesTheVMOffered(t *testing.T) {
 	}
 }
 
-/*
-Register and copy fail in opposite, expensive directions, so an unset mode is
-
-	a refusal rather than a default.
-*/
+/* Register and copy fail in opposite, expensive directions, so an unset mode is
+   a refusal rather than a default. */
 func TestImportRefusesAnUnsetMode(t *testing.T) {
 	hv := &importStubHV{}
 	r := recWithRoots(hv, `D:\`)

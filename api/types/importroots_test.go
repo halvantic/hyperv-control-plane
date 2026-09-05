@@ -72,13 +72,10 @@ func TestImportScanRoots(t *testing.T) {
 	}
 }
 
-/*
-The CSV test is the one that matters, because the naive rule — "skip anything
-
-	on the system drive" — silently excludes exactly the storage this feature
-	exists for. A cluster member would then scan nothing and report no importable
-	VMs, which reads as "the volume is empty".
-*/
+/* The CSV test is the one that matters, because the naive rule — "skip anything
+   on the system drive" — silently excludes exactly the storage this feature
+   exists for. A cluster member would then scan nothing and report no importable
+   VMs, which reads as "the volume is empty". */
 func TestCSVsAreNotTheSystemDrive(t *testing.T) {
 	for _, p := range []string{`C:\ClusterStorage\DS1`, `c:\clusterstorage\ds1`, `C:/ClusterStorage/DS1`} {
 		if !isCSVPath(p) {

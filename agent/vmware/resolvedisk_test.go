@@ -32,14 +32,12 @@ import (
 
 const testCapacity int64 = 40 << 30
 
-/*
-vmfsDatastore is a VMFS layout, including the trap.
+/* vmfsDatastore is a VMFS layout, including the trap.
 
-	descriptorSize bytes are served for the .vmdk over HTTP, and the full disk is
-	served for -flat.vmdk. statSize is what the datastore BROWSER would report for
-	the .vmdk — the disk's capacity — and is deliberately present so a future
-	implementation that goes back to asking it fails this test.
-*/
+   descriptorSize bytes are served for the .vmdk over HTTP, and the full disk is
+   served for -flat.vmdk. statSize is what the datastore BROWSER would report for
+   the .vmdk — the disk's capacity — and is deliberately present so a future
+   implementation that goes back to asking it fails this test. */
 type vmfsDatastore struct {
 	files    map[string]int64 // path -> bytes actually servable over HTTP
 	statSize map[string]int64 // path -> what the browser claims
@@ -89,15 +87,13 @@ func TestTheFlatFileIsChosenEvenWhenTheDescriptorClaimsToBeTheDisk(t *testing.T)
 	}
 }
 
-/*
-The probe must read the END of the disk.
+/* The probe must read the END of the disk.
 
-	A descriptor is a real file and serves its own first bytes perfectly well, so
-	a probe at offset 0 returns a full sector from BOTH files and cannot tell
-	them apart. This asserts the offset rather than the outcome, because a probe
-	at the wrong offset gives the right answer here by luck and the wrong one on
-	any disk whose descriptor happens to exceed a sector.
-*/
+   A descriptor is a real file and serves its own first bytes perfectly well, so
+   a probe at offset 0 returns a full sector from BOTH files and cannot tell
+   them apart. This asserts the offset rather than the outcome, because a probe
+   at the wrong offset gives the right answer here by luck and the wrong one on
+   any disk whose descriptor happens to exceed a sector. */
 func TestTheProbeAsksForTheEndOfTheDiskNotTheStart(t *testing.T) {
 	var gotOffset, gotLength int64
 	probe := func(_ context.Context, _ string, offset, length int64) (int64, error) {
@@ -115,12 +111,9 @@ func TestTheProbeAsksForTheEndOfTheDiskNotTheStart(t *testing.T) {
 	}
 }
 
-/*
-A datastore that serves the data under the descriptor's own name — NFS, and
-
-	anything monolithic — must keep using that name rather than hunting for a
-	flat file that does not exist.
-*/
+/* A datastore that serves the data under the descriptor's own name — NFS, and
+   anything monolithic — must keep using that name rather than hunting for a
+   flat file that does not exist. */
 func TestADatastoreThatServesTheDiskUnderItsOwnNameIsUsedAsIs(t *testing.T) {
 	ds := &vmfsDatastore{files: map[string]int64{"[nfs1] BSL/BSL.vmdk": testCapacity}}
 	got, err := resolveDiskFile(t.Context(), "[nfs1] BSL/BSL.vmdk", testCapacity, ds.probe, datastoreFacts{})
@@ -151,12 +144,9 @@ func TestASnapshotDeltaIsFound(t *testing.T) {
 	}
 }
 
-/*
-Where nothing can serve the disk, the failure lists what was tried and what
-
-	each one did. That is a diagnosis an operator can act on; "Error caused by
-	file" and "returned less than requested" were both mysteries.
-*/
+/* Where nothing can serve the disk, the failure lists what was tried and what
+   each one did. That is a diagnosis an operator can act on; "Error caused by
+   file" and "returned less than requested" were both mysteries. */
 func TestWhenNothingHoldsTheDiskTheFailureNamesEverythingItTried(t *testing.T) {
 	ds := &vmfsDatastore{files: map[string]int64{"[vsan1] BSL/BSL.vmdk": 523}}
 	_, err := resolveDiskFile(t.Context(), "[vsan1] BSL/BSL.vmdk", testCapacity, ds.probe, datastoreFacts{})
@@ -191,33 +181,28 @@ func TestAMissingCandidateDoesNotStopTheSearch(t *testing.T) {
 	}
 }
 
-/*
-What the datastore's HTTP status means for a ranged read.
+/* What the datastore's HTTP status means for a ranged read.
 
-	The third real failure, and the one that showed this path had never copied a
-	byte. The probe reported:
+   The third real failure, and the one that showed this path had never copied a
+   byte. The probe reported:
 
-	  BSL-flat.vmdk (could not be read: … 206 Partial Content)
+     BSL-flat.vmdk (could not be read: … 206 Partial Content)
 
-	206 is the CORRECT answer to a range request. govmomi's Download accepts only
-	200 OK and turns everything else into an error, so every ranged read of real
-	disk data failed on its status. It stayed hidden because the earlier failures
-	never got this far: a 523-byte descriptor fits inside the requested range, so
-	the server answers 200 with the whole file.
-*/
+   206 is the CORRECT answer to a range request. govmomi's Download accepts only
+   200 OK and turns everything else into an error, so every ranged read of real
+   disk data failed on its status. It stayed hidden because the earlier failures
+   never got this far: a 523-byte descriptor fits inside the requested range, so
+   the server answers 200 with the whole file. */
 func TestARangedReadAcceptsPartialContent(t *testing.T) {
 	if err := acceptRangedRead(206, "206 Partial Content", nil, 103079211008); err != nil {
 		t.Fatalf("the answer that means \"here is the range you asked for\" was rejected: %v", err)
 	}
 }
 
-/*
-200 to a MID-FILE range means the server ignored the range and is sending the
-
-	file from the beginning. Reading it would write the start of the disk over the
-	middle of it, on every chunk, and the copy would report success — the worst
-	thing this code can produce, and invisible until the VM misbehaves.
-*/
+/* 200 to a MID-FILE range means the server ignored the range and is sending the
+   file from the beginning. Reading it would write the start of the disk over the
+   middle of it, on every chunk, and the copy would report success — the worst
+   thing this code can produce, and invisible until the VM misbehaves. */
 func TestARangeTheServerIgnoredIsRefusedRatherThanCopied(t *testing.T) {
 	err := acceptRangedRead(200, "200 OK", nil, 65536)
 	if err == nil {
@@ -259,13 +244,11 @@ func TestOtherStatusesAreReportedWithTheStatus(t *testing.T) {
 	}
 }
 
-/*
-The 500 that stalled a warm migration said only "500 Internal Server Error".
+/* The 500 that stalled a warm migration said only "500 Internal Server Error".
 
-	ESXi had answered with a page saying why, and it was dropped on the floor —
-	leaving the resolver to infer a cause from a status code and the operator to
-	read the inference. The reason the host gave has to reach the job message.
-*/
+   ESXi had answered with a page saying why, and it was dropped on the floor —
+   leaving the resolver to infer a cause from a status code and the operator to
+   read the inference. The reason the host gave has to reach the job message. */
 func TestTheReasonTheHostGaveSurvives(t *testing.T) {
 	body := strings.NewReader("<html><head><title>500</title></head><body>" +
 		"<h1>Error</h1><p>Failed to open file /vmfs/volumes/datastore1/vm-2/vm-2-flat.vmdk: Device or resource busy</p>" +
@@ -302,15 +285,12 @@ func TestAHugeBodyIsCutDown(t *testing.T) {
 	}
 }
 
-/*
-A failure that could not read anything has to say what the datastore knows,
+/* A failure that could not read anything has to say what the datastore knows,
+   because the read alone cannot tell a missing file from a withheld one.
 
-	because the read alone cannot tell a missing file from a withheld one.
-
-	The failure this replaced ended in two guesses: that a 500 meant another
-	backup held a lock, and that the datastore might be vSAN. Both were one call
-	away from being facts.
-*/
+   The failure this replaced ended in two guesses: that a 500 meant another
+   backup held a lock, and that the datastore might be vSAN. Both were one call
+   away from being facts. */
 func TestAFailureReportsWhatTheDatastoreKnows(t *testing.T) {
 	probe := func(_ context.Context, cand string, _, _ int64) (int64, error) {
 		if strings.HasSuffix(cand, "-flat.vmdk") {

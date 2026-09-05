@@ -132,14 +132,12 @@ func RunPass(ctx context.Context, prov Provisioner, req PassRequest, onProgress 
 	return runPass(ctx, c, prov, req, onProgress)
 }
 
-/*
-passSource is the half of Client a pass drives.
+/* passSource is the half of Client a pass drives.
 
-	The ORDER of these calls is where the correctness of a pass lives — off
-	before snapshot, snapshot removed on every exit including a failed one — and
-	an order can only be tested by watching the calls. Against a real vCenter
-	those are the two things hardest to observe and most expensive to get wrong.
-*/
+   The ORDER of these calls is where the correctness of a pass lives — off
+   before snapshot, snapshot removed on every exit including a failed one — and
+   an order can only be tested by watching the calls. Against a real vCenter
+   those are the two things hardest to observe and most expensive to get wrong. */
 type passSource interface {
 	Source
 	Inspect(ctx context.Context, moRef string) (VMInfo, error)
@@ -387,14 +385,12 @@ func gracefulOff(d time.Duration) time.Duration {
 	return d
 }
 
-/*
-DestPathFor names one disk's VHDX.
+/* DestPathFor names one disk's VHDX.
 
-	Derived from the SOURCE disk's file name, not from a counter. A VM with disks
-	added and removed over the years has keys 2000, 2002 and 2005, and numbering
-	the destinations 1, 2, 3 loses the only thing that lets an operator match a
-	VHDX back to the VMDK it came from a year later.
-*/
+   Derived from the SOURCE disk's file name, not from a counter. A VM with disks
+   added and removed over the years has keys 2000, 2002 and 2005, and numbering
+   the destinations 1, 2, 3 loses the only thing that lets an operator match a
+   VHDX back to the VMDK it came from a year later. */
 func DestPathFor(dir, vmName string, d Disk) string {
 	base := d.Path
 	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
@@ -446,13 +442,11 @@ func fmtBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-/*
-HostDisks is the real destination: VHDXs on this Hyper-V host.
+/* HostDisks is the real destination: VHDXs on this Hyper-V host.
 
-	Thin on purpose. Create and Open differ by ONE thing — Create replaces what it
-	finds and Open must not — and keeping them two named methods rather than one
-	with a flag means a caller cannot get that wrong by passing false.
-*/
+   Thin on purpose. Create and Open differ by ONE thing — Create replaces what it
+   finds and Open must not — and keeping them two named methods rather than one
+   with a flag means a caller cannot get that wrong by passing false. */
 type HostDisks struct {
 	PS *hyperv.PowerShell
 }
