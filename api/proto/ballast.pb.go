@@ -5903,8 +5903,13 @@ type ClusterCSV struct {
 	// the virtual disk but not the filesystem leaves those two disagreeing, and
 	// the volume is the one that says what is usable. Carried so a CSV's declared
 	// size can be compared with reality.
-	SizeBytes     uint64 `protobuf:"varint,7,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	FreeBytes     uint64 `protobuf:"varint,8,opt,name=free_bytes,json=freeBytes,proto3" json:"free_bytes,omitempty"`
+	SizeBytes uint64 `protobuf:"varint,7,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	FreeBytes uint64 `protobuf:"varint,8,opt,name=free_bytes,json=freeBytes,proto3" json:"free_bytes,omitempty"`
+	// serial_number is the serial of the DISK this volume sits on — the same
+	// identifier CSVSourceSpec uses, and the only thing tying an observed volume
+	// to the LUN carrying it. Without it a LUN holding a real CSV showed as
+	// "unclaimed": the CSV said only its name, the disk only its serial.
+	SerialNumber  string `protobuf:"bytes,9,opt,name=serial_number,json=serialNumber,proto3" json:"serial_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5993,6 +5998,13 @@ func (x *ClusterCSV) GetFreeBytes() uint64 {
 		return x.FreeBytes
 	}
 	return 0
+}
+
+func (x *ClusterCSV) GetSerialNumber() string {
+	if x != nil {
+		return x.SerialNumber
+	}
+	return ""
 }
 
 // ClusterVM is one highly-available VM role as observed by the cluster.
@@ -7522,7 +7534,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x0fClusterResource\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +
-	"\x05state\x18\x03 \x01(\tR\x05state\"\xf6\x01\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\"\x9b\x02\n" +
 	"\n" +
 	"ClusterCSV\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
@@ -7535,7 +7547,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\a \x01(\x04R\tsizeBytes\x12\x1d\n" +
 	"\n" +
-	"free_bytes\x18\b \x01(\x04R\tfreeBytes\"T\n" +
+	"free_bytes\x18\b \x01(\x04R\tfreeBytes\x12#\n" +
+	"\rserial_number\x18\t \x01(\tR\fserialNumber\"T\n" +
 	"\tClusterVM\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +

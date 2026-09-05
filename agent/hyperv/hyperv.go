@@ -1036,6 +1036,9 @@ type ClusterCSV struct {
 	Health         string
 	Operational    string
 	DetachedReason string
+	// SerialNumber is the serial of the DISK this volume sits on — the only
+	// thing tying an observed volume to the LUN carrying it.
+	SerialNumber string
 
 	// SizeBytes/FreeBytes are the VOLUME's capacity as the cluster reports it,
 	// not the backing virtual disk's. Those differ whenever a grow reached the

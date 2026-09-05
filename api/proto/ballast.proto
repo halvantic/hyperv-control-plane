@@ -973,6 +973,11 @@ message ClusterCSV {
   // size can be compared with reality.
   uint64 size_bytes = 7;
   uint64 free_bytes = 8;
+  // serial_number is the serial of the DISK this volume sits on — the same
+  // identifier CSVSourceSpec uses, and the only thing tying an observed volume
+  // to the LUN carrying it. Without it a LUN holding a real CSV showed as
+  // "unclaimed": the CSV said only its name, the disk only its serial.
+  string serial_number = 9;
 }
 
 // ClusterVM is one highly-available VM role as observed by the cluster.

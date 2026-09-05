@@ -2266,6 +2266,16 @@ type CSVStatus struct {
 	Name      string `json:"name"`
 	OwnerNode string `json:"ownerNode,omitempty"`
 	State     string `json:"state,omitempty"`
+	/* SerialNumber is the serial of the DISK this volume sits on — the same
+	   identifier CSVSpec.Source uses, and the only thing tying an observed
+	   volume to the LUN carrying it.
+
+	   Without it the two lists cannot be joined. The console showed a LUN
+	   holding DS1 as "unclaimed" and had no way to offer to declare it: the CSV
+	   said only its name, the disk said only its serial, and nothing connected
+	   them. Reported for display and for that join; the DECLARED source is
+	   still what the reconcile binds on. */
+	SerialNumber string `json:"serialNumber,omitempty"`
 
 	// Health and Operational are the BACKING VIRTUAL DISK's status, observed
 	// separately from the pool's. A pool and its volumes fail independently: a

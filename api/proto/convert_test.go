@@ -278,6 +278,7 @@ func sampleClusterStatus() types.ClusterStatus {
 			Name: "Cluster Virtual Disk (Vol01)", OwnerNode: "n1", State: "Online",
 			Health: "Warning", Operational: "Degraded", DetachedReason: "By Policy",
 			SizeBytes: 322055438336, FreeBytes: 273657683968,
+			SerialNumber: "8a1d8c9e-8dbb-4fcb-a39b-d90925097740",
 		}},
 		Pool: &types.ClusterPoolStatus{
 			Name: "S2D on c1", RawBytes: 1 << 40, AllocatedBytes: 1 << 38,

@@ -1209,7 +1209,7 @@ func clusterCSVsToProto(vs []types.CSVStatus) []*ClusterCSV {
 	for _, v := range vs {
 		out = append(out, &ClusterCSV{Name: v.Name, OwnerNode: v.OwnerNode, State: v.State,
 			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason,
-			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes})
+			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes, SerialNumber: v.SerialNumber})
 	}
 	return out
 }
@@ -1265,7 +1265,7 @@ func clusterCSVsFromProto(vs []*ClusterCSV) []types.CSVStatus {
 	for _, v := range vs {
 		out = append(out, types.CSVStatus{Name: v.GetName(), OwnerNode: v.GetOwnerNode(), State: v.GetState(),
 			Health: v.GetHealth(), Operational: v.GetOperational(), DetachedReason: v.GetDetachedReason(),
-			SizeBytes: v.GetSizeBytes(), FreeBytes: v.GetFreeBytes()})
+			SizeBytes: v.GetSizeBytes(), FreeBytes: v.GetFreeBytes(), SerialNumber: v.GetSerialNumber()})
 	}
 	return out
 }

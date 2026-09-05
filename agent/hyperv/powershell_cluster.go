@@ -41,6 +41,8 @@ type clusterCSVObs struct {
 	DetachedReason string `json:"detachedReason"`
 	SizeBytes      uint64 `json:"sizeBytes"`
 	FreeBytes      uint64 `json:"freeBytes"`
+	// SerialNumber ties this volume to the LUN underneath it. See the script.
+	SerialNumber string `json:"serialNumber"`
 }
 
 type clusterObservation struct {
@@ -265,7 +267,26 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
     $sz = [uint64]$info.Partition.Size
     $free = [uint64]$info.Partition.FreeSpace
   }
-  [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr; sizeBytes = $sz; freeBytes = $free } })
+  # The SERIAL of the disk underneath, which is what ties this volume to the LUN
+  # carrying it. Nothing else does: the CSV knows its name, the disk knows its
+  # serial, and without this the console showed a LUN holding a real volume as
+  # "unclaimed" and could not offer to declare it.
+  #
+  # Reached through the partition's disk number rather than by matching sizes —
+  # a volume is always slightly smaller than the disk it is on, so size is a
+  # guess and this is an identity.
+  $serial = ''
+  if ($info -and $info.Partition -and $info.Partition.DiskNumber -ne $null) {
+    try { $serial = [string](Get-Disk -Number $info.Partition.DiskNumber -ErrorAction Stop).SerialNumber } catch {}
+  }
+  if (-not $serial -and $info -and $info.Partition -and $info.Partition.Name) {
+    # Fall back to the volume path, which Get-Partition can resolve to a disk.
+    try {
+      $pn = @(Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.AccessPaths -contains ([string]$info.Partition.Name) })[0]
+      if ($pn) { $serial = [string](Get-Disk -Number $pn.DiskNumber -ErrorAction SilentlyContinue).SerialNumber }
+    } catch {}
+  }
+  [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr; sizeBytes = $sz; freeBytes = $free; serialNumber = ([string]$serial).Trim() } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {
   [pscustomobject]@{ name = [string]$_.Name; owner = [string]$_.OwnerNode; state = [string]$_.State } })
 $sp = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })[0]
@@ -703,7 +724,7 @@ func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) 
 	for _, v := range obs.CSVs {
 		csvs = append(csvs, ClusterCSV{Name: v.Name, OwnerNode: v.Owner, State: v.State,
 			Health: v.Health, Operational: v.Operational, DetachedReason: v.DetachedReason,
-			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes})
+			SizeBytes: v.SizeBytes, FreeBytes: v.FreeBytes, SerialNumber: v.SerialNumber})
 	}
 	cvms := make([]ClusterVM, 0, len(obs.ClusterVMs))
 	for _, v := range obs.ClusterVMs {
