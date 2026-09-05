@@ -6,17 +6,19 @@ import (
 	"testing"
 )
 
-/* A removal that removed nothing and said it had.
+/*
+A removal that removed nothing and said it had.
 
-   RemoveCSV was one line of S2D: find a Storage Spaces virtual disk of that
-   name, Remove-VirtualDisk it, and treat "no such virtual disk" as nothing to
-   do. On S2D that reasoning holds. On an iSCSI-backed cluster there IS no
-   virtual disk — the CSV sits on a LUN from an array — so it found nothing,
-   returned NOOP, and the job reported "removed volume DS1".
+	RemoveCSV was one line of S2D: find a Storage Spaces virtual disk of that
+	name, Remove-VirtualDisk it, and treat "no such virtual disk" as nothing to
+	do. On S2D that reasoning holds. On an iSCSI-backed cluster there IS no
+	virtual disk — the CSV sits on a LUN from an array — so it found nothing,
+	returned NOOP, and the job reported "removed volume DS1".
 
-   Twice on Primary1, 2026-09-01, against a CSV the cluster was reporting Online
-   and 1 TB in a reading twenty-four seconds old. The script had always
-   distinguished NOOP from REMOVED; nothing read the result. */
+	Twice on Primary1, 2026-09-01, against a CSV the cluster was reporting Online
+	and 1 TB in a reading twenty-four seconds old. The script had always
+	distinguished NOOP from REMOVED; nothing read the result.
+*/
 func TestRemoveCSVAsksTheClusterBeforeConcludingThereIsNothing(t *testing.T) {
 	var script string
 	p := &PowerShell{}
@@ -59,12 +61,14 @@ func TestRemoveCSVFailsWhenThereIsNothingToRemove(t *testing.T) {
 	}
 }
 
-/* The half Ballast does not own is named rather than silently skipped.
+/*
+The half Ballast does not own is named rather than silently skipped.
 
-   Taking the CSV out of the cluster is Ballast's domain. The LUN behind it is on
-   an array it has no presence on, and CLAUDE.md is explicit that where an action
-   lies outside that boundary the console says so plainly and names the one step,
-   rather than leaving an operator to discover that the disk is still full. */
+	Taking the CSV out of the cluster is Ballast's domain. The LUN behind it is on
+	an array it has no presence on, and CLAUDE.md is explicit that where an action
+	lies outside that boundary the console says so plainly and names the one step,
+	rather than leaving an operator to discover that the disk is still full.
+*/
 func TestRemoveCSVSaysWhatItCouldNotDo(t *testing.T) {
 	p := &PowerShell{}
 	p.run = func(_ context.Context, _ string) ([]byte, error) {

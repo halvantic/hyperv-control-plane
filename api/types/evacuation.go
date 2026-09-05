@@ -2,29 +2,31 @@ package types
 
 import "time"
 
-/* Emptying a Hyper-V host or cluster onto another one.
+/*
+Emptying a Hyper-V host or cluster onto another one.
 
-   The single-VM move already exists — shared-nothing live migration, Move-VM
-   with -IncludeStorage, run on the SOURCE host, with the Kerberos and
-   constrained-delegation setup that makes a service-initiated move work at all.
-   What was missing is doing it to forty VMs without a person driving each one,
-   which is what building a new environment actually consists of.
+	The single-VM move already exists — shared-nothing live migration, Move-VM
+	with -IncludeStorage, run on the SOURCE host, with the Kerberos and
+	constrained-delegation setup that makes a service-initiated move work at all.
+	What was missing is doing it to forty VMs without a person driving each one,
+	which is what building a new environment actually consists of.
 
-   AN OBJECT, NOT A BUTTON. An evacuation runs for hours, the centre may restart
-   in the middle of it, and half-moved is a real state somebody has to be able
-   to look at. So it is a record with per-VM outcomes and a controller that
-   takes one step per tick, the same shape as a VMware migration and for the
-   same reasons.
+	AN OBJECT, NOT A BUTTON. An evacuation runs for hours, the centre may restart
+	in the middle of it, and half-moved is a real state somebody has to be able
+	to look at. So it is a record with per-VM outcomes and a controller that
+	takes one step per tick, the same shape as a VMware migration and for the
+	same reasons.
 
-   PLACEMENT IS REWRITTEN AFTER THE MOVE, NEVER BEFORE. Spec.Placement.HostName
-   decides which agent owns a VM, and the move itself has to be run by the agent
-   that currently HAS it. Rewriting placement first points the destination agent
-   at a VM it has not got, and an agent reconciling a VM it cannot find creates
-   one — an empty machine with the right name over the top of a real migration.
+	PLACEMENT IS REWRITTEN AFTER THE MOVE, NEVER BEFORE. Spec.Placement.HostName
+	decides which agent owns a VM, and the move itself has to be run by the agent
+	that currently HAS it. Rewriting placement first points the destination agent
+	at a VM it has not got, and an agent reconciling a VM it cannot find creates
+	one — an empty machine with the right name over the top of a real migration.
 
-   WHAT IS DELIBERATELY NOT HERE: nothing removes the source host from anything,
-   and nothing decommissions it. An evacuation moves workloads off; what happens
-   to the empty host afterwards is a separate decision, taken by a person. */
+	WHAT IS DELIBERATELY NOT HERE: nothing removes the source host from anything,
+	and nothing decommissions it. An evacuation moves workloads off; what happens
+	to the empty host afterwards is a separate decision, taken by a person.
+*/
 type Evacuation struct {
 	Meta   ObjectMeta       `json:"meta"`
 	Spec   EvacuationSpec   `json:"spec"`
@@ -125,11 +127,13 @@ type EvacuationSpec struct {
 	ContinueOnFailure bool `json:"continueOnFailure,omitempty"`
 }
 
-/* EvacuationNIC maps one source switch to a destination.
+/*
+EvacuationNIC maps one source switch to a destination.
 
-   By switch NAME on both sides, because that is what a VM's adapter carries and
-   what Hyper-V compares. A dvport chosen in the console resolves to its switch
-   and VLAN before it gets here, the same way a VMware migration's does. */
+	By switch NAME on both sides, because that is what a VM's adapter carries and
+	what Hyper-V compares. A dvport chosen in the console resolves to its switch
+	and VLAN before it gets here, the same way a VMware migration's does.
+*/
 type EvacuationNIC struct {
 	/* VM binds this mapping to ONE virtual machine. Empty applies it to every VM
 	   on SourceSwitch, which is what forty VMs off one switch want — that is one

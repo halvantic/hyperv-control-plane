@@ -35,19 +35,21 @@ func s2dCluster() ClusterAssignment {
 	return formerOf(types.ClusterSpec{Storage: &types.ClusterStorageSpec{Kind: types.StorageKindS2D}})
 }
 
-/* Storage must not be attempted while the cluster has no identity.
+/*
+Storage must not be attempted while the cluster has no identity.
 
-   Enable-ClusterStorageSpacesDirect cannot succeed with the cluster name and IP
-   offline, and failing is expensive: on the rig (S2DCluster, 2026-08-16)
-   EnsureS2DPoolDisks took 3m57s a go because it cycles S2D when it finds no
-   pool, and the pass was cut off at the five-minute cycle limit before it
-   reached the cluster state read. Every pass burned four minutes on something
-   that could not work, and the centre received no cluster status at all — so the
-   ClusterCoreGroup condition naming the real fault never arrived and the console
-   showed an empty cluster page.
+	Enable-ClusterStorageSpacesDirect cannot succeed with the cluster name and IP
+	offline, and failing is expensive: on the rig (S2DCluster, 2026-08-16)
+	EnsureS2DPoolDisks took 3m57s a go because it cycles S2D when it finds no
+	pool, and the pass was cut off at the five-minute cycle limit before it
+	reached the cluster state read. Every pass burned four minutes on something
+	that could not work, and the centre received no cluster status at all — so the
+	ClusterCoreGroup condition naming the real fault never arrived and the console
+	showed an empty cluster page.
 
-   The core-group condition already told operators to fix that first. These
-   tests are what make the reconciler agree with it. */
+	The core-group condition already told operators to fix that first. These
+	tests are what make the reconciler agree with it.
+*/
 func TestStorageIsNotAttemptedWhileTheCoreGroupIsDown(t *testing.T) {
 	for _, state := range []string{"Pending", "Offline", "PartialOnline", "Failed"} {
 		t.Run(state, func(t *testing.T) {

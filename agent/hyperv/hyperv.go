@@ -558,6 +558,12 @@ type Interface interface {
 	// storage stranded behind it. Returns what was started.
 	StartClusterCoreGroup(ctx context.Context) (Outcome, string, error)
 
+	// StartClusterVolume asks the cluster to bring one CSV or clustered disk
+	// online. Narrower than the core-group repair above: that one exists because
+	// the whole cluster is down and everything else is a symptom; this is an
+	// operator pointing at one volume.
+	StartClusterVolume(ctx context.Context, volume string) (Outcome, string, error)
+
 	// GetNodeSelf reads this host's OWN cluster membership state. Answerable when
 	// the cluster itself is not, which is the point of it.
 	GetNodeSelf(ctx context.Context) (NodeSelf, error)

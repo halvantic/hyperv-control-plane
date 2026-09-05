@@ -275,13 +275,15 @@ func TestBothTheComputerAndTheAgentAccountsAreGranted(t *testing.T) {
 	}
 }
 
-/* The export has to report while it runs.
+/*
+The export has to report while it runs.
 
-   Export-VM is synchronous and silent, so a copy of any real size looked
-   exactly like a hung one: "exporting HVNew01 to HVNEW06", then nothing, then a
-   failure naming a time limit and not a single byte. An operator could not tell
-   a slow link from a stuck job — the one distinction that decides whether to
-   wait or intervene. */
+	Export-VM is synchronous and silent, so a copy of any real size looked
+	exactly like a hung one: "exporting HVNew01 to HVNEW06", then nothing, then a
+	failure naming a time limit and not a single byte. An operator could not tell
+	a slow link from a stuck job — the one distinction that decides whether to
+	wait or intervene.
+*/
 func TestTheExportReportsProgressWhileItRuns(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "D:\\VMs", "", "", nil)
 
@@ -324,12 +326,14 @@ func TestTheExportReportsProgressWhileItRuns(t *testing.T) {
 	}
 }
 
-/* The denominator is the file length, not the virtual size.
+/*
+The denominator is the file length, not the virtual size.
 
-   A dynamic 500GB disk holding 40GB copies 40GB. Reported against 500 it would
-   sit near eight percent for the whole run and read as stalled — a progress bar
-   that lies is worse than none, because it is the thing being used to decide
-   whether the job is stuck. */
+	A dynamic 500GB disk holding 40GB copies 40GB. Reported against 500 it would
+	sit near eight percent for the whole run and read as stalled — a progress bar
+	that lies is worse than none, because it is the thing being used to decide
+	whether the job is stuck.
+*/
 func TestProgressIsMeasuredAgainstWhatIsActuallyCopied(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "D:\\VMs", "", "", nil)
 	if !strings.Contains(s, "$totalBytes += [int64]$f.Length") {
@@ -347,17 +351,19 @@ func TestProgressIsMeasuredAgainstWhatIsActuallyCopied(t *testing.T) {
 	}
 }
 
-/* The destination's path is text here, not a path.
+/*
+The destination's path is text here, not a path.
 
-   Join-Path resolves the drive qualifier against the machine RUNNING it, and
-   this script runs on the source. Copying HVNew01 to HVNEW06, whose storage is
-   I: and whose source host's is not, it threw:
+	Join-Path resolves the drive qualifier against the machine RUNNING it, and
+	this script runs on the source. Copying HVNew01 to HVNEW06, whose storage is
+	I: and whose source host's is not, it threw:
 
-     Join-Path : Cannot find drive. A drive with the name 'I' does not exist.
+	  Join-Path : Cannot find drive. A drive with the name 'I' does not exist.
 
-   The whole point of the copy strategy is that the two hosts share nothing, so
-   assuming the destination's drives exist here is the one assumption it cannot
-   make. */
+	The whole point of the copy strategy is that the two hosts share nothing, so
+	assuming the destination's drives exist here is the one assumption it cannot
+	make.
+*/
 func TestTheDestinationPathIsNeverResolvedLocally(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "", nil)
 
@@ -373,19 +379,22 @@ func TestTheDestinationPathIsNeverResolvedLocally(t *testing.T) {
 	}
 }
 
-/* A compatibility report is a snapshot, so fixing it settles nothing until it
-   is asked again.
+/*
+A compatibility report is a snapshot, so fixing it settles nothing until it
 
-   The import disconnected all four of HVNew01's adapters successfully and then
-   read the ORIGINAL report, which still listed the four problems the disconnect
-   had just solved:
+	is asked again.
 
-     this host cannot take the VM even with its networks disconnected:
-     Could not find Ethernet switch 'ConvergedSwitch2'. | ... (x4)
+	The import disconnected all four of HVNew01's adapters successfully and then
+	read the ORIGINAL report, which still listed the four problems the disconnect
+	had just solved:
 
-   Compare-VM -CompatibilityReport is the documented way to ask again. This is
-   also the one real difference from the MOVE path, where fixing a report does
-   not take at all -- see movecompat.go. */
+	  this host cannot take the VM even with its networks disconnected:
+	  Could not find Ethernet switch 'ConvergedSwitch2'. | ... (x4)
+
+	Compare-VM -CompatibilityReport is the documented way to ask again. This is
+	also the one real difference from the MOVE path, where fixing a report does
+	not take at all -- see movecompat.go.
+*/
 func TestTheImportAsksTheReportAgainAfterFixingIt(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "",
 		[]types.EvacuationNIC{{SourceSwitch: "ConvergedSwitch2", TargetSwitch: "Converged"}})
@@ -407,19 +416,21 @@ func TestTheImportAsksTheReportAgainAfterFixingIt(t *testing.T) {
 	}
 }
 
-/* Progress notes: a bare percentage is decorated, prose is not.
+/*
+Progress notes: a bare percentage is decorated, prose is not.
 
-   The handler was written when the only payload was a number polled out of a
-   Move-VM job, so it wrapped every line as "live migration N%". Three
-   operations share it now and most emit prose, which reached the console as
+	The handler was written when the only payload was a number polled out of a
+	Move-VM job, so it wrapped every line as "live migration N%". Three
+	operations share it now and most emit prose, which reached the console as
 
-     live migration copied 50 GB of 50 GB (100%)%
+	  live migration copied 50 GB of 50 GB (100%)%
 
-   The stray percent is the visible half. The damaging half is calling a COPY a
-   live migration: they are different operations with different costs, and the
-   copy says so itself by refusing to run unless the guest is off. Telling an
-   operator their stopped guest is live-migrating is the console contradicting
-   the thing it just did. */
+	The stray percent is the visible half. The damaging half is calling a COPY a
+	live migration: they are different operations with different costs, and the
+	copy says so itself by refusing to run unless the guest is off. Telling an
+	operator their stopped guest is live-migrating is the console contradicting
+	the thing it just did.
+*/
 func TestOnlyABarePercentageIsDecorated(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"42", "live migration 42%"},
@@ -434,13 +445,15 @@ func TestOnlyABarePercentageIsDecorated(t *testing.T) {
 	}
 }
 
-/* Clearing a leftover export.
+/*
+Clearing a leftover export.
 
-   The copy refuses to write a second export over a first, because that is how a
-   half-copy becomes an unreadable one. Until now the refusal ended at "remove
-   it" — an instruction to open a session on the destination, which the brief
-   calls a defect rather than a runbook step, and which lands at the worst
-   moment: mid-evacuation, over a mess that is Ballast's own. */
+	The copy refuses to write a second export over a first, because that is how a
+	half-copy becomes an unreadable one. Until now the refusal ended at "remove
+	it" — an instruction to open a session on the destination, which the brief
+	calls a defect rather than a runbook step, and which lands at the worst
+	moment: mid-evacuation, over a mess that is Ballast's own.
+*/
 func TestTheRefusalNamesWhatIsThereAndWhatToDo(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "I:", "", "", nil)
 
@@ -487,12 +500,14 @@ func TestClearingRefusesFilesAVMIsRegisteredAgainst(t *testing.T) {
 	}
 }
 
-/* Every path this script builds keeps its separator.
+/*
+Every path this script builds keeps its separator.
 
-   Shipped once without one: "$root.TrimEnd('') + '' + $v" renders I:HVNew01,
-   which resolves to nothing, so clearing a leftover would have reported there
-   was nothing there. It is invisible in review — the line reads correctly at a
-   glance and the missing character is the whole meaning. */
+	Shipped once without one: "$root.TrimEnd('') + '' + $v" renders I:HVNew01,
+	which resolves to nothing, so clearing a leftover would have reported there
+	was nothing there. It is invisible in review — the line reads correctly at a
+	glance and the missing character is the whole meaning.
+*/
 func TestBuiltPathsKeepTheirSeparator(t *testing.T) {
 	sep := "\\"
 	copyScript := copyVMScript("HVNew01", "HVNEW06", "I:"+sep, "", "", nil)
@@ -511,13 +526,15 @@ func TestBuiltPathsKeepTheirSeparator(t *testing.T) {
 	}
 }
 
-/* Silence and work look the same, so the copy says which it is.
+/*
+Silence and work look the same, so the copy says which it is.
 
-   Reporting only movement was half right: it stops a console looking busy while
-   nothing happens, and it also makes "finished the bytes, now doing something
-   else" indistinguishable from "wedged". Observed: 50 GB of 50 GB eleven
-   seconds in, then six and a half minutes of nothing, with the import running
-   silently the whole time. */
+	Reporting only movement was half right: it stops a console looking busy while
+	nothing happens, and it also makes "finished the bytes, now doing something
+	else" indistinguishable from "wedged". Observed: 50 GB of 50 GB eleven
+	seconds in, then six and a half minutes of nothing, with the import running
+	silently the whole time.
+*/
 func TestTheCopySaysSomethingWhileItIsQuiet(t *testing.T) {
 	s := copyVMScript("HVNew01", "HVNEW06", "I:\\", "", "", nil)
 

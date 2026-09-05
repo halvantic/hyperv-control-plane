@@ -75,23 +75,25 @@ type streamHeader struct {
 	compressAlgorithm uint16
 }
 
-/* dataStart is the sector the first grain marker sits on.
+/*
+dataStart is the sector the first grain marker sits on.
 
-   overHead when it says anything, and this is not a preference. vCenter's own
-   export puts descriptorOffset=1, descriptorSize=1 and overHead=128: the
-   descriptor ends at sector 2 and the data begins at sector 128, with 126
-   sectors of padding between them. Computing the start from the descriptor
-   lands in that padding — and a zero-filled sector is a structurally valid
-   end-of-stream marker, so the decode ends immediately, reports success in its
-   own terms, and produces an empty disk.
+	overHead when it says anything, and this is not a preference. vCenter's own
+	export puts descriptorOffset=1, descriptorSize=1 and overHead=128: the
+	descriptor ends at sector 2 and the data begins at sector 128, with 126
+	sectors of padding between them. Computing the start from the descriptor
+	lands in that padding — and a zero-filled sector is a structurally valid
+	end-of-stream marker, so the decode ends immediately, reports success in its
+	own terms, and produces an empty disk.
 
-   That is not a hypothetical: it is what the first real warm migration did.
-   Only the footer check turned it into a failure instead of an 80GB file of
-   zeros. Measured against BallastJumphost on 2026-08-31, not read off a
-   specification.
+	That is not a hypothetical: it is what the first real warm migration did.
+	Only the footer check turned it into a failure instead of an 80GB file of
+	zeros. Measured against BallastJumphost on 2026-08-31, not read off a
+	specification.
 
-   The descriptor arithmetic is kept as the fallback for a producer that leaves
-   overHead at zero, where it is the best answer available. */
+	The descriptor arithmetic is kept as the fallback for a producer that leaves
+	overHead at zero, where it is the best answer available.
+*/
 func (h streamHeader) dataStart() uint64 {
 	afterDescriptor := uint64(1)
 	if h.descriptorSize > 0 && h.descriptorOffset >= 1 {
@@ -106,13 +108,15 @@ func (h streamHeader) dataStart() uint64 {
 // CapacityBytes is the size of the virtual disk the stream describes.
 func (h streamHeader) CapacityBytes() int64 { return int64(h.capacitySectors) * vmdkSector }
 
-/* parseStreamHeader reads and CHECKS the header.
+/*
+parseStreamHeader reads and CHECKS the header.
 
-   Every check here is one that, skipped, produces a disk rather than an error:
-   a sparse extent that is not stream-optimised decodes into nonsense at
-   plausible offsets, and a grain size that is not a whole number of destination
-   sectors cannot be written to a block device at all. Both are cheaper to
-   refuse now than to discover at the end of an eighty-gigabyte copy. */
+	Every check here is one that, skipped, produces a disk rather than an error:
+	a sparse extent that is not stream-optimised decodes into nonsense at
+	plausible offsets, and a grain size that is not a whole number of destination
+	sectors cannot be written to a block device at all. Both are cheaper to
+	refuse now than to discover at the end of an eighty-gigabyte copy.
+*/
 func parseStreamHeader(b []byte) (streamHeader, error) {
 	var h streamHeader
 	if len(b) < vmdkSector {
@@ -157,14 +161,16 @@ func parseStreamHeader(b []byte) (streamHeader, error) {
 // grainSink takes one decoded grain at its offset in the virtual disk.
 type grainSink func(offset int64, data []byte) error
 
-/* decodeStreamVMDK reads a stream-optimised VMDK and hands over each grain.
+/*
+decodeStreamVMDK reads a stream-optimised VMDK and hands over each grain.
 
-   Returns the number of DISK bytes handed over — not the bytes read off the
-   wire, which are compressed and mean nothing to an operator watching a copy.
+	Returns the number of DISK bytes handed over — not the bytes read off the
+	wire, which are compressed and mean nothing to an operator watching a copy.
 
-   It reads to the end of the stream and insists on getting there. An io.EOF
-   anywhere is an error, and so is an end-of-stream marker that arrives without
-   a footer before it. */
+	It reads to the end of the stream and insists on getting there. An io.EOF
+	anywhere is an error, and so is an end-of-stream marker that arrives without
+	a footer before it.
+*/
 func decodeStreamVMDK(r io.Reader, sink grainSink) (int64, error) {
 	head := make([]byte, vmdkSector)
 	if _, err := io.ReadFull(r, head); err != nil {

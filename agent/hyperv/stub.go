@@ -465,6 +465,10 @@ func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 // StartClusterCoreGroup records the request and brings the stub's core group
 // online, so a test can assert the cluster stops reporting a core-group problem
 // afterwards rather than only that the call was made.
+func (s *Stub) StartClusterVolume(_ context.Context, _ string) (Outcome, string, error) {
+	return OutcomeUnchanged, "stub", nil
+}
+
 func (s *Stub) StartClusterCoreGroup(_ context.Context) (Outcome, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

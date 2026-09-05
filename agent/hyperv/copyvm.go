@@ -476,17 +476,19 @@ if ($importOut -and $importOut.id) {
 `, cluster)
 }
 
-/* CopyBudget is how long a whole-VM storage copy may run.
+/*
+CopyBudget is how long a whole-VM storage copy may run.
 
-   Twelve hours, deliberately generous, for the same reason a VMware migration
-   pass gets twelve: the operation is bounded by somebody's disk and somebody's
-   link, and a copy cut short at hour four wastes every byte of it. It lives
-   here, beside the operation, so the budget and the work cannot drift apart the
-   way the capture budget once did.
+	Twelve hours, deliberately generous, for the same reason a VMware migration
+	pass gets twelve: the operation is bounded by somebody's disk and somebody's
+	link, and a copy cut short at hour four wastes every byte of it. It lives
+	here, beside the operation, so the budget and the work cannot drift apart the
+	way the capture budget once did.
 
-   Long is safe only because the copy now REPORTS. An export that has stopped
-   moving is visible in the console within a minute; without that, a generous
-   budget would just be a longer wait before the same unexplained failure. */
+	Long is safe only because the copy now REPORTS. An export that has stopped
+	moving is visible in the console within a minute; without that, a generous
+	budget would just be a longer wait before the same unexplained failure.
+*/
 const CopyBudget = 12 * time.Hour
 
 // CopyVM exports a VM to the destination, imports it there and removes the

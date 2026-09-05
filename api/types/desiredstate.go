@@ -444,16 +444,18 @@ type LiveMigrationSpec struct {
 	Networks []string `json:"networks,omitempty"`
 }
 
-/* BMCSpec is how to reach a host's management controller.
+/*
+BMCSpec is how to reach a host's management controller.
 
-   Redfish only, and power-ON only. Redfish is the standard every current
-   controller speaks — iLO 5+, iDRAC 8+, Lenovo XCC, Supermicro X11+ — and the
-   older ones that need IPMI are told so plainly rather than failing obscurely.
+	Redfish only, and power-ON only. Redfish is the standard every current
+	controller speaks — iLO 5+, iDRAC 8+, Lenovo XCC, Supermicro X11+ — and the
+	older ones that need IPMI are told so plainly rather than failing obscurely.
 
-   Powering a host ON is safe: a machine that is off has nothing running to
-   disturb. The destructive directions — force off, reset — are deliberately NOT
-   here. They pull power from running workloads, and a control plane that can do
-   that from a right-click menu is one misclick from an outage. */
+	Powering a host ON is safe: a machine that is off has nothing running to
+	disturb. The destructive directions — force off, reset — are deliberately NOT
+	here. They pull power from running workloads, and a control plane that can do
+	that from a right-click menu is one misclick from an outage.
+*/
 type BMCSpec struct {
 	// Address is the controller's hostname or IP, e.g. "hv01-ilo.lab.local".
 	// A bare address is reached over HTTPS; a scheme may be given explicitly.
@@ -1572,10 +1574,24 @@ type ISCSISession struct {
 	TargetIQN string `json:"targetIQN"`
 	// Connected distinguishes a target that is known from one that is logged in.
 	Connected bool `json:"connected,omitempty"`
-	// Persistent means the login is restored at boot. A non-persistent session
-	// works perfectly until the node reboots and then silently does not come
-	// back, which on a cluster member means its disks simply do not arrive.
-	Persistent bool `json:"persistent,omitempty"`
+	/* Persistent means the login is restored at boot. A non-persistent session
+	   works perfectly until the node reboots and then silently does not come
+	   back, which on a cluster member means its disks simply do not arrive.
+
+	   NOT omitempty, and that is the point. With it, false and "this agent never
+	   reported the field" are the same JSON — which is what made a stored status
+	   unreadable when one had to be diagnosed by hand.
+
+	   A companion "was this established at all" flag was written and then
+	   removed. It would have to cross the gRPC wire to reach the centre, a proto
+	   bool is false when absent, and this machine has protoc-gen-go without
+	   protoc — so it would have arrived false for every session and reported
+	   every one as unestablished. Worse than the ambiguity it was fixing.
+
+	   It is also less needed than it looks: an agent reporting a session at all
+	   ran the script that sets this, so absent means an agent old enough that
+	   AgentOutdated is already saying so. */
+	Persistent bool `json:"persistent"`
 	// Paths is how many connections back this session — more than one only when
 	// MPIO is doing its job.
 	Paths int `json:"paths,omitempty"`
@@ -2386,8 +2402,20 @@ const (
 
 	JobClusterMoveGroup = "ClusterMoveGroup" // params: group, node — move/fail over a clustered role to node
 	JobClusterMoveCSV   = "ClusterMoveCSV"   // params: volume, node — move CSV ownership to node
-	JobClusterValidate  = "ClusterValidate"  // params: nodes (optional, comma list), include (optional) — Test-Cluster
-	JobClusterMoveVM    = "ClusterMoveVM"    // params: vm, node — live-migrate a clustered VM role to node
+
+	/* JobClusterVolumeOnline asks the cluster to bring one volume online.
+
+	   An offline CSV is the cluster's decision and it usually has a reason, but
+	   an operator whose storage is down had to open Failover Cluster Manager and
+	   right-click — a recovery reachable only from outside the product, which
+	   CLAUDE.md counts as a defect rather than a runbook step. It bites hardest
+	   exactly here: after something has already gone wrong.
+
+	   Coordination, not a decision. The cluster still owns whether the resource
+	   may come online, and its refusal is reported in its own words. */
+	JobClusterVolumeOnline = "ClusterVolumeOnline" // params: volume
+	JobClusterValidate     = "ClusterValidate"     // params: nodes (optional, comma list), include (optional) — Test-Cluster
+	JobClusterMoveVM       = "ClusterMoveVM"       // params: vm, node — live-migrate a clustered VM role to node
 	/* JobCopyVM moves a VM by EXPORTING it to the destination's storage and
 	   importing it there, then removing the original. params: vm, destHost,
 	   destPath, sourceCluster/targetCluster (optional), networkMap (optional

@@ -16,11 +16,14 @@ func vtpmVM(on bool, gen int) types.VM {
 	return v
 }
 
-/* Enable-VMTPM alone does not work, and that is the whole reason this belongs in
-   a console rather than a runbook.
+/*
+Enable-VMTPM alone does not work, and that is the whole reason this belongs in
 
-   A vTPM is sealed to key protectors, and Hyper-V refuses to enable one on a VM
-   that has none: "A key protector cannot be found for the virtual machine." */
+	a console rather than a runbook.
+
+	A vTPM is sealed to key protectors, and Hyper-V refuses to enable one on a VM
+	that has none: "A key protector cannot be found for the virtual machine."
+*/
 func TestAVTPMGetsItsKeyProtectorFirst(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vtpmVM(true, 2), 2)
 
@@ -44,10 +47,13 @@ func TestAVTPMGetsItsKeyProtectorFirst(t *testing.T) {
 	}
 }
 
-/* The consequence of sealing is stated, because it is not reversible by wishing:
-   the protector belongs to THIS host's guardian, so the VM cannot simply be
-   exported and imported elsewhere. Better said when it is created than
-   discovered during a migration. */
+/*
+The consequence of sealing is stated, because it is not reversible by wishing:
+
+	the protector belongs to THIS host's guardian, so the VM cannot simply be
+	exported and imported elsewhere. Better said when it is created than
+	discovered during a migration.
+*/
 func TestTheSealingConsequenceIsSaidOutLoud(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vtpmVM(true, 2), 2)
 	for _, want := range []string{"cannot simply be exported and imported", "BitLocker recovery key"} {
@@ -57,10 +63,13 @@ func TestTheSealingConsequenceIsSaidOutLoud(t *testing.T) {
 	}
 }
 
-/* Generation 1 has no UEFI firmware and can never present a TPM. Accepting the
-   setting there would leave a checkbox ticked doing nothing, which is how
-   somebody spends an afternoon on a Windows 11 installer that will not proceed
-   and blames the installer. */
+/*
+Generation 1 has no UEFI firmware and can never present a TPM. Accepting the
+
+	setting there would leave a checkbox ticked doing nothing, which is how
+	somebody spends an afternoon on a Windows 11 installer that will not proceed
+	and blames the installer.
+*/
 func TestGenerationOneIsRefusedRatherThanIgnored(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vtpmVM(true, 1), 1)
 	if !strings.Contains(s, "Generation 1") || !strings.Contains(s, "cannot have a TPM") {
@@ -72,9 +81,12 @@ func TestGenerationOneIsRefusedRatherThanIgnored(t *testing.T) {
 	}
 }
 
-/* Adding or removing a TPM needs the VM stopped, and Ballast does not restart
-   somebody's VM to satisfy a checkbox — the same rule as Secure Boot and the
-   virtualisation extensions. */
+/*
+Adding or removing a TPM needs the VM stopped, and Ballast does not restart
+
+	somebody's VM to satisfy a checkbox — the same rule as Secure Boot and the
+	virtualisation extensions.
+*/
 func TestATPMChangeOnARunningVMIsDeferredAndNamed(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vtpmVM(true, 2), 2)
 	if !strings.Contains(s, "$pendingWhat += ('a TPM (want ") {
@@ -94,8 +106,11 @@ func TestTheTPMIsDrivenBothWays(t *testing.T) {
 	}
 }
 
-/* Compared against what the VM HAS, not against whether the command has been run
-   before. Get-VMSecurity reports it, so there is no reason to track it. */
+/*
+Compared against what the VM HAS, not against whether the command has been run
+
+	before. Get-VMSecurity reports it, so there is no reason to track it.
+*/
 func TestTheTPMStateIsReadBackRatherThanAssumed(t *testing.T) {
 	s := newTestPS(&fakeRunner{}).ensureVMScript(vtpmVM(true, 2), 2)
 	if !strings.Contains(s, "Get-VMSecurity -VMName 'Win11'") || !strings.Contains(s, "$sec.TpmEnabled") {

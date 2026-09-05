@@ -192,13 +192,15 @@ func (v *Client) Inspect(ctx context.Context, moRef string) (VMInfo, error) {
 	return out, nil
 }
 
-/* EnableCBT turns Changed Block Tracking on.
+/*
+EnableCBT turns Changed Block Tracking on.
 
-   Refused on a running VM, deliberately. The setting applies at power-on, so
-   enabling it on a running guest reports success and changes nothing — the
-   next QueryChangedDiskAreas fails and the operator is left with a migration
-   that said it was ready and was not. Ballast will not restart somebody's VM
-   to save itself a step, so the honest answer is to say what has to happen. */
+	Refused on a running VM, deliberately. The setting applies at power-on, so
+	enabling it on a running guest reports success and changes nothing — the
+	next QueryChangedDiskAreas fails and the operator is left with a migration
+	that said it was ready and was not. Ballast will not restart somebody's VM
+	to save itself a step, so the honest answer is to say what has to happen.
+*/
 func (v *Client) EnableCBT(ctx context.Context, moRef string) error {
 	info, err := v.Inspect(ctx, moRef)
 	if err != nil {
@@ -224,14 +226,16 @@ func (v *Client) EnableCBT(ctx context.Context, moRef string) error {
 	return nil
 }
 
-/* Snapshot freezes the disks so they can be read while the guest runs.
+/*
+Snapshot freezes the disks so they can be read while the guest runs.
 
-   Memory is deliberately NOT captured: it would double the snapshot's cost and
-   the time the guest is stunned, and nothing here ever restores it. Quiescing
-   is also off — it needs VMware Tools, fails on guests that do not have it,
-   and turning a copy into a refusal because a guest could not flush its
-   filesystem is the wrong trade for a migration that will be cut over cleanly
-   later. */
+	Memory is deliberately NOT captured: it would double the snapshot's cost and
+	the time the guest is stunned, and nothing here ever restores it. Quiescing
+	is also off — it needs VMware Tools, fails on guests that do not have it,
+	and turning a copy into a refusal because a guest could not flush its
+	filesystem is the wrong trade for a migration that will be cut over cleanly
+	later.
+*/
 func (v *Client) Snapshot(ctx context.Context, moRef, name string) (string, error) {
 	task, err := v.vm(moRef).CreateSnapshot(ctx, name,
 		"Created by Ballast for a migration. Safe to leave; Ballast removes it when the migration ends.",
@@ -250,15 +254,17 @@ func (v *Client) Snapshot(ctx context.Context, moRef, name string) (string, erro
 	return ref.Value, nil
 }
 
-/* RemoveSnapshot deletes one and waits for the data to merge back.
+/*
+RemoveSnapshot deletes one and waits for the data to merge back.
 
-   Waiting matters. Returning as soon as the task is accepted would let the
-   next pass start while consolidation is still running, and the next pass
-   reads the base disk — which is mid-merge and not yet complete. Consolidation
-   is also the expensive part for the source's datastore, so a pass that
-   overlaps the last one's merge is how a migration starts hurting the system
-   it is leaving. Removing one that has already gone is not an error: this runs
-   on cleanup paths that do not know how far a failed attempt got. */
+	Waiting matters. Returning as soon as the task is accepted would let the
+	next pass start while consolidation is still running, and the next pass
+	reads the base disk — which is mid-merge and not yet complete. Consolidation
+	is also the expensive part for the source's datastore, so a pass that
+	overlaps the last one's merge is how a migration starts hurting the system
+	it is leaving. Removing one that has already gone is not an error: this runs
+	on cleanup paths that do not know how far a failed attempt got.
+*/
 func (v *Client) RemoveSnapshot(ctx context.Context, moRef, snapRef string) error {
 	if strings.TrimSpace(snapRef) == "" {
 		return nil
@@ -313,15 +319,17 @@ type Extent struct {
 	Length int64
 }
 
-/* ChangedAreas asks what to copy.
+/*
+ChangedAreas asks what to copy.
 
-   changeID "*" means "everything allocated", which is what a BASE copy wants:
-   a thin 500GB disk with 40GB written transfers 40GB, not 500. The same call
-   with the previous pass's marker returns only what has changed since, so the
-   base copy and every delta are one operation with a different argument. The
-   returned ChangeId is the marker for the NEXT pass and must be stored whether
-   or not anything came back — a pass that found nothing still moves the marker
-   forward, and reusing the old one would re-copy that window for ever. */
+	changeID "*" means "everything allocated", which is what a BASE copy wants:
+	a thin 500GB disk with 40GB written transfers 40GB, not 500. The same call
+	with the previous pass's marker returns only what has changed since, so the
+	base copy and every delta are one operation with a different argument. The
+	returned ChangeId is the marker for the NEXT pass and must be stored whether
+	or not anything came back — a pass that found nothing still moves the marker
+	forward, and reusing the old one would re-copy that window for ever.
+*/
 func (v *Client) ChangedAreas(ctx context.Context, moRef, snapRef string, deviceKey int32, changeID string, diskSize int64) ([]Extent, string, error) {
 	if changeID == "" {
 		changeID = "*"
@@ -369,10 +377,12 @@ func (v *Client) ChangedAreas(ctx context.Context, moRef, snapRef string, device
 	return out, next, nil
 }
 
-/* snapshotChangeID reads the change marker VMware stamped on a disk when the
+/*
+snapshotChangeID reads the change marker VMware stamped on a disk when the
 
-   snapshot was taken. It lives on the snapshot's copy of the hardware, not the
-   VM's, which is the whole point: it names the exact instant this pass read. */
+	snapshot was taken. It lives on the snapshot's copy of the hardware, not the
+	VM's, which is the whole point: it names the exact instant this pass read.
+*/
 func (v *Client) snapshotChangeID(ctx context.Context, snapRef string, deviceKey int32) (string, error) {
 	var m mo.VirtualMachineSnapshot
 	pc := property.DefaultCollector(v.c.Client)
@@ -400,14 +410,16 @@ func (v *Client) snapshotChangeID(ctx context.Context, snapRef string, deviceKey
 	return "", fmt.Errorf("disk %d is not in snapshot %s — it was added or removed in VMware after this migration started", deviceKey, snapRef)
 }
 
-/* explainCBTError names the one failure that matters and cannot be retried.
+/*
+explainCBTError names the one failure that matters and cannot be retried.
 
-   A CBT reset — caused by a storage vMotion, a failed consolidation, or some
-   power operations — invalidates the marker, and VMware then refuses the query
-   rather than silently returning everything. That is the good outcome: the bad
-   one would be copying the whole disk while telling the operator it is a
-   delta. It is named here so the migration can fall back to a full re-copy
-   knowingly. */
+	A CBT reset — caused by a storage vMotion, a failed consolidation, or some
+	power operations — invalidates the marker, and VMware then refuses the query
+	rather than silently returning everything. That is the good outcome: the bad
+	one would be copying the whole disk while telling the operator it is a
+	delta. It is named here so the migration can fall back to a full re-copy
+	knowingly.
+*/
 func explainCBTError(err error, changeID string) error {
 	s := strings.ToLower(err.Error())
 	// The reset is checked FIRST. Its message mentions change tracking too, and
@@ -440,13 +452,15 @@ func explainCBTError(err error, changeID string) error {
 	return err
 }
 
-/* ErrDiskLocked reports a disk file the host holds open and will not serve.
+/*
+ErrDiskLocked reports a disk file the host holds open and will not serve.
 
-   Its own error because the remedy depends on WHO holds it, and only the caller
-   knows: on a powered-off source a lock is somebody else's and worth chasing,
-   and on a running one it is the guest's own and there is nothing to chase.
-   NFC answers both with the same "NFC_FILE_LOCKED", so the distinction cannot
-   be made here. */
+	Its own error because the remedy depends on WHO holds it, and only the caller
+	knows: on a powered-off source a lock is somebody else's and worth chasing,
+	and on a running one it is the guest's own and there is nothing to chase.
+	NFC answers both with the same "NFC_FILE_LOCKED", so the distinction cannot
+	be made here.
+*/
 var ErrDiskLocked = fmt.Errorf("the host will not serve the disk file")
 
 // diskLocked carries a resolve failure that ended in a lock without changing a
@@ -462,11 +476,13 @@ func (e diskLocked) Is(target error) bool { return target == ErrDiskLocked }
 // pass can test a power state without importing vim25 types.
 const poweredOnState = string(types.VirtualMachinePowerStatePoweredOn)
 
-/* ErrCBTUnavailable reports a disk that cannot answer a change-tracking query.
+/*
+ErrCBTUnavailable reports a disk that cannot answer a change-tracking query.
 
-   Distinct from ErrCBTReset: a reset had tracking and lost its marker, and this
-   never had tracking at all. Both are recovered by reading in full, but only one
-   of them is a surprise. */
+	Distinct from ErrCBTReset: a reset had tracking and lost its marker, and this
+	never had tracking at all. Both are recovered by reading in full, but only one
+	of them is a surprise.
+*/
 var ErrCBTUnavailable = fmt.Errorf("change tracking is not available")
 
 // ErrCBTReset reports a change marker VMware no longer recognises. Its own error
@@ -474,21 +490,23 @@ var ErrCBTUnavailable = fmt.Errorf("change tracking is not available")
 // and say so, rather than failing a migration that is still perfectly possible.
 var ErrCBTReset = fmt.Errorf("change tracking was reset")
 
-/* PinReads routes datastore reads through the host that is running the VM.
+/*
+PinReads routes datastore reads through the host that is running the VM.
 
-   govmomi's own words for the alternative, on Datastore.ServiceTicket, are "An
-   host is chosen at random". Where several hosts are attached to a datastore,
-   vCenter may proxy a read to one that does not own the VM — and that host
-   cannot take a lock on a running guest's files, so it answers NFC_FILE_LOCKED.
-   Identical to a guest holding its own disk, from an entirely different cause,
-   and the operator is told to stop a VM that never needed stopping.
+	govmomi's own words for the alternative, on Datastore.ServiceTicket, are "An
+	host is chosen at random". Where several hosts are attached to a datastore,
+	vCenter may proxy a read to one that does not own the VM — and that host
+	cannot take a lock on a running guest's files, so it answers NFC_FILE_LOCKED.
+	Identical to a guest holding its own disk, from an entirely different cause,
+	and the operator is told to stop a VM that never needed stopping.
 
-   Only where there is a choice to make. One host attached means vCenter had
-   nowhere else to send it, and pinning would swap a read through vCenter for a
-   read straight at the ESXi host — so an agent that can reach vCenter but not
-   the host would lose a path that works, to close a hazard that cannot occur.
-   Pinning exactly when there is a decision is the point; doing it always is a
-   different bug waiting on a different network. */
+	Only where there is a choice to make. One host attached means vCenter had
+	nowhere else to send it, and pinning would swap a read through vCenter for a
+	read straight at the ESXi host — so an agent that can reach vCenter but not
+	the host would lose a path that works, to close a hazard that cannot occur.
+	Pinning exactly when there is a decision is the point; doing it always is a
+	different bug waiting on a different network.
+*/
 func (v *Client) PinReads(ctx context.Context, moRef, dsPath string) error {
 	ds, _, err := v.datastoreFor(ctx, dsPath)
 	if err != nil {
@@ -517,13 +535,15 @@ func (v *Client) PinReads(ctx context.Context, moRef, dsPath string) error {
 	return nil
 }
 
-/* ReadAt reads bytes from a disk file on the datastore.
+/*
+ReadAt reads bytes from a disk file on the datastore.
 
-   Over the datastore HTTP endpoint with a Range header, authenticated by the
-   same session as everything else. This is what removes the need for VMware's
-   VDDK — a C library under a click-through licence with no Go bindings — at
-   the cost of reading the FLAT file rather than a consolidated view, which is
-   why every pass consolidates its snapshot before the next one starts. */
+	Over the datastore HTTP endpoint with a Range header, authenticated by the
+	same session as everything else. This is what removes the need for VMware's
+	VDDK — a C library under a click-through licence with no Go bindings — at
+	the cost of reading the FLAT file rather than a consolidated view, which is
+	why every pass consolidates its snapshot before the next one starts.
+*/
 func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64) (io.ReadCloser, error) {
 	ds, path, err := v.datastoreFor(ctx, dsPath)
 	if err != nil {
@@ -563,17 +583,19 @@ func (v *Client) ReadAt(ctx context.Context, dsPath string, offset, length int64
 	return res.Body, nil
 }
 
-/* acceptRangedRead decides whether a response to a ranged GET can be trusted.
+/*
+acceptRangedRead decides whether a response to a ranged GET can be trusted.
 
-   206 is the answer that means "here is the range you asked for".
+	206 is the answer that means "here is the range you asked for".
 
-   200 means the server IGNORED the range and is sending the file from the
-   beginning. At offset 0 that is harmless — the bytes start where they belong,
-   and a body shorter than asked for is caught by the read itself. Anywhere else
-   it is the worst outcome this code can produce: the start of the disk written
-   over the middle of it, every chunk, with the copy reporting success and the
-   VM booting into a subtly wrong disk. So it is refused, loudly, rather than
-   read. */
+	200 means the server IGNORED the range and is sending the file from the
+	beginning. At offset 0 that is harmless — the bytes start where they belong,
+	and a body shorter than asked for is caught by the read itself. Anywhere else
+	it is the worst outcome this code can produce: the start of the disk written
+	over the middle of it, every chunk, with the copy reporting success and the
+	VM booting into a subtly wrong disk. So it is refused, loudly, rather than
+	read.
+*/
 func acceptRangedRead(code int, status string, body io.Reader, offset int64) error {
 	switch code {
 	case http.StatusPartialContent:
@@ -600,13 +622,15 @@ func acceptRangedRead(code int, status string, body io.Reader, offset int64) err
 	}
 }
 
-/* serverReason pulls the human part out of an error response.
+/*
+serverReason pulls the human part out of an error response.
 
-   ESXi answers a refused file read with an HTML page whose text is the reason.
-   Bounded and flattened to one line, because this ends up in a job message an
-   operator reads, and an unbounded body from a host that is already misbehaving
-   is not something to paste whole. An empty result is normal and means the
-   response carried nothing worth repeating. */
+	ESXi answers a refused file read with an HTML page whose text is the reason.
+	Bounded and flattened to one line, because this ends up in a job message an
+	operator reads, and an unbounded body from a host that is already misbehaving
+	is not something to paste whole. An empty result is normal and means the
+	response carried nothing worth repeating.
+*/
 func serverReason(body io.Reader) string {
 	if body == nil {
 		return ""
@@ -654,23 +678,25 @@ func (v *Client) datastoreFor(ctx context.Context, dsPath string) (*object.Datas
 	return ds, p.Path, nil
 }
 
-/* ResolveDiskFile finds the file that actually holds a disk's data.
+/*
+ResolveDiskFile finds the file that actually holds a disk's data.
 
-   A VirtualDisk's backing names its DESCRIPTOR — "[datastore1] BSL/BSL.vmdk" —
-   and on VMFS that is a few hundred bytes of text. The data is beside it in
-   BSL-flat.vmdk. Reading the descriptor and expecting the disk is what produced
+	A VirtualDisk's backing names its DESCRIPTOR — "[datastore1] BSL/BSL.vmdk" —
+	and on VMFS that is a few hundred bytes of text. The data is beside it in
+	BSL-flat.vmdk. Reading the descriptor and expecting the disk is what produced
 
-     read [datastore1] BSL/BSL.vmdk at 0: the datastore returned less than the
-     33554432 bytes requested
+	  read [datastore1] BSL/BSL.vmdk at 0: the datastore returned less than the
+	  33554432 bytes requested
 
-   on the first real migration: 32MB asked for, a text file returned.
+	on the first real migration: 32MB asked for, a text file returned.
 
-   ASKED, NOT DERIVED. Appending "-flat" is right for VMFS and wrong elsewhere —
-   NFS keeps a single file, a snapshot delta is "-000001-delta.vmdk", SEsparse is
-   "-sesparse.vmdk", and vSAN has no such file at all. So the datastore is asked
-   how big each candidate is and the one that can actually hold the disk wins.
-   Where nothing does, the failure lists what was found and how big it was,
-   because that is a diagnosis an operator can act on rather than a mystery. */
+	ASKED, NOT DERIVED. Appending "-flat" is right for VMFS and wrong elsewhere —
+	NFS keeps a single file, a snapshot delta is "-000001-delta.vmdk", SEsparse is
+	"-sesparse.vmdk", and vSAN has no such file at all. So the datastore is asked
+	how big each candidate is and the one that can actually hold the disk wins.
+	Where nothing does, the failure lists what was found and how big it was,
+	because that is a diagnosis an operator can act on rather than a mystery.
+*/
 func (v *Client) ResolveDiskFile(ctx context.Context, dsPath string, capacity int64) (string, error) {
 	return resolveDiskFile(ctx, dsPath, capacity, v.probeRead, datastoreFacts{
 		size: v.fileSize,
@@ -678,17 +704,19 @@ func (v *Client) ResolveDiskFile(ctx context.Context, dsPath string, capacity in
 	})
 }
 
-/* fileSize asks the datastore browser how big a file is.
+/*
+fileSize asks the datastore browser how big a file is.
 
-   Only ever on a failure path, and only to say what was found. The browser
-   cannot be trusted to CHOOSE the file — for a descriptor it answers with the
-   virtual disk's capacity rather than the 523 bytes of text actually there,
-   which is why the choice is made by reading. But once nothing could be read,
-   "the browser lists this file at exactly the size of the disk" is the fact
-   that separates a file that is missing from one that is being withheld.
+	Only ever on a failure path, and only to say what was found. The browser
+	cannot be trusted to CHOOSE the file — for a descriptor it answers with the
+	virtual disk's capacity rather than the 523 bytes of text actually there,
+	which is why the choice is made by reading. But once nothing could be read,
+	"the browser lists this file at exactly the size of the disk" is the fact
+	that separates a file that is missing from one that is being withheld.
 
-   A question the browser cannot answer is reported as unanswered. An absent
-   size is not a size of zero. */
+	A question the browser cannot answer is reported as unanswered. An absent
+	size is not a size of zero.
+*/
 func (v *Client) fileSize(ctx context.Context, dsPath string) (int64, bool) {
 	ds, path, err := v.datastoreFor(ctx, dsPath)
 	if err != nil {
@@ -717,15 +745,17 @@ func (v *Client) datastoreKind(ctx context.Context, dsPath string) string {
 	return string(t)
 }
 
-/* probeRead reports how many bytes the datastore will actually serve.
+/*
+probeRead reports how many bytes the datastore will actually serve.
 
-   Deliberately the SAME channel the copy reads through. The first attempt at
-   this asked the datastore browser for the file size instead, and the browser
-   answers about the VIRTUAL DISK: for "BSL.vmdk" it reports the disk's full
-   capacity, while an HTTP GET on that identical path returns 523 bytes of
-   descriptor text. Both answers are true about different things, and picking
-   the file on the strength of the one the copy does not use chose the
-   descriptor every time. */
+	Deliberately the SAME channel the copy reads through. The first attempt at
+	this asked the datastore browser for the file size instead, and the browser
+	answers about the VIRTUAL DISK: for "BSL.vmdk" it reports the disk's full
+	capacity, while an HTTP GET on that identical path returns 523 bytes of
+	descriptor text. Both answers are true about different things, and picking
+	the file on the strength of the one the copy does not use chose the
+	descriptor every time.
+*/
 func (v *Client) probeRead(ctx context.Context, dsPath string, offset, length int64) (int64, error) {
 	rc, err := v.ReadAt(ctx, dsPath, offset, length)
 	if err != nil {
@@ -742,14 +772,17 @@ func (v *Client) probeRead(ctx context.Context, dsPath string, offset, length in
 // diskProbe reads a range and reports how many bytes came back.
 type diskProbe func(ctx context.Context, dsPath string, offset, length int64) (int64, error)
 
-/* datastoreFacts are the two questions a FAILED resolve needs answered, and
-   neither is used to pick the file.
+/*
+datastoreFacts are the two questions a FAILED resolve needs answered, and
 
-   They exist because the failure this replaced ended in two guesses — that a
-   500 meant somebody else held a lock, and that the datastore might be vSAN —
-   in a product whose standing rule is that a diagnosis it could make and does
-   not is a defect. Both are one call away. Either may be unanswerable, and an
-   unanswered question is left out of the message rather than guessed at. */
+	neither is used to pick the file.
+
+	They exist because the failure this replaced ended in two guesses — that a
+	500 meant somebody else held a lock, and that the datastore might be vSAN —
+	in a product whose standing rule is that a diagnosis it could make and does
+	not is a defect. Both are one call away. Either may be unanswerable, and an
+	unanswered question is left out of the message rather than guessed at.
+*/
 type datastoreFacts struct {
 	// size is what the datastore browser lists for a file, and whether it could
 	// be asked at all.
@@ -758,12 +791,14 @@ type datastoreFacts struct {
 	kind func(ctx context.Context, dsPath string) string
 }
 
-/* resolveDiskFile picks the candidate that can serve the END of the disk.
+/*
+resolveDiskFile picks the candidate that can serve the END of the disk.
 
-   The end, not the start: a descriptor is a valid file and will happily serve
-   its first few hundred bytes, so a probe at offset 0 cannot tell it from the
-   data. Only the file that actually holds the disk can return a full sector at
-   capacity-1 sector, which makes this a question with one right answer. */
+	The end, not the start: a descriptor is a valid file and will happily serve
+	its first few hundred bytes, so a probe at offset 0 cannot tell it from the
+	data. Only the file that actually holds the disk can return a full sector at
+	capacity-1 sector, which makes this a question with one right answer.
+*/
 func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe diskProbe, facts datastoreFacts) (string, error) {
 	length := sectorSize
 	if capacity < length {
@@ -843,13 +878,15 @@ func resolveDiskFile(ctx context.Context, dsPath string, capacity int64, probe d
 	return "", err
 }
 
-/* PowerOff shuts the source down for a cutover.
+/*
+PowerOff shuts the source down for a cutover.
 
-   Graceful first, through VMware Tools, then a hard stop only after the guest
-   has been given time. A migration cutover ends with the guest's filesystem
-   being read one last time, and pulling the power on a Windows guest with
-   writes in flight puts a dirty filesystem into the disk that is about to
-   become production. */
+	Graceful first, through VMware Tools, then a hard stop only after the guest
+	has been given time. A migration cutover ends with the guest's filesystem
+	being read one last time, and pulling the power on a Windows guest with
+	writes in flight puts a dirty filesystem into the disk that is about to
+	become production.
+*/
 func (v *Client) PowerOff(ctx context.Context, moRef string, graceful time.Duration) error {
 	vm := v.vm(moRef)
 	info, err := v.Inspect(ctx, moRef)
@@ -887,11 +924,13 @@ func (v *Client) PowerOff(ctx context.Context, moRef string, graceful time.Durat
 	return nil
 }
 
-/* consolidateWait is how long a pass waits for a snapshot to merge.
+/*
+consolidateWait is how long a pass waits for a snapshot to merge.
 
-   Generous, because the alternative is worse in both directions: giving up
-   early leaves a snapshot growing on the source, and the next pass then reads
-   a base disk that is mid-merge. Ten minutes covers a normal consolidation on
-   busy storage; beyond that something is genuinely wrong and saying so beats
-   waiting silently. */
+	Generous, because the alternative is worse in both directions: giving up
+	early leaves a snapshot growing on the source, and the next pass then reads
+	a base disk that is mid-merge. Ten minutes covers a normal consolidation on
+	busy storage; beyond that something is genuinely wrong and saying so beats
+	waiting silently.
+*/
 const consolidateWait = 10 * time.Minute
