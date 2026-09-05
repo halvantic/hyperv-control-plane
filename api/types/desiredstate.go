@@ -2559,6 +2559,27 @@ const (
 
 	JobPruneISCSIPortals = "PruneISCSIPortals" // params: portals — comma-separated declared portals to keep
 
+	/* JobClearISCSIFavourites removes stale persistent logins — the favourites in
+	   iscsicpl — for the declared targets, leaving every session connected.
+
+	   Ballast makes a session persistent by registering the existing one, and
+	   that call fails against login state left by an earlier configuration. A
+	   session made fresh by Connect-IscsiTarget never needs it. So a host
+	   carrying leftovers never becomes persistent however many passes run: it
+	   works until it reboots and then does not come back, and the only way out
+	   was the iSCSI Initiator control panel on the host.
+
+	   Nothing is disconnected. A persistent entry is what happens at BOOT, and
+	   removing it does not touch what is connected now — measured on HVNEW01,
+	   2026-09-06, where the session stayed up throughout and the next reconcile
+	   registered it properly. The job reports the live session count back as
+	   proof rather than asserting it.
+
+	   Only DECLARED targets. An entry for something nobody declared may belong to
+	   another product, and removing it would be Ballast reaching outside what it
+	   was asked to manage. */
+	JobClearISCSIFavourites = "ClearISCSIFavourites" // params: targets — comma-separated declared target IQNs
+
 	// JobScanImportableVMs walks this host's storage for VM configurations no
 	// host has registered and reports them in status.
 	//

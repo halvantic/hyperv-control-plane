@@ -971,23 +971,46 @@ if ($before.Count -eq 0) {
   'RESULT=there are no discovery portals on this host to clear. The spec adds them on the next reconcile.'
   return
 }
-$removed = @(); $failed = @()
+$attempted = @(); $failed = @()
 foreach ($h in $before) {
   $addr = [string]$h.TargetPortalAddress
+  $attempted += $addr
   # Piped, never named. -TargetPortalPortNumber fails with "Type mismatch for
   # parameter" on this cmdlet whatever is put in it, and the object carries the
   # identity the initiator itself assigned.
-  try { $h | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop; $removed += $addr }
+  # A retry naming the address was written here and removed: naming this portal
+  # rather than piping it fails on this cmdlet, which is a finding already
+  # recorded above and pinned by a test. The end-state check below is what makes
+  # the difference, and it does not depend on the call reporting anything.
+  try { $h | Remove-IscsiTargetPortal -Confirm:$false -ErrorAction Stop }
   catch { $failed += ($addr + ': ' + ([string]$_.Exception.Message).Trim()) }
 }
 # Sessions are deliberately left alone. Removing a discovery portal does not drop
 # one, so the node keeps its disks while this runs.
 $sessions = @(Get-IscsiSession -ErrorAction SilentlyContinue).Count
-if ($removed.Count -eq 0) {
-  throw ('none of the ' + [string]$before.Count + ' discovery portal(s) could be removed: ' + ($failed -join '; '))
+
+# JUDGED ON THE END STATE, not on whether the calls returned.
+#
+# HVNEW04 and HVNEW05 reported "none of the 2 discovery portal(s) could be
+# removed: The specified portal was not found" — for portals that had just been
+# listed. Whether that means they were already gone, or the remove could not
+# match them, the question an operator has is the same one: are they there now.
+# A cmdlet complaining is not an answer to it, and reporting Failed for a host
+# that ended in exactly the wanted state sends somebody to fix nothing.
+$after = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.TargetPortalAddress })
+$removed = @($attempted | Where-Object { $after -notcontains $_ })
+$stillThere = @($attempted | Where-Object { $after -contains $_ })
+
+if ($stillThere.Count -gt 0) {
+  throw ([string]$stillThere.Count + ' discovery portal(s) are still on this host after being asked to go (' +
+    ($stillThere -join ', ') + ')' + $(if ($failed.Count) { ': ' + ($failed -join '; ') } else { ', and the removal reported no error, which means something else is holding them' }))
 }
 $msg = 'cleared ' + [string]$removed.Count + ' discovery portal(s) (' + ($removed -join ', ') + ')'
-if ($failed.Count -gt 0) { $msg += '; ' + [string]$failed.Count + ' could not be removed: ' + ($failed -join '; ') }
+if ($failed.Count -gt 0) {
+  # Gone, but not without complaint. Worth saying: the end state is right and
+  # the next person reading a journal should know it was not a clean removal.
+  $msg += ' — they are gone, though the removal reported: ' + ($failed -join '; ')
+}
 $msg += '. ' + [string]$sessions + ' existing session(s) left connected. The next reconcile re-adds the portals from the spec and logs in again'
 'RESULT=' + $msg`
 

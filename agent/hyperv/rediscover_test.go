@@ -67,12 +67,30 @@ func TestRediscoverDoesNotTouchSessionsOrPersistentLogins(t *testing.T) {
 	}
 }
 
-// Removing nothing at all is a failure, not a success. Reporting a no-op as a
-// repair is the bug this session found in RemoveCSV.
-func TestRediscoverFailsWhenItCouldRemoveNothing(t *testing.T) {
+/*
+Removing nothing at all is a failure, not a success — reporting a no-op as a
+
+	repair is the bug this session found in RemoveCSV.
+
+	The rule that enforces it changed, and is stronger for it. It was "no removal
+	call succeeded"; it is now "the portals are still there afterwards". The old
+	one reported Failed on HVNEW04 and HVNEW05 for portals that ended in exactly
+	the wanted state, because the cmdlet complained on its way to doing what was
+	asked. A cmdlet's verdict is not the end state, and the end state is the
+	question an operator actually has.
+*/
+func TestRediscoverFailsWhenThePortalsAreStillThere(t *testing.T) {
 	s := rediscoverScript(t)
-	if !strings.Contains(s, "if ($removed.Count -eq 0) {") || !strings.Contains(s, "throw ('none of the ") {
-		t.Fatalf("a total failure to remove would be reported as a repair:\n%s", s)
+	if !strings.Contains(s, "$after = @(Get-IscsiTargetPortal") {
+		t.Fatalf("it does not re-read the portals, so it cannot know whether they went:\n%s", s)
+	}
+	if !strings.Contains(s, "if ($stillThere.Count -gt 0) {") || !strings.Contains(s, "still on this host after being asked to go") {
+		t.Fatalf("a portal that survived would be reported as a repair:\n%s", s)
+	}
+	// And a removal that complained but WORKED is not a failure. That is the
+	// case that was being reported wrongly.
+	if !strings.Contains(s, "they are gone, though the removal reported") {
+		t.Errorf("a portal that went despite an error is not reported as gone:\n%s", s)
 	}
 	// No portals at all is a different answer again, and says so rather than
 	// throwing: there is genuinely nothing to clear.

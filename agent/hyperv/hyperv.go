@@ -564,6 +564,10 @@ type Interface interface {
 	// operator pointing at one volume.
 	StartClusterVolume(ctx context.Context, volume string) (Outcome, string, error)
 
+	// ClearISCSIFavourites removes stale persistent logins for the declared
+	// targets. Nothing is disconnected; see powershell_favourites.go.
+	ClearISCSIFavourites(ctx context.Context, targets []string) (string, error)
+
 	// GetNodeSelf reads this host's OWN cluster membership state. Answerable when
 	// the cluster itself is not, which is the point of it.
 	GetNodeSelf(ctx context.Context) (NodeSelf, error)

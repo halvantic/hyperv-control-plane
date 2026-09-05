@@ -93,6 +93,14 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobClearISCSIFavourites:
+		var targets []string
+		for _, t := range strings.Split(p["targets"], ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				targets = append(targets, t)
+			}
+		}
+		return r.hv.ClearISCSIFavourites(ctx, targets)
 	case types.JobClusterVolumeOnline:
 		out, note, err := r.hv.StartClusterVolume(ctx, p["volume"])
 		if err != nil {

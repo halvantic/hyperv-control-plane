@@ -465,6 +465,10 @@ func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 // StartClusterCoreGroup records the request and brings the stub's core group
 // online, so a test can assert the cluster stops reporting a core-group problem
 // afterwards rather than only that the call was made.
+func (s *Stub) ClearISCSIFavourites(_ context.Context, _ []string) (string, error) {
+	return "stub", nil
+}
+
 func (s *Stub) StartClusterVolume(_ context.Context, _ string) (Outcome, string, error) {
 	return OutcomeUnchanged, "stub", nil
 }
