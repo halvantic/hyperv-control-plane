@@ -399,7 +399,18 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''; $plen = 0
   if ($static) { $ip = [string]$a.IPAddress; $plen = [int]$a.PrefixLength }
-  $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  # Where-Object { $_ } is load-bearing, not tidiness.
+  #
+  # An adapter with no resolvers returns $null here, and @($null) is an array of
+  # ONE null — which serialises as [null] and decodes into Go as [""]. So a NIC
+  # with no DNS reported one empty DNS server rather than none, and every
+  # consumer that asked "are there any?" got yes. The console's DNS column drew
+  # a blank cell instead of "—" on every teamed adapter, and the check that
+  # compares a NIC's resolvers against the domain controller's compared "".
+  #
+  # Absent is not empty-string, the same way absent is not zero. Found on
+  # HVNEW01, 2026-09-07: every adapter on every converged host carried [""].
+  $dns = @((Get-DnsClientServerAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ })
   $reg = [bool](Get-DnsClient -InterfaceIndex $_.ifIndex -ErrorAction SilentlyContinue).RegisterThisConnectionsAddress
   # Default-route next hop on this NIC, so a re-homed management IP can keep the
   # host's default route on the converged switch's vNIC.
@@ -682,7 +693,10 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
     elseif ([string]$_.PrefixOrigin -eq 'Dhcp') { $k = 'dhcp' }
     [pscustomobject]@{ address = ([string]$_.IPAddress + '/' + [string]$_.PrefixLength); kind = $k }
   })
-  $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+  # Same as the physical-adapter read above: @($null) is an array of one null,
+  # which reaches Go as [""] and makes "no DNS" indistinguishable from "one
+  # blank DNS server".
+  $dns = @((Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ })
   # Default-route next hop on this vNIC. Without it the observation cannot tell a
   # routable management vNIC from an isolated fabric one, and anything rebuilding
   # a spec from what is observed writes a management vNIC with no gateway — which
