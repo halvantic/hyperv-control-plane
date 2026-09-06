@@ -175,6 +175,58 @@ func JumboValueFor(values []string, want int) (string, bool) {
 	return best, best != ""
 }
 
+/*
+JumboHeaderBytes is the Ethernet + VLAN overhead a frame size carries over
+
+	its payload.
+
+	Why an enum driver offering 9014 is the right choice for a 9000 payload, and
+	why a numeric one is asked for 9014 rather than 9000. Drivers that count the
+	payload instead simply get 14 bytes more headroom than asked for, which costs
+	nothing: what the host actually SENDS is the IP interface MTU, set separately
+	and exactly. An uplink able to carry a little more than the interface is the
+	normal arrangement; an uplink able to carry less is the fault.
+*/
+const JumboHeaderBytes = 14
+
+/*
+JumboNumericFor picks a value for a NUMERIC *JumboPacket.
+
+	A good many server NICs — HPE's Embedded FlexibleLOM among them — expose
+	jumbo frames as a range rather than a menu, so ValidDisplayValues is empty
+	and there is nothing to choose from. Reading only the list made a perfectly
+	capable card report "a jumbo-frame setting with no size this agent could
+	read. It offered: ." for ever.
+
+	Aims at want + headers so the interface can actually reach want, and never
+	goes above max. A driver whose max sits between want and want+headers still
+	gets its max, which is the most it can do and is worth having.
+
+	step is honoured downwards, so the value written is one the driver will
+	accept rather than one it silently rounds. A rounded value that lands below
+	want is refused rather than written: reporting jumbo while carrying less
+	than asked is the failure this whole file exists to prevent.
+*/
+func JumboNumericFor(min, max, step, want int) (int, bool) {
+	if want <= 0 || max <= 0 || max < want {
+		return 0, false
+	}
+	v := want + JumboHeaderBytes
+	if v > max {
+		v = max
+	}
+	if step > 1 && min > 0 && v > min {
+		v = min + ((v-min)/step)*step
+	}
+	if v < min {
+		v = min
+	}
+	if v < want {
+		return 0, false
+	}
+	return v, true
+}
+
 // JumboValueSize exposes the size a driver's display value stands for, so a
 // caller can compare what is SELECTED against what was wanted. Drivers spell
 // these variously ("9014", "9014 Bytes"), and the units are not the point.
@@ -203,26 +255,39 @@ func jumboNumber(v string) (int, bool) {
 DescribeJumboRefusal explains an adapter that cannot carry what was asked.
 
 	Written for the operator rather than the developer, and it names the one thing
-	they can act on. An adapter with no jumbo keyword at all is a fact about the
-	card; one whose largest offered size falls short is a fact about its driver.
-	Neither is something Ballast can fix, and both were previously invisible.
+	they can act on. Three genuinely different facts, which used to be two:
+
+	  no keyword      the card exposes no jumbo setting at all. A fact about the
+	                  hardware or its driver; nothing here changes it.
+	  a ceiling       the driver offers sizes, and the largest falls short. Names
+	                  the actual limit rather than saying "cannot".
+	  neither         the property exists and reports no sizes AND no range. This
+	                  is the message the HPE FlexibleLOM produced — "It offered: ."
+	                  — because only the enumerated list was being read. It should
+	                  now be rare, and when it happens it is a genuinely unreadable
+	                  driver rather than an unread one, so it says that.
 */
-func DescribeJumboRefusal(adapter, keyword string, values []string, want int) string {
+func DescribeJumboRefusal(adapter, keyword string, values []string, max, want int) string {
 	if keyword == "" {
 		return fmt.Sprintf("%s exposes no jumbo-frame setting, so it cannot carry an MTU of %d. "+
 			"Either the adapter does not support jumbo frames or its driver does not expose them; "+
 			"a driver update is the only thing that changes this.", adapter, want)
 	}
-	largest := 0
+	largest := max
 	for _, v := range values {
 		if n, ok := jumboNumber(v); ok && n > largest {
 			largest = n
 		}
 	}
 	if largest == 0 {
-		return fmt.Sprintf("%s offers a jumbo-frame setting (%s) with no size this agent could read. "+
-			"It offered: %s. Nothing was changed.", adapter, keyword, strings.Join(values, ", "))
+		return fmt.Sprintf("%s has a jumbo-frame setting (%s) that reports neither a list of sizes nor a range, "+
+			"so there is no value this agent can safely write. Set it by hand in the adapter's advanced "+
+			"properties and Ballast will read it back. Nothing was changed.", adapter, keyword)
 	}
-	return fmt.Sprintf("%s cannot carry an MTU of %d: the largest its driver offers is %d. "+
-		"It offered: %s. Nothing was changed.", adapter, want, largest, strings.Join(values, ", "))
+	offered := "a maximum of " + strconv.Itoa(largest)
+	if len(values) > 0 {
+		offered = "it offered: " + strings.Join(values, ", ")
+	}
+	return fmt.Sprintf("%s cannot carry an MTU of %d: the largest its driver allows is %d (%s). Nothing was changed.",
+		adapter, want, largest, offered)
 }

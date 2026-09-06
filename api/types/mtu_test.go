@@ -202,12 +202,12 @@ What an adapter that cannot do it is told.
 	ignored or rejected it, and the host would report jumbo either way.
 */
 func TestDescribeJumboRefusalNamesTheActualLimit(t *testing.T) {
-	noKeyword := DescribeJumboRefusal("NIC1", "", nil, 9000)
+	noKeyword := DescribeJumboRefusal("NIC1", "", nil, 0, 9000)
 	if !strings.Contains(noKeyword, "no jumbo-frame setting") || !strings.Contains(noKeyword, "driver update") {
 		t.Errorf("an adapter with no jumbo support is not explained: %q", noKeyword)
 	}
-	tooSmall := DescribeJumboRefusal("NIC1", "*JumboPacket", []string{"Disabled", "4088"}, 9000)
-	if !strings.Contains(tooSmall, "largest its driver offers is 4088") {
+	tooSmall := DescribeJumboRefusal("NIC1", "*JumboPacket", []string{"Disabled", "4088"}, 0, 9000)
+	if !strings.Contains(tooSmall, "largest its driver allows is 4088") {
 		t.Errorf("the actual ceiling is not named: %q", tooSmall)
 	}
 	// Both must say nothing was changed — a refusal that leaves the adapter in
@@ -216,5 +216,103 @@ func TestDescribeJumboRefusalNamesTheActualLimit(t *testing.T) {
 		if !strings.Contains(m, "Nothing was changed") && !strings.Contains(m, "changes this") {
 			t.Errorf("a refusal does not say what happened to the adapter: %q", m)
 		}
+	}
+}
+
+/*
+A NUMERIC *JumboPacket, which is how many server NICs expose it.
+
+	An advanced property is either enumerated or numeric, and ValidDisplayValues
+	is populated only for the first kind. Reading only that list made an HPE
+	Embedded FlexibleLOM — perfectly capable of jumbo frames — report "a
+	jumbo-frame setting with no size this agent could read. It offered: ." on
+	every pass. Accurate about what it saw and wrong about what it meant.
+*/
+func TestJumboNumericFor(t *testing.T) {
+	tests := []struct {
+		name                 string
+		min, max, step, want int
+		expect               int
+		ok                   bool
+	}{
+		{
+			// The ordinary case: aim at want + headers so the IP interface can
+			// actually reach want, exactly as an enum driver's 9014 does.
+			name: "aims at the payload plus headers", min: 1500, max: 9014, step: 1, want: 9000,
+			expect: 9014, ok: true,
+		},
+		{
+			// A driver whose ceiling sits between want and want+headers still
+			// gets its ceiling: it is the most it can do and is worth having.
+			name: "takes the ceiling when it falls just short of the headers",
+			min:  1500, max: 9000, step: 1, want: 9000, expect: 9000, ok: true,
+		},
+		{
+			name: "refuses when the range cannot reach what was asked",
+			min:  1500, max: 4088, step: 1, want: 9000, ok: false,
+		},
+		{
+			/* Step is honoured DOWNWARDS so the value is one the driver accepts
+			   rather than one it silently rounds — and if rounding lands below
+			   what was asked, it is refused. Reporting jumbo while carrying less
+			   than asked is the failure this file exists to prevent. */
+			name: "rounds down onto a step the driver will accept",
+			min:  1514, max: 9014, step: 100, want: 8000, expect: 8014, ok: true,
+		},
+		{
+			name: "refuses when rounding down would land under what was asked",
+			min:  1500, max: 9005, step: 1000, want: 9000, ok: false,
+		},
+		{
+			// No range at all is the enumerated kind, or an unreadable driver.
+			// Either way there is nothing here to choose from.
+			name: "reports nothing when there is no range", min: 0, max: 0, step: 0, want: 9000, ok: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := JumboNumericFor(tc.min, tc.max, tc.step, tc.want)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %d)", ok, tc.ok, got)
+			}
+			if ok && got != tc.expect {
+				t.Errorf("chose %d, want %d", got, tc.expect)
+			}
+			if ok && got < tc.want {
+				t.Errorf("chose %d, which is below the %d that was asked for", got, tc.want)
+			}
+		})
+	}
+}
+
+/*
+The message the HPE card produced, and what it says now.
+
+	"It offered: ." was the old output for a property with an empty enum. It is
+	now only reachable when the driver reports neither a list nor a range, which
+	is a genuinely unreadable driver rather than an unread one — and it says so,
+	and names the one thing an operator can do about it.
+*/
+func TestARefusalWithNeitherListNorRange(t *testing.T) {
+	msg := DescribeJumboRefusal("Embedded FlexibleLOM 1 Port 1", "*JumboPacket", nil, 0, 9000)
+	if strings.Contains(msg, "It offered: .") {
+		t.Errorf("still reports an empty list as though it were the whole answer: %q", msg)
+	}
+	if !strings.Contains(msg, "neither a list of sizes nor a range") {
+		t.Errorf("does not say what was actually missing: %q", msg)
+	}
+	if !strings.Contains(msg, "by hand") {
+		t.Errorf("does not name the one thing the operator can do: %q", msg)
+	}
+}
+
+// A numeric driver's ceiling is named even with no list to quote.
+func TestARefusalNamesANumericCeiling(t *testing.T) {
+	msg := DescribeJumboRefusal("Embedded FlexibleLOM 1 Port 1", "*JumboPacket", nil, 4088, 9000)
+	if !strings.Contains(msg, "largest its driver allows is 4088") {
+		t.Errorf("does not name the numeric ceiling: %q", msg)
+	}
+	if !strings.Contains(msg, "a maximum of 4088") {
+		t.Errorf("does not say the limit came from a range rather than a list: %q", msg)
 	}
 }

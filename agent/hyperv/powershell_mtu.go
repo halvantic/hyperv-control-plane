@@ -3,6 +3,7 @@ package hyperv
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/joshua-fourie/ballast/api/types"
@@ -52,8 +53,20 @@ type AdapterMTU struct {
 	Keyword string `json:"keyword"`
 	// Setting is the value currently selected, verbatim from the driver.
 	Setting string `json:"setting"`
-	// Values are every value this driver will accept, verbatim.
+	// Values are every value this driver will accept, verbatim. EMPTY is not a
+	// broken card: an enumerated property lists its options here, and a NUMERIC
+	// one has none — it has a range instead. See Min/Max below.
 	Values []string `json:"values"`
+	// Min, Max and Step describe a NUMERIC *JumboPacket, which is how a good
+	// many server NICs expose it — HPE's Embedded FlexibleLOM among them.
+	//
+	// They were not read at all, so an adapter that is perfectly capable of
+	// jumbo frames reported "a jumbo-frame setting with no size this agent could
+	// read. It offered: ." on every pass. Observed on real hardware 2026-09-07:
+	// the message was accurate about what it saw and wrong about what it meant.
+	Min  int `json:"min"`
+	Max  int `json:"max"`
+	Step int `json:"step"`
 	// Found is false when there is no adapter by this name.
 	Found bool `json:"found"`
 }
@@ -83,6 +96,9 @@ foreach ($n in %s) {
     $adv = @(Get-NetAdapterAdvancedProperty -Name $n -ErrorAction SilentlyContinue |
       Where-Object { $_.DisplayName -like '*Jumbo*' })[0]
   }
+  # An advanced property is EITHER enumerated or numeric. ValidDisplayValues is
+  # populated only for the first kind; the second carries a range instead, and
+  # reading only the list makes a capable card look incapable.
   $out += [pscustomobject]@{
     name    = $n
     found   = $true
@@ -90,6 +106,9 @@ foreach ($n in %s) {
     keyword = [string]$adv.RegistryKeyword
     setting = [string]$adv.DisplayValue
     values  = @($adv.ValidDisplayValues | ForEach-Object { [string]$_ })
+    min     = [int]$adv.NumericParameterMinValue
+    max     = [int]$adv.NumericParameterMaxValue
+    step    = [int]$adv.NumericParameterStepValue
   }
 }
 # Always an array, so one adapter does not decode as an object.
@@ -185,9 +204,16 @@ func planAdapterMTU(obs []AdapterMTU, want int) (apply []mtuApply, refusals []st
 		if adapterCarries(a, want) {
 			continue
 		}
-		value, ok := types.JumboValueFor(a.Values, want)
+		/* An advanced property is EITHER enumerated or numeric.
+
+		   ValidDisplayValues is populated only for the first kind. Reading only
+		   that list made a card with a perfectly good range report "a
+		   jumbo-frame setting with no size this agent could read. It offered: ."
+		   on every pass — accurate about what it saw, wrong about what it meant.
+		   Seen on HPE Embedded FlexibleLOM 1 Port 1/2, 2026-09-07. */
+		value, numeric, ok := chooseJumbo(a, want)
 		if !ok {
-			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, want))
+			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, a.Max, want))
 			continue
 		}
 		// The driver already has the right value selected and its IP interface
@@ -202,7 +228,7 @@ func planAdapterMTU(obs []AdapterMTU, want int) (apply []mtuApply, refusals []st
 					"disable/enable of the adapter forces it.", a.Name, value, a.NlMtu))
 			continue
 		}
-		apply = append(apply, mtuApply{Name: a.Name, Keyword: a.Keyword, Value: value})
+		apply = append(apply, mtuApply{Name: a.Name, Keyword: a.Keyword, Value: value, Numeric: numeric})
 	}
 	return apply, refusals
 }
@@ -249,6 +275,27 @@ type mtuApply struct {
 	Name    string
 	Keyword string
 	Value   string
+	// Numeric selects how the value is written. An enumerated property takes
+	// -DisplayValue; a numeric one takes -RegistryValue, and passing a bare
+	// number as a display value is rejected by some drivers and silently
+	// ignored by others.
+	Numeric bool
+}
+
+/*
+chooseJumbo picks the value to write, from whichever half the driver offers.
+
+	Returns the value, whether it is numeric (which decides how it is written),
+	and whether one exists at all.
+*/
+func chooseJumbo(a AdapterMTU, want int) (value string, numeric bool, ok bool) {
+	if v, found := types.JumboValueFor(a.Values, want); found {
+		return v, false, true
+	}
+	if n, found := types.JumboNumericFor(a.Min, a.Max, a.Step, want); found {
+		return strconv.Itoa(n), true, true
+	}
+	return "", false, false
 }
 
 func namesOf(a []mtuApply) string {
@@ -273,8 +320,15 @@ func applyMTUScript(apply []mtuApply) string {
 		if kw == "" {
 			kw = "*JumboPacket"
 		}
-		fmt.Fprintf(&b, "Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword %s -DisplayValue %s -ErrorAction Stop\n",
-			psQuote(a.Name), psQuote(kw), psQuote(a.Value))
+		// A numeric property is set by its registry value; an enumerated one by
+		// its display value. Using the wrong one is rejected by some drivers and
+		// quietly ignored by others, which is the worse outcome.
+		param := "-DisplayValue"
+		if a.Numeric {
+			param = "-RegistryValue"
+		}
+		fmt.Fprintf(&b, "Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword %s %s %s -ErrorAction Stop\n",
+			psQuote(a.Name), psQuote(kw), param, psQuote(a.Value))
 	}
 	return b.String()
 }

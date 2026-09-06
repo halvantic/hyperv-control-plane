@@ -66,7 +66,7 @@ func TestOneIncapableAdapterDoesNotStopTheRest(t *testing.T) {
 	if err == nil {
 		t.Fatal("an adapter that cannot carry 9000 was not reported")
 	}
-	if !strings.Contains(err.Error(), "largest its driver offers is 4088") {
+	if !strings.Contains(err.Error(), "largest its driver allows is 4088") {
 		t.Errorf("the refusal does not name the actual ceiling: %v", err)
 	}
 	// The capable one was still configured, and the outcome says so.
@@ -307,5 +307,73 @@ func TestJumboValueSizeIgnoresTheUnits(t *testing.T) {
 		if ok != tc.ok || (ok && got != tc.want) {
 			t.Errorf("JumboValueSize(%q) = %d,%v want %d,%v", tc.in, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+/*
+The HPE FlexibleLOM: a numeric property, and it is applied differently.
+
+	Seen on real hardware 2026-09-07. Both ports reported "*JumboPacket ... no
+	size this agent could read. It offered: ." for ever, because only the
+	enumerated list was read and a numeric property has none — it has a range.
+
+	The write differs too: a numeric property takes -RegistryValue, and passing a
+	bare number as a display value is rejected by some drivers and silently
+	ignored by others. The second is the dangerous one, so the script is checked
+	rather than just the choice.
+*/
+func TestANumericJumboPropertyIsChosenAndWrittenCorrectly(t *testing.T) {
+	a := AdapterMTU{
+		Name: "Embedded FlexibleLOM 1 Port 1", Found: true,
+		NlMtu: 1500, Keyword: "*JumboPacket", Setting: "1500",
+		Values: nil, // numeric: no enumerated list at all
+		Min:    1500, Max: 9014, Step: 1,
+	}
+	apply, refusals := planAdapterMTU([]AdapterMTU{a}, 9000)
+	if len(refusals) != 0 {
+		t.Fatalf("a card with a perfectly good range was refused: %v", refusals)
+	}
+	if len(apply) != 1 || apply[0].Value != "9014" {
+		t.Fatalf("chose %+v, want 9014 — the payload plus headers", apply)
+	}
+	if !apply[0].Numeric {
+		t.Error("not marked numeric, so it would be written as a display value")
+	}
+	script := applyMTUScript(apply)
+	if !strings.Contains(script, "-RegistryValue '9014'") {
+		t.Errorf("a numeric property is not written by registry value:\n%s", script)
+	}
+	if strings.Contains(script, "-DisplayValue") {
+		t.Errorf("written as a display value, which some drivers ignore silently:\n%s", script)
+	}
+}
+
+// An enumerated property keeps taking a display value. Both shapes exist on one
+// fleet and getting either wrong is silent.
+func TestAnEnumeratedJumboPropertyStillUsesDisplayValue(t *testing.T) {
+	a := AdapterMTU{
+		Name: "NIC1", Found: true, NlMtu: 1500, Keyword: "*JumboPacket", Setting: "Disabled",
+		Values: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
+	}
+	apply, _ := planAdapterMTU([]AdapterMTU{a}, 9000)
+	if len(apply) != 1 || apply[0].Value != "9014 Bytes" || apply[0].Numeric {
+		t.Fatalf("chose %+v, want the enumerated 9014 Bytes", apply)
+	}
+	script := applyMTUScript(apply)
+	if !strings.Contains(script, "-DisplayValue '9014 Bytes'") {
+		t.Errorf("an enumerated property is not written by display value:\n%s", script)
+	}
+}
+
+// A numeric card already at its value settles, like any other.
+func TestANumericAdapterAlreadyAtItsValueSettles(t *testing.T) {
+	a := AdapterMTU{
+		Name: "Embedded FlexibleLOM 1 Port 1", Found: true,
+		NlMtu:   0, // teamed: no IP interface
+		Keyword: "*JumboPacket", Setting: "9014", Min: 1500, Max: 9014, Step: 1,
+	}
+	apply, refusals := planAdapterMTU([]AdapterMTU{a}, 9000)
+	if len(apply) != 0 || len(refusals) != 0 {
+		t.Fatalf("a teamed numeric adapter already at 9014 did not settle: apply=%+v refusals=%v", apply, refusals)
 	}
 }
