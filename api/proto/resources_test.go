@@ -50,6 +50,7 @@ func sampleResources() types.HostResources {
 			Profile:    "DomainAuthenticated",
 			Addresses:  []types.VNICAddress{{Address: "192.168.1.74/24", Kind: "host"}},
 			Gateway:    "192.168.1.1",
+			MTUBytes:   9000,
 		}},
 	}
 }

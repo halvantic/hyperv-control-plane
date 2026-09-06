@@ -475,6 +475,10 @@ message ManagementVNICInfo {
   // to an isolated storage/live-migration one, so anything reconstructing a spec
   // from observation needs it. See ManagementVNICInfo in api/types.
   string gateway = 7;
+  // mtu_bytes is the MTU this interface will actually send at (NlMtu). Observed
+  // rather than taken from the spec: it is reset by anything that re-creates the
+  // interface, so a vNIC can sit at 1500 having been set to 9000 an hour ago.
+  int32 mtu_bytes = 8;
 }
 
 message VNICAddress {
@@ -534,6 +538,19 @@ message PhysicalAdapter {
   // UI can prefill an exact CIDR when re-homing the address onto a management
   // vNIC. Zero when ipv4 is empty.
   int32 prefix_length = 10;
+  // mtu_bytes is the payload MTU this adapter's IPv4 interface currently carries
+  // (NlMtu) — the number that governs, whatever the driver setting claims.
+  int32 mtu_bytes = 11;
+  // jumbo_keyword is the driver's advanced-property keyword for jumbo frames,
+  // empty when the adapter exposes none. Empty is a fact about the card, and is
+  // a different answer from "not looked at".
+  string jumbo_keyword = 12;
+  // jumbo_values are the values this driver will accept, verbatim, and
+  // jumbo_setting the one currently selected. Vendors disagree about what the
+  // number means — Intel's 9014 and Mellanox's 9614 both carry a 9000 payload —
+  // so these travel rather than being guessed at.
+  repeated string jumbo_values = 13;
+  string jumbo_setting = 14;
 }
 
 message PhysicalDisk {
@@ -589,6 +606,11 @@ message VirtualSwitchSpec {
   SETTeamingMode teaming_mode = 3;
   SETLoadBalancing load_balancing = 4;
   bool allow_management_os = 5;
+  // mtu_bytes is the payload MTU every uplink in this team must carry; 0 leaves
+  // the adapters as the driver has them. It belongs on the switch because that
+  // is where the setting physically lives: jumbo frames are a driver property on
+  // the PHYSICAL adapter, and every vNIC inherits what the uplinks will carry.
+  int32 mtu_bytes = 6;
 }
 
 message ManagementVNICSpec {
@@ -610,6 +632,10 @@ message ManagementVNICSpec {
   // RDMA on this vNIC. Optional so that "not set" and "off" stay distinct: RDMA
   // needs capable adapters and, for RoCE, DCB end to end.
   optional bool rdma = 8;
+  // mtu_bytes is this vNIC's IPv4 interface MTU; 0 means whatever the switch
+  // gives it. Distinct from the switch's MTU and not a substitute: the uplink
+  // decides what can cross the wire, this decides what the stack puts on it.
+  int32 mtu_bytes = 9;
 }
 
 message IPConfig {

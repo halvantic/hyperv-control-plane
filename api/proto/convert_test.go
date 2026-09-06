@@ -43,6 +43,7 @@ func sampleHost() types.Host {
 					TeamingMode:       types.SETSwitchIndependent,
 					LoadBalancing:     types.SETDynamic,
 					AllowManagementOS: true,
+					MTUBytes:          9000,
 				}},
 				ManagementVNICs: []types.ManagementVNICSpec{{
 					Name:       "Management",
@@ -54,6 +55,7 @@ func sampleHost() types.Host {
 						DNSServers: []string{"10.0.0.1", "10.0.0.2"},
 					},
 					MinBandwidthWeight: 10,
+					MTUBytes:           9000,
 				}},
 			},
 			Storage: types.HostStorageSpec{
@@ -82,6 +84,8 @@ func sampleHost() types.Host {
 						Name: "NIC1", MAC: "00:15:5D:00:00:01", LinkSpeedBps: 25_000_000_000, Up: true,
 						IsManagement: true, IPv4: "192.168.1.50", PrefixLength: 24,
 						DNSServers: []string{"192.168.1.168"}, RegistersDNS: true, Gateway: "192.168.1.1",
+						MTUBytes:   9000, JumboKeyword: "*JumboPacket", JumboSetting: "9014 Bytes",
+						JumboValues: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
 					},
 				},
 				PhysicalDisks: []types.PhysicalDisk{
@@ -475,6 +479,7 @@ func TestVNICPurposeAndAffinityRoundTrip(t *testing.T) {
 		Purpose:            types.VNICStorage,
 		TeamMemberAdapter:  "Ethernet2",
 		RDMA:               &rdma,
+		MTUBytes:           9000,
 		IPConfig:           &types.IPConfig{Address: "10.0.40.11/24"},
 	}
 	got := mgmtVNICFromProto(mgmtVNICToProto(want))
@@ -487,6 +492,12 @@ func TestVNICPurposeAndAffinityRoundTrip(t *testing.T) {
 	}
 	if got.RDMA == nil || !*got.RDMA {
 		t.Errorf("RDMA lost: %v", got.RDMA)
+	}
+	// A dropped MTU round-trips as a perfect zero, which reads as "not declared"
+	// — so the centre would store 9000, the agent would receive nothing, and the
+	// vNIC would sit at 1500 with everything reporting success.
+	if got.MTUBytes != 9000 {
+		t.Errorf("the vNIC's MTU lost: %d — it would silently fall back to 1500", got.MTUBytes)
 	}
 	if got.Name != want.Name || got.VLANID != want.VLANID || got.IPConfig == nil || got.IPConfig.Address != want.IPConfig.Address {
 		t.Errorf("the fields that already worked must keep working: %+v", got)

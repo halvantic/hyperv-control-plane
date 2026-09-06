@@ -93,6 +93,38 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobTestJumboPath:
+		/* The only thing in Ballast that establishes jumbo frames actually work.
+
+		   Deliberately a job and never part of a pass. It changes nothing and
+		   asserts nothing about desired state, and running a ping storm from
+		   every host on every 40-second cycle would be load, not diagnosis.
+
+		   The tester is behind its own interface, so a backend that cannot do it
+		   says so rather than silently reporting a clean test. */
+		tester, ok := r.hv.(hyperv.JumboPathTester)
+		if !ok {
+			return "", fmt.Errorf("this agent's Hyper-V backend cannot run a jumbo path test")
+		}
+		mtu := hyperv.ParseMTUParam(p["mtu"])
+		var targets []string
+		for _, t := range strings.Split(p["targets"], ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				targets = append(targets, t)
+			}
+		}
+		probes, err := tester.TestJumboPath(ctx, r.lastStorageVNICs, targets, mtu)
+		if err != nil {
+			return "", err
+		}
+		msg := hyperv.DescribeJumboProbes(probes, mtu)
+		// A genuine MTU fault fails the job; an unreachable peer does not. Both
+		// are in the message either way — what changes is whether the console
+		// shows this as something to act on.
+		if hyperv.JumboProbesFailed(probes) {
+			return "", fmt.Errorf("%s", msg)
+		}
+		return msg, nil
 	case types.JobClearISCSIFavourites:
 		var targets []string
 		for _, t := range strings.Split(p["targets"], ",") {

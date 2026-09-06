@@ -221,6 +221,10 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			RegistersDns: a.RegistersDNS,
 			Gateway:      a.Gateway,
 			PrefixLength: int32(a.PrefixLength),
+			MtuBytes:     int32(a.MTUBytes),
+			JumboKeyword: a.JumboKeyword,
+			JumboValues:  a.JumboValues,
+			JumboSetting: a.JumboSetting,
 		})
 	}
 	for _, d := range inv.PhysicalDisks {
@@ -263,6 +267,10 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			RegistersDNS: a.GetRegistersDns(),
 			Gateway:      a.GetGateway(),
 			PrefixLength: int(a.GetPrefixLength()),
+			MTUBytes:     int(a.GetMtuBytes()),
+			JumboKeyword: a.GetJumboKeyword(),
+			JumboValues:  a.GetJumboValues(),
+			JumboSetting: a.GetJumboSetting(),
 		})
 	}
 	for _, d := range inv.GetPhysicalDisks() {
@@ -297,6 +305,7 @@ func networkingToProto(n types.HostNetworkingSpec) *HostNetworkingSpec {
 			TeamingMode:       teamingModeToProto(s.TeamingMode),
 			LoadBalancing:     loadBalancingToProto(s.LoadBalancing),
 			AllowManagementOs: s.AllowManagementOS,
+			MtuBytes:          int32(s.MTUBytes),
 		})
 	}
 	for _, v := range n.ManagementVNICs {
@@ -324,6 +333,7 @@ func networkingFromProto(n *HostNetworkingSpec) types.HostNetworkingSpec {
 			TeamingMode:       teamingModeFromProto(s.GetTeamingMode()),
 			LoadBalancing:     loadBalancingFromProto(s.GetLoadBalancing()),
 			AllowManagementOS: s.GetAllowManagementOs(),
+			MTUBytes:          int(s.GetMtuBytes()),
 		})
 	}
 	for _, v := range n.GetManagementVnics() {
@@ -347,6 +357,7 @@ func mgmtVNICToProto(v types.ManagementVNICSpec) *ManagementVNICSpec {
 		MinBandwidthWeight: int32(v.MinBandwidthWeight),
 		Purpose:            string(v.Purpose),
 		TeamMemberAdapter:  v.TeamMemberAdapter,
+		MtuBytes:           int32(v.MTUBytes),
 	}
 	// Carried as optional so "not declared" and "declared off" stay distinct on
 	// the wire. Flattened to a bool, a fleet that cannot do RDMA would be
@@ -372,6 +383,7 @@ func mgmtVNICFromProto(v *ManagementVNICSpec) types.ManagementVNICSpec {
 		MinBandwidthWeight: int(v.GetMinBandwidthWeight()),
 		Purpose:            types.VNICPurpose(v.GetPurpose()),
 		TeamMemberAdapter:  v.GetTeamMemberAdapter(),
+		MTUBytes:           int(v.GetMtuBytes()),
 	}
 	if v.Rdma != nil {
 		rdma := v.GetRdma()
@@ -671,7 +683,7 @@ func resourcesToProto(r types.HostResources) *HostResources {
 		})
 	}
 	for _, v := range r.ManagementVNICs {
-		mv := &ManagementVNICInfo{Name: v.Name, SwitchName: v.SwitchName, VlanId: int32(v.VlanID), DnsServers: v.DNSServers, Profile: v.Profile, Gateway: v.Gateway}
+		mv := &ManagementVNICInfo{Name: v.Name, SwitchName: v.SwitchName, VlanId: int32(v.VlanID), DnsServers: v.DNSServers, Profile: v.Profile, Gateway: v.Gateway, MtuBytes: int32(v.MTUBytes)}
 		for _, a := range v.Addresses {
 			mv.Addresses = append(mv.Addresses, &VNICAddress{Address: a.Address, Kind: a.Kind})
 		}
@@ -694,7 +706,7 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 		})
 	}
 	for _, v := range r.GetManagementVnics() {
-		mv := types.ManagementVNICInfo{Name: v.GetName(), SwitchName: v.GetSwitchName(), VlanID: int(v.GetVlanId()), DNSServers: v.GetDnsServers(), Profile: v.GetProfile(), Gateway: v.GetGateway()}
+		mv := types.ManagementVNICInfo{Name: v.GetName(), SwitchName: v.GetSwitchName(), VlanID: int(v.GetVlanId()), DNSServers: v.GetDnsServers(), Profile: v.GetProfile(), Gateway: v.GetGateway(), MTUBytes: int(v.GetMtuBytes())}
 		for _, a := range v.GetAddresses() {
 			mv.Addresses = append(mv.Addresses, types.VNICAddress{Address: a.GetAddress(), Kind: a.GetKind()})
 		}

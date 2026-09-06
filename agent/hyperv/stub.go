@@ -19,6 +19,17 @@ import (
 // implementation is unavailable or explicitly overridden, so the rest of the
 // agent runs unchanged on a developer machine.
 type Stub struct {
+	// AdapterMTU is what each physical adapter pretends to report, keyed by
+	// lower-cased name. Absent adapters behave as an ordinary 1500 NIC whose
+	// driver can reach 9014.
+	AdapterMTU map[string]StubAdapterMTU
+	// VNICMTU records the IPv4 interface MTU set on each management vNIC.
+	VNICMTU map[string]int
+	// MTUWrites records every adapter actually written to, in order. The point
+	// of the stub: a second reconcile pass that appends to this has bounced a
+	// live uplink for nothing.
+	MTUWrites []string
+
 	// Inventory, if set, overrides the default fixture. Lets tests drive the
 	// agent with specific hardware.
 	Inventory *types.HostInventory
@@ -1124,4 +1135,103 @@ func (s *Stub) ScanImportableVMs(_ context.Context, roots []string) ([]types.Imp
 
 func (s *Stub) ImportVM(_ context.Context, v VMImport) (string, error) {
 	return "imported " + v.ConfigPath, nil
+}
+
+/* MTU, in the stub.
+
+   Modelled rather than stubbed to a constant, because the interesting cases are
+   all about disagreement: an adapter already at the right MTU must not be
+   written again (writing resets the miniport), and one whose driver cannot
+   reach the size must be reported rather than silently skipped. A stub that
+   always succeeded would let both regress unnoticed.
+*/
+
+// StubAdapterMTU is what the stub pretends one adapter reports. The zero value
+// is an ordinary 1500 adapter that can do jumbo, which is the common case.
+type StubAdapterMTU struct {
+	NlMtu   int
+	Keyword string
+	Setting string
+	Values  []string
+	Missing bool
+}
+
+func (s *Stub) adapterMTU(name string) StubAdapterMTU {
+	if a, ok := s.AdapterMTU[strings.ToLower(name)]; ok {
+		return a
+	}
+	return StubAdapterMTU{NlMtu: 1500, Keyword: "*JumboPacket", Setting: "Disabled",
+		Values: []string{"Disabled", "4088 Bytes", "9014 Bytes"}}
+}
+
+func (s *Stub) AdapterMTUs(_ context.Context, adapters []string) ([]AdapterMTU, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AdapterMTU, 0, len(adapters))
+	for _, n := range adapters {
+		a := s.adapterMTU(n)
+		if a.Missing {
+			out = append(out, AdapterMTU{Name: n})
+			continue
+		}
+		out = append(out, AdapterMTU{Name: n, Found: true, NlMtu: a.NlMtu,
+			Keyword: a.Keyword, Setting: a.Setting, Values: a.Values})
+	}
+	return out, nil
+}
+
+func (s *Stub) EnsureAdapterMTU(ctx context.Context, adapters []string, want int) (Outcome, error) {
+	if want <= 0 || len(adapters) == 0 {
+		return OutcomeUnchanged, nil
+	}
+	obs, err := s.AdapterMTUs(ctx, adapters)
+	if err != nil {
+		return OutcomeUnchanged, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AdapterMTU == nil {
+		s.AdapterMTU = map[string]StubAdapterMTU{}
+	}
+	changed := false
+	var refusals []string
+	for _, a := range obs {
+		if !a.Found {
+			refusals = append(refusals, a.Name+" is not present on this host")
+			continue
+		}
+		if a.NlMtu >= want {
+			continue
+		}
+		value, ok := types.JumboValueFor(a.Values, want)
+		if !ok {
+			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, want))
+			continue
+		}
+		cur := s.adapterMTU(a.Name)
+		cur.NlMtu, cur.Setting = want, value
+		s.AdapterMTU[strings.ToLower(a.Name)] = cur
+		s.MTUWrites = append(s.MTUWrites, a.Name)
+		changed = true
+	}
+	if len(refusals) > 0 {
+		return outcomeFor(changed), fmt.Errorf("%s", strings.Join(refusals, "; "))
+	}
+	return outcomeFor(changed), nil
+}
+
+func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int) (Outcome, error) {
+	if want <= 0 {
+		return OutcomeUnchanged, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.VNICMTU == nil {
+		s.VNICMTU = map[string]int{}
+	}
+	if s.VNICMTU[strings.ToLower(vnicName)] == want {
+		return OutcomeUnchanged, nil
+	}
+	s.VNICMTU[strings.ToLower(vnicName)] = want
+	return OutcomeUpdated, nil
 }

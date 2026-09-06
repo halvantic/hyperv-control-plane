@@ -411,7 +411,19 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   # fabric NIC — callers use "carries an IP" to refuse teaming it into a vSwitch,
   # and that guard must keep firing for storage/live-migration NICs.
   $isMgmt = $static -and $gw -ne ''
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw }
+  # MTU, and what the driver will accept.
+  #
+  # NlMtu is reported rather than the driver's jumbo setting because NlMtu is
+  # what the IP stack will actually send; the two disagree while a reset is in
+  # flight, and on a card that silently declined the value. The valid values
+  # travel too, so the console can say what a card will and will not do instead
+  # of an operator finding out by trying.
+  $mtu = 0
+  $nlm = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+  if ($nlm) { $mtu = [int](@($nlm)[0].NlMtu) }
+  $jp = Get-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
+  if (-not $jp) { $jp = @(Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*Jumbo*' })[0] }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ }) }
 }
 # Keyed on UniqueId, NOT DeviceId.
 #
@@ -677,7 +689,14 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
   # is the edit that stranded the members off-subnet on 2026-08-05. An isolated
   # vNIC correctly reports none, and that absence is the fact worth carrying.
   $gw = [string](@(Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)[0].NextHop)
-  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw }
+  # The MTU this interface will actually send at. Observed rather than assumed
+  # from the spec, because it is reset by anything that re-creates the interface
+  # — including the IP reconcile's own remove-and-re-add — so a vNIC can sit at
+  # 1500 having been set to 9000 an hour earlier with nothing reporting it.
+  $vmtu = 0
+  $vi = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue
+  if ($vi) { $vmtu = [int](@($vi)[0].NlMtu) }
+  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw; mtuBytes = $vmtu }
 })
 [pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos); managementVNICs = @($mgmtVnics) } | ConvertTo-Json -Depth 5 -Compress
 `

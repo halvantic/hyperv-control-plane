@@ -73,6 +73,26 @@ type Interface interface {
 	// doing nothing when it already matches.
 	EnsureSwitch(ctx context.Context, spec types.VirtualSwitchSpec) (Outcome, error)
 
+	// EnsureAdapterMTU sets the named physical adapters to carry an MTU of want,
+	// choosing the value each driver actually offers rather than writing the
+	// number verbatim — vendors count *JumboPacket differently and most accept
+	// only values from their own menu.
+	//
+	// Idempotent, and that matters more here than usual: writing the property
+	// resets the miniport, so an apply that ran every pass would bounce every
+	// uplink in the fleet on every reconcile. Nothing is written when the
+	// adapter's IP interface already reports the MTU.
+	EnsureAdapterMTU(ctx context.Context, adapters []string, want int) (Outcome, error)
+
+	// AdapterMTUs observes what the named adapters carry, and what their drivers
+	// will accept. A pure read, folded into HostInventory.
+	AdapterMTUs(ctx context.Context, adapters []string) ([]AdapterMTU, error)
+
+	// EnsureInterfaceMTU sets the IPv4 interface MTU on a management vNIC. A
+	// different layer from the adapter property: the uplink decides what can
+	// cross the wire, this decides what the stack will put on it.
+	EnsureInterfaceMTU(ctx context.Context, vnicName string, want int) (Outcome, error)
+
 	// EnsureMgmtVNIC makes the management OS vNIC described by spec exist on its
 	// switch and carry its VLAN, IP and QoS-weight intent. The switch named by
 	// spec.SwitchName is expected to exist already; the reconciler ensures

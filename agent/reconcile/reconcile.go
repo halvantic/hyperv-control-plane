@@ -58,6 +58,12 @@ type Reconciler struct {
 	// nothing" and is the behaviour every host had before pinning existed.
 	lastStorageAddresses []string
 
+	// lastStorageVNICs is the same host pass's storage vNICs, kept whole.
+	// The jumbo path test pings FROM them and needs each one's prefix to
+	// decide which targets are on its subnet — a probe across a router
+	// measures the router's MTU and would name the wrong culprit.
+	lastStorageVNICs []types.ManagementVNICSpec
+
 	// volumeSources is the declared LUN behind each cluster volume, from the most
 	// recent cluster pass. The ADOPT job needs it: the reconcile refuses a LUN
 	// that has contents, and the operator's decision arrives later as a job that
@@ -303,6 +309,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// make a vNIC that failed to apply silently stop being bound to, which is the
 	// pass where the operator most needs to see the path missing.
 	r.lastStorageAddresses = desired.Spec.Networking.StorageAddresses()
+	// The storage vNICs themselves, for the jumbo path test. It needs the
+	// address AND the prefix to decide which targets share a subnet, which
+	// the flattened address list above has already thrown away.
+	r.lastStorageVNICs = desired.Spec.Networking.StorageVNICs()
 	var (
 		conds           []types.Condition
 		changed         bool
@@ -487,6 +497,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			changed = true
 			r.log.Info("switch reconciled", "switch", sw.Name, "outcome", out)
 		}
+
+		/* The team's MTU, after the switch exists and its members are bound.
+
+		   Ordered this way because the members are the thing being set: a team
+		   that has not been built yet has no adapters to configure, and running
+		   this first would report every uplink absent on a fresh host.
+
+		   Advisory, not fatal. An adapter whose driver cannot reach the size is
+		   a fact about the card — the switch is otherwise correct and its
+		   traffic flows — so it reports against its own condition rather than
+		   failing the switch and taking the host red. */
+		if sw.MTUBytes > 0 {
+			out, err := r.hv.EnsureAdapterMTU(ctx, sw.TeamMembers, sw.MTUBytes)
+			conds = append(conds, r.advisoryCondition("SwitchMTU/"+sw.Name, out, err))
+			if err != nil {
+				r.log.Warn("set switch MTU", "switch", sw.Name, "mtu", sw.MTUBytes, "err", err)
+			} else if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("switch MTU reconciled", "switch", sw.Name, "mtu", sw.MTUBytes, "outcome", out)
+			}
+		}
 	}
 
 	// Resolve each vNIC's effective spec first, then reconcile the whole set in
@@ -561,12 +592,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			// so there is nothing to gain from throttling part of it.
 			r.vnicsSettled, r.vnicGen = settled, desired.Meta.Generation
 		}
+
+		/* Each vNIC's own interface MTU, after the set is applied.
+
+		   Deliberately outside the settle throttle above. The vNIC batch settles
+		   once its switch, VLAN, pin and RDMA are right, and the interface MTU is
+		   none of those — it is reset by anything that re-creates the interface,
+		   including the IP reconcile's own remove-and-re-add. A vNIC can settle
+		   at 1500 having been set to 9000 an hour earlier, which is exactly the
+		   silent regression this feature exists to catch. It is a cheap read, so
+		   it is checked every pass. */
+		for _, v := range vnics {
+			if v.MTUBytes <= 0 {
+				continue
+			}
+			out, err := r.hv.EnsureInterfaceMTU(ctx, v.Name, v.MTUBytes)
+			conds = append(conds, r.advisoryCondition("VNICMTU/"+v.Name, out, err))
+			if err != nil {
+				r.log.Warn("set vNIC MTU", "vnic", v.Name, "mtu", v.MTUBytes, "err", err)
+			} else if out != hyperv.OutcomeUnchanged {
+				changed = true
+				r.log.Info("vNIC MTU reconciled", "vnic", v.Name, "mtu", v.MTUBytes, "outcome", out)
+			}
+		}
 	}
 
 	// Whether the redundancy is real. Reported even on a settled pass, because a
 	// vNIC that has been correctly applied to the wrong uplink is settled and
 	// wrong, and nothing else on the host will ever say so.
 	conds = append(conds, storageNetworkCondition(net, wantsMultipathStorage(desired), r.now)...)
+
+	// Whether the frames are the size everyone thinks they are. Reported on every
+	// pass for the same reason as the line above: a vNIC whose interface MTU was
+	// reset by an IP re-apply is settled and wrong.
+	conds = append(conds, mtuCondition(net, r.now)...)
 
 	// Prune stray management-OS vNICs: on a switch we manage, remove any management
 	// vNIC not in the declared set that carries no real IPv4 at all (APIPA only) —

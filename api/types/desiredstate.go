@@ -721,6 +721,14 @@ type ManagementVNICInfo struct {
 	// reconstructing intent from observation needs it: a management vNIC written
 	// without its gateway loses the host's default route.
 	Gateway string `json:"gateway,omitempty"`
+
+	// MTUBytes is the MTU this interface will actually send at (NlMtu).
+	//
+	// Observed rather than taken from the spec, because it is reset by anything
+	// that re-creates the interface — including the IP reconcile's own
+	// remove-and-re-add. A vNIC can therefore sit at 1500 having been set to
+	// 9000 an hour earlier, settled and wrong, with nothing else reporting it.
+	MTUBytes int `json:"mtuBytes,omitempty"`
 }
 
 // VNICAddress is one IPv4 address on a vNIC with its classification.
@@ -839,6 +847,31 @@ type PhysicalAdapter struct {
 	// UI can prefill an exact CIDR when re-homing the address onto a management
 	// vNIC. Zero when IPv4 is empty.
 	PrefixLength int `json:"prefixLength,omitempty"`
+
+	// MTUBytes is the payload MTU this adapter's IP interface currently carries
+	// (NlMtu). This is the number that governs, whatever the driver's own jumbo
+	// setting claims, so it is what gets compared against desired state.
+	MTUBytes int `json:"mtuBytes,omitempty"`
+
+	// JumboKeyword is the driver's advanced-property keyword for jumbo frames,
+	// empty when the adapter exposes none.
+	//
+	// Reported because "this adapter cannot do jumbo frames" and "Ballast has not
+	// looked" are different answers and were previously indistinguishable. An
+	// adapter with no keyword is a fact about the hardware, not a failure.
+	JumboKeyword string `json:"jumboKeyword,omitempty"`
+
+	// JumboValues are the values this driver will actually accept, verbatim.
+	//
+	// Vendors disagree about what the number means: Intel's 9014 and Mellanox's
+	// 9614 both carry a 9000-byte payload, and some drivers offer only "Disabled"
+	// and a couple of fixed sizes. Writing a bare 9000 is therefore wrong on most
+	// cards. These are carried up so the choice can be explained rather than
+	// guessed, and so the console can say what a card will and will not do.
+	JumboValues []string `json:"jumboValues,omitempty"`
+
+	// JumboSetting is the value currently selected in the driver, verbatim.
+	JumboSetting string `json:"jumboSetting,omitempty"`
 }
 
 type PhysicalDisk struct {
@@ -969,6 +1002,26 @@ type VirtualSwitchSpec struct {
 	// AllowManagementOS controls whether the host shares the switch for its
 	// own management traffic (true) or the switch is VM-only (false).
 	AllowManagementOS bool `json:"allowManagementOS"`
+
+	// MTUBytes is the payload MTU every uplink in this switch's team must carry.
+	// Zero leaves the adapters exactly as the driver has them.
+	//
+	// It belongs on the SWITCH, not on a vNIC, because that is where the setting
+	// physically lives. Jumbo frames on Windows are a driver advanced property
+	// (*JumboPacket) on the PHYSICAL adapter; the vSwitch and every vNIC on it
+	// inherit whatever the uplinks will carry. Declaring 9000 on a storage vNIC
+	// whose uplink is at 1500 configures nothing and reports success.
+	//
+	// One number for the whole team, deliberately. SET spreads traffic across
+	// uplinks and moves it on failure, so a team whose members disagree about MTU
+	// works until it fails over onto the member that cannot carry the frame.
+	//
+	// The value is the payload (9000), not the on-the-wire frame. Drivers count
+	// this differently — Intel offers 9014, others 9216 or 9614, each including a
+	// different amount of header — so the agent reads what the driver actually
+	// offers and picks the smallest value that carries this payload, rather than
+	// writing a number that means something else on the next vendor's card.
+	MTUBytes int `json:"mtuBytes,omitempty"`
 }
 
 type SETTeamingMode string
@@ -1021,6 +1074,22 @@ type ManagementVNICSpec struct {
 	// Empty leaves placement to SET, which is correct for management and VM
 	// traffic and wrong for storage.
 	TeamMemberAdapter string `json:"teamMemberAdapter,omitempty"`
+
+	// MTUBytes is the payload MTU this vNIC's IP interface must carry. Zero
+	// means whatever the switch gives it, which is the right default for
+	// management and VM traffic.
+	//
+	// Distinct from the switch's MTU and NOT a substitute for it. The uplink
+	// decides what can physically cross the wire; this decides what the IP stack
+	// on this interface will put on it. Setting it above the uplink's MTU is the
+	// silent failure worth refusing: everything reports configured, and every
+	// frame over 1500 is dropped somewhere the host cannot see.
+	//
+	// Declared per vNIC rather than inherited because a converged switch commonly
+	// carries jumbo storage alongside management that must stay at 1500 — a
+	// management interface at 9000 talking to a 1500 router is a slow, sporadic
+	// fault that looks like anything but MTU.
+	MTUBytes int `json:"mtuBytes,omitempty"`
 
 	// RDMA enables RDMA on this vNIC (Enable-NetAdapterRdma).
 	//
@@ -2589,6 +2658,29 @@ const (
 	   another product, and removing it would be Ballast reaching outside what it
 	   was asked to manage. */
 	JobClearISCSIFavourites = "ClearISCSIFavourites" // params: targets — comma-separated declared target IQNs
+
+	/* JobTestJumboPath sends a don't-fragment ping at the declared payload from
+	   each storage vNIC to the addresses that matter, and reports what crossed.
+
+	   It exists because configuring MTU correctly on every host is not the same
+	   as jumbo frames working, and nothing on a host can tell the difference.
+	   Three things have to agree — the uplink, the IP interface, and the physical
+	   switch between the hosts — and Ballast owns the first two. The third it has
+	   no presence on and cannot read.
+
+	   So the only way to establish the truth is to send a frame that size and see
+	   whether it arrives. Don't-fragment is the whole point: without it the stack
+	   silently splits an oversized packet and the test passes on a 1500 path.
+
+	   The result names the culprit rather than reporting a failure. Both ends at
+	   9000 with the ping failing is a switch that has not been configured, and
+	   that is a sentence the console can print — the one step the operator has to
+	   take somewhere Ballast does not run.
+
+	   params: mtu (payload bytes; default 9000), targets (comma-separated
+	   addresses; empty means the host tests every peer it can see from its own
+	   storage subnets). */
+	JobTestJumboPath = "TestJumboPath" // params: mtu, targets
 
 	// JobScanImportableVMs walks this host's storage for VM configurations no
 	// host has registered and reports them in status.

@@ -3066,7 +3066,11 @@ type ManagementVNICInfo struct {
 	// none. Having a gateway is what makes a management vNIC routable, as opposed
 	// to an isolated storage/live-migration one, so anything reconstructing a spec
 	// from observation needs it. See ManagementVNICInfo in api/types.
-	Gateway       string `protobuf:"bytes,7,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	Gateway string `protobuf:"bytes,7,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	// mtu_bytes is the MTU this interface will actually send at (NlMtu). Observed
+	// rather than taken from the spec: it is reset by anything that re-creates the
+	// interface, so a vNIC can sit at 1500 having been set to 9000 an hour ago.
+	MtuBytes      int32 `protobuf:"varint,8,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3148,6 +3152,13 @@ func (x *ManagementVNICInfo) GetGateway() string {
 		return x.Gateway
 	}
 	return ""
+}
+
+func (x *ManagementVNICInfo) GetMtuBytes() int32 {
+	if x != nil {
+		return x.MtuBytes
+	}
+	return 0
 }
 
 type VNICAddress struct {
@@ -3465,7 +3476,20 @@ type PhysicalAdapter struct {
 	// prefix_length is the IPv4 prefix of the address in ipv4 (e.g. 24), so the
 	// UI can prefill an exact CIDR when re-homing the address onto a management
 	// vNIC. Zero when ipv4 is empty.
-	PrefixLength  int32 `protobuf:"varint,10,opt,name=prefix_length,json=prefixLength,proto3" json:"prefix_length,omitempty"`
+	PrefixLength int32 `protobuf:"varint,10,opt,name=prefix_length,json=prefixLength,proto3" json:"prefix_length,omitempty"`
+	// mtu_bytes is the payload MTU this adapter's IPv4 interface currently carries
+	// (NlMtu) — the number that governs, whatever the driver setting claims.
+	MtuBytes int32 `protobuf:"varint,11,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
+	// jumbo_keyword is the driver's advanced-property keyword for jumbo frames,
+	// empty when the adapter exposes none. Empty is a fact about the card, and is
+	// a different answer from "not looked at".
+	JumboKeyword string `protobuf:"bytes,12,opt,name=jumbo_keyword,json=jumboKeyword,proto3" json:"jumbo_keyword,omitempty"`
+	// jumbo_values are the values this driver will accept, verbatim, and
+	// jumbo_setting the one currently selected. Vendors disagree about what the
+	// number means — Intel's 9014 and Mellanox's 9614 both carry a 9000 payload —
+	// so these travel rather than being guessed at.
+	JumboValues   []string `protobuf:"bytes,13,rep,name=jumbo_values,json=jumboValues,proto3" json:"jumbo_values,omitempty"`
+	JumboSetting  string   `protobuf:"bytes,14,opt,name=jumbo_setting,json=jumboSetting,proto3" json:"jumbo_setting,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3568,6 +3592,34 @@ func (x *PhysicalAdapter) GetPrefixLength() int32 {
 		return x.PrefixLength
 	}
 	return 0
+}
+
+func (x *PhysicalAdapter) GetMtuBytes() int32 {
+	if x != nil {
+		return x.MtuBytes
+	}
+	return 0
+}
+
+func (x *PhysicalAdapter) GetJumboKeyword() string {
+	if x != nil {
+		return x.JumboKeyword
+	}
+	return ""
+}
+
+func (x *PhysicalAdapter) GetJumboValues() []string {
+	if x != nil {
+		return x.JumboValues
+	}
+	return nil
+}
+
+func (x *PhysicalAdapter) GetJumboSetting() string {
+	if x != nil {
+		return x.JumboSetting
+	}
+	return ""
 }
 
 type PhysicalDisk struct {
@@ -3780,8 +3832,13 @@ type VirtualSwitchSpec struct {
 	TeamingMode       SETTeamingMode         `protobuf:"varint,3,opt,name=teaming_mode,json=teamingMode,proto3,enum=ballast.v1.SETTeamingMode" json:"teaming_mode,omitempty"`
 	LoadBalancing     SETLoadBalancing       `protobuf:"varint,4,opt,name=load_balancing,json=loadBalancing,proto3,enum=ballast.v1.SETLoadBalancing" json:"load_balancing,omitempty"`
 	AllowManagementOs bool                   `protobuf:"varint,5,opt,name=allow_management_os,json=allowManagementOs,proto3" json:"allow_management_os,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// mtu_bytes is the payload MTU every uplink in this team must carry; 0 leaves
+	// the adapters as the driver has them. It belongs on the switch because that
+	// is where the setting physically lives: jumbo frames are a driver property on
+	// the PHYSICAL adapter, and every vNIC inherits what the uplinks will carry.
+	MtuBytes      int32 `protobuf:"varint,6,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VirtualSwitchSpec) Reset() {
@@ -3849,6 +3906,13 @@ func (x *VirtualSwitchSpec) GetAllowManagementOs() bool {
 	return false
 }
 
+func (x *VirtualSwitchSpec) GetMtuBytes() int32 {
+	if x != nil {
+		return x.MtuBytes
+	}
+	return 0
+}
+
 type ManagementVNICSpec struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -3868,7 +3932,11 @@ type ManagementVNICSpec struct {
 	TeamMemberAdapter string `protobuf:"bytes,7,opt,name=team_member_adapter,json=teamMemberAdapter,proto3" json:"team_member_adapter,omitempty"`
 	// RDMA on this vNIC. Optional so that "not set" and "off" stay distinct: RDMA
 	// needs capable adapters and, for RoCE, DCB end to end.
-	Rdma          *bool `protobuf:"varint,8,opt,name=rdma,proto3,oneof" json:"rdma,omitempty"`
+	Rdma *bool `protobuf:"varint,8,opt,name=rdma,proto3,oneof" json:"rdma,omitempty"`
+	// mtu_bytes is this vNIC's IPv4 interface MTU; 0 means whatever the switch
+	// gives it. Distinct from the switch's MTU and not a substitute: the uplink
+	// decides what can cross the wire, this decides what the stack puts on it.
+	MtuBytes      int32 `protobuf:"varint,9,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3957,6 +4025,13 @@ func (x *ManagementVNICSpec) GetRdma() bool {
 		return *x.Rdma
 	}
 	return false
+}
+
+func (x *ManagementVNICSpec) GetMtuBytes() int32 {
+	if x != nil {
+		return x.MtuBytes
+	}
+	return 0
 }
 
 type IPConfig struct {
@@ -7271,7 +7346,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\avolumes\x18\x02 \x03(\v2\x19.ballast.v1.StorageVolumeR\avolumes\x12\x12\n" +
 	"\x04isos\x18\x03 \x03(\tR\x04isos\x12D\n" +
 	"\x0eswitch_details\x18\x04 \x03(\v2\x1d.ballast.v1.VirtualSwitchInfoR\rswitchDetails\x12I\n" +
-	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\xee\x01\n" +
+	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\x8b\x02\n" +
 	"\x12ManagementVNICInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vswitch_name\x18\x02 \x01(\tR\n" +
@@ -7281,7 +7356,8 @@ const file_ballast_proto_rawDesc = "" +
 	"dnsServers\x12\x18\n" +
 	"\aprofile\x18\x05 \x01(\tR\aprofile\x125\n" +
 	"\taddresses\x18\x06 \x03(\v2\x17.ballast.v1.VNICAddressR\taddresses\x12\x18\n" +
-	"\agateway\x18\a \x01(\tR\agateway\";\n" +
+	"\agateway\x18\a \x01(\tR\agateway\x12\x1b\n" +
+	"\tmtu_bytes\x18\b \x01(\x05R\bmtuBytes\";\n" +
 	"\vVNICAddress\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x93\x01\n" +
@@ -7308,7 +7384,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
 	"os_version\x18\x05 \x01(\tR\tosVersion\x12,\n" +
-	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\xab\x02\n" +
+	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\xb5\x03\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
@@ -7321,7 +7397,11 @@ const file_ballast_proto_rawDesc = "" +
 	"\rregisters_dns\x18\b \x01(\bR\fregistersDns\x12\x18\n" +
 	"\agateway\x18\t \x01(\tR\agateway\x12#\n" +
 	"\rprefix_length\x18\n" +
-	" \x01(\x05R\fprefixLength\"\xde\x02\n" +
+	" \x01(\x05R\fprefixLength\x12\x1b\n" +
+	"\tmtu_bytes\x18\v \x01(\x05R\bmtuBytes\x12#\n" +
+	"\rjumbo_keyword\x18\f \x01(\tR\fjumboKeyword\x12!\n" +
+	"\fjumbo_values\x18\r \x03(\tR\vjumboValues\x12#\n" +
+	"\rjumbo_setting\x18\x0e \x01(\tR\fjumboSetting\"\xde\x02\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -7344,13 +7424,14 @@ const file_ballast_proto_rawDesc = "" +
 	"\vdns_servers\x18\x03 \x03(\tR\n" +
 	"dnsServers\x12>\n" +
 	"\vnic_configs\x18\x04 \x03(\v2\x1d.ballast.v1.PhysicalNICConfigR\n" +
-	"nicConfigs\"\xfe\x01\n" +
+	"nicConfigs\"\x9b\x02\n" +
 	"\x11VirtualSwitchSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fteam_members\x18\x02 \x03(\tR\vteamMembers\x12=\n" +
 	"\fteaming_mode\x18\x03 \x01(\x0e2\x1a.ballast.v1.SETTeamingModeR\vteamingMode\x12C\n" +
 	"\x0eload_balancing\x18\x04 \x01(\x0e2\x1c.ballast.v1.SETLoadBalancingR\rloadBalancing\x12.\n" +
-	"\x13allow_management_os\x18\x05 \x01(\bR\x11allowManagementOs\"\xb3\x02\n" +
+	"\x13allow_management_os\x18\x05 \x01(\bR\x11allowManagementOs\x12\x1b\n" +
+	"\tmtu_bytes\x18\x06 \x01(\x05R\bmtuBytes\"\xd0\x02\n" +
 	"\x12ManagementVNICSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vswitch_name\x18\x02 \x01(\tR\n" +
@@ -7360,7 +7441,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\x14min_bandwidth_weight\x18\x05 \x01(\x05R\x12minBandwidthWeight\x12\x18\n" +
 	"\apurpose\x18\x06 \x01(\tR\apurpose\x12.\n" +
 	"\x13team_member_adapter\x18\a \x01(\tR\x11teamMemberAdapter\x12\x17\n" +
-	"\x04rdma\x18\b \x01(\bH\x00R\x04rdma\x88\x01\x01B\a\n" +
+	"\x04rdma\x18\b \x01(\bH\x00R\x04rdma\x88\x01\x01\x12\x1b\n" +
+	"\tmtu_bytes\x18\t \x01(\x05R\bmtuBytesB\a\n" +
 	"\x05_rdma\"_\n" +
 	"\bIPConfig\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x18\n" +
