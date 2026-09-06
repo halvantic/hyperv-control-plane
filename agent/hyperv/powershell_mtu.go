@@ -46,7 +46,22 @@ import (
 // AdapterMTU is what one physical adapter reports about its MTU.
 type AdapterMTU struct {
 	Name string `json:"name"`
-	// NlMtu is the IP interface's MTU — the number that governs what is sent.
+	/* MtuSize is the miniport's own MTU, from Get-NetAdapter.
+
+	   The best answer available and the last one this agent learned to ask for.
+	   It is present on a teamed adapter, which NlMtu is not, and it is what the
+	   card is actually carrying, which the driver's *JumboPacket display value
+	   is not always.
+
+	   Both of the other two failed on one real card at once. HPE's 631FLR-SFP28
+	   (Marvell FastLinQ), 2026-09-07: Get-NetIPInterface does not list the
+	   physical adapters at all, so NlMtu was 0; *JumboPacket reported
+	   DisplayValue 1514 with no valid values and no numeric range; and
+	   Get-NetAdapter reported MtuSize 9000, which was the truth. Ballast drew
+	   1514 for an adapter carrying 9000. */
+	MtuSize int `json:"mtuSize"`
+	// NlMtu is the IP interface's MTU. Absent on a teamed adapter, which has no
+	// IP interface by design.
 	NlMtu int `json:"nlMtu"`
 	// Keyword is the driver's jumbo advanced-property keyword, empty when the
 	// adapter exposes none. Empty is a fact about the card, not a read failure.
@@ -83,6 +98,10 @@ $out = @()
 foreach ($n in %s) {
   $a = Get-NetAdapter -Name $n -ErrorAction SilentlyContinue
   if (-not $a) { $out += [pscustomobject]@{ name = $n; found = $false }; continue }
+  # The miniport's own MTU. Present whether or not the adapter is teamed, and
+  # true whatever the driver's advanced property happens to say.
+  $mtuSize = 0
+  if ($a.MtuSize) { $mtuSize = [int]$a.MtuSize }
   # NlMtu is what the IP stack will actually send. Read first and reported
   # regardless of what the driver property below claims.
   $mtu = 0
@@ -102,10 +121,14 @@ foreach ($n in %s) {
   $out += [pscustomobject]@{
     name    = $n
     found   = $true
+    mtuSize = $mtuSize
     nlMtu   = $mtu
     keyword = [string]$adv.RegistryKeyword
     setting = [string]$adv.DisplayValue
-    values  = @($adv.ValidDisplayValues | ForEach-Object { [string]$_ })
+    # Blanks dropped: a driver with no enumerated values yields one empty
+    # string here, and one empty string reads as one offered size to
+    # everything downstream — the same fault the DNS list had.
+    values  = @($adv.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ })
     min     = [int]$adv.NumericParameterMinValue
     max     = [int]$adv.NumericParameterMaxValue
     step    = [int]$adv.NumericParameterStepValue
@@ -236,23 +259,27 @@ func planAdapterMTU(obs []AdapterMTU, want int) (apply []mtuApply, refusals []st
 /*
 adapterCarries reports whether this adapter already sends frames of want bytes.
 
-	Two authorities, and which one applies depends on whether the adapter has an
-	IP interface at all.
+	Three sources, tried in order of how much they can be trusted. Every one of
+	them is absent or wrong on some real card, which is why there are three.
 
-	  NlMtu > 0  — the adapter has an IP interface, and NlMtu is what the stack
-	               will actually send. It wins: a driver value can be selected
-	               and not in force.
-	  NlMtu == 0 — the adapter is bound into a vSwitch and has no IP interface
-	               by design. There is nothing else to read, so the driver's own
-	               selected value is the only available truth. Treating the
-	               absence as a small number would make every teamed uplink
-	               permanently unsettled.
-
-	The selected value is compared by SIZE, not by string: drivers spell it
-	variously ("9014", "9014 Bytes") and a card whose menu only reaches 9014 is
-	carrying a 9000-byte payload, which is what was asked for.
+	  MtuSize — the miniport's own MTU, from Get-NetAdapter. Present whether or
+	            not the adapter is teamed, and the thing the card is actually
+	            carrying. First because it is right most often.
+	  NlMtu   — the IP interface's MTU. Absent on a teamed adapter by design,
+	            and that absence must never read as a small number, or every
+	            uplink in every team is permanently unsettled.
+	  Setting — the driver's selected *JumboPacket value. Last, because it can
+	            disagree with the card: the 631FLR reported 1514 while carrying
+	            9000. Compared by SIZE, not by string, since drivers spell it
+	            variously ("9014", "9014 Bytes") and a menu reaching 9014 is
+	            carrying the 9000-byte payload that was asked for.
 */
 func adapterCarries(a AdapterMTU, want int) bool {
+	// The miniport's own MTU, when it has one. Present on a teamed adapter and
+	// true whatever the driver property says — see AdapterMTU.MtuSize.
+	if a.MtuSize > 0 {
+		return a.MtuSize >= want
+	}
 	if a.NlMtu > 0 {
 		return a.NlMtu >= want
 	}
@@ -351,19 +378,74 @@ func (p *PowerShell) EnsureInterfaceMTU(ctx context.Context, vnicName string, wa
 		return OutcomeUnchanged, nil
 	}
 	alias := "vEthernet (" + vnicName + ")"
+
+	/* A management vNIC is an adapter as well as an IP interface, and both have
+	   to agree before a jumbo frame leaves the host.
+
+	   Set-NetIPInterface alone was not enough on the rig: the call is accepted
+	   and NlMtu stays at 1500, on a host whose uplinks are genuinely at 9000.
+	   The Hyper-V Virtual Ethernet Adapter has its own *JumboPacket, and the IP
+	   layer cannot exceed what the miniport under it will carry — so the
+	   adapter property is set FIRST and the interface MTU after it, which is
+	   the same order as the physical uplinks and the vSwitch above them.
+
+	   Both steps are idempotent and read back. The adapter property is only
+	   written when it is actually short, because writing it resets the vNIC and
+	   a vNIC reset drops the host's management address for a moment. */
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$i = Get-NetIPInterface -InterfaceAlias %[1]s -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$alias = %[1]s
+$want  = %[2]d
+
+$i = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue
 if (-not $i) { Write-Output 'RESULT=absent'; return }
 $cur = [int](@($i)[0].NlMtu)
-if ($cur -eq %[2]d) { Write-Output 'RESULT=unchanged'; return }
-Set-NetIPInterface -InterfaceAlias %[1]s -AddressFamily IPv4 -NlMtuBytes %[2]d -ErrorAction Stop
-# Read back rather than trusting the set. An interface whose uplink cannot carry
-# the size accepts the call and keeps the old value, which would otherwise be
-# reported as a successful change.
-$now = [int](@(Get-NetIPInterface -InterfaceAlias %[1]s -AddressFamily IPv4 -ErrorAction SilentlyContinue)[0].NlMtu)
-if ($now -ne %[2]d) { throw "the interface accepted an MTU of %[2]d and still reports $now" }
-Write-Output 'RESULT=set'
+
+# The adapter beneath the interface. Its MTU caps whatever the IP layer is told.
+$na  = Get-NetAdapter -Name $alias -ErrorAction SilentlyContinue
+$aMtu = 0; if ($na -and $na.MtuSize) { $aMtu = [int]$na.MtuSize }
+$adv = Get-NetAdapterAdvancedProperty -Name $alias -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
+$advVal = ''; if ($adv) { $advVal = [string]$adv.DisplayValue }
+
+if ($cur -eq $want -and ($aMtu -eq 0 -or $aMtu -ge $want)) { Write-Output 'RESULT=unchanged'; return }
+
+# Raise the adapter first, and only when it is short: writing this resets the
+# vNIC, and on the management vNIC that drops the host's address for a moment.
+$bumped = $false
+if ($adv -and $aMtu -gt 0 -and $aMtu -lt $want) {
+  $vals = @($adv.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ })
+  $pick = ''
+  foreach ($v in $vals) {
+    $n = 0; if ([int]::TryParse((($v -split '\s+')[0]), [ref]$n)) { if ($n -ge $want -and ($pick -eq '' -or $n -lt $pickN)) { $pick = $v; $pickN = $n } }
+  }
+  if ($pick -ne '') {
+    Set-NetAdapterAdvancedProperty -Name $alias -RegistryKeyword '*JumboPacket' -DisplayValue $pick -ErrorAction Stop
+    $bumped = $true
+    Start-Sleep -Seconds 3
+  }
+}
+
+Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -NlMtuBytes $want -ErrorAction Stop
+
+# Read back rather than trusting the set. An interface whose adapter cannot
+# carry the size accepts the call and keeps the old value, which would otherwise
+# be reported as a successful change.
+$now = [int](@(Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue)[0].NlMtu)
+if ($now -ne $want) {
+  $na2 = Get-NetAdapter -Name $alias -ErrorAction SilentlyContinue
+  $a2 = 0; if ($na2 -and $na2.MtuSize) { $a2 = [int]$na2.MtuSize }
+  $adv2 = Get-NetAdapterAdvancedProperty -Name $alias -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
+  $offer = ''
+  if ($adv2) { $offer = (@($adv2.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }) -join ', ') }
+  $v2 = ''; if ($adv2) { $v2 = [string]$adv2.DisplayValue }
+  # Say what was actually seen, not just that it failed. Which of the two layers
+  # is short is the whole diagnosis, and only this script can see both.
+  throw ("the interface accepted an MTU of $want and still reports $now. " +
+    "Its adapter carries $a2 and its jumbo setting is '" + $v2 + "'" +
+    $(if ($offer) { " (offers: $offer)" } else { " (offers nothing this agent can read)" }) + ". " +
+    $(if ($a2 -gt 0 -and $a2 -lt $want) { "The adapter under this vNIC is the limit." } else { "The adapter is not the limit, so the vSwitch or its uplinks are." }))
+}
+if ($bumped) { Write-Output 'RESULT=set-adapter' } else { Write-Output 'RESULT=set' }
 `, psQuote(alias), want)
 
 	out, err := p.run(ctx, script)
@@ -373,7 +455,7 @@ Write-Output 'RESULT=set'
 	switch resultOf(out) {
 	case "absent":
 		return OutcomeUnchanged, fmt.Errorf("no IPv4 interface named %q, so its MTU could not be set", alias)
-	case "set":
+	case "set", "set-adapter":
 		return OutcomeUpdated, nil
 	default:
 		return OutcomeUnchanged, nil

@@ -377,3 +377,148 @@ func TestANumericAdapterAlreadyAtItsValueSettles(t *testing.T) {
 		t.Fatalf("a teamed numeric adapter already at 9014 did not settle: apply=%+v refusals=%v", apply, refusals)
 	}
 }
+
+/*
+The card where both of the other two sources failed at once.
+
+	HPE 631FLR-SFP28 (Marvell FastLinQ) on the physical host, 2026-09-07, read
+	straight off the machine:
+
+	  Get-NetIPInterface     — does not list the physical adapters at all, so
+	                           NlMtu is 0
+	  *JumboPacket           — DisplayValue 1514, no valid values, no min/max
+	  Get-NetAdapter MtuSize — 9000
+
+	The card was carrying 9000 and Ballast drew 1514. MtuSize is the only source
+	that was both present and true, and it was the one the agent never asked for.
+*/
+func TestMtuSizeWinsWhenTheDriverPropertyDisagrees(t *testing.T) {
+	a := AdapterMTU{
+		Name: "Embedded FlexibleLOM 1 Port 1", Found: true,
+		MtuSize: 9000, // the card really is at 9000
+		NlMtu:   0,    // teamed: no IP interface
+		Keyword: "*JumboPacket", Setting: "1514",
+		Values: nil, Min: 0, Max: 0,
+	}
+	if !adapterCarries(a, 9000) {
+		t.Fatal("a card carrying 9000 was judged not to be, from a driver property that disagreed")
+	}
+	apply, refusals := planAdapterMTU([]AdapterMTU{a}, 9000)
+	if len(apply) != 0 {
+		t.Errorf("would have rewritten a card already at 9000, bouncing a live uplink: %+v", apply)
+	}
+	if len(refusals) != 0 {
+		t.Errorf("reported a problem with a correctly configured card: %v", refusals)
+	}
+}
+
+// And a card genuinely below what was asked is still caught, from the same
+// source. MtuSize being authoritative must not make it permissive.
+func TestMtuSizeBelowWhatWasAskedIsStillShort(t *testing.T) {
+	a := AdapterMTU{
+		Name: "NIC1", Found: true, MtuSize: 1500, NlMtu: 0,
+		Keyword: "*JumboPacket", Setting: "9014 Bytes",
+		Values: []string{"Disabled", "9014 Bytes"},
+	}
+	if adapterCarries(a, 9000) {
+		t.Fatal("a card at 1500 was judged to carry 9000 because its driver had a value selected")
+	}
+}
+
+/*
+The order matters, and each source is used only where the one above is
+
+	absent — otherwise a stale driver value overrules a live reading.
+*/
+func TestAdapterCarriesPrefersTheLiveReadings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a    AdapterMTU
+		want bool
+	}{
+		{"MtuSize decides over NlMtu", AdapterMTU{MtuSize: 9000, NlMtu: 1500}, true},
+		{"NlMtu decides when there is no MtuSize", AdapterMTU{MtuSize: 0, NlMtu: 9000}, true},
+		{"the driver value is the last resort", AdapterMTU{MtuSize: 0, NlMtu: 0, Setting: "9014"}, true},
+		{"and nothing at all carries nothing", AdapterMTU{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := adapterCarries(tc.a, 9000); got != tc.want {
+				t.Errorf("adapterCarries = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+/*
+A management vNIC is an adapter as well as an IP interface.
+
+	Set-NetIPInterface alone was not enough on the physical host: the call is
+	accepted and NlMtu stays at 1500, on a host whose uplinks are genuinely at
+	9000. The Hyper-V Virtual Ethernet Adapter has its own *JumboPacket, and the
+	IP layer cannot exceed what the miniport under it carries.
+
+	The script is asserted rather than the outcome, because the ORDER is the
+	fix — adapter first, interface second, the same order as the uplinks and the
+	switch above them — and an order is not observable from a return value.
+*/
+func TestVNICMTURaisesTheAdapterBeforeTheInterface(t *testing.T) {
+	var script string
+	p := &PowerShell{}
+	p.run = func(_ context.Context, s string) ([]byte, error) {
+		script = s
+		return []byte("RESULT=set"), nil
+	}
+	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	adapter := strings.Index(script, "Set-NetAdapterAdvancedProperty")
+	iface := strings.Index(script, "Set-NetIPInterface")
+	if adapter < 0 || iface < 0 {
+		t.Fatalf("one of the two layers is not set at all:\n%s", script)
+	}
+	if adapter > iface {
+		t.Errorf("the interface is raised before the adapter under it, which is the order that does not work:\n%s", script)
+	}
+	// Only when the adapter is actually short: writing it resets the vNIC, and
+	// on the management vNIC that drops the host's address for a moment.
+	if !strings.Contains(script, "$aMtu -lt $want") {
+		t.Errorf("the adapter is written unconditionally, so every pass would reset the vNIC:\n%s", script)
+	}
+}
+
+/*
+The failure has to say WHICH layer is short.
+
+	"the interface accepted an MTU of 9000 and still reports 1500" names a
+	symptom. Whether the adapter beneath it or the switch above it is the limit
+	is the diagnosis, and this script is the only thing that can see both.
+*/
+func TestVNICMTUFailureNamesTheLayerThatIsShort(t *testing.T) {
+	var script string
+	p := &PowerShell{}
+	p.run = func(_ context.Context, s string) ([]byte, error) { script = s; return []byte("RESULT=set"), nil }
+	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Its adapter carries",
+		"The adapter under this vNIC is the limit.",
+		"The adapter is not the limit, so the vSwitch or its uplinks are.",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the failure does not say %q:\n%s", want, script)
+		}
+	}
+}
+
+// Nothing declared does nothing, and costs not even a read.
+func TestVNICMTUUndeclaredDoesNothing(t *testing.T) {
+	called := false
+	p := &PowerShell{}
+	p.run = func(_ context.Context, _ string) ([]byte, error) { called = true; return nil, nil }
+	out, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 0)
+	if err != nil || out != OutcomeUnchanged || called {
+		t.Fatalf("an undeclared vNIC MTU did something: out=%v err=%v ran=%v", out, err, called)
+	}
+}

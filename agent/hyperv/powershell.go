@@ -429,12 +429,19 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   # flight, and on a card that silently declined the value. The valid values
   # travel too, so the console can say what a card will and will not do instead
   # of an operator finding out by trying.
+  # MtuSize first: it is the miniport's own MTU, present whether or not the
+  # adapter is teamed, and true whatever the driver's advanced property says.
+  # NlMtu is absent on a teamed adapter, and on the 631FLR the *JumboPacket
+  # display value read 1514 for a card carrying 9000.
   $mtu = 0
-  $nlm = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-  if ($nlm) { $mtu = [int](@($nlm)[0].NlMtu) }
+  if ($_.MtuSize) { $mtu = [int]$_.MtuSize }
+  if ($mtu -eq 0) {
+    $nlm = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+    if ($nlm) { $mtu = [int](@($nlm)[0].NlMtu) }
+  }
   $jp = Get-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
   if (-not $jp) { $jp = @(Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*Jumbo*' })[0] }
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ }) }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
 }
 # Keyed on UniqueId, NOT DeviceId.
 #
@@ -707,6 +714,9 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
   # from the spec, because it is reset by anything that re-creates the interface
   # — including the IP reconcile's own remove-and-re-add — so a vNIC can sit at
   # 1500 having been set to 9000 an hour earlier with nothing reporting it.
+  # NlMtu here, not MtuSize: on a management vNIC it is the IP interface's MTU
+  # that decides what the stack puts on the wire, and that is the number an
+  # operator is comparing against the uplinks below it.
   $vmtu = 0
   $vi = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue
   if ($vi) { $vmtu = [int](@($vi)[0].NlMtu) }
