@@ -1429,6 +1429,21 @@ type ClusterSwitchSpec struct {
 	// AllowManagementOS shares the switch for host management traffic when true.
 	AllowManagementOS bool `json:"allowManagementOS,omitempty"`
 
+	// MTUBytes is the payload MTU every uplink of this switch must carry, on
+	// every member. Zero leaves the adapters as their drivers have them.
+	//
+	// One number for the whole cluster, not per host. A converged fabric where
+	// one node's uplinks are at 1500 and the rest are at 9000 is worse than one
+	// where none of them are: SMB Multichannel and MPIO both spread across
+	// members, so the fabric works until traffic lands on the node that cannot
+	// carry the frame. Members disagreeing about MTU is the failure this field
+	// exists to make impossible to express.
+	//
+	// Fanned into every member's VirtualSwitchSpec.MTUBytes. Whether each host's
+	// adapters can actually reach it is a fact about that hardware, reported per
+	// host rather than assumed here.
+	MTUBytes int `json:"mtuBytes,omitempty"`
+
 	// HostNICs maps each member host name to the physical adapter names that
 	// back the switch on that host. A host with no entry is skipped (the switch
 	// is not created there until NICs are chosen for it).
@@ -1472,6 +1487,14 @@ type ClusterMgmtVNIC struct {
 	// it where the fabric cannot carry it produces storage that works until it is
 	// loaded, so it is declared rather than inferred.
 	RDMA *bool `json:"rdma,omitempty"`
+
+	// MTUBytes is this vNIC's IPv4 interface MTU on every member. Zero means
+	// whatever the switch gives it, which is right for management traffic.
+	//
+	// Cluster-wide like the switch's, and for the same reason: a storage vNIC at
+	// 9000 on two nodes and 1500 on a third is a fabric that works until the
+	// third one is asked to carry a full frame.
+	MTUBytes int `json:"mtuBytes,omitempty"`
 
 	// HostIPs maps a member host to this vNIC's IP (CIDR) on that host. A host
 	// with no entry gets DHCP.
