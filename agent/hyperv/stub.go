@@ -1193,27 +1193,24 @@ func (s *Stub) EnsureAdapterMTU(ctx context.Context, adapters []string, want int
 	if s.AdapterMTU == nil {
 		s.AdapterMTU = map[string]StubAdapterMTU{}
 	}
-	changed := false
-	var refusals []string
-	for _, a := range obs {
-		if !a.Found {
-			refusals = append(refusals, a.Name+" is not present on this host")
-			continue
+	// The SAME decision the real backend makes. The stub used to carry its own
+	// copy and the two drifted at once — it had no "already selected but not in
+	// force" branch, so a test written against the real rule passed against a
+	// backend that did not implement it.
+	apply, refusals := planAdapterMTU(obs, want)
+	for _, m := range apply {
+		cur := s.adapterMTU(m.Name)
+		// A teamed adapter reports no NlMtu at all, so applying must not invent
+		// one — otherwise the stub cannot express the state that produced the
+		// permanent false negative on HVNEW01.
+		if cur.NlMtu > 0 {
+			cur.NlMtu = want
 		}
-		if a.NlMtu >= want {
-			continue
-		}
-		value, ok := types.JumboValueFor(a.Values, want)
-		if !ok {
-			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, want))
-			continue
-		}
-		cur := s.adapterMTU(a.Name)
-		cur.NlMtu, cur.Setting = want, value
-		s.AdapterMTU[strings.ToLower(a.Name)] = cur
-		s.MTUWrites = append(s.MTUWrites, a.Name)
-		changed = true
+		cur.Setting = m.Value
+		s.AdapterMTU[strings.ToLower(m.Name)] = cur
+		s.MTUWrites = append(s.MTUWrites, m.Name)
 	}
+	changed := len(apply) > 0
 	if len(refusals) > 0 {
 		return outcomeFor(changed), fmt.Errorf("%s", strings.Join(refusals, "; "))
 	}

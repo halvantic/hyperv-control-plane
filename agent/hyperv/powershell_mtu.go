@@ -134,35 +134,7 @@ func (p *PowerShell) EnsureAdapterMTU(ctx context.Context, adapters []string, wa
 		return OutcomeUnchanged, err
 	}
 
-	var apply []mtuApply
-	var refusals []string
-	for _, a := range obs {
-		if !a.Found {
-			refusals = append(refusals, a.Name+" is not present on this host")
-			continue
-		}
-		// Already carrying it. Read from NlMtu, not from the driver property:
-		// the property records what was asked for, NlMtu what will be sent.
-		if a.NlMtu >= want {
-			continue
-		}
-		value, ok := types.JumboValueFor(a.Values, want)
-		if !ok {
-			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, want))
-			continue
-		}
-		// The driver already has the right value selected but NlMtu has not
-		// caught up — a reset in flight, or a card that needs the interface
-		// poked. Writing it again would bounce the link for nothing.
-		if strings.EqualFold(strings.TrimSpace(a.Setting), strings.TrimSpace(value)) {
-			refusals = append(refusals, fmt.Sprintf(
-				"%s already has %s selected in its driver but its IP interface still reports an MTU of %d. "+
-					"The adapter has not finished applying it; this usually settles within a pass or two, and a "+
-					"disable/enable of the adapter forces it.", a.Name, value, a.NlMtu))
-			continue
-		}
-		apply = append(apply, mtuApply{Name: a.Name, Keyword: a.Keyword, Value: value})
-	}
+	apply, refusals := planAdapterMTU(obs, want)
 
 	if len(apply) > 0 {
 		if err := p.run2(ctx, applyMTUScript(apply)); err != nil {
@@ -177,6 +149,94 @@ func (p *PowerShell) EnsureAdapterMTU(ctx context.Context, adapters []string, wa
 	}
 	return outcomeFor(len(apply) > 0), nil
 }
+
+/*
+planAdapterMTU decides what to write, and what to say about what cannot be.
+
+	Pure, and shared by the real backend and the stub. It was inline in
+	EnsureAdapterMTU with the stub carrying its own copy, and the two drifted
+	immediately: the stub had no "already selected but not in force" branch, so a
+	test written against the real rule passed against a backend that did not
+	implement it. A decision worth testing is a decision worth having once.
+*/
+func planAdapterMTU(obs []AdapterMTU, want int) (apply []mtuApply, refusals []string) {
+	for _, a := range obs {
+		if !a.Found {
+			refusals = append(refusals, a.Name+" is not present on this host")
+			continue
+		}
+		/* Already carrying it.
+
+		   NlMtu is the better authority WHERE IT EXISTS, because the driver
+		   property records what was asked for and NlMtu what will be sent. On a
+		   teamed adapter it does not exist at all: a physical NIC bound into a
+		   vSwitch has no IP interface by design, so Get-NetIPInterface returns
+		   nothing and NlMtu reads 0.
+
+		   Judging that as "0 < 9000, not carrying it" was a permanent false
+		   negative. Observed on HVNEW01, 2026-09-07: all four uplinks had 9014
+		   correctly selected in their drivers, and SwitchMTU reported "not
+		   applied — its IP interface still reports an MTU of 0" on every pass,
+		   for ever. A reconcile that can never settle is the failure this whole
+		   feature is supposed to prevent, produced by the check itself.
+
+		   So: NlMtu decides when there is one, the driver's own selected value
+		   decides when there is not. */
+		if adapterCarries(a, want) {
+			continue
+		}
+		value, ok := types.JumboValueFor(a.Values, want)
+		if !ok {
+			refusals = append(refusals, types.DescribeJumboRefusal(a.Name, a.Keyword, a.Values, want))
+			continue
+		}
+		// The driver already has the right value selected and its IP interface
+		// has NOT caught up — a reset in flight, or a card that needs poking.
+		// Only reachable when NlMtu exists; a teamed adapter with the right value
+		// selected was settled by adapterCarries above. Writing it again would
+		// bounce the link for nothing.
+		if strings.EqualFold(strings.TrimSpace(a.Setting), strings.TrimSpace(value)) {
+			refusals = append(refusals, fmt.Sprintf(
+				"%s already has %s selected in its driver but its IP interface still reports an MTU of %d. "+
+					"The adapter has not finished applying it; this usually settles within a pass or two, and a "+
+					"disable/enable of the adapter forces it.", a.Name, value, a.NlMtu))
+			continue
+		}
+		apply = append(apply, mtuApply{Name: a.Name, Keyword: a.Keyword, Value: value})
+	}
+	return apply, refusals
+}
+
+/*
+adapterCarries reports whether this adapter already sends frames of want bytes.
+
+	Two authorities, and which one applies depends on whether the adapter has an
+	IP interface at all.
+
+	  NlMtu > 0  — the adapter has an IP interface, and NlMtu is what the stack
+	               will actually send. It wins: a driver value can be selected
+	               and not in force.
+	  NlMtu == 0 — the adapter is bound into a vSwitch and has no IP interface
+	               by design. There is nothing else to read, so the driver's own
+	               selected value is the only available truth. Treating the
+	               absence as a small number would make every teamed uplink
+	               permanently unsettled.
+
+	The selected value is compared by SIZE, not by string: drivers spell it
+	variously ("9014", "9014 Bytes") and a card whose menu only reaches 9014 is
+	carrying a 9000-byte payload, which is what was asked for.
+*/
+func adapterCarries(a AdapterMTU, want int) bool {
+	if a.NlMtu > 0 {
+		return a.NlMtu >= want
+	}
+	n, ok := jumboSize(a.Setting)
+	return ok && n >= want
+}
+
+// jumboSize reads the size out of a driver's selected value, ignoring the units
+// some drivers append.
+func jumboSize(v string) (int, bool) { return types.JumboValueSize(v) }
 
 func outcomeFor(changed bool) Outcome {
 	if changed {

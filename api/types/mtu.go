@@ -175,6 +175,11 @@ func JumboValueFor(values []string, want int) (string, bool) {
 	return best, best != ""
 }
 
+// JumboValueSize exposes the size a driver's display value stands for, so a
+// caller can compare what is SELECTED against what was wanted. Drivers spell
+// these variously ("9014", "9014 Bytes"), and the units are not the point.
+func JumboValueSize(v string) (int, bool) { return jumboNumber(v) }
+
 // jumboNumber reads the size out of a driver's display value. Drivers spell
 // these variously ("9014", "9014 Bytes", "9000"), so the leading digits are
 // taken and the rest ignored.

@@ -236,3 +236,76 @@ func TestParseMTUParam(t *testing.T) {
 		}
 	}
 }
+
+/*
+A teamed uplink has no IP interface, and judging it by one never settles.
+
+	A physical NIC bound into a vSwitch holds no IP address by design, so
+	Get-NetIPInterface returns nothing for it and NlMtu reads 0. The check read
+	that as "0 < 9000, not carrying it" and then found the right value already
+	selected in the driver, so it reported "not applied — its IP interface still
+	reports an MTU of 0" on every pass, for ever.
+
+	Observed on HVNEW01, 2026-09-07: all four uplinks correctly at 9014, the
+	condition permanently amber. A reconcile that can never settle is precisely
+	what this feature exists to prevent, produced by the check itself.
+*/
+func TestATeamedUplinkWithNoIPInterfaceStillSettles(t *testing.T) {
+	teamed := StubAdapterMTU{
+		NlMtu:   0, // bound into a vSwitch: no IP interface at all
+		Keyword: "*JumboPacket", Setting: "9014 Bytes",
+		Values: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
+	}
+	s := &Stub{AdapterMTU: map[string]StubAdapterMTU{"nic1": teamed, "nic2": teamed}}
+
+	for i := 0; i < 3; i++ {
+		out, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1", "NIC2"}, 9000)
+		if err != nil {
+			t.Fatalf("pass %d reported a problem with a correctly configured team: %v", i, err)
+		}
+		if out != OutcomeUnchanged {
+			t.Fatalf("pass %d reported %v; a team already at 9014 has nothing to do", i, out)
+		}
+	}
+	if len(s.MTUWrites) != 0 {
+		t.Errorf("rewrote a correct value and bounced the uplinks: %v", s.MTUWrites)
+	}
+}
+
+/*
+The driver's value is only trusted where there is nothing better.
+
+	An adapter WITH an IP interface reporting less than asked is a real fault —
+	the driver accepted a value that is not in force — and must keep saying so.
+	Trusting the selected value everywhere would trade one silence for another.
+*/
+func TestAnAdapterWithAnIPInterfaceIsStillJudgedByIt(t *testing.T) {
+	s := &Stub{AdapterMTU: map[string]StubAdapterMTU{
+		"nic1": {NlMtu: 1500, Keyword: "*JumboPacket", Setting: "9014 Bytes",
+			Values: []string{"Disabled", "9014 Bytes"}},
+	}}
+	_, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1"}, 9000)
+	if err == nil {
+		t.Fatal("an adapter whose IP interface is still at 1500 was reported as settled")
+	}
+	if !strings.Contains(err.Error(), "still reports an MTU of 1500") {
+		t.Errorf("the message does not say what the interface actually reports: %v", err)
+	}
+}
+
+// The size is compared, not the string: a card whose menu only reaches 9014 is
+// carrying the 9000-byte payload that was asked for.
+func TestJumboValueSizeIgnoresTheUnits(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"9014 Bytes", 9014, true}, {"9014", 9014, true}, {"Disabled", 0, false}, {"", 0, false},
+	} {
+		got, ok := types.JumboValueSize(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("JumboValueSize(%q) = %d,%v want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
