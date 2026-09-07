@@ -82,6 +82,21 @@ type AdapterMTU struct {
 	Min  int `json:"min"`
 	Max  int `json:"max"`
 	Step int `json:"step"`
+	/* RSC and LSO: the third thing that has to agree, and the one nothing
+	   reports.
+
+	   Receive Segment Coalescing and Large Send Offload both re-segment traffic
+	   in the NIC, and on some drivers they interact badly with a 9000-byte MTU
+	   behind a Hyper-V vSwitch. Every layer still reports 9000 — the adapter,
+	   the IP interface, the switch — so no amount of reading configuration
+	   shows anything wrong, and only an end-to-end frame proves otherwise.
+
+	   Found on the rig, 2026-09-07: HPE 631FLR-SFP28 on Server 2025, everything
+	   set to 9000 and jumbo not working until both were disabled by hand on
+	   every host. That hand is what CLAUDE.md rules out, so Ballast now reads
+	   them, says so, and can turn them off. */
+	RSC bool `json:"rsc"`
+	LSO bool `json:"lso"`
 	// Found is false when there is no adapter by this name.
 	Found bool `json:"found"`
 }
@@ -110,6 +125,16 @@ foreach ($n in %s) {
   # The jumbo keyword is not spelled the same by every driver. *JumboPacket is
   # the standardised one; some cards only expose a display name, so fall back to
   # matching on that rather than reporting a jumbo-capable card as incapable.
+  # Offloads that re-segment traffic in the NIC. Reported whether or not jumbo
+  # is asked for, because the caller decides whether they matter.
+  $rsc = $false
+  foreach ($r in @(Get-NetAdapterRsc -Name $n -ErrorAction SilentlyContinue)) {
+    if ($r.IPv4Enabled -or $r.IPv6Enabled) { $rsc = $true }
+  }
+  $lso = $false
+  foreach ($l in @(Get-NetAdapterLso -Name $n -ErrorAction SilentlyContinue)) {
+    if ($l.V1IPv4Enabled -or $l.IPv4Enabled -or $l.IPv6Enabled) { $lso = $true }
+  }
   $adv = Get-NetAdapterAdvancedProperty -Name $n -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
   if (-not $adv) {
     $adv = @(Get-NetAdapterAdvancedProperty -Name $n -ErrorAction SilentlyContinue |
@@ -121,6 +146,8 @@ foreach ($n in %s) {
   $out += [pscustomobject]@{
     name    = $n
     found   = $true
+    rsc     = $rsc
+    lso     = $lso
     mtuSize = $mtuSize
     nlMtu   = $mtu
     keyword = [string]$adv.RegistryKeyword
@@ -177,6 +204,19 @@ func (p *PowerShell) EnsureAdapterMTU(ctx context.Context, adapters []string, wa
 	}
 
 	apply, refusals := planAdapterMTU(obs, want)
+	/* Offloads that stop jumbo working even when every MTU is right.
+
+	   Reported alongside the refusals rather than instead of them: the MTU may
+	   have been applied perfectly and jumbo still not work, which is exactly
+	   the case an operator cannot see from any configuration. It clears itself
+	   when they are off, and only appears where jumbo was actually asked for —
+	   RSC and LSO on a 1500 fabric are doing their job and are nobody's
+	   problem. */
+	if want > types.StandardMTU {
+		if why := offloadsInTheWay(obs); why != "" {
+			refusals = append(refusals, why)
+		}
+	}
 
 	if len(apply) > 0 {
 		if err := p.run2(ctx, applyMTUScript(apply)); err != nil {
@@ -290,6 +330,47 @@ func adapterCarries(a AdapterMTU, want int) bool {
 // jumboSize reads the size out of a driver's selected value, ignoring the units
 // some drivers append.
 func jumboSize(v string) (int, bool) { return types.JumboValueSize(v) }
+
+/*
+offloadsInTheWay names the adapters whose offloads will defeat jumbo frames.
+
+	Receive Segment Coalescing and Large Send Offload both re-segment traffic in
+	the NIC. On some drivers that interacts badly with a 9000-byte MTU behind a
+	Hyper-V vSwitch, and the failure is invisible: every layer reports 9000 and
+	large frames simply do not arrive.
+
+	Seen on the rig 2026-09-07 — HPE 631FLR-SFP28 on Server 2025, every MTU set
+	correctly and jumbo dead until both were disabled on every host by hand.
+	Ballast could read this the whole time and said nothing, which is the
+	diagnosis-it-could-make-and-does-not that CLAUDE.md calls a defect.
+*/
+func offloadsInTheWay(obs []AdapterMTU) string {
+	var rsc, lso []string
+	for _, a := range obs {
+		if !a.Found {
+			continue
+		}
+		if a.RSC {
+			rsc = append(rsc, a.Name)
+		}
+		if a.LSO {
+			lso = append(lso, a.Name)
+		}
+	}
+	if len(rsc) == 0 && len(lso) == 0 {
+		return ""
+	}
+	var parts []string
+	if len(rsc) > 0 {
+		parts = append(parts, "RSC on "+strings.Join(rsc, ", "))
+	}
+	if len(lso) > 0 {
+		parts = append(parts, "LSO on "+strings.Join(lso, ", "))
+	}
+	return strings.Join(parts, " and ") + ". Both re-segment traffic in the NIC and can stop jumbo frames working " +
+		"even though every MTU reads correctly — the frames simply do not arrive, and no configuration anywhere " +
+		"shows it. Disable them on this switch's uplinks if the jumbo path test fails"
+}
 
 func outcomeFor(changed bool) Outcome {
 	if changed {

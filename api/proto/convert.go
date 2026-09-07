@@ -225,6 +225,8 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			JumboKeyword: a.JumboKeyword,
 			JumboValues:  a.JumboValues,
 			JumboSetting: a.JumboSetting,
+			RscEnabled:   a.RSCEnabled,
+			LsoEnabled:   a.LSOEnabled,
 		})
 	}
 	for _, d := range inv.PhysicalDisks {
@@ -271,6 +273,8 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			JumboKeyword: a.GetJumboKeyword(),
 			JumboValues:  a.GetJumboValues(),
 			JumboSetting: a.GetJumboSetting(),
+			RSCEnabled:   a.GetRscEnabled(),
+			LSOEnabled:   a.GetLsoEnabled(),
 		})
 	}
 	for _, d := range inv.GetPhysicalDisks() {

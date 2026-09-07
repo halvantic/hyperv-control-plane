@@ -84,6 +84,12 @@ type Interface interface {
 	// adapter's IP interface already reports the MTU.
 	EnsureAdapterMTU(ctx context.Context, adapters []string, want int) (Outcome, error)
 
+	// DisableNICOffloads turns RSC and LSO off on the named physical adapters.
+	// The third thing that has to agree for jumbo frames, and the only one no
+	// configuration anywhere shows is wrong. Reads back, because both cmdlets
+	// are silent on success and on a driver that declines.
+	DisableNICOffloads(ctx context.Context, adapters []string) (string, error)
+
 	// AdapterMTUs observes what the named adapters carry, and what their drivers
 	// will accept. A pure read, folded into HostInventory.
 	AdapterMTUs(ctx context.Context, adapters []string) ([]AdapterMTU, error)

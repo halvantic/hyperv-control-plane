@@ -86,6 +86,7 @@ func sampleHost() types.Host {
 						DNSServers: []string{"192.168.1.168"}, RegistersDNS: true, Gateway: "192.168.1.1",
 						MTUBytes:   9000, JumboKeyword: "*JumboPacket", JumboSetting: "9014 Bytes",
 						JumboValues: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
+						RSCEnabled:  true, LSOEnabled: true,
 					},
 				},
 				PhysicalDisks: []types.PhysicalDisk{

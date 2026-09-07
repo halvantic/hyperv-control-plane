@@ -551,6 +551,12 @@ message PhysicalAdapter {
   // so these travel rather than being guessed at.
   repeated string jumbo_values = 13;
   string jumbo_setting = 14;
+  // rsc_enabled and lso_enabled are the offloads that re-segment traffic in the
+  // NIC — the third thing that has to agree for jumbo frames, and the only one
+  // no configuration anywhere shows is wrong: every MTU reads 9000 and large
+  // frames do not arrive. See PhysicalAdapter in api/types.
+  bool rsc_enabled = 15;
+  bool lso_enabled = 16;
 }
 
 message PhysicalDisk {

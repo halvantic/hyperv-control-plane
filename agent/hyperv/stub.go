@@ -23,6 +23,10 @@ type Stub struct {
 	// lower-cased name. Absent adapters behave as an ordinary 1500 NIC whose
 	// driver can reach 9014.
 	AdapterMTU map[string]StubAdapterMTU
+	// Offloads is each adapter's RSC/LSO state, keyed by lower-cased name.
+	Offloads map[string]StubOffload
+	// OffloadWrites records every adapter actually disabled, in order.
+	OffloadWrites []string
 	// VNICMTU records the IPv4 interface MTU set on each management vNIC.
 	VNICMTU map[string]int
 	// MTUWrites records every adapter actually written to, in order. The point
@@ -1231,4 +1235,53 @@ func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int) 
 	}
 	s.VNICMTU[strings.ToLower(vnicName)] = want
 	return OutcomeUpdated, nil
+}
+
+// StubOffload is what the stub pretends one adapter's offloads are.
+type StubOffload struct {
+	RSC, LSO, Missing bool
+	// Stuck models a driver that accepts the call and declines it, which is the
+	// case that must not be reported as success — an operator told the offloads
+	// are off goes and looks at their switch for a fault on their host.
+	Stuck bool
+}
+
+func (s *Stub) DisableNICOffloads(_ context.Context, adapters []string) (string, error) {
+	if len(adapters) == 0 {
+		return "", fmt.Errorf("no adapters were named, so nothing was changed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Offloads == nil {
+		s.Offloads = map[string]StubOffload{}
+	}
+	var off, missing, stuck []string
+	for _, n := range adapters {
+		cur := s.Offloads[strings.ToLower(n)]
+		switch {
+		case cur.Missing:
+			missing = append(missing, n)
+		case cur.Stuck:
+			stuck = append(stuck, n+" (RSC and LSO)")
+		default:
+			cur.RSC, cur.LSO = false, false
+			s.Offloads[strings.ToLower(n)] = cur
+			s.OffloadWrites = append(s.OffloadWrites, n)
+			off = append(off, n)
+		}
+	}
+	var said []string
+	if len(off) > 0 {
+		said = append(said, "RSC and LSO are off on "+strings.Join(off, ", "))
+	}
+	if len(missing) > 0 {
+		said = append(said, "no adapter named "+strings.Join(missing, ", ")+" on this host")
+	}
+	if len(stuck) > 0 {
+		return strings.Join(said, "; "), fmt.Errorf("still enabled after being disabled: %s", strings.Join(stuck, ", "))
+	}
+	if len(said) == 0 {
+		return "nothing to change", nil
+	}
+	return strings.Join(said, "; ") + ". Run the jumbo path test to confirm a full frame now crosses", nil
 }

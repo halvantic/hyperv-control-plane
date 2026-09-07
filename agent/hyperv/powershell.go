@@ -439,9 +439,19 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
     $nlm = Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
     if ($nlm) { $mtu = [int](@($nlm)[0].NlMtu) }
   }
+  # RSC and LSO: the third thing that has to agree for jumbo frames, and the
+  # only one nothing else reports. Both re-segment traffic in the NIC.
+  $rsc = $false
+  foreach ($r in @(Get-NetAdapterRsc -Name $_.Name -ErrorAction SilentlyContinue)) {
+    if ($r.IPv4Enabled -or $r.IPv6Enabled) { $rsc = $true }
+  }
+  $lso = $false
+  foreach ($l in @(Get-NetAdapterLso -Name $_.Name -ErrorAction SilentlyContinue)) {
+    if ($l.V1IPv4Enabled -or $l.IPv4Enabled -or $l.IPv6Enabled) { $lso = $true }
+  }
   $jp = Get-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
   if (-not $jp) { $jp = @(Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*Jumbo*' })[0] }
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }); rscEnabled = $rsc; lsoEnabled = $lso }
 }
 # Keyed on UniqueId, NOT DeviceId.
 #

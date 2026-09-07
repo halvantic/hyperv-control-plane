@@ -522,3 +522,89 @@ func TestVNICMTUUndeclaredDoesNothing(t *testing.T) {
 		t.Fatalf("an undeclared vNIC MTU did something: out=%v err=%v ran=%v", out, err, called)
 	}
 }
+
+/*
+The offloads, named on the condition rather than left to be discovered.
+
+	HVNEW04 and HVNEW05 were deliberately left with RSC and LSO on so this could
+	be seen working: every MTU on them reads 9000 and jumbo does not work.
+	Ballast could read this the whole time and said nothing — the
+	diagnosis-it-could-make-and-does-not that CLAUDE.md calls a defect.
+*/
+func TestOffloadsAreNamedWhenJumboIsAskedFor(t *testing.T) {
+	obs := []AdapterMTU{
+		{Name: "Ethernet 2", Found: true, MtuSize: 9000, RSC: true},
+		{Name: "Ethernet 3", Found: true, MtuSize: 9000, LSO: true},
+		{Name: "Ethernet 4", Found: true, MtuSize: 9000},
+	}
+	why := offloadsInTheWay(obs)
+	if !strings.Contains(why, "RSC on Ethernet 2") || !strings.Contains(why, "LSO on Ethernet 3") {
+		t.Fatalf("does not name which offload is on which adapter: %q", why)
+	}
+	if strings.Contains(why, "Ethernet 4") {
+		t.Errorf("named an adapter with neither offload on: %q", why)
+	}
+	// The part that makes it worth reading rather than a restatement.
+	if !strings.Contains(why, "no configuration anywhere shows it") {
+		t.Errorf("does not say the fault is invisible everywhere else: %q", why)
+	}
+}
+
+// A clean team says nothing, and neither does a 1500 fabric — there the
+// offloads are doing their job.
+func TestOffloadsAreSilentWhenTheyDoNotMatter(t *testing.T) {
+	clean := []AdapterMTU{{Name: "Ethernet 2", Found: true, MtuSize: 9000}}
+	if why := offloadsInTheWay(clean); why != "" {
+		t.Errorf("a clean team was flagged: %q", why)
+	}
+	s := &Stub{}
+	if _, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1"}, 1500); err != nil {
+		t.Errorf("a 1500 fabric reported an offload problem: %v", err)
+	}
+}
+
+/*
+Disabling reads back, because both cmdlets are silent on success AND on a
+
+	driver that declines. Reporting a decline as done sends an operator to look
+	at their switch for a fault on their host.
+*/
+func TestDisablingOffloadsRefusesToClaimADeclineWorked(t *testing.T) {
+	s := &Stub{Offloads: map[string]StubOffload{
+		"ethernet 2": {RSC: true, Stuck: true},
+		"ethernet 3": {LSO: true},
+	}}
+	msg, err := s.DisableNICOffloads(context.Background(), []string{"Ethernet 2", "Ethernet 3"})
+	if err == nil {
+		t.Fatal("a driver that declined was reported as success")
+	}
+	if !strings.Contains(err.Error(), "Ethernet 2") {
+		t.Errorf("the refusal does not name the adapter that declined: %v", err)
+	}
+	// And what DID work is still said: half a team fixed is worth having.
+	if !strings.Contains(msg, "Ethernet 3") {
+		t.Errorf("the adapter that was fixed is not reported: %q", msg)
+	}
+}
+
+func TestDisablingOffloadsReportsWhatIsOffAndWhatIsNext(t *testing.T) {
+	s := &Stub{Offloads: map[string]StubOffload{"ethernet 2": {RSC: true, LSO: true}}}
+	msg, err := s.DisableNICOffloads(context.Background(), []string{"Ethernet 2"})
+	if err != nil {
+		t.Fatalf("a clean disable failed: %v", err)
+	}
+	if !strings.Contains(msg, "RSC and LSO are off on Ethernet 2") {
+		t.Errorf("does not say what is off: %q", msg)
+	}
+	// Turning them off is not proof jumbo works; only a frame is.
+	if !strings.Contains(msg, "jumbo path test") {
+		t.Errorf("does not name the step that actually confirms it: %q", msg)
+	}
+}
+
+func TestDisablingOffloadsNeedsAdapters(t *testing.T) {
+	s := &Stub{}
+	if _, err := s.DisableNICOffloads(context.Background(), nil); err == nil {
+		t.Fatal("disabling nothing was reported as success")
+	}
+}

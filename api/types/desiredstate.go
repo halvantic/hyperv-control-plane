@@ -872,6 +872,20 @@ type PhysicalAdapter struct {
 
 	// JumboSetting is the value currently selected in the driver, verbatim.
 	JumboSetting string `json:"jumboSetting,omitempty"`
+
+	/* RSCEnabled and LSOEnabled are the offloads that re-segment traffic in the
+	   NIC, and the third thing that has to agree for jumbo frames.
+
+	   They are the only one of the three that no configuration anywhere shows
+	   is wrong: the adapter reports 9000, the IP interface reports 9000, the
+	   switch reports 9000, and large frames do not arrive. Found on the rig
+	   2026-09-07, where jumbo worked only after both were disabled by hand on
+	   every host.
+
+	   Reported always, not only where jumbo is declared — on a 1500 fabric they
+	   are doing their job, and it is the reader who decides whether they matter. */
+	RSCEnabled bool `json:"rscEnabled,omitempty"`
+	LSOEnabled bool `json:"lsoEnabled,omitempty"`
 }
 
 type PhysicalDisk struct {
@@ -2704,6 +2718,27 @@ const (
 	   addresses; empty means the host tests every peer it can see from its own
 	   storage subnets). */
 	JobTestJumboPath = "TestJumboPath" // params: mtu, targets
+
+	/* JobDisableNICOffloads turns off RSC and LSO on named physical adapters.
+
+	   The third thing that has to agree for jumbo frames, and the only one with
+	   no configuration anywhere that shows it is wrong. Receive Segment
+	   Coalescing and Large Send Offload both re-segment traffic in the NIC, and
+	   on some drivers that defeats a 9000-byte MTU behind a Hyper-V vSwitch:
+	   every layer reports 9000, and large frames simply do not arrive.
+
+	   Found on the rig 2026-09-07 — HPE 631FLR-SFP28 on Server 2025, every MTU
+	   set correctly and jumbo dead until both were disabled by hand on every
+	   host. A fix that needs a PowerShell session on each host is the defect
+	   CLAUDE.md names, so it is a job.
+
+	   A job rather than desired state, deliberately. These offloads earn their
+	   keep on a 1500 fabric and turning them off costs throughput, so it is a
+	   decision an operator makes for a reason, not something a reconcile does
+	   on their behalf because an MTU was declared.
+
+	   params: adapters — comma-separated physical adapter names */
+	JobDisableNICOffloads = "DisableNICOffloads"
 
 	// JobScanImportableVMs walks this host's storage for VM configurations no
 	// host has registered and reports them in status.

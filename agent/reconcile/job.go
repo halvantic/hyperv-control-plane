@@ -93,6 +93,20 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
+	case types.JobDisableNICOffloads:
+		/* RSC and LSO off, so jumbo frames can actually cross.
+
+		   A job rather than desired state: these offloads earn their keep on a
+		   1500 fabric and turning them off costs throughput, so it is a decision
+		   an operator makes for a reason — not something a reconcile does on
+		   their behalf because an MTU was declared somewhere. */
+		var adapters []string
+		for _, a := range strings.Split(p["adapters"], ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				adapters = append(adapters, a)
+			}
+		}
+		return r.hv.DisableNICOffloads(ctx, adapters)
 	case types.JobTestJumboPath:
 		/* The only thing in Ballast that establishes jumbo frames actually work.
 
