@@ -3070,7 +3070,11 @@ type ManagementVNICInfo struct {
 	// mtu_bytes is the MTU this interface will actually send at (NlMtu). Observed
 	// rather than taken from the spec: it is reset by anything that re-creates the
 	// interface, so a vNIC can sit at 1500 having been set to 9000 an hour ago.
-	MtuBytes      int32 `protobuf:"varint,8,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
+	MtuBytes int32 `protobuf:"varint,8,opt,name=mtu_bytes,json=mtuBytes,proto3" json:"mtu_bytes,omitempty"`
+	// lso_enabled is Large Send Offload on this vNIC — a SEPARATE setting from
+	// the uplinks' below it, and the half that decides what the management OS
+	// puts on the wire. See ManagementVNICInfo in api/types.
+	LsoEnabled    bool `protobuf:"varint,9,opt,name=lso_enabled,json=lsoEnabled,proto3" json:"lso_enabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3159,6 +3163,13 @@ func (x *ManagementVNICInfo) GetMtuBytes() int32 {
 		return x.MtuBytes
 	}
 	return 0
+}
+
+func (x *ManagementVNICInfo) GetLsoEnabled() bool {
+	if x != nil {
+		return x.LsoEnabled
+	}
+	return false
 }
 
 type VNICAddress struct {
@@ -7366,7 +7377,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\avolumes\x18\x02 \x03(\v2\x19.ballast.v1.StorageVolumeR\avolumes\x12\x12\n" +
 	"\x04isos\x18\x03 \x03(\tR\x04isos\x12D\n" +
 	"\x0eswitch_details\x18\x04 \x03(\v2\x1d.ballast.v1.VirtualSwitchInfoR\rswitchDetails\x12I\n" +
-	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\x8b\x02\n" +
+	"\x10management_vnics\x18\x05 \x03(\v2\x1e.ballast.v1.ManagementVNICInfoR\x0fmanagementVnics\"\xac\x02\n" +
 	"\x12ManagementVNICInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vswitch_name\x18\x02 \x01(\tR\n" +
@@ -7377,7 +7388,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\aprofile\x18\x05 \x01(\tR\aprofile\x125\n" +
 	"\taddresses\x18\x06 \x03(\v2\x17.ballast.v1.VNICAddressR\taddresses\x12\x18\n" +
 	"\agateway\x18\a \x01(\tR\agateway\x12\x1b\n" +
-	"\tmtu_bytes\x18\b \x01(\x05R\bmtuBytes\";\n" +
+	"\tmtu_bytes\x18\b \x01(\x05R\bmtuBytes\x12\x1f\n" +
+	"\vlso_enabled\x18\t \x01(\bR\n" +
+	"lsoEnabled\";\n" +
 	"\vVNICAddress\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x93\x01\n" +

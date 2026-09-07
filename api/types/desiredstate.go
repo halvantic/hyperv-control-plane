@@ -722,6 +722,20 @@ type ManagementVNICInfo struct {
 	// without its gateway loses the host's default route.
 	Gateway string `json:"gateway,omitempty"`
 
+	/* LSOEnabled is Large Send Offload on this vNIC, which defeats jumbo frames
+	   and is a SEPARATE setting from the uplinks' below it.
+
+	   Read straight off the rig 2026-09-07. On HVNEW04, after the uplinks had
+	   been disabled, every physical adapter read LSO off and every vEthernet
+	   read it on — and jumbo still did not work. On HVNEW06, where it does,
+	   both halves are off. So reporting only the uplinks would have taken the
+	   warning away while the fault was still there, which is worse than never
+	   having warned.
+
+	   The vNIC is where the host's own traffic is segmented, so this is the
+	   half that actually decides what leaves the management OS. */
+	LSOEnabled bool `json:"lsoEnabled,omitempty"`
+
 	// MTUBytes is the MTU this interface will actually send at (NlMtu).
 	//
 	// Observed rather than taken from the spec, because it is reset by anything

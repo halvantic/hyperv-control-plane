@@ -479,6 +479,10 @@ message ManagementVNICInfo {
   // rather than taken from the spec: it is reset by anything that re-creates the
   // interface, so a vNIC can sit at 1500 having been set to 9000 an hour ago.
   int32 mtu_bytes = 8;
+  // lso_enabled is Large Send Offload on this vNIC — a SEPARATE setting from
+  // the uplinks' below it, and the half that decides what the management OS
+  // puts on the wire. See ManagementVNICInfo in api/types.
+  bool lso_enabled = 9;
 }
 
 message VNICAddress {

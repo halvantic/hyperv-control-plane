@@ -687,7 +687,7 @@ func resourcesToProto(r types.HostResources) *HostResources {
 		})
 	}
 	for _, v := range r.ManagementVNICs {
-		mv := &ManagementVNICInfo{Name: v.Name, SwitchName: v.SwitchName, VlanId: int32(v.VlanID), DnsServers: v.DNSServers, Profile: v.Profile, Gateway: v.Gateway, MtuBytes: int32(v.MTUBytes)}
+		mv := &ManagementVNICInfo{Name: v.Name, SwitchName: v.SwitchName, VlanId: int32(v.VlanID), DnsServers: v.DNSServers, Profile: v.Profile, Gateway: v.Gateway, MtuBytes: int32(v.MTUBytes), LsoEnabled: v.LSOEnabled}
 		for _, a := range v.Addresses {
 			mv.Addresses = append(mv.Addresses, &VNICAddress{Address: a.Address, Kind: a.Kind})
 		}
@@ -710,7 +710,7 @@ func resourcesFromProto(r *HostResources) types.HostResources {
 		})
 	}
 	for _, v := range r.GetManagementVnics() {
-		mv := types.ManagementVNICInfo{Name: v.GetName(), SwitchName: v.GetSwitchName(), VlanID: int(v.GetVlanId()), DNSServers: v.GetDnsServers(), Profile: v.GetProfile(), Gateway: v.GetGateway(), MTUBytes: int(v.GetMtuBytes())}
+		mv := types.ManagementVNICInfo{Name: v.GetName(), SwitchName: v.GetSwitchName(), VlanID: int(v.GetVlanId()), DNSServers: v.GetDnsServers(), Profile: v.GetProfile(), Gateway: v.GetGateway(), MTUBytes: int(v.GetMtuBytes()), LSOEnabled: v.GetLsoEnabled()}
 		for _, a := range v.GetAddresses() {
 			mv.Addresses = append(mv.Addresses, types.VNICAddress{Address: a.GetAddress(), Kind: a.GetKind()})
 		}

@@ -730,7 +730,16 @@ $mgmtVnics = @(Get-VMNetworkAdapter -ManagementOS -ErrorAction SilentlyContinue 
   $vmtu = 0
   $vi = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue
   if ($vi) { $vmtu = [int](@($vi)[0].NlMtu) }
-  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw; mtuBytes = $vmtu }
+  # LSO on the vNIC, which is a separate setting from the uplinks' below it and
+  # is the half that decides what the management OS actually puts on the wire.
+  # On HVNEW04 the uplinks read off and every vEthernet read on, with jumbo
+  # still broken; reporting only the uplinks would have withdrawn the warning
+  # while the fault stood.
+  $vlso = $false
+  foreach ($l in @(Get-NetAdapterLso -Name $alias -ErrorAction SilentlyContinue)) {
+    if ($l.V1IPv4Enabled -or $l.IPv4Enabled -or $l.IPv6Enabled) { $vlso = $true }
+  }
+  [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = $vlan; dnsServers = @($dns); profile = $netCat[$alias]; addresses = @($addrs); gateway = $gw; mtuBytes = $vmtu; lsoEnabled = $vlso }
 })
 [pscustomobject]@{ switches = @($switches); switchDetails = @($switchDetails); volumes = @($vols); isos = @($isos); managementVNICs = @($mgmtVnics) } | ConvertTo-Json -Depth 5 -Compress
 `
