@@ -59,7 +59,18 @@ type vmObservation struct {
 	Generation          int               `json:"generation"`
 	Disks               []vmDiskObs       `json:"disks"`
 	Nics                []vmNicObs        `json:"nics"`
-	Repl                *vmReplObs        `json:"repl"`
+	// Integ is what the guest services are ACTUALLY set to. Read with the rest
+	// of the configuration rather than on demand: nearly every VM declares none
+	// of them, so the declared value alone tells an operator nothing about the
+	// machine in front of them.
+	Integ []vmIntegObs `json:"integ"`
+	Repl  *vmReplObs   `json:"repl"`
+}
+
+// vmIntegObs is one guest integration service as the host reports it.
+type vmIntegObs struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }
 
 type vmReplObs struct {
@@ -122,6 +133,13 @@ try { foreach ($a in @(Get-VMNetworkAdapter -VMName %[1]s -ErrorAction SilentlyC
   $vl = 0; try { $vv = Get-VMNetworkAdapterVlan -VMNetworkAdapter $a -ErrorAction SilentlyContinue; if ($vv -and $vv.OperationMode -eq 'Access') { $vl = [int]$vv.AccessVlanId } } catch {}
   $nics += [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = [int]$vl }
 } } catch {}
+# The guest integration services, as they actually are. Read with the rest of
+# the configuration because the declared value is almost always "nothing
+# declared", which says nothing about the guest in front of the operator.
+$integ = @()
+try { foreach ($i in @(Get-VMIntegrationService -VMName %[1]s -ErrorAction SilentlyContinue)) {
+  $integ += [pscustomobject]@{ name = [string]$i.Name; enabled = [bool]$i.Enabled }
+} } catch {}
 $dm = $false; $mmin = [uint64]0; $mmax = [uint64]0
 try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $mmax = [uint64]$vm.MemoryMaximum } catch {}
 $repl = $null
@@ -176,6 +194,7 @@ try {
   generation          = [int]$vm.Generation
   disks               = @($disks)
   nics                = @($nics)
+  integ               = @($integ)
   repl                = $repl
 } | ConvertTo-Json -Compress -Depth 6
 `, psQuote(name))
@@ -214,6 +233,9 @@ try {
 		for _, n := range obs.Nics {
 			o.NetworkAdapters = append(o.NetworkAdapters, types.VMNetworkAdapterSpec{Name: n.Name, SwitchName: n.SwitchName, VLANID: n.VLANID})
 		}
+		for _, i := range obs.Integ {
+			o.IntegrationServices = append(o.IntegrationServices, types.VMIntegrationServiceState{Name: i.Name, Enabled: i.Enabled})
+		}
 		observed = o
 	}
 	var repl *types.VMReplicationStatus
@@ -249,21 +271,22 @@ try {
 // observedVMListItem is one VM in the host-wide inventory (compact — no
 // per-VM KVP/checkpoint reads, which would be too heavy across every VM).
 type observedVMListItem struct {
-	Name       string      `json:"name"`
-	ID         string      `json:"id"`
-	PowerState string      `json:"powerState"`
-	Clustered  bool        `json:"clustered"`
-	GuestOS    string      `json:"guestOS"`
-	IPAddress  string      `json:"ipAddress"`
-	Processor  int         `json:"processorCount"`
-	MemStartup uint64      `json:"memoryStartup"`
-	DynMem     bool        `json:"dynamicMemory"`
-	MemMin     uint64      `json:"memMin"`
-	MemMax     uint64      `json:"memMax"`
-	Generation int         `json:"generation"`
-	Disks      []vmDiskObs `json:"disks"`
-	Nics       []vmNicObs  `json:"nics"`
-	Repl       *vmReplObs  `json:"repl"`
+	Name       string       `json:"name"`
+	ID         string       `json:"id"`
+	PowerState string       `json:"powerState"`
+	Clustered  bool         `json:"clustered"`
+	GuestOS    string       `json:"guestOS"`
+	IPAddress  string       `json:"ipAddress"`
+	Processor  int          `json:"processorCount"`
+	MemStartup uint64       `json:"memoryStartup"`
+	DynMem     bool         `json:"dynamicMemory"`
+	MemMin     uint64       `json:"memMin"`
+	MemMax     uint64       `json:"memMax"`
+	Generation int          `json:"generation"`
+	Disks      []vmDiskObs  `json:"disks"`
+	Nics       []vmNicObs   `json:"nics"`
+	Integ      []vmIntegObs `json:"integ"`
+	Repl       *vmReplObs   `json:"repl"`
 }
 
 // ListObservedVMs enumerates every VM on the host. Best-effort per VM: a read
@@ -295,6 +318,10 @@ foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
       }
     } catch {}
     $clustered = $false; try { $clustered = [bool]$vm.IsClustered } catch {}
+    $integ = @()
+    try { foreach ($i in @(Get-VMIntegrationService -VMName $vm.Name -ErrorAction SilentlyContinue)) {
+      $integ += [pscustomobject]@{ name = [string]$i.Name; enabled = [bool]$i.Enabled }
+    } } catch {}
     $dm = $false; $mmin = [uint64]0; $mmax = [uint64]0
     try { $dm = [bool]$vm.DynamicMemoryEnabled; $mmin = [uint64]$vm.MemoryMinimum; $mmax = [uint64]$vm.MemoryMaximum } catch {}
     $out += [pscustomobject]@{
@@ -302,7 +329,7 @@ foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
       guestOS = ''; ipAddress = [string]$ips
       processorCount = [int]$vm.ProcessorCount; memoryStartup = [uint64]$vm.MemoryStartup
       dynamicMemory = $dm; memMin = $mmin; memMax = $mmax; generation = [int]$vm.Generation
-      disks = @($disks); nics = @($nics); repl = $repl
+      disks = @($disks); nics = @($nics); integ = @($integ); repl = $repl
     }
   } catch {}
 }
@@ -335,6 +362,9 @@ ConvertTo-Json -InputObject @($out) -Compress -Depth 6
 		}
 		for _, n := range it.Nics {
 			cfg.NetworkAdapters = append(cfg.NetworkAdapters, types.VMNetworkAdapterSpec{Name: n.Name, SwitchName: n.SwitchName, VLANID: n.VLANID})
+		}
+		for _, i := range it.Integ {
+			cfg.IntegrationServices = append(cfg.IntegrationServices, types.VMIntegrationServiceState{Name: i.Name, Enabled: i.Enabled})
 		}
 		ov := types.ObservedVM{
 			Name: it.Name, VMID: it.ID, PowerState: powerStateFromHyperV(it.PowerState),

@@ -3048,17 +3048,18 @@ type VM struct {
 	Status VMStatus `json:"status,omitempty"`
 }
 
-/* VMIntegrationServices is the six Hyper-V guest services, each tri-state.
+/*
+VMIntegrationServices is the six Hyper-V guest services, each tri-state.
 
-   A nil field is UNMANAGED and left exactly as it is. The distinction matters
-   more here than in most places: these have real consequences and different
-   Hyper-V defaults, so a missing value must never be read as "off". Shutdown
-   off means a host drain has to hard-stop the guest; VSS off means no
-   application-consistent backup; Time Synchronization on is wrong for a domain
-   controller and right for nearly everything else.
+	A nil field is UNMANAGED and left exactly as it is. The distinction matters
+	more here than in most places: these have real consequences and different
+	Hyper-V defaults, so a missing value must never be read as "off". Shutdown
+	off means a host drain has to hard-stop the guest; VSS off means no
+	application-consistent backup; Time Synchronization on is wrong for a domain
+	controller and right for nearly everything else.
 
-   Named as Hyper-V names them, so what is ticked here and what Get-VMIntegrationService
-   prints are recognisably the same thing.
+	Named as Hyper-V names them, so what is ticked here and what Get-VMIntegrationService
+	prints are recognisably the same thing.
 */
 type VMIntegrationServices struct {
 	// GuestServiceInterface is file copy into the guest. Ships DISABLED.
@@ -3522,6 +3523,14 @@ type VMReplicationStatus struct {
 // VMObserved is a VM's actual configuration as read from the host, used to show
 // and adopt VMs created outside Ballast. Disks reuse VMDiskSpec with SizeBytes
 // left zero so an adopt attaches the existing VHDX rather than recreating it.
+// VMIntegrationServiceState is one guest service as the host reports it, named
+// exactly as Hyper-V names it so the console and Get-VMIntegrationService are
+// recognisably describing the same thing.
+type VMIntegrationServiceState struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
 type VMObserved struct {
 	ProcessorCount     int                    `json:"processorCount,omitempty"`
 	MemoryStartupBytes uint64                 `json:"memoryStartupBytes,omitempty"`
@@ -3531,6 +3540,19 @@ type VMObserved struct {
 	Generation         int                    `json:"generation,omitempty"`
 	Disks              []VMDiskSpec           `json:"disks,omitempty"`
 	NetworkAdapters    []VMNetworkAdapterSpec `json:"networkAdapters,omitempty"`
+	/* IntegrationServices is what the guest services are ACTUALLY set to, as
+	   the host reports them.
+
+	   Observed rather than declared, and both are needed. Nearly every VM
+	   declares none of them — that is the correct default — so a console
+	   showing only the declaration says "left alone" six times and tells an
+	   operator nothing about the machine in front of them. Whether Shutdown is
+	   on right now is the question they came to answer.
+
+	   Empty means NOT READ YET, which is not the same as "all off": a VM the
+	   agent has not looked at must never be drawn as one with every service
+	   disabled. */
+	IntegrationServices []VMIntegrationServiceState `json:"integrationServices,omitempty"`
 }
 
 // VMCheckpoint is one Hyper-V checkpoint (snapshot) of a VM. Checkpoints form a
