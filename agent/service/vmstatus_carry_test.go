@@ -61,7 +61,13 @@ func TestBuildVMStatusCarriesEveryObservedField(t *testing.T) {
 		MemoryStatus:        "OK",
 		CPUUsagePercent:     12,
 		UptimeSeconds:       3600,
-		Conditions:          []types.Condition{{Type: "VMConfigured", Status: true}},
+		// The integration layer's verdict on the guest. It reached nothing for
+		// as long as it existed: the script read it, VMState had no field for
+		// it, so VMStatus.Heartbeat was always empty and the console's
+		// heartbeatOK was false on every VM. This guard could not catch it
+		// because there was no VMResult field to compare against.
+		Heartbeat:  "OkApplicationsHealthy",
+		Conditions: []types.Condition{{Type: "VMConfigured", Status: true}},
 	}
 
 	// Every exported VMResult field must be set, or this proves nothing about it.

@@ -132,3 +132,22 @@ func TestIntegrationScriptUsesHyperVsOwnNames(t *testing.T) {
 		t.Errorf("disable is not addressed by name:\n%s", sc)
 	}
 }
+
+/*
+Heartbeat has to reach the status, or nothing downstream can use it.
+
+	The script has always read it and nothing carried it into VMState, so
+	VMStatus.Heartbeat was never set, the proto carried an always-empty field,
+	and the console's heartbeatOK was false on every VM since it was written.
+	The gap only surfaced when something finally needed the value.
+
+	Asserted at the type level rather than through a live read: the fault was a
+	field that existed at both ends and in neither middle.
+*/
+func TestVMStateCarriesHeartbeat(t *testing.T) {
+	var st VMState
+	st.Heartbeat = "OkApplicationsHealthy"
+	if st.Heartbeat == "" {
+		t.Fatal("VMState has no Heartbeat to carry")
+	}
+}

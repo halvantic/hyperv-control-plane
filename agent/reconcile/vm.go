@@ -65,6 +65,10 @@ type VMResult struct {
 	MemoryStatus    string
 	CPUUsagePercent int
 	UptimeSeconds   int64
+	// Heartbeat is the integration layer's verdict on the guest. Carried because
+	// it is the one reading that separates a guest whose kernel drivers work
+	// from one whose userspace daemons do not — and it was reaching nothing.
+	Heartbeat string
 
 	Conditions []types.Condition
 }
@@ -328,6 +332,11 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 		res.MemoryStatus = state.MemoryStatus
 		res.CPUUsagePercent = state.CPUUsagePercent
 		res.UptimeSeconds = state.UptimeSeconds
+		// Never copied before, so VMStatus.Heartbeat was always empty and the
+		// console's heartbeatOK always false. It is the one reading that
+		// distinguishes a guest whose kernel drivers work from one whose
+		// userspace daemons do not.
+		res.Heartbeat = state.Heartbeat
 		res.Replication = state.Replication
 	}
 

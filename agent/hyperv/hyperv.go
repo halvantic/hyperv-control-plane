@@ -861,6 +861,20 @@ type VMState struct {
 	MemoryStatus    string
 	CPUUsagePercent int
 	UptimeSeconds   int64
+	/* Heartbeat is the integration layer's own verdict on the guest: "Ok",
+	   "OkApplicationsHealthy", "OkApplicationsUnknown", "Lost", "Error",
+	   "Disabled", or empty when nothing was reported.
+
+	   The script has always read it and nothing carried it up, so VMStatus.
+	   Heartbeat was never set, the proto carried an always-empty field, and the
+	   console's heartbeatOK has been false on every VM since it was written.
+	   Found 2026-09-07 while looking for something to distinguish a guest whose
+	   kernel drivers work from one whose userspace daemons do not — heartbeat is
+	   exactly that discriminator, and it was not arriving.
+
+	   Empty means NOT REPORTED, which is not a fault; only the "Ok" family means
+	   a guest is answering. */
+	Heartbeat string
 	// Checkpoints is the VM's current set of Hyper-V checkpoints (snapshots).
 	Checkpoints []types.VMCheckpoint
 	// Observed is the VM's actual configuration (CPU/memory/disks/adapters), for

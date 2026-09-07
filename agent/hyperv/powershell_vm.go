@@ -259,6 +259,7 @@ try {
 		MemoryStatus:        obs.MemoryStatus,
 		CPUUsagePercent:     obs.CPUUsagePercent,
 		UptimeSeconds:       obs.UptimeSeconds,
+		Heartbeat:           obs.Heartbeat,
 		GuestOS:             obs.GuestOS,
 		IPAddress:           obs.IPAddress,
 		GuestFQDN:           obs.GuestFQDN,

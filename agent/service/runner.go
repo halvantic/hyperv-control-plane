@@ -1551,6 +1551,7 @@ func (r *runner) buildVMStatus(res reconcile.VMResult) types.VMStatus {
 		MemoryStatus:        res.MemoryStatus,
 		CPUUsagePercent:     res.CPUUsagePercent,
 		UptimeSeconds:       res.UptimeSeconds,
+		Heartbeat:           res.Heartbeat,
 		Replication:         res.Replication,
 		Conditions:          res.Conditions,
 	}
