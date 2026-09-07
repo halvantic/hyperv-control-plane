@@ -123,6 +123,15 @@ type Interface interface {
 	// reconcile confirming that nothing had changed.
 	EnsureMgmtVNICs(ctx context.Context, specs []types.ManagementVNICSpec) ([]Outcome, []error)
 
+	// EnsureIntegrationServices brings a VM's Hyper-V guest services to what the
+	// spec declares. Nil fields are unmanaged and never touched: Hyper-V's own
+	// defaults differ per service, so reading an absent value as "off" would
+	// disable backup and graceful shutdown on every VM nobody had declared.
+	EnsureIntegrationServices(ctx context.Context, vm string, want *types.VMIntegrationServices) (Outcome, error)
+
+	// GetIntegrationServices reads what a VM's guest services are set to.
+	GetIntegrationServices(ctx context.Context, vm string) ([]IntegrationServiceState, error)
+
 	// ClusterVMRolesPresent reports which of the named VMs already exist as
 	// highly-available cluster roles, in one query. EnsureClusterVMRole answers
 	// that for a single VM by enumerating every cluster group, so reconciling n

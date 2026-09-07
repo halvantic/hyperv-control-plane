@@ -1086,6 +1086,23 @@ message VMSpec {
   // install and what BitLocker binds to. Generation 2 only, and it needs a key
   // protector before Hyper-V will enable it.
   bool tpm = 17;
+  // integration_services are the Hyper-V guest services. Absent means the whole
+  // set is unmanaged, and each field inside is itself optional — a nil one is
+  // left alone. Reading an absent value as "off" would disable backup and
+  // graceful shutdown on every VM nobody had declared. See api/types.
+  VMIntegrationServices integration_services = 18;
+}
+
+// VMIntegrationServices is the six Hyper-V guest services, each tri-state:
+// unset means unmanaged, which is why every field is optional. Hyper-V's own
+// defaults differ per service, so a plain bool would be a lie for half of them.
+message VMIntegrationServices {
+  optional bool guest_service_interface = 1;
+  optional bool heartbeat = 2;
+  optional bool key_value_pair_exchange = 3;
+  optional bool shutdown = 4;
+  optional bool time_synchronisation = 5;
+  optional bool vss = 6;
 }
 
 // VMReplicationSpec declares Hyper-V Replica for one VM. replica_server is the

@@ -3048,6 +3048,38 @@ type VM struct {
 	Status VMStatus `json:"status,omitempty"`
 }
 
+/* VMIntegrationServices is the six Hyper-V guest services, each tri-state.
+
+   A nil field is UNMANAGED and left exactly as it is. The distinction matters
+   more here than in most places: these have real consequences and different
+   Hyper-V defaults, so a missing value must never be read as "off". Shutdown
+   off means a host drain has to hard-stop the guest; VSS off means no
+   application-consistent backup; Time Synchronization on is wrong for a domain
+   controller and right for nearly everything else.
+
+   Named as Hyper-V names them, so what is ticked here and what Get-VMIntegrationService
+   prints are recognisably the same thing.
+*/
+type VMIntegrationServices struct {
+	// GuestServiceInterface is file copy into the guest. Ships DISABLED.
+	GuestServiceInterface *bool `json:"guestServiceInterface,omitempty"`
+	// Heartbeat is the liveness signal the console's health column reads.
+	Heartbeat *bool `json:"heartbeat,omitempty"`
+	// KeyValuePairExchange carries guest facts back to the host — the guest's
+	// IP addresses and OS build reach Ballast through it.
+	KeyValuePairExchange *bool `json:"keyValuePairExchange,omitempty"`
+	// Shutdown is what lets a host drain stop a guest gracefully. Off means the
+	// only remaining option is to pull the power.
+	Shutdown *bool `json:"shutdown,omitempty"`
+	// TimeSynchronisation syncs the guest clock to the host. Correct for nearly
+	// everything and wrong for a domain controller, which must hold the
+	// authoritative time itself.
+	TimeSynchronisation *bool `json:"timeSynchronisation,omitempty"`
+	// VSS is the volume shadow copy service: what makes an application-
+	// consistent backup possible rather than a crash-consistent one.
+	VSS *bool `json:"vss,omitempty"`
+}
+
 type VMSpec struct {
 	// Placement assigns the VM to a host. Exactly one agent — the one for
 	// Placement.HostName — owns and reconciles this VM.
@@ -3178,6 +3210,21 @@ type VMSpec struct {
 	// ISOPath, when set, attaches a DVD drive backed by this ISO so the VM can
 	// boot from it. Empty means no boot media (or one already attached is left
 	// as-is). For a Generation 2 VM the agent also makes the DVD a boot entry.
+	/* IntegrationServices are the Hyper-V guest services to enable or disable.
+
+	   Nil means unmanaged, which is why each is a pointer. Hyper-V's own
+	   defaults differ per service — Guest Service Interface ships off, the rest
+	   ship on — and a struct of plain bools would read as "turn all of these
+	   off" for every VM that had never been asked about, silently disabling
+	   backup and shutdown across a fleet on the first save. Declare or leave
+	   alone, the same rule as RDMA and MTU.
+
+	   Worth managing rather than leaving to whoever built the VM: Shutdown is
+	   what makes a graceful host drain work, VSS is what makes a consistent
+	   backup possible, and both are per-VM settings that nothing in the console
+	   could previously see or set. */
+	IntegrationServices *VMIntegrationServices `json:"integrationServices,omitempty"`
+
 	ISOPath string `json:"isoPath,omitempty"`
 
 	// DesiredPowerState is the power state the agent should drive the VM to.

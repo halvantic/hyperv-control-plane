@@ -524,44 +524,26 @@ func TestVNICMTUUndeclaredDoesNothing(t *testing.T) {
 }
 
 /*
-LSO, and specifically not RSC.
+No offload is named on the MTU condition any more.
 
-	This flagged both at first, on the strength of a command that disabled both.
-	The operator then said they had only ever disabled LSO — and the fleet
-	readings agree: on HVNEW01-03, where jumbo works, RSC is enabled on every
-	uplink and LSO is off. RSC is not the blocker on this hardware, and naming it
-	put an amber action on three hosts that were already correct.
+	It named LSO, because disabling LSO made jumbo start working. The operator
+	then re-ENABLED it and jumbo kept working — writing any advanced property
+	resets the miniport, and that reset was the whole effect. Naming an innocent
+	setting on a condition an operator reads is worse than naming nothing: it
+	sends them to change something that cannot help, and it did.
 */
-func TestOnlyLSOIsTreatedAsBlockingJumbo(t *testing.T) {
-	obs := []AdapterMTU{
-		// HVNEW01's actual shape: RSC on, LSO off, jumbo working.
-		{Name: "Ethernet 2", Found: true, MtuSize: 9000, RSC: true, LSO: false},
-		{Name: "Ethernet 3", Found: true, MtuSize: 9000, RSC: true, LSO: false},
+func TestTheMTUConditionDoesNotBlameAnOffload(t *testing.T) {
+	s := &Stub{AdapterMTU: map[string]StubAdapterMTU{
+		// Both offloads on, and the adapter already carrying 9000.
+		"nic1": {NlMtu: 9000, Keyword: "*JumboPacket", Setting: "9014 Bytes",
+			Values: []string{"Disabled", "9014 Bytes"}},
+	}}
+	out, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1"}, 9000)
+	if err != nil {
+		t.Fatalf("a correctly configured adapter reported a problem: %v", err)
 	}
-	if why := offloadsInTheWay(obs); why != "" {
-		t.Fatalf("a host where jumbo works was flagged, because RSC is on: %q", why)
-	}
-
-	// HVNEW04's shape: LSO still on, jumbo broken.
-	obs = append(obs, AdapterMTU{Name: "Ethernet 4", Found: true, MtuSize: 9000, RSC: true, LSO: true})
-	why := offloadsInTheWay(obs)
-	if !strings.Contains(why, "Ethernet 4") {
-		t.Errorf("the uplink that actually blocks jumbo is not named: %q", why)
-	}
-	if strings.Contains(why, "RSC") {
-		t.Errorf("RSC is named as a fault on hardware where it demonstrably is not: %q", why)
-	}
-	// The part worth reading: it is invisible everywhere else.
-	if !strings.Contains(why, "no configuration anywhere shows it") {
-		t.Errorf("does not say why nothing else reports this: %q", why)
-	}
-}
-
-// A 1500 fabric is never nagged: there LSO is doing its job.
-func TestLSOIsNotFlaggedWithoutJumbo(t *testing.T) {
-	s := &Stub{}
-	if _, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1"}, 1500); err != nil {
-		t.Errorf("a 1500 fabric reported an offload problem: %v", err)
+	if out != OutcomeUnchanged {
+		t.Errorf("outcome %v on an adapter already at 9000", out)
 	}
 }
 

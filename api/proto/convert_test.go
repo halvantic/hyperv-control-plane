@@ -84,7 +84,7 @@ func sampleHost() types.Host {
 						Name: "NIC1", MAC: "00:15:5D:00:00:01", LinkSpeedBps: 25_000_000_000, Up: true,
 						IsManagement: true, IPv4: "192.168.1.50", PrefixLength: 24,
 						DNSServers: []string{"192.168.1.168"}, RegistersDNS: true, Gateway: "192.168.1.1",
-						MTUBytes:   9000, JumboKeyword: "*JumboPacket", JumboSetting: "9014 Bytes",
+						MTUBytes: 9000, JumboKeyword: "*JumboPacket", JumboSetting: "9014 Bytes",
 						JumboValues: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
 						RSCEnabled:  true, LSOEnabled: true,
 					},
@@ -183,7 +183,17 @@ func sampleVM() types.VM {
 			// value, so a wire that dropped this would have the centre store a
 			// vTPM the agent never hears about — and Windows 11 refuse to install
 			// on a VM the console says has one.
-			TPM:       true,
+			TPM: true,
+			/* Mixed on purpose: one true, one FALSE, and the rest left nil.
+
+			   A false that arrives as nil, or a nil that arrives as false, are
+			   both disasters here — the second disables backup and graceful
+			   shutdown on every VM nobody declared. Only a sample carrying all
+			   three states can prove the wire keeps them apart. */
+			IntegrationServices: &types.VMIntegrationServices{
+				Shutdown:            boolPtr(true),
+				TimeSynchronisation: boolPtr(false),
+			},
 			BootOrder: []string{"DVD", "Drive", "Network"},
 			Replication: &types.VMReplicationSpec{
 				Enabled:            true,
@@ -586,3 +596,7 @@ func TestISCSIDiskContentsRoundTrips(t *testing.T) {
 		t.Errorf("an unprobed disk must not claim to be known: %+v", got.Disks[2])
 	}
 }
+
+// boolPtr is for the tri-state guest services, where nil, true and false are
+// three different instructions.
+func boolPtr(b bool) *bool { return &b }

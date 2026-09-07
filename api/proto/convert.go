@@ -1383,6 +1383,22 @@ func vmSpecToProto(s types.VMSpec) *VMSpec {
 		NestedVirtualisation: s.NestedVirtualisation,
 		Tpm:                  s.TPM,
 	}
+	/* Each field carried as optional, so "unmanaged" survives the wire.
+
+	   Flattened to plain bools, a service nobody had declared would arrive at
+	   the agent as false and be disabled — the round trip itself would turn off
+	   backup and graceful shutdown. This is the exact failure CLAUDE.md
+	   describes for a field the proto does not carry, with a worse ending. */
+	if is := s.IntegrationServices; is != nil {
+		out.IntegrationServices = &VMIntegrationServices{
+			GuestServiceInterface: is.GuestServiceInterface,
+			Heartbeat:             is.Heartbeat,
+			KeyValuePairExchange:  is.KeyValuePairExchange,
+			Shutdown:              is.Shutdown,
+			TimeSynchronisation:   is.TimeSynchronisation,
+			Vss:                   is.VSS,
+		}
+	}
 	if s.DynamicMemory != nil {
 		out.DynamicMemory = &DynamicMemorySpec{
 			MinBytes: s.DynamicMemory.MinBytes,
@@ -1436,6 +1452,7 @@ func vmSpecFromProto(s *VMSpec) types.VMSpec {
 		VideoResolution:      s.GetVideoResolution(),
 		NestedVirtualisation: s.GetNestedVirtualisation(),
 		TPM:                  s.GetTpm(),
+		IntegrationServices:  integrationFromProto(s.GetIntegrationServices()),
 	}
 	if dm := s.GetDynamicMemory(); dm != nil {
 		out.DynamicMemory = &types.DynamicMemorySpec{
@@ -1826,5 +1843,25 @@ func importScanFromProto(s *ImportScanStatus) *types.ImportScanStatus {
 		ElapsedMs: s.GetElapsedMs(),
 		Truncated: s.GetTruncated(),
 		Message:   s.GetMessage(),
+	}
+}
+
+/*
+integrationFromProto rebuilds the tri-state guest services.
+
+	Nil in, nil out: a spec that declares nothing must arrive declaring nothing,
+	or the agent disables every service on it.
+*/
+func integrationFromProto(p *VMIntegrationServices) *types.VMIntegrationServices {
+	if p == nil {
+		return nil
+	}
+	return &types.VMIntegrationServices{
+		GuestServiceInterface: p.GuestServiceInterface,
+		Heartbeat:             p.Heartbeat,
+		KeyValuePairExchange:  p.KeyValuePairExchange,
+		Shutdown:              p.Shutdown,
+		TimeSynchronisation:   p.TimeSynchronisation,
+		VSS:                   p.Vss,
 	}
 }

@@ -204,19 +204,17 @@ func (p *PowerShell) EnsureAdapterMTU(ctx context.Context, adapters []string, wa
 	}
 
 	apply, refusals := planAdapterMTU(obs, want)
-	/* Offloads that stop jumbo working even when every MTU is right.
+	/* No offload is named here any more.
 
-	   Reported alongside the refusals rather than instead of them: the MTU may
-	   have been applied perfectly and jumbo still not work, which is exactly
-	   the case an operator cannot see from any configuration. It clears itself
-	   when they are off, and only appears where jumbo was actually asked for —
-	   RSC and LSO on a 1500 fabric are doing their job and are nobody's
-	   problem. */
-	if want > types.StandardMTU {
-		if why := offloadsInTheWay(obs); why != "" {
-			refusals = append(refusals, why)
-		}
-	}
+	   This reported LSO as a thing that stops jumbo working, because disabling
+	   it made jumbo start working. The operator then re-ENABLED LSO and jumbo
+	   kept working: writing any advanced property resets the miniport, and that
+	   reset was the entire effect. The offload was never involved.
+
+	   What actually puts an MTU in force is the adapter restarting, which
+	   EnsureInterfaceMTU now does for fabric vNICs. Naming an innocent setting
+	   on a condition an operator reads is worse than naming nothing — it sends
+	   them to change something that will not help, and it did. */
 
 	if len(apply) > 0 {
 		if err := p.run2(ctx, applyMTUScript(apply)); err != nil {
@@ -330,33 +328,6 @@ func adapterCarries(a AdapterMTU, want int) bool {
 // jumboSize reads the size out of a driver's selected value, ignoring the units
 // some drivers append.
 func jumboSize(v string) (int, bool) { return types.JumboValueSize(v) }
-
-/*
-offloadsInTheWay names the uplinks whose LSO will defeat jumbo frames.
-
-	Large Send Offload re-segments traffic in the NIC, and on some drivers that
-	defeats a 9000-byte MTU behind a Hyper-V vSwitch. The failure is invisible:
-	every layer reports 9000 and large frames do not arrive.
-
-	LSO and not RSC. This named both at first, and the operator then said they
-	had only ever disabled LSO — on HVNEW01-03, where jumbo works, RSC reads
-	enabled on every uplink. So RSC is not the blocker on this hardware, and
-	naming it put an advisory on three hosts that were already right.
-*/
-func offloadsInTheWay(obs []AdapterMTU) string {
-	var lso []string
-	for _, a := range obs {
-		if a.Found && a.LSO {
-			lso = append(lso, a.Name)
-		}
-	}
-	if len(lso) == 0 {
-		return ""
-	}
-	return "Large Send Offload is on " + strings.Join(lso, ", ") + ". It re-segments traffic in the NIC and can " +
-		"stop jumbo frames working even though every MTU reads correctly — the frames simply do not arrive, and " +
-		"no configuration anywhere shows it"
-}
 
 func outcomeFor(changed bool) Outcome {
 	if changed {

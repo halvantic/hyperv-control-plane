@@ -187,6 +187,22 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 		// change we just made as if it had not happened.
 		obs.full = true
 	}
+	/* The guest integration services, where the spec declares any.
+
+	   Applied here rather than inside EnsureVM because they take effect on a
+	   RUNNING guest — unlike Secure Boot or a generation change, which wait for
+	   a power cycle. Nothing is touched that the spec does not name. */
+	if is := vm.Spec.IntegrationServices; is != nil {
+		out, ierr := r.hv.EnsureIntegrationServices(ctx, vm.Meta.Name, is)
+		res.Conditions = append(res.Conditions, r.condition("IntegrationServices/"+vm.Meta.Name, out, ierr))
+		if ierr != nil {
+			r.log.Warn("set integration services failed", "vm", vm.Meta.Name, "err", ierr)
+		} else if out != hyperv.OutcomeUnchanged {
+			res.Changed = true
+			r.log.Info("integration services reconciled", "vm", vm.Meta.Name, "outcome", out)
+		}
+	}
+
 	// A clustered VM must be registered as a highly-available role so Failover
 	// Clustering owns its placement and failover. Idempotent: a no-op once the
 	// role exists.

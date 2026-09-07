@@ -31,6 +31,11 @@ type Stub struct {
 	// puts an MTU change in force, and doing it to the management vNIC drops
 	// the host's own address — so which ones appear here is the point.
 	VNICCycles []string
+	// Integration is each VM's guest services, keyed by lower-cased VM name.
+	Integration map[string][]IntegrationServiceState
+	// IntegrationWrites records every service actually changed, "+Name" or
+	// "-Name". A service that was never declared must never appear here.
+	IntegrationWrites []string
 	// VNICMTU records the IPv4 interface MTU set on each management vNIC.
 	VNICMTU map[string]int
 	// MTUWrites records every adapter actually written to, in order. The point
@@ -1289,4 +1294,68 @@ func (s *Stub) DisableLSO(_ context.Context, adapters, switches []string) (strin
 		got = append(got, st)
 	}
 	return summariseLSO(got)
+}
+
+/*
+Integration services, in the stub.
+
+	Modelled with a real set of services rather than a constant, because the
+	interesting cases are all about NOT acting: a nil field must leave a service
+	alone, and a service the host does not report must not be acted on at all.
+*/
+func (s *Stub) GetIntegrationServices(_ context.Context, vm string) ([]IntegrationServiceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Integration == nil {
+		s.Integration = map[string][]IntegrationServiceState{}
+	}
+	if got, ok := s.Integration[strings.ToLower(vm)]; ok {
+		return got, nil
+	}
+	// Hyper-V's own defaults: Guest Service Interface off, the rest on.
+	return []IntegrationServiceState{
+		{Name: "Guest Service Interface", Enabled: false},
+		{Name: "Heartbeat", Enabled: true},
+		{Name: "Key-Value Pair Exchange", Enabled: true},
+		{Name: "Shutdown", Enabled: true},
+		{Name: "Time Synchronization", Enabled: true},
+		{Name: "VSS", Enabled: true},
+	}, nil
+}
+
+func (s *Stub) EnsureIntegrationServices(ctx context.Context, vm string, want *types.VMIntegrationServices) (Outcome, error) {
+	if want == nil {
+		return OutcomeUnchanged, nil
+	}
+	have, err := s.GetIntegrationServices(ctx, vm)
+	if err != nil {
+		return OutcomeUnchanged, err
+	}
+	enable, disable := integrationPlan(want, have)
+	if len(enable) == 0 && len(disable) == 0 {
+		return OutcomeUnchanged, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Integration == nil {
+		s.Integration = map[string][]IntegrationServiceState{}
+	}
+	next := append([]IntegrationServiceState(nil), have...)
+	set := func(name string, on bool) {
+		for i := range next {
+			if strings.EqualFold(next[i].Name, name) {
+				next[i].Enabled = on
+			}
+		}
+	}
+	for _, n := range enable {
+		set(n, true)
+		s.IntegrationWrites = append(s.IntegrationWrites, "+"+n)
+	}
+	for _, n := range disable {
+		set(n, false)
+		s.IntegrationWrites = append(s.IntegrationWrites, "-"+n)
+	}
+	s.Integration[strings.ToLower(vm)] = next
+	return OutcomeUpdated, nil
 }
