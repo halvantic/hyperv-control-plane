@@ -27,6 +27,10 @@ type Stub struct {
 	Offloads map[string]StubOffload
 	// OffloadWrites records every adapter actually disabled, in order.
 	OffloadWrites []string
+	// VNICCycles records every vNIC actually restarted. The restart is what
+	// puts an MTU change in force, and doing it to the management vNIC drops
+	// the host's own address — so which ones appear here is the point.
+	VNICCycles []string
 	// VNICMTU records the IPv4 interface MTU set on each management vNIC.
 	VNICMTU map[string]int
 	// MTUWrites records every adapter actually written to, in order. The point
@@ -1221,7 +1225,7 @@ func (s *Stub) EnsureAdapterMTU(ctx context.Context, adapters []string, want int
 	return outcomeFor(changed), nil
 }
 
-func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int) (Outcome, error) {
+func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int, mayCycle bool) (Outcome, error) {
 	if want <= 0 {
 		return OutcomeUnchanged, nil
 	}
@@ -1234,6 +1238,9 @@ func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int) 
 		return OutcomeUnchanged, nil
 	}
 	s.VNICMTU[strings.ToLower(vnicName)] = want
+	if mayCycle {
+		s.VNICCycles = append(s.VNICCycles, vnicName)
+	}
 	return OutcomeUpdated, nil
 }
 

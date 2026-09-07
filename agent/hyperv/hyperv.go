@@ -100,7 +100,12 @@ type Interface interface {
 	// EnsureInterfaceMTU sets the IPv4 interface MTU on a management vNIC. A
 	// different layer from the adapter property: the uplink decides what can
 	// cross the wire, this decides what the stack will put on it.
-	EnsureInterfaceMTU(ctx context.Context, vnicName string, want int) (Outcome, error)
+	//
+	// mayCycle allows the adapter to be restarted, which is what actually puts
+	// the change in force — Set-NetIPInterface resets nothing, and no reading
+	// shows the difference. False for the management vNIC, which carries the
+	// host's address and the agent's link to the centre.
+	EnsureInterfaceMTU(ctx context.Context, vnicName string, want int, mayCycle bool) (Outcome, error)
 
 	// EnsureMgmtVNIC makes the management OS vNIC described by spec exist on its
 	// switch and carry its VLAN, IP and QoS-weight intent. The switch named by

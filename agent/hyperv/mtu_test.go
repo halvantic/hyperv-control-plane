@@ -468,7 +468,7 @@ func TestVNICMTURaisesTheAdapterBeforeTheInterface(t *testing.T) {
 		script = s
 		return []byte("RESULT=set"), nil
 	}
-	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000); err != nil {
+	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000, true); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 
@@ -498,7 +498,7 @@ func TestVNICMTUFailureNamesTheLayerThatIsShort(t *testing.T) {
 	var script string
 	p := &PowerShell{}
 	p.run = func(_ context.Context, s string) ([]byte, error) { script = s; return []byte("RESULT=set"), nil }
-	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000); err != nil {
+	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -517,7 +517,7 @@ func TestVNICMTUUndeclaredDoesNothing(t *testing.T) {
 	called := false
 	p := &PowerShell{}
 	p.run = func(_ context.Context, _ string) ([]byte, error) { called = true; return nil, nil }
-	out, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 0)
+	out, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 0, true)
 	if err != nil || out != OutcomeUnchanged || called {
 		t.Fatalf("an undeclared vNIC MTU did something: out=%v err=%v ran=%v", out, err, called)
 	}
@@ -658,5 +658,93 @@ func TestDisablingLSONeedsSomethingToActOn(t *testing.T) {
 	s := &Stub{}
 	if _, err := s.DisableLSO(context.Background(), nil, nil); err == nil {
 		t.Fatal("disabling nothing was reported as success")
+	}
+}
+
+/*
+What actually puts an MTU change in force: restarting the adapter.
+
+	Chased at length as an offload problem. Disabling LSO made jumbo start
+	working, so LSO looked like the cause — until the operator re-ENABLED it and
+	jumbo kept working. Writing any advanced property resets the miniport, and
+	that reset was the whole effect; the offload was never involved in either
+	direction.
+
+	Set-NetIPInterface resets nothing, so a vNIC's MTU is set and not in force,
+	and NO reading shows the difference — HVNEW04 reported NlMtu 9000 on every
+	vNIC while a 9000-byte frame would not cross. Only the path test can tell.
+*/
+func TestAFabricVNICIsCycledSoTheChangeTakesEffect(t *testing.T) {
+	var script string
+	p := &PowerShell{}
+	p.run = func(_ context.Context, s string) ([]byte, error) { script = s; return []byte("RESULT=set"), nil }
+	if _, err := p.EnsureInterfaceMTU(context.Background(), "Storage01", 9000, true); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if !strings.Contains(script, "Restart-NetAdapter") {
+		t.Fatalf("the adapter is never cycled, so the MTU is set and never in force:\n%s", script)
+	}
+	// After the interface is set, not before: cycling first would discard it.
+	if strings.Index(script, "Restart-NetAdapter") < strings.Index(script, "Set-NetIPInterface") {
+		t.Errorf("the adapter is cycled before the MTU is applied:\n%s", script)
+	}
+}
+
+/*
+The management vNIC is set and NOT cycled.
+
+	It carries the host's address and the agent's link to the centre, so
+	restarting it is a self-inflicted outage on the path Ballast is managed
+	over. It is left for an operator to do deliberately — and said plainly,
+	because an MTU that reads correct and does not work is exactly the silence
+	this whole feature exists to break.
+*/
+func TestTheManagementVNICIsNotCycledOnBallastsOwnInitiative(t *testing.T) {
+	var script string
+	p := &PowerShell{}
+	p.run = func(_ context.Context, s string) ([]byte, error) {
+		script = s
+		return []byte("RESULT=set-needs-restart"), nil
+	}
+	_, err := p.EnsureInterfaceMTU(context.Background(), "Management", 9000, false)
+	if err == nil {
+		t.Fatal("the management vNIC was reported as done when its MTU is not in force")
+	}
+	for _, want := range []string{"will not take effect until the adapter is restarted", "drops this host's address"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message does not say %q: %v", want, err)
+		}
+	}
+	if !strings.Contains(script, "$mayCycle = $false") {
+		t.Errorf("the script was not told to leave the adapter alone:\n%s", script)
+	}
+}
+
+// And the reconciler decides which is which by purpose, so a storage vNIC is
+// cycled and the management one is not.
+func TestOnlyFabricVNICsAreCycledByTheReconciler(t *testing.T) {
+	s := &Stub{}
+	if _, err := s.EnsureInterfaceMTU(context.Background(), "Storage01", 9000, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnsureInterfaceMTU(context.Background(), "Management", 9000, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.VNICCycles) != 1 || s.VNICCycles[0] != "Storage01" {
+		t.Fatalf("cycled %v; only the fabric vNIC should be restarted", s.VNICCycles)
+	}
+}
+
+// Cycling happens on the change and never again: a settled vNIC is read and
+// left alone, so a steady pass cannot bounce a live interface.
+func TestASettledVNICIsNotCycledAgain(t *testing.T) {
+	s := &Stub{}
+	for i := 0; i < 3; i++ {
+		if _, err := s.EnsureInterfaceMTU(context.Background(), "Storage01", 9000, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.VNICCycles) != 1 {
+		t.Fatalf("cycled %d times; a steady pass must not bounce a live interface", len(s.VNICCycles))
 	}
 }

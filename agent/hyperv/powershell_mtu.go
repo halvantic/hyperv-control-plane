@@ -440,7 +440,7 @@ EnsureInterfaceMTU sets the IP interface MTU on one management vNIC.
 	anything, but a write on every pass would report Updated for ever and the
 	reconcile would never settle.
 */
-func (p *PowerShell) EnsureInterfaceMTU(ctx context.Context, vnicName string, want int) (Outcome, error) {
+func (p *PowerShell) EnsureInterfaceMTU(ctx context.Context, vnicName string, want int, mayCycle bool) (Outcome, error) {
 	if want <= 0 {
 		return OutcomeUnchanged, nil
 	}
@@ -461,8 +461,9 @@ func (p *PowerShell) EnsureInterfaceMTU(ctx context.Context, vnicName string, wa
 	   a vNIC reset drops the host's management address for a moment. */
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$alias = %[1]s
-$want  = %[2]d
+$alias    = %[1]s
+$want     = %[2]d
+$mayCycle = %[3]s
 
 $i = Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue
 if (-not $i) { Write-Output 'RESULT=absent'; return }
@@ -494,6 +495,24 @@ if ($adv -and $aMtu -gt 0 -and $aMtu -lt $want) {
 
 Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -NlMtuBytes $want -ErrorAction Stop
 
+# The MTU is now SET and is not yet in force.
+#
+# Set-NetIPInterface resets nothing, and no reading anywhere shows the
+# difference: HVNEW04 reported NlMtu 9000 on every vNIC while a 9000-byte
+# frame would not cross. What puts it in force is the adapter restarting,
+# which is why disabling an offload appeared to fix jumbo — writing any
+# advanced property resets the miniport as a side effect. That was chased
+# for a while as though the offload were the cause; it never was.
+#
+# Cycled here only where the caller allows it. A fabric vNIC carries no part
+# of the agent's own path and can be bounced freely; the management vNIC
+# holds the host's address and its link to the centre, so that one is left
+# for an operator to do deliberately.
+if ($mayCycle) {
+  Restart-NetAdapter -Name $alias -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 4
+}
+
 # Read back rather than trusting the set. An interface whose adapter cannot
 # carry the size accepts the call and keeps the old value, which would otherwise
 # be reported as a successful change.
@@ -512,8 +531,9 @@ if ($now -ne $want) {
     $(if ($offer) { " (offers: $offer)" } else { " (offers nothing this agent can read)" }) + ". " +
     $(if ($a2 -gt 0 -and $a2 -lt $want) { "The adapter under this vNIC is the limit." } else { "The adapter is not the limit, so the vSwitch or its uplinks are." }))
 }
+if (-not $mayCycle) { Write-Output 'RESULT=set-needs-restart'; return }
 if ($bumped) { Write-Output 'RESULT=set-adapter' } else { Write-Output 'RESULT=set' }
-`, psQuote(alias), want)
+`, psQuote(alias), want, psBool(mayCycle))
 
 	out, err := p.run(ctx, script)
 	if err != nil {
@@ -524,6 +544,15 @@ if ($bumped) { Write-Output 'RESULT=set-adapter' } else { Write-Output 'RESULT=s
 		return OutcomeUnchanged, fmt.Errorf("no IPv4 interface named %q, so its MTU could not be set", alias)
 	case "set", "set-adapter":
 		return OutcomeUpdated, nil
+	case "set-needs-restart":
+		// Applied and not yet in force, and nothing readable will say so. The
+		// management vNIC is not cycled on Ballast's own initiative because it
+		// carries the host's address and the agent's link to the centre.
+		return OutcomeUpdated, fmt.Errorf(
+			"the MTU of %d is set on %s and will not take effect until the adapter is restarted. Nothing reports "+
+				"the difference — the interface already reads %d — so a jumbo frame will not cross until it is "+
+				"cycled. This is the management vNIC, so restarting it briefly drops this host's address and its "+
+				"link to the centre; do it deliberately from the host's networking page", want, alias, want)
 	default:
 		return OutcomeUnchanged, nil
 	}

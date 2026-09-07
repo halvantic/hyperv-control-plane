@@ -606,7 +606,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 			if v.MTUBytes <= 0 {
 				continue
 			}
-			out, err := r.hv.EnsureInterfaceMTU(ctx, v.Name, v.MTUBytes)
+			/* Whether this vNIC may be restarted to put the change in force.
+
+			   An MTU set on an interface does nothing until the adapter cycles,
+			   and no reading shows the difference — HVNEW04 reported NlMtu 9000
+			   on every vNIC while a 9000-byte frame would not cross. A fabric
+			   vNIC carries no part of the agent's own path and is cycled here;
+			   the MANAGEMENT vNIC holds the host's address and its link to the
+			   centre, so it is set, reported as needing a restart, and left for
+			   an operator to cycle deliberately. */
+			out, err := r.hv.EnsureInterfaceMTU(ctx, v.Name, v.MTUBytes, v.Purpose != types.VNICManagement)
 			conds = append(conds, r.advisoryCondition("VNICMTU/"+v.Name, out, err))
 			if err != nil {
 				r.log.Warn("set vNIC MTU", "vnic", v.Name, "mtu", v.MTUBytes, "err", err)
