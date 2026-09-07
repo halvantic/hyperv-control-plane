@@ -93,20 +93,30 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.DrainNode(ctx, p["node"]), "drained "+p["node"])
 	case types.JobNodeResume:
 		return done(r.hv.ResumeNode(ctx, p["node"]), "resumed "+p["node"])
-	case types.JobDisableNICOffloads:
-		/* RSC and LSO off, so jumbo frames can actually cross.
+	case types.JobDisableLSO:
+		/* LSO off, so jumbo frames can actually cross.
 
-		   A job rather than desired state: these offloads earn their keep on a
-		   1500 fabric and turning them off costs throughput, so it is a decision
-		   an operator makes for a reason — not something a reconcile does on
-		   their behalf because an MTU was declared somewhere. */
-		var adapters []string
-		for _, a := range strings.Split(p["adapters"], ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				adapters = append(adapters, a)
+		   LSO and not RSC: on the rig, RSC is enabled on every uplink of the
+		   hosts where jumbo works, so it is not the blocker and changing it
+		   would be churn on hosts that are already right.
+
+		   A job rather than desired state: LSO earns its keep on a 1500 fabric
+		   and turning it off costs throughput, so it is a decision an operator
+		   makes for a reason — not something a reconcile does on their behalf
+		   because an MTU was declared somewhere. */
+		splitCSV := func(v string) []string {
+			var out []string
+			for _, a := range strings.Split(v, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					out = append(out, a)
+				}
 			}
+			return out
 		}
-		return r.hv.DisableNICOffloads(ctx, adapters)
+		// The switches as well as the uplinks: their management vNICs carry the
+		// setting separately, and the operator's own working command had no
+		// -Name and so hit both.
+		return r.hv.DisableLSO(ctx, splitCSV(p["adapters"]), splitCSV(p["switches"]))
 	case types.JobTestJumboPath:
 		/* The only thing in Ballast that establishes jumbo frames actually work.
 

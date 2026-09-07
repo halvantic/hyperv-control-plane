@@ -524,39 +524,41 @@ func TestVNICMTUUndeclaredDoesNothing(t *testing.T) {
 }
 
 /*
-The offloads, named on the condition rather than left to be discovered.
+LSO, and specifically not RSC.
 
-	HVNEW04 and HVNEW05 were deliberately left with RSC and LSO on so this could
-	be seen working: every MTU on them reads 9000 and jumbo does not work.
-	Ballast could read this the whole time and said nothing — the
-	diagnosis-it-could-make-and-does-not that CLAUDE.md calls a defect.
+	This flagged both at first, on the strength of a command that disabled both.
+	The operator then said they had only ever disabled LSO — and the fleet
+	readings agree: on HVNEW01-03, where jumbo works, RSC is enabled on every
+	uplink and LSO is off. RSC is not the blocker on this hardware, and naming it
+	put an amber action on three hosts that were already correct.
 */
-func TestOffloadsAreNamedWhenJumboIsAskedFor(t *testing.T) {
+func TestOnlyLSOIsTreatedAsBlockingJumbo(t *testing.T) {
 	obs := []AdapterMTU{
-		{Name: "Ethernet 2", Found: true, MtuSize: 9000, RSC: true},
-		{Name: "Ethernet 3", Found: true, MtuSize: 9000, LSO: true},
-		{Name: "Ethernet 4", Found: true, MtuSize: 9000},
+		// HVNEW01's actual shape: RSC on, LSO off, jumbo working.
+		{Name: "Ethernet 2", Found: true, MtuSize: 9000, RSC: true, LSO: false},
+		{Name: "Ethernet 3", Found: true, MtuSize: 9000, RSC: true, LSO: false},
 	}
+	if why := offloadsInTheWay(obs); why != "" {
+		t.Fatalf("a host where jumbo works was flagged, because RSC is on: %q", why)
+	}
+
+	// HVNEW04's shape: LSO still on, jumbo broken.
+	obs = append(obs, AdapterMTU{Name: "Ethernet 4", Found: true, MtuSize: 9000, RSC: true, LSO: true})
 	why := offloadsInTheWay(obs)
-	if !strings.Contains(why, "RSC on Ethernet 2") || !strings.Contains(why, "LSO on Ethernet 3") {
-		t.Fatalf("does not name which offload is on which adapter: %q", why)
+	if !strings.Contains(why, "Ethernet 4") {
+		t.Errorf("the uplink that actually blocks jumbo is not named: %q", why)
 	}
-	if strings.Contains(why, "Ethernet 4") {
-		t.Errorf("named an adapter with neither offload on: %q", why)
+	if strings.Contains(why, "RSC") {
+		t.Errorf("RSC is named as a fault on hardware where it demonstrably is not: %q", why)
 	}
-	// The part that makes it worth reading rather than a restatement.
+	// The part worth reading: it is invisible everywhere else.
 	if !strings.Contains(why, "no configuration anywhere shows it") {
-		t.Errorf("does not say the fault is invisible everywhere else: %q", why)
+		t.Errorf("does not say why nothing else reports this: %q", why)
 	}
 }
 
-// A clean team says nothing, and neither does a 1500 fabric — there the
-// offloads are doing their job.
-func TestOffloadsAreSilentWhenTheyDoNotMatter(t *testing.T) {
-	clean := []AdapterMTU{{Name: "Ethernet 2", Found: true, MtuSize: 9000}}
-	if why := offloadsInTheWay(clean); why != "" {
-		t.Errorf("a clean team was flagged: %q", why)
-	}
+// A 1500 fabric is never nagged: there LSO is doing its job.
+func TestLSOIsNotFlaggedWithoutJumbo(t *testing.T) {
 	s := &Stub{}
 	if _, err := s.EnsureAdapterMTU(context.Background(), []string{"NIC1"}, 1500); err != nil {
 		t.Errorf("a 1500 fabric reported an offload problem: %v", err)
@@ -564,47 +566,97 @@ func TestOffloadsAreSilentWhenTheyDoNotMatter(t *testing.T) {
 }
 
 /*
-Disabling reads back, because both cmdlets are silent on success AND on a
+Silence is not "off", and reporting it as off is a false success.
 
-	driver that declines. Reporting a decline as done sends an operator to look
-	at their switch for a fault on their host.
+	The first version read a cmdlet that returned nothing as "disabled", so on
+	HVNEW04 the job reported LSO off on four uplinks it had not changed. The
+	operator was told the fix had been applied, went looking at their switch, and
+	the inventory eight minutes later still read LSO enabled on all four. This
+	codebase names absent-read-as-a-value as its most expensive bug class; this
+	was it, written fresh, in the very job meant to close an invisible fault.
 */
-func TestDisablingOffloadsRefusesToClaimADeclineWorked(t *testing.T) {
+func TestUnreadableLSOIsNotReportedAsOff(t *testing.T) {
 	s := &Stub{Offloads: map[string]StubOffload{
-		"ethernet 2": {RSC: true, Stuck: true},
+		"ethernet 2": {Unreadable: true},
+		"ethernet 3": {Unreadable: true},
+	}}
+	_, err := s.DisableLSO(context.Background(), []string{"Ethernet 2", "Ethernet 3"}, nil)
+	if err == nil {
+		t.Fatal("adapters that reported nothing were counted as successfully disabled")
+	}
+	if !strings.Contains(err.Error(), "could be read") {
+		t.Errorf("the failure does not say the setting was unreadable: %v", err)
+	}
+	if len(s.OffloadWrites) != 0 {
+		t.Errorf("claimed to have written to adapters that answer nothing: %v", s.OffloadWrites)
+	}
+}
+
+/*
+A driver that accepts the call and declines it — HVNEW04's, on every uplink.
+
+	Reporting this as done is what sent the operator to look at their switch for
+	a fault on their host, so it fails, and it says the host still cannot carry
+	jumbo frames rather than leaving that to be inferred.
+*/
+func TestLSOStillOnAfterDisablingIsAFailure(t *testing.T) {
+	s := &Stub{Offloads: map[string]StubOffload{
+		"ethernet 2": {LSO: true, Stuck: true},
 		"ethernet 3": {LSO: true},
 	}}
-	msg, err := s.DisableNICOffloads(context.Background(), []string{"Ethernet 2", "Ethernet 3"})
+	msg, err := s.DisableLSO(context.Background(), []string{"Ethernet 2", "Ethernet 3"}, nil)
 	if err == nil {
 		t.Fatal("a driver that declined was reported as success")
 	}
 	if !strings.Contains(err.Error(), "Ethernet 2") {
 		t.Errorf("the refusal does not name the adapter that declined: %v", err)
 	}
-	// And what DID work is still said: half a team fixed is worth having.
+	if !strings.Contains(err.Error(), "cannot carry jumbo frames") {
+		t.Errorf("does not say what it means for the operator: %v", err)
+	}
+	// What DID work is still said: half a team fixed is worth having.
 	if !strings.Contains(msg, "Ethernet 3") {
 		t.Errorf("the adapter that was fixed is not reported: %q", msg)
 	}
 }
 
-func TestDisablingOffloadsReportsWhatIsOffAndWhatIsNext(t *testing.T) {
-	s := &Stub{Offloads: map[string]StubOffload{"ethernet 2": {RSC: true, LSO: true}}}
-	msg, err := s.DisableNICOffloads(context.Background(), []string{"Ethernet 2"})
+func TestDisablingLSOReportsWhatIsOffAndWhatIsNext(t *testing.T) {
+	s := &Stub{Offloads: map[string]StubOffload{"ethernet 2": {LSO: true}}}
+	msg, err := s.DisableLSO(context.Background(), []string{"Ethernet 2"}, nil)
 	if err != nil {
 		t.Fatalf("a clean disable failed: %v", err)
 	}
-	if !strings.Contains(msg, "RSC and LSO are off on Ethernet 2") {
+	if !strings.Contains(msg, "LSO is off on Ethernet 2") {
 		t.Errorf("does not say what is off: %q", msg)
 	}
-	// Turning them off is not proof jumbo works; only a frame is.
+	// Turning it off is not proof jumbo works; only a frame is.
 	if !strings.Contains(msg, "jumbo path test") {
 		t.Errorf("does not name the step that actually confirms it: %q", msg)
 	}
 }
 
-func TestDisablingOffloadsNeedsAdapters(t *testing.T) {
+// The management vNICs over a switch are covered too: the operator's own
+// working command had no -Name and so hit both.
+func TestDisablingLSOCoversTheSwitchesVNICs(t *testing.T) {
+	script := disableLSOScript([]string{"Ethernet 2"}, []string{"ConvergedSwitch"})
+	if !strings.Contains(script, "Get-VMNetworkAdapter -ManagementOS -SwitchName $sw") {
+		t.Errorf("the switch's management vNICs are not included:\n%s", script)
+	}
+	// Every sub-setting named: the cmdlet's defaults vary by driver, and V1IPv4
+	// in particular is commonly left enabled.
+	if !strings.Contains(script, "-IPv4 -IPv6") || !strings.Contains(script, "-V1IPv4") {
+		t.Errorf("not every LSO sub-setting is disabled explicitly:\n%s", script)
+	}
+	// Verified against a FRESH read: asking in the same breath returns what was
+	// requested rather than what took.
+	if !strings.Contains(script, "Start-Sleep") {
+		t.Errorf("reads back without letting the change settle:\n%s", script)
+	}
+}
+
+func TestDisablingLSONeedsSomethingToActOn(t *testing.T) {
 	s := &Stub{}
-	if _, err := s.DisableNICOffloads(context.Background(), nil); err == nil {
+	if _, err := s.DisableLSO(context.Background(), nil, nil); err == nil {
 		t.Fatal("disabling nothing was reported as success")
 	}
 }

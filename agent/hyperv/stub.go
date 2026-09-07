@@ -1237,51 +1237,49 @@ func (s *Stub) EnsureInterfaceMTU(_ context.Context, vnicName string, want int) 
 	return OutcomeUpdated, nil
 }
 
-// StubOffload is what the stub pretends one adapter's offloads are.
+// StubOffload is what the stub pretends one adapter's LSO state is.
 type StubOffload struct {
 	RSC, LSO, Missing bool
 	// Stuck models a driver that accepts the call and declines it, which is the
 	// case that must not be reported as success — an operator told the offloads
 	// are off goes and looks at their switch for a fault on their host.
 	Stuck bool
+	// Unreadable models an adapter that exposes no RSC/LSO at all. Reading its
+	// silence as "off" is what made the first version report success for
+	// adapters it may never have touched.
+	Unreadable bool
 }
 
-func (s *Stub) DisableNICOffloads(_ context.Context, adapters []string) (string, error) {
-	if len(adapters) == 0 {
-		return "", fmt.Errorf("no adapters were named, so nothing was changed")
+func (s *Stub) DisableLSO(_ context.Context, adapters, switches []string) (string, error) {
+	if len(adapters) == 0 && len(switches) == 0 {
+		return "", fmt.Errorf("no adapters or switches were named, so nothing was changed")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Offloads == nil {
 		s.Offloads = map[string]StubOffload{}
 	}
-	var off, missing, stuck []string
-	for _, n := range adapters {
+	var got []OffloadState
+	for _, n := range append(append([]string{}, adapters...), switches...) {
 		cur := s.Offloads[strings.ToLower(n)]
+		st := OffloadState{Name: n, Found: !cur.Missing}
 		switch {
 		case cur.Missing:
-			missing = append(missing, n)
+		case cur.Unreadable:
+			// Reports nothing. Must never be counted as off; that is the whole
+			// fault this stub exists to be able to express.
+			st.LSOKnown = false
 		case cur.Stuck:
-			stuck = append(stuck, n+" (RSC and LSO)")
+			// Accepts the call and declines it, which HVNEW04's driver did on
+			// every uplink while the job reported success.
+			st.LSOKnown, st.LSO = true, true
 		default:
-			cur.RSC, cur.LSO = false, false
+			cur.LSO = false
 			s.Offloads[strings.ToLower(n)] = cur
 			s.OffloadWrites = append(s.OffloadWrites, n)
-			off = append(off, n)
+			st.LSOKnown, st.LSO = true, false
 		}
+		got = append(got, st)
 	}
-	var said []string
-	if len(off) > 0 {
-		said = append(said, "RSC and LSO are off on "+strings.Join(off, ", "))
-	}
-	if len(missing) > 0 {
-		said = append(said, "no adapter named "+strings.Join(missing, ", ")+" on this host")
-	}
-	if len(stuck) > 0 {
-		return strings.Join(said, "; "), fmt.Errorf("still enabled after being disabled: %s", strings.Join(stuck, ", "))
-	}
-	if len(said) == 0 {
-		return "nothing to change", nil
-	}
-	return strings.Join(said, "; ") + ". Run the jumbo path test to confirm a full frame now crosses", nil
+	return summariseLSO(got)
 }

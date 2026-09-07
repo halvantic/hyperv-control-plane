@@ -332,44 +332,30 @@ func adapterCarries(a AdapterMTU, want int) bool {
 func jumboSize(v string) (int, bool) { return types.JumboValueSize(v) }
 
 /*
-offloadsInTheWay names the adapters whose offloads will defeat jumbo frames.
+offloadsInTheWay names the uplinks whose LSO will defeat jumbo frames.
 
-	Receive Segment Coalescing and Large Send Offload both re-segment traffic in
-	the NIC. On some drivers that interacts badly with a 9000-byte MTU behind a
-	Hyper-V vSwitch, and the failure is invisible: every layer reports 9000 and
-	large frames simply do not arrive.
+	Large Send Offload re-segments traffic in the NIC, and on some drivers that
+	defeats a 9000-byte MTU behind a Hyper-V vSwitch. The failure is invisible:
+	every layer reports 9000 and large frames do not arrive.
 
-	Seen on the rig 2026-09-07 — HPE 631FLR-SFP28 on Server 2025, every MTU set
-	correctly and jumbo dead until both were disabled on every host by hand.
-	Ballast could read this the whole time and said nothing, which is the
-	diagnosis-it-could-make-and-does-not that CLAUDE.md calls a defect.
+	LSO and not RSC. This named both at first, and the operator then said they
+	had only ever disabled LSO — on HVNEW01-03, where jumbo works, RSC reads
+	enabled on every uplink. So RSC is not the blocker on this hardware, and
+	naming it put an advisory on three hosts that were already right.
 */
 func offloadsInTheWay(obs []AdapterMTU) string {
-	var rsc, lso []string
+	var lso []string
 	for _, a := range obs {
-		if !a.Found {
-			continue
-		}
-		if a.RSC {
-			rsc = append(rsc, a.Name)
-		}
-		if a.LSO {
+		if a.Found && a.LSO {
 			lso = append(lso, a.Name)
 		}
 	}
-	if len(rsc) == 0 && len(lso) == 0 {
+	if len(lso) == 0 {
 		return ""
 	}
-	var parts []string
-	if len(rsc) > 0 {
-		parts = append(parts, "RSC on "+strings.Join(rsc, ", "))
-	}
-	if len(lso) > 0 {
-		parts = append(parts, "LSO on "+strings.Join(lso, ", "))
-	}
-	return strings.Join(parts, " and ") + ". Both re-segment traffic in the NIC and can stop jumbo frames working " +
-		"even though every MTU reads correctly — the frames simply do not arrive, and no configuration anywhere " +
-		"shows it. Disable them on this switch's uplinks if the jumbo path test fails"
+	return "Large Send Offload is on " + strings.Join(lso, ", ") + ". It re-segments traffic in the NIC and can " +
+		"stop jumbo frames working even though every MTU reads correctly — the frames simply do not arrive, and " +
+		"no configuration anywhere shows it"
 }
 
 func outcomeFor(changed bool) Outcome {

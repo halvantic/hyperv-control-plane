@@ -2719,26 +2719,25 @@ const (
 	   storage subnets). */
 	JobTestJumboPath = "TestJumboPath" // params: mtu, targets
 
-	/* JobDisableNICOffloads turns off RSC and LSO on named physical adapters.
+	/* JobDisableLSO turns off Large Send Offload on named adapters.
 
 	   The third thing that has to agree for jumbo frames, and the only one with
-	   no configuration anywhere that shows it is wrong. Receive Segment
-	   Coalescing and Large Send Offload both re-segment traffic in the NIC, and
-	   on some drivers that defeats a 9000-byte MTU behind a Hyper-V vSwitch:
-	   every layer reports 9000, and large frames simply do not arrive.
+	   no configuration anywhere that shows it is wrong. LSO re-segments traffic
+	   in the NIC, and on some drivers that defeats a 9000-byte MTU behind a
+	   Hyper-V vSwitch: every layer reports 9000 and large frames do not arrive.
 
-	   Found on the rig 2026-09-07 — HPE 631FLR-SFP28 on Server 2025, every MTU
-	   set correctly and jumbo dead until both were disabled by hand on every
-	   host. A fix that needs a PowerShell session on each host is the defect
-	   CLAUDE.md names, so it is a job.
+	   Found on the rig 2026-09-07 — HPE 631FLR-SFP28 on Server 2025 — where
+	   jumbo started working only after LSO was disabled by hand on every host.
+	   RSC was left ENABLED on those same hosts and jumbo works, so it is not
+	   the blocker here and nothing offers to change it.
 
-	   A job rather than desired state, deliberately. These offloads earn their
-	   keep on a 1500 fabric and turning them off costs throughput, so it is a
-	   decision an operator makes for a reason, not something a reconcile does
-	   on their behalf because an MTU was declared.
+	   A job rather than desired state, deliberately. LSO earns its keep on a
+	   1500 fabric and turning it off costs throughput, so it is a decision an
+	   operator makes for a reason, not something a reconcile does on their
+	   behalf because an MTU was declared.
 
-	   params: adapters — comma-separated physical adapter names */
-	JobDisableNICOffloads = "DisableNICOffloads"
+	   params: adapters, switches — comma-separated */
+	JobDisableLSO = "DisableLSO"
 
 	// JobScanImportableVMs walks this host's storage for VM configurations no
 	// host has registered and reports them in status.
