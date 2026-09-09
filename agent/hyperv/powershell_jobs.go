@@ -579,6 +579,108 @@ func formatDiskDriveScript(deviceID, driveLetter string) string {
 		"'RESULT=FORMATTED'"
 }
 
+/*
+CreateVolumeInFreeSpace carves a volume out of a disk's UNALLOCATED space and
+
+	leaves every partition that already exists alone.
+
+	This is the one disk job that may run on the OS disk, and the reason is what
+	it does not do. There is no Clear-Disk and no Initialize-Disk anywhere in it:
+	it allocates space nothing has claimed and formats the partition that results.
+	A host with a single 6TB disk carrying a 600GB Windows is otherwise a host
+	with nowhere to put a VM, which is not true of the hardware — it was true of
+	Ballast, which could only claim a disk whole.
+
+	Standalone hosts. A storage pool takes whole disks, so an S2D member has no
+	use for free space inside a partition table and there is no cluster form of
+	this.
+
+	sizeBytes of 0 takes the whole free extent.
+*/
+func (p *PowerShell) CreateVolumeInFreeSpace(ctx context.Context, deviceID, driveLetter, label string, sizeBytes uint64) error {
+	if strings.TrimSpace(driveLetter) == "" {
+		/* Refused here rather than on the host, because the reason is about this
+		   job and not about the disk.
+
+		   A volume with no letter is a legitimate thing elsewhere — a disk bound
+		   for a folder mount or a cluster wants one — but this job would then
+		   have nothing to recognise its own previous run by, and running it twice
+		   would carve a SECOND volume out of the remaining space rather than
+		   doing nothing. Every operation here is idempotent; the way this one
+		   stays idempotent is the letter. */
+		return fmt.Errorf("a drive letter is required to carve a volume out of free space: it is what makes running " +
+			"this twice a no-op rather than a second volume")
+	}
+	if err := p.run2(ctx, createVolumeInFreeSpaceScript(deviceID, driveLetter, label, sizeBytes)); err != nil {
+		return fmt.Errorf("create a volume in the free space on disk %q as %s: %w", deviceID, driveLetter, err)
+	}
+	return nil
+}
+
+/*
+createVolumeInFreeSpaceScript builds it, split out so every refusal is testable
+
+	without a host.
+
+	The refusals are the substance. Each one names a state an operator can act on
+	rather than letting New-Partition fail with its own wording, and two of them —
+	a RAW disk and an MBR disk with space it cannot address — are conditions where
+	the remedy is a different action entirely.
+*/
+func createVolumeInFreeSpaceScript(deviceID, driveLetter, label string, sizeBytes uint64) string {
+	id := psQuote(deviceID)
+	letter := psQuote(driveLetter)
+
+	script := "$ErrorActionPreference='Stop'; " +
+		"$pd = Get-PhysicalDisk | Where-Object { [string]$_.DeviceId -eq " + id + " }; " +
+		"if (-not $pd) { throw 'no physical disk with DeviceId ' + " + id + " }; " +
+		"$disk = $pd | Get-Disk -ErrorAction SilentlyContinue; " +
+		"if (-not $disk) { throw 'this disk presents no partition table to Windows, which is what a pooled disk looks " +
+		"like: Storage Spaces owns it and there is no free space on it to carve' }; " +
+		// Its own previous run. Checked BEFORE anything is measured, so a repeat
+		// is a no-op rather than a refusal about the space it already used.
+		"$existing = Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -eq " + letter + " }; " +
+		"if ($existing) { 'RESULT=NOOP'; return }; " +
+		// RAW is the other job. Saying so is the difference between an operator
+		// clicking the right thing and reading a New-Partition error.
+		"if ($disk.PartitionStyle -eq 'RAW') { throw 'this disk has no partition table at all, so there is no free " +
+		"space inside one to use. Format the whole disk instead — that is the action for a raw disk' }; " +
+		"$free = [uint64]0; try { $free = [uint64]$disk.LargestFreeExtent } catch {}; "
+
+	// A floor rather than "greater than zero": alignment and metadata make a few
+	// megabytes of tail space look like room and it is not somewhere a volume can
+	// live.
+	script += "if ($free -lt 1073741824) { " +
+		"$why = 'there is no unallocated space on this disk to carve a volume out of (largest free run: ' + " +
+		"[string][math]::Round($free / 1MB, 1) + ' MB)'; " +
+		"if ($disk.PartitionStyle -eq 'MBR' -and [uint64]$disk.Size -gt 2199023255552) { " +
+		"$why += '. This disk is MBR and larger than 2TB, so Windows cannot address anything past 2TB of it — " +
+		"the space beyond that is unreachable until the disk is converted to GPT, which destroys what is on it' }; " +
+		"throw $why }; "
+
+	if sizeBytes > 0 {
+		want := strconv.FormatUint(sizeBytes, 10)
+		script += "$want = [uint64]" + want + "; " +
+			// Both numbers, because "too big" without the size that would fit is
+			// a refusal somebody has to guess their way past.
+			"if ($want -gt $free) { throw 'asked for ' + [string][math]::Round($want / 1GB, 1) + ' GB and the largest " +
+			"unallocated run on this disk is ' + [string][math]::Round($free / 1GB, 1) + ' GB' }; " +
+			"$part = New-Partition -DiskNumber $disk.Number -Size $want -DriveLetter " + letter + "; "
+	} else {
+		// -UseMaximumSize on a partitioned disk takes the largest free extent,
+		// which is exactly "the rest of it".
+		script += "$part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter " + letter + "; "
+	}
+
+	format := "$part | Format-Volume -FileSystem NTFS -Confirm:$false"
+	if strings.TrimSpace(label) != "" {
+		format += " -NewFileSystemLabel " + psQuote(label)
+	}
+	return script + format + " | Out-Null; " +
+		"'RESULT=CREATED ' + " + letter + " + ' ' + [string][math]::Round((Get-Partition -DriveLetter " + letter +
+		").Size / 1GB, 1) + 'GB'"
+}
+
 // EnsureClusterVMRole makes a VM highly available. Idempotent: if a VM cluster
 // group already exists for it, it is left alone. The new role's group is named
 // after the VM, which is what the discovery observation keys on.

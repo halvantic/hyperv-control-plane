@@ -242,6 +242,11 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 			PoolName:         d.PoolName,
 			CannotPoolReason: d.CannotPoolReason,
 			Usage:            d.Usage,
+
+			PartitionStyle:         d.PartitionStyle,
+			AllocatedBytes:         d.AllocatedBytes,
+			LargestFreeExtentBytes: d.LargestFreeExtentBytes,
+			LayoutKnown:            d.LayoutKnown,
 		})
 	}
 	out.UsedDriveLetters = inv.UsedDriveLetters
@@ -290,6 +295,11 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 			PoolName:         d.GetPoolName(),
 			CannotPoolReason: d.GetCannotPoolReason(),
 			Usage:            d.GetUsage(),
+
+			PartitionStyle:         d.GetPartitionStyle(),
+			AllocatedBytes:         d.GetAllocatedBytes(),
+			LargestFreeExtentBytes: d.GetLargestFreeExtentBytes(),
+			LayoutKnown:            d.GetLayoutKnown(),
 		})
 	}
 	out.UsedDriveLetters = inv.GetUsedDriveLetters()

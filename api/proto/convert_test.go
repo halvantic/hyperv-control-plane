@@ -99,6 +99,11 @@ func sampleHost() types.Host {
 						// contributes nothing, so it must survive the wire or the
 						// console cannot explain a pool that will not allocate.
 						Usage: "Retired",
+						// The shrunk-OS-disk shape: 6TB of disk, 600GB allocated,
+						// the rest sitting there unusable until something reports
+						// it.
+						PartitionStyle: "GPT", AllocatedBytes: 644_245_094_400,
+						LargestFreeExtentBytes: 5_355_700_183_040, LayoutKnown: true,
 					},
 				},
 				TotalMemoryBytes: 137_438_953_472,
@@ -470,6 +475,24 @@ func TestHostRoundTripCarriesEveryField(t *testing.T) {
 	// what claims a disk from CanPool — the sample above sets every field so a
 	// later addition cannot ride the round trip as a silent zero value.
 	check("PhysicalDisk", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalDisks[0]))
+
+	/* The free space on a disk, asserted by value rather than only by the
+	   is-it-set sweep above.
+
+	   Dropped on the wire this reads as a disk with no room on it, which is
+	   indistinguishable from the state Ballast was in before it collected this
+	   at all: a host with one 6TB disk carrying a 600GB Windows, and nowhere to
+	   put a VM. LayoutKnown is the half that cannot be inferred — without it,
+	   "no free space" and "never read" are the same zero. */
+	disk := InventoryFromProto(InventoryToProto(sampleHost().Status.Inventory)).PhysicalDisks[0]
+	if disk.LargestFreeExtentBytes != 5_355_700_183_040 || disk.AllocatedBytes != 644_245_094_400 {
+		t.Errorf("PhysicalDisk free space did not survive the round trip: allocated %d, largest free extent %d",
+			disk.AllocatedBytes, disk.LargestFreeExtentBytes)
+	}
+	if disk.PartitionStyle != "GPT" || !disk.LayoutKnown {
+		t.Errorf("PhysicalDisk layout did not survive the round trip: style %q, known %v",
+			disk.PartitionStyle, disk.LayoutKnown)
+	}
 	check("PhysicalAdapter", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalAdapters[0]))
 }
 

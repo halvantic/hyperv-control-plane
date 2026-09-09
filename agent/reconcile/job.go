@@ -338,6 +338,24 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], ""), "formatted disk "+p["deviceId"]+" with no drive letter")
 		}
 		return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], p["driveLetter"]), "formatted disk "+p["deviceId"]+" as "+p["driveLetter"]+":")
+	case types.JobCreateVolumeInFreeSpace:
+		/* A bad size must not become "the whole free extent".
+
+		   0 means "take the rest" and is a deliberate choice an operator makes.
+		   A size that will not parse is a different thing entirely — a typo, or a
+		   console sending something unexpected — and quietly turning it into the
+		   maximum would hand somebody the whole disk when they asked for 200GB.
+		   Absent is not zero here either. */
+		var size uint64
+		if raw := strings.TrimSpace(p["sizeBytes"]); raw != "" {
+			n, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil {
+				return done(fmt.Errorf("sizeBytes %q is not a number of bytes; leave it out to use the whole free extent", raw), "")
+			}
+			size = n
+		}
+		return done(r.hv.CreateVolumeInFreeSpace(ctx, p["deviceId"], p["driveLetter"], p["label"], size),
+			"created a volume on disk "+p["deviceId"]+" as "+p["driveLetter"]+": from unallocated space")
 	case types.JobRepairHostDNS:
 		return r.hv.RepairHostDNS(ctx, p["dns"])
 	case types.JobResetPoolDisks:

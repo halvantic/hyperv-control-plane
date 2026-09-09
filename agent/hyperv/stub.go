@@ -405,7 +405,10 @@ func (s *Stub) RemoveSwitch(_ context.Context, _ string) error       { return ni
 func (s *Stub) RemoveVM(_ context.Context, _ string) error           { return nil }
 func (s *Stub) FormatDisk(_ context.Context, _ string) error         { return nil }
 func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error { return nil }
-func (s *Stub) DestroyCluster(_ context.Context) error               { return nil }
+func (s *Stub) CreateVolumeInFreeSpace(_ context.Context, _, _, _ string, _ uint64) error {
+	return nil
+}
+func (s *Stub) DestroyCluster(_ context.Context) error { return nil }
 
 // ClusterIP is the stub's current cluster address, so a test can assert the
 // re-address happened rather than only that the call was made.

@@ -3676,9 +3676,17 @@ type PhysicalDisk struct {
 	// Spare". Independent of health: a RETIRED disk reports Healthy and
 	// contributes nothing, which is why a pool of healthy disks can be unable to
 	// create a volume. See PhysicalDisk in api/types.
-	Usage         string `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Usage string `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
+	// The unallocated space on the disk, for carving a volume out of what an OS
+	// volume does not use. partition_style matters on its own: an MBR disk cannot
+	// address past 2TB. layout_known separates "no free space" from "not read" —
+	// a pooled disk has no Disk object at all. See PhysicalDisk in api/types.
+	PartitionStyle         string `protobuf:"bytes,12,opt,name=partition_style,json=partitionStyle,proto3" json:"partition_style,omitempty"`
+	AllocatedBytes         uint64 `protobuf:"varint,13,opt,name=allocated_bytes,json=allocatedBytes,proto3" json:"allocated_bytes,omitempty"`
+	LargestFreeExtentBytes uint64 `protobuf:"varint,14,opt,name=largest_free_extent_bytes,json=largestFreeExtentBytes,proto3" json:"largest_free_extent_bytes,omitempty"`
+	LayoutKnown            bool   `protobuf:"varint,15,opt,name=layout_known,json=layoutKnown,proto3" json:"layout_known,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *PhysicalDisk) Reset() {
@@ -3786,6 +3794,34 @@ func (x *PhysicalDisk) GetUsage() string {
 		return x.Usage
 	}
 	return ""
+}
+
+func (x *PhysicalDisk) GetPartitionStyle() string {
+	if x != nil {
+		return x.PartitionStyle
+	}
+	return ""
+}
+
+func (x *PhysicalDisk) GetAllocatedBytes() uint64 {
+	if x != nil {
+		return x.AllocatedBytes
+	}
+	return 0
+}
+
+func (x *PhysicalDisk) GetLargestFreeExtentBytes() uint64 {
+	if x != nil {
+		return x.LargestFreeExtentBytes
+	}
+	return 0
+}
+
+func (x *PhysicalDisk) GetLayoutKnown() bool {
+	if x != nil {
+		return x.LayoutKnown
+	}
+	return false
 }
 
 type HostNetworkingSpec struct {
@@ -7537,7 +7573,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\vrsc_enabled\x18\x0f \x01(\bR\n" +
 	"rscEnabled\x12\x1f\n" +
 	"\vlso_enabled\x18\x10 \x01(\bR\n" +
-	"lsoEnabled\"\xde\x02\n" +
+	"lsoEnabled\"\x8e\x04\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -7553,7 +7589,11 @@ const file_ballast_proto_rawDesc = "" +
 	"\tpool_name\x18\t \x01(\tR\bpoolName\x12,\n" +
 	"\x12cannot_pool_reason\x18\n" +
 	" \x01(\tR\x10cannotPoolReason\x12\x14\n" +
-	"\x05usage\x18\v \x01(\tR\x05usage\"\xfb\x01\n" +
+	"\x05usage\x18\v \x01(\tR\x05usage\x12'\n" +
+	"\x0fpartition_style\x18\f \x01(\tR\x0epartitionStyle\x12'\n" +
+	"\x0fallocated_bytes\x18\r \x01(\x04R\x0eallocatedBytes\x129\n" +
+	"\x19largest_free_extent_bytes\x18\x0e \x01(\x04R\x16largestFreeExtentBytes\x12!\n" +
+	"\flayout_known\x18\x0f \x01(\bR\vlayoutKnown\"\xfb\x01\n" +
 	"\x12HostNetworkingSpec\x129\n" +
 	"\bswitches\x18\x01 \x03(\v2\x1d.ballast.v1.VirtualSwitchSpecR\bswitches\x12I\n" +
 	"\x10management_vnics\x18\x02 \x03(\v2\x1e.ballast.v1.ManagementVNICSpecR\x0fmanagementVnics\x12\x1f\n" +

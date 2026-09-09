@@ -464,15 +464,39 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
 $osIds = @()
 try { $osIds = @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.IsBoot -or $_.IsSystem } | Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.UniqueId }) } catch {}
 # Map UniqueId → first drive letter assigned via a partition (e.g. an NTFS volume
-# formatted with Format-Volume and a drive letter).
+# formatted with Format-Volume and a drive letter), and UniqueId → the disk's
+# partition layout.
+#
+# THE LAYOUT IS WHY A SHRUNK OS DISK IS USABLE. A 6TB disk whose Windows volume
+# was shrunk to 600GB has 5.4TB nothing has claimed, and until this was collected
+# a disk was either raw — claimed whole — or in use and filtered out of every
+# picker. The capacity was not hidden by the OS-disk rule; it was never read.
+#
+# LargestFreeExtent rather than Size - AllocatedSize: Windows commonly parks a
+# recovery partition behind the OS volume, so what is free and what can be taken
+# in ONE piece are different numbers, and only the second can be offered to
+# anybody. PartitionStyle comes with it because an MBR disk cannot address past
+# 2TB, so free space beyond that is unreachable until a destructive conversion —
+# a different conversation from creating a volume, and one an operator should not
+# have to discover by being refused.
+#
+# Both maps are filled from ONE pass. The Get-Disk | Get-PhysicalDisk pipeline is
+# the expensive part of this script and it already runs twice.
 $diskToLetter = @{}
+$diskLayout = @{}
 try {
   Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
     $d = $_
     $letters = @($d | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
-    if ($letters.Count -gt 0) {
-      $pds = @($d | Get-PhysicalDisk -ErrorAction SilentlyContinue)
-      foreach ($pd in $pds) { $diskToLetter[[string]$pd.UniqueId] = $letters[0] }
+    $alloc = [uint64]0
+    $free = [uint64]0
+    try { $alloc = [uint64]$d.AllocatedSize } catch {}
+    try { $free = [uint64]$d.LargestFreeExtent } catch {}
+    $lay = @{ style = [string]$d.PartitionStyle; allocated = $alloc; free = $free }
+    $pds = @($d | Get-PhysicalDisk -ErrorAction SilentlyContinue)
+    foreach ($pd in $pds) {
+      $diskLayout[[string]$pd.UniqueId] = $lay
+      if ($letters.Count -gt 0) { $diskToLetter[[string]$pd.UniqueId] = $letters[0] }
     }
   }
 } catch {}
@@ -515,7 +539,15 @@ $disks = $pdisks | ForEach-Object {
   # health figure Ballast showed said the pool was fine.
   $usage = ''
   try { $usage = [string]$_.Usage } catch {}
-  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType; poolName = $pool; cannotPoolReason = $why; usage = $usage }
+  # A POOLED disk has no Disk object at all — Storage Spaces owns it — so its
+  # layout is genuinely unknown rather than empty. layoutKnown carries that:
+  # without it, "no free space" and "never read" arrive as the same zero, and
+  # the console would draw a disk with nothing spare on evidence it never had.
+  $lay = $null
+  if ($diskLayout.ContainsKey($uid)) { $lay = $diskLayout[$uid] }
+  $style = ''; $alloc = [uint64]0; $freeExtent = [uint64]0
+  if ($lay) { $style = [string]$lay.style; $alloc = [uint64]$lay.allocated; $freeExtent = [uint64]$lay.free }
+  [pscustomobject]@{ deviceId = $id; uniqueId = $uid; sizeBytes = [uint64]$_.Size; mediaType = [string]$_.MediaType; canPool = [bool]$_.CanPool; isOSDisk = ($uid -in $osIds); driveLetter = $letter; busType = [string]$_.BusType; poolName = $pool; cannotPoolReason = $why; usage = $usage; partitionStyle = $style; allocatedBytes = $alloc; largestFreeExtentBytes = $freeExtent; layoutKnown = [bool]$lay }
 }
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem

@@ -200,6 +200,13 @@ type Interface interface {
 	// FormatDiskDrive initialises a physical disk, creates a single GPT partition,
 	// formats it NTFS and assigns the requested drive letter. Refuses the OS disk.
 	FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error
+	// CreateVolumeInFreeSpace carves a volume out of a disk's UNALLOCATED space,
+	// leaving existing partitions alone. It is the one disk operation that may
+	// run on the OS disk, because it neither clears nor initialises anything —
+	// which is what makes a 6TB disk holding a 600GB Windows usable for VMs.
+	// sizeBytes of 0 takes the whole free extent. Standalone hosts: a pool takes
+	// whole disks.
+	CreateVolumeInFreeSpace(ctx context.Context, deviceID, driveLetter, label string, sizeBytes uint64) error
 
 	// RepairHostDNS fixes a common multi-homed-host misconfiguration: it points
 	// every non-management NIC's DNS at the domain controller (the management

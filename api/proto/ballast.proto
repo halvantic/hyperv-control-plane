@@ -586,6 +586,14 @@ message PhysicalDisk {
   // contributes nothing, which is why a pool of healthy disks can be unable to
   // create a volume. See PhysicalDisk in api/types.
   string usage = 11;
+  // The unallocated space on the disk, for carving a volume out of what an OS
+  // volume does not use. partition_style matters on its own: an MBR disk cannot
+  // address past 2TB. layout_known separates "no free space" from "not read" —
+  // a pooled disk has no Disk object at all. See PhysicalDisk in api/types.
+  string partition_style = 12;
+  uint64 allocated_bytes = 13;
+  uint64 largest_free_extent_bytes = 14;
+  bool layout_known = 15;
 }
 
 // ---------------------------------------------------------------------------

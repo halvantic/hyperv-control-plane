@@ -920,7 +920,45 @@ type PhysicalDisk struct {
 	CanPool   bool   `json:"canPool,omitempty"`
 	// IsOSDisk is true for the disk backing the host's boot/system volume, so the
 	// UI can exclude it from the data disks available for S2D.
+	//
+	// It means "no WHOLE-DISK operation", not "invisible". A storage pool needs
+	// the whole disk and can never have this one, so excluding it from a pool
+	// picker is right. Unallocated space on it is a different question — see
+	// LargestFreeExtentBytes.
 	IsOSDisk bool `json:"isOSDisk,omitempty"`
+
+	/* What the disk's partition table says, for the space that is NOT spoken
+	   for.
+
+	   A 6TB disk whose OS volume was shrunk to 600GB has 5.4TB an operator can
+	   carve a Hyper-V volume out of, and Ballast could not express that: a disk
+	   was either raw, and claimed whole, or in use and filtered out of every
+	   picker. The capacity was not hidden by the OS-disk rule — it was never
+	   read.
+
+	   Standalone only, deliberately. A pool owns whole disks, so free space
+	   inside a partition table is not something an S2D member has any use for. */
+
+	// PartitionStyle is "GPT", "MBR" or "RAW", as Windows reports it. Worth
+	// carrying on its own: an MBR disk cannot address anything past 2TB, so free
+	// space beyond that is unreachable until the disk is converted, which is
+	// destructive and is a different conversation from creating a volume.
+	PartitionStyle string `json:"partitionStyle,omitempty"`
+	// AllocatedBytes is how much of the disk existing partitions occupy.
+	AllocatedBytes uint64 `json:"allocatedBytes,omitempty"`
+	/* LargestFreeExtentBytes is the biggest CONTIGUOUS run of unallocated space,
+	   which is what a new partition can actually use.
+
+	   Not Size - AllocatedBytes. Windows commonly parks a recovery partition
+	   behind the OS volume, so what is free and what is usable in one piece are
+	   different numbers, and only the second one can be offered to somebody. */
+	LargestFreeExtentBytes uint64 `json:"largestFreeExtentBytes,omitempty"`
+	/* LayoutKnown says the three fields above were READ, rather than defaulted.
+
+	   A pooled disk has no Disk object by design — Storage Spaces owns it — so
+	   the layout is genuinely unknown there, and zero free space and unknown free
+	   space must not read the same. Absent is not zero. */
+	LayoutKnown bool `json:"layoutKnown,omitempty"`
 	// DriveLetter is the Windows drive letter assigned to this disk's primary
 	// partition (e.g. "E"), empty when the disk is raw or pooled.
 	DriveLetter string `json:"driveLetter,omitempty"`
@@ -2813,6 +2851,21 @@ const (
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter (optional — empty leaves the volume with no letter) — initialise, partition, format NTFS
+	/* JobCreateVolumeInFreeSpace carves a volume out of a disk's UNALLOCATED
+	   space, leaving every existing partition alone.
+
+	   params: deviceId, driveLetter (required), sizeBytes (optional — 0 takes
+	   the whole free extent), label (optional).
+
+	   It is the one disk job that may run on the OS disk, and the reason is what
+	   it does NOT do: no Clear-Disk, no Initialize-Disk, nothing that touches a
+	   partition that already exists. It allocates space nothing has claimed. A
+	   host with one 6TB disk carrying a 600GB Windows is otherwise a host with
+	   no room for a VM, which is not true of the hardware.
+
+	   Standalone hosts only. A pool takes whole disks, so there is no cluster
+	   form of this. */
+	JobCreateVolumeInFreeSpace = "CreateVolumeInFreeSpace"
 
 	JobRepairHostDNS  = "RepairHostDNS"  // no params — point non-management NICs' DNS at the DC and stop them registering in DNS
 	JobResetPoolDisks = "ResetPoolDisks" // no params — wipe local non-OS, non-pooled disks so S2D can claim them (adding a node's capacity)
