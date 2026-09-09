@@ -521,6 +521,23 @@ if ($entries.Count -gt 0) {
 }
 `
 
+// indentBlock indents every non-empty line of a generated block, so a script
+// fragment built for the top level reads correctly once it is nested inside an
+// if. Cosmetic in PowerShell and not in a 200-line generated script somebody has
+// to read when it goes wrong.
+func indentBlock(block, pad string) string {
+	if strings.TrimSpace(block) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(block, "\n"), "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			lines[i] = pad + l
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // ensureVMScript builds the convergence script for one VM. It is split out so it
 // stays readable; the logic is in-script (like EnsureCSV) since it is a sequence
 // of idempotent cmdlet checks rather than a single decision.
@@ -755,7 +772,24 @@ if ($null -ne $vp.ExposeVirtualizationExtensions) {
 		}
 	}
 
-	disks := ""
+	/* Every path this VM declares, so a disk attached from somewhere else can be
+	   told from a disk that is simply also declared.
+
+	   Without it, a VM legitimately declaring two disks of the same file name in
+	   different folders would read as one disk that had moved. Normalised by
+	   PowerShell rather than in Go, because Windows decides what two paths being
+	   the same means. */
+	declared := ""
+	if len(s.Disks) > 0 {
+		quoted := make([]string, 0, len(s.Disks))
+		for _, d := range s.Disks {
+			quoted = append(quoted, psQuote(d.Path))
+		}
+		declared = "$declaredDisks = @()\nforeach ($dp in @(" + strings.Join(quoted, ", ") +
+			")) { $declaredDisks += [IO.Path]::GetFullPath($dp) }\n"
+	}
+
+	disks := declared
 	for _, d := range s.Disks {
 		path := psQuote(d.Path)
 		create := ""
@@ -781,34 +815,65 @@ if ($null -ne $vp.ExposeVirtualizationExtensions) {
 }
 `, path, sizeFlag)
 		}
-		// Consider the desired disk present if it is the attached file OR an
-		// ancestor of an attached differencing disk — when the VM has a
-		// checkpoint it runs off an .avhdx whose parent chain leads back to this
-		// VHDX, so a naive exact-path match would wrongly try to re-attach the
-		// (locked) base. Paths are normalised so forward/backslash and casing
-		// differences still match.
-		disks += create + fmt.Sprintf(`$want = [IO.Path]::GetFullPath(%[2]s)
+		/* Consider the desired disk present if it is the attached file OR an
+		   ancestor of an attached differencing disk — when the VM has a
+		   checkpoint it runs off an .avhdx whose parent chain leads back to this
+		   VHDX, so a naive exact-path match would wrongly try to re-attach the
+		   (locked) base. Paths are normalised so forward/backslash and casing
+		   differences still match.
+
+		   A MISSING DISK AND A MOVED DISK ARE NOT THE SAME THING, and the check
+		   above cannot tell them apart on its own: after a storage migration the
+		   same file is attached from a new location, so the declared path matches
+		   nothing and this went off to attach a second copy from a folder that no
+		   longer holds one. Seen on BallastJumphost, moved from I: to D:: the VM
+		   was running perfectly with its disk attached the whole time, and Ballast
+		   marked it degraded and handed the operator Add-VMHardDiskDrive's own
+		   wording about a file it could not find.
+
+		   The window is real even when everything works — the centre rewrites the
+		   declared paths when the move job reports success, and the agent enforces
+		   the old ones until it pulls that generation. So the same file name
+		   attached from somewhere else is recognised for what it is: the storage
+		   moved and the declaration has not caught up. Nothing is attached and
+		   nothing is created; it is said once, as a warning, and the next pull
+		   settles it.
+
+		   It also guards the worse case, which is silent. A declared disk WITH a
+		   size would have had New-VHD create a blank VHDX at the old path and
+		   attach that — no error, VM boots, empty disk, real data left behind
+		   where it was moved from. The create only runs now when the disk is
+		   neither present nor found elsewhere. */
+		disks += fmt.Sprintf(`$want = [IO.Path]::GetFullPath(%[2]s)
+$leaf = [IO.Path]::GetFileName($want)
 $present = $false
+$movedTo = ''
 foreach ($d in (Get-VMHardDiskDrive -VMName %[1]s)) {
   $p = $d.Path
   while ($p) {
-    if ([IO.Path]::GetFullPath($p) -ieq $want) { $present = $true; break }
+    $full = [IO.Path]::GetFullPath($p)
+    if ($full -ieq $want) { $present = $true; break }
+    if (-not $movedTo -and ([IO.Path]::GetFileName($full) -ieq $leaf) -and ($declaredDisks -notcontains $full)) { $movedTo = $full }
     $vhd = Get-VHD -Path $p -ErrorAction SilentlyContinue
     if ($vhd) { $p = $vhd.ParentPath } else { $p = $null }
   }
   if ($present) { break }
 }
 if (-not $present) {
-  try { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
-  catch {
-    # During a live migration the VHDX is held open by the running VM, so a node
-    # reconciling mid-migration can transiently see the disk as unattached and
-    # fail to (re)attach it with "being used by another process". That is expected
-    # and settles once migration completes — treat it as transient, not a failure.
-    if ($_.Exception.Message -notlike '*another process*' -and $_.Exception.Message -notlike '*being used*') { throw }
+  if ($movedTo) {
+    Write-Warning ('the disk declared at ' + %[2]s + ' is attached from ' + $movedTo + ' instead, so this VM' + [char]39 + 's storage has been moved. Nothing was attached or created - the declared path is what needs updating, and a move made from Ballast updates it within a pass or two')
+  } else {
+%[3]s    try { Add-VMHardDiskDrive -VMName %[1]s -Path %[2]s; $changed = $true }
+    catch {
+      # During a live migration the VHDX is held open by the running VM, so a node
+      # reconciling mid-migration can transiently see the disk as unattached and
+      # fail to (re)attach it with "being used by another process". That is expected
+      # and settles once migration completes — treat it as transient, not a failure.
+      if ($_.Exception.Message -notlike '*another process*' -and $_.Exception.Message -notlike '*being used*') { throw }
+    }
   }
 }
-`, name, path)
+`, name, path, indentBlock(create, "    "))
 	}
 
 	adapters := ""
