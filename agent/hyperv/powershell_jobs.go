@@ -773,12 +773,7 @@ if ($grp -and $grp.OwnerNode.Name -eq $tn) { Write-Output ('DONE already on ' + 
 $v = Get-VM -Name $vm -ErrorAction SilentlyContinue
 $mt = 'Quick'; if ($v -and $v.State -eq 'Running') { $mt = 'Live' }
 $job = Start-Job -ScriptBlock { param($vm,$tn,$mt) Import-Module FailoverClusters -ErrorAction SilentlyContinue; Move-ClusterVirtualMachineRole -Name $vm -Node $tn -MigrationType $mt } -ArgumentList $vm,$tn,$mt
-$last = -1
-while ($job.State -eq 'Running') {
-  $mj = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending)[0]
-  if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
-  Start-Sleep -Seconds 2
-}
+`+migrationProgressLoop()+`
 Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
 if ($job.State -eq 'Failed') {
   $msg = ''; try { $msg = [string]$job.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
@@ -809,7 +804,7 @@ if ($job.State -eq 'Failed') {
 Remove-Job $job -Force -ErrorAction SilentlyContinue
 Write-Output ('DONE live-migrated ' + $vm + ' to ' + $tn)`, psQuote(vm), psQuote(node))
 	var result string
-	if err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result)); err != nil {
+	if err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result, "live migration")); err != nil {
 		return fmt.Errorf("migrate VM %q to %q: %w", vm, node, err)
 	}
 	return nil
@@ -898,7 +893,7 @@ Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 		migrateWithProgress(moveWithNetworkMap(networkMap)),
 		unclusterScript(vm, sourceCluster), reclusterScript(vm, targetCluster), restoreClusterScript(vm, sourceCluster))
 	result := "migrated " + vm + " to " + destHost
-	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
+	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result, "live migration"))
 	if err != nil {
 		return "", fmt.Errorf("migrate vm %q to %q: %w", vm, destHost, err)
 	}
@@ -909,6 +904,55 @@ Write-Output ('DONE migrated ' + $vm + ' to ' + $dest)`,
 // the foreground polls Msvm_MigrationJob and emits "PROGRESS <pct>" lines the
 // agent streams into progress reports. On failure it folds the recent VMMS event
 // detail into the thrown message so the real cause is visible.
+/*
+migrationProgressLoop polls Hyper-V for the percentage of the move in flight.
+
+	Shared by every caller that backgrounds a move and streams progress, because
+	choosing WHICH job to read is the whole difficulty and two copies of it is one
+	copy that will be fixed. It expects $job (the background job) and, where it
+	can be had, $vm.
+*/
+func migrationProgressLoop() string {
+	return `$last = -1
+while ($job.State -eq 'Running') {
+  # THE MIGRATION JOB THAT IS ACTUALLY RUNNING, and this VM's.
+  #
+  # This took the highest PercentComplete of every Msvm_MigrationJob on the
+  # host. Those instances persist after they finish, so any migration that has
+  # ever completed sits at 100 for ever and sorts first — the console read
+  # "100%" the moment a move started and never moved off it. Measured on
+  # HVNEW06: Ballast said 100% while Hyper-V Manager showed the storage move at
+  # 51%. A progress bar that is wrong in the reassuring direction is worse than
+  # none: it says finished while gigabytes are still crossing the wire.
+  #
+  # JobState below 7 is everything before Completed (New, Starting, Running,
+  # Suspended, Shutting Down), which is the whole of "still going".
+  $mj = $null
+  try {
+    $live = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue |
+      Where-Object { [int]$_.JobState -lt 7 })
+    # Two moves at once on one host is ordinary during an evacuation, and the
+    # other one's percentage is not this one's. Kept only when the association
+    # can be read; an unreadable association is not evidence that the job
+    # belongs to somebody else.
+    if ($live.Count -gt 1 -and $vm) {
+      $mine = @($live | Where-Object {
+        $el = $null
+        try { $el = @(Get-CimAssociatedInstance -InputObject $_ -ResultClassName Msvm_ComputerSystem -ErrorAction SilentlyContinue) } catch {}
+        $el -and (@($el | ForEach-Object { [string]$_.ElementName }) -contains $vm)
+      })
+      if ($mine.Count -gt 0) { $live = $mine }
+    }
+    # Newest first. Sorting on the percentage is what picked the finished one.
+    $mj = @($live | Sort-Object StartTime -Descending)[0]
+  } catch {}
+  # No running job means no answer, and no answer is reported as nothing. The
+  # old code had no such case: it always found something to call progress.
+  if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
+  Start-Sleep -Seconds 2
+}`
+}
+
 func migrateWithProgress(moveCmd string) string {
 	/* $ErrorActionPreference INSIDE the job.
 
@@ -922,12 +966,7 @@ func migrateWithProgress(moveCmd string) string {
 	   did work was the running VM, because a live migration produces the
 	   progress this loop watches and a real result. */
 	return `$job = Start-Job -ScriptBlock { param($vm,$dest,$node,$path,$mt) $ErrorActionPreference = 'Stop'; Import-Module Hyper-V -ErrorAction SilentlyContinue; Import-Module FailoverClusters -ErrorAction SilentlyContinue; ` + moveCmd + ` } -ArgumentList $vm,$dest,$node,$path,$mt
-$last = -1
-while ($job.State -eq 'Running') {
-  $mj = @(Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_MigrationJob -ErrorAction SilentlyContinue | Sort-Object PercentComplete -Descending)[0]
-  if ($mj) { $pc = [int]$mj.PercentComplete; if ($pc -ne $last) { Write-Output ('PROGRESS ' + $pc); $last = $pc } }
-  Start-Sleep -Seconds 2
-}
+` + migrationProgressLoop() + `
 # The job's own output and errors, KEPT. Piping them to Out-Null discarded the
 # only account of what went wrong, so a failure that did reach here arrived as
 # an empty message.
@@ -971,22 +1010,34 @@ migrationLineHandler turns a script's PROGRESS lines into progress notes.
 	So a bare number is still decorated, and anything else is passed through as
 	written. A script that has something to say says it.
 */
-func migrationLineHandler(onProgress ProgressFunc, result *string) func(string) {
+func migrationLineHandler(onProgress ProgressFunc, result *string, label string) func(string) {
 	return func(line string) {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "PROGRESS "):
-			onProgress.emit(progressNote(strings.TrimPrefix(line, "PROGRESS ")))
+			onProgress.emit(progressNote(strings.TrimPrefix(line, "PROGRESS "), label))
 		case strings.HasPrefix(line, "DONE "):
 			*result = strings.TrimPrefix(line, "DONE ")
 		}
 	}
 }
 
-// progressNote decorates a bare percentage and leaves prose alone.
-func progressNote(payload string) string {
+/*
+progressNote decorates a bare percentage and leaves prose alone.
+
+	The label comes from the CALLER, because only the caller knows what is
+	happening. It was the constant "live migration", so a storage migration
+	reported itself as a live migration — the VM never moved anywhere and the
+	operator watching the console was told it had. Naming the operation wrongly
+	is the same fault as reporting the wrong number, one level up: both describe
+	something that is not occurring.
+*/
+func progressNote(payload, label string) string {
 	if p := strings.TrimSpace(payload); p != "" && isAllDigits(p) {
-		return "live migration " + p + "%"
+		if strings.TrimSpace(label) == "" {
+			return p + "%"
+		}
+		return strings.TrimSpace(label) + " " + p + "%"
 	}
 	return strings.TrimSpace(payload)
 }
@@ -1400,8 +1451,10 @@ $mt = $vhds
 ` + migrateWithProgress("Move-VMStorage -VMName $vm -VirtualMachinePath $path -SnapshotFilePath $path -SmartPagingFilePath $path -Vhds $mt") + `
 Write-Output ('DONE moved ' + $vm + ' storage to ' + $folder)
 ` + clusteredVMRestoreSuffix
+	// Its own name. Nothing is live-migrating: the VM stays exactly where it is
+	// and its files move underneath it.
 	result := "moved " + vm + " storage to " + folder
-	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result))
+	err := p.runStream(ctx, script, migrationLineHandler(onProgress, &result, "moving storage"))
 	if err != nil {
 		return "", fmt.Errorf("move storage of %q to %q: %w", vm, folder, err)
 	}
