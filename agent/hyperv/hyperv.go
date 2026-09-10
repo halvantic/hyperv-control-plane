@@ -440,7 +440,12 @@ type Interface interface {
 	// CheckISOLibrary probes an SMB boot-media share both as the agent and as the
 	// node's computer account — the way Hyper-V will actually attach media. Read
 	// only; it mounts nothing.
-	CheckISOLibrary(ctx context.Context, path string) (ISOLibraryState, error)
+	// user/pass are the optional stored credential for the AGENT's own read of
+	// the share. They do not affect the computer-account probe, because nothing
+	// can: Hyper-V attaches media as the computer account whatever Ballast
+	// authenticates as. Empty when none is declared or the centre did not send
+	// it.
+	CheckISOLibrary(ctx context.Context, path, user, pass string) (ISOLibraryState, error)
 
 	// RebuildStoragePool DESTROYS the S2D pool and its volumes and re-enables S2D
 	// to create a fresh pool from the cluster's current disks. For a stale/degraded

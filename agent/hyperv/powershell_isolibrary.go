@@ -31,13 +31,43 @@ type ISOLibraryState struct {
 // reached the NAS anonymously because the credential could not double-hop, so it
 // false-failed a share that was fine. The only honest computer-account test is
 // one that actually runs as LocalSystem, which means a scheduled task.
-func isoLibraryScript(path string) string {
+func isoLibraryScript(path, user, pass string) string {
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $share = %[1]s
+$user = %[2]s
+$pass = %[3]s
 $out = [ordered]@{ readable = $false; machineReadable = $null; message = ''; isos = @() }
 
 # 1. The agent's own read. This is what populates the list, and on its own it
 #    proves nothing about whether a VM can boot from it.
+#
+#    THE CREDENTIAL APPLIES HERE AND NOWHERE ELSE, which is the whole subtlety
+#    of it. It authenticates the agent's listing; it cannot change how Hyper-V
+#    attaches media, which is always as the computer account. So a library
+#    configured with a credential can list every image and still fail to boot a
+#    VM, and step 2 below is what says so.
+$mapped = ''
+if ($user) {
+  # New-SmbMapping wants the SHARE ROOT, not a folder inside it.
+  $root = $share
+  $m = [regex]::Match($share, '^(\\\\[^\\]+\\[^\\]+)')
+  if ($m.Success) { $root = $m.Groups[1].Value }
+  try {
+    New-SmbMapping -RemotePath $root -UserName $user -Password $pass -ErrorAction Stop | Out-Null
+    $mapped = $root
+  } catch {
+    $msg = [string]$_.Exception.Message
+    # Windows permits ONE identity per server per session, so an existing
+    # connection to the same file server refuses this one. That is a fact about
+    # the session, not about the credential, and an operator told "the password
+    # is wrong" would go and change a password that was fine.
+    if ($msg -like '*multiple connections*' -or $msg -like '*Multiple connections*') {
+      $out.message = 'this host already has a connection to ' + $root + ' as another identity, and Windows allows only one per server. The stored credential was not used; the listing below is whatever the existing connection can see.'
+    } else {
+      $out.message = 'the stored credential could not be used to reach ' + $root + ': ' + $msg
+    }
+  }
+}
 try {
   $files = @(Get-ChildItem -LiteralPath $share -Filter *.iso -File -ErrorAction Stop |
              Sort-Object LastWriteTime -Descending | ForEach-Object { [string]$_.Name })
@@ -45,6 +75,8 @@ try {
   $out.isos = $files
 } catch {
   $out.message = 'the agent cannot read ' + $share + ': ' + [string]$_.Exception.Message
+} finally {
+  if ($mapped) { Remove-SmbMapping -RemotePath $mapped -Force -ErrorAction SilentlyContinue }
 }
 
 # 2. The computer-account read, run as LocalSystem via a one-shot scheduled task.
@@ -101,7 +133,13 @@ try {
 # out, because the library looks perfectly healthy in the console and every boot
 # from it fails.
 if ($out.readable -and $out.machineReadable -eq $false -and -not $out.message) {
-  $out.message = 'the agent can read this share but the node computer account cannot, so VMs will not boot from it'
+  if ($user) {
+    # The exact trap the credential creates: it makes the list look healthy and
+    # changes nothing about the attach.
+    $out.message = 'the stored credential lets Ballast list this share, but the node computer account cannot read it, so VMs still will not boot from it. A credential only affects this listing - Hyper-V attaches media as the computer account either way.'
+  } else {
+    $out.message = 'the agent can read this share but the node computer account cannot, so VMs will not boot from it'
+  }
 }
 # The opposite, which is the NORMAL result of following this feature's own
 # advice: the share is granted to the computer accounts and not to the agent's
@@ -111,19 +149,19 @@ if ($out.readable -and $out.machineReadable -eq $false -and -not $out.message) {
 if ((-not $out.readable) -and $out.machineReadable -eq $true) {
   $out.message = 'this share is granted to the node computer accounts but not to the agent''s service account, which is the expected result of granting Domain Computers. VMs boot from it normally; Ballast lists it through the computer account instead. Grant the agent''s account read as well only if you want Ballast to read it directly.'
 }
-[pscustomobject]$out | ConvertTo-Json -Compress`, psQuote(path))
+[pscustomobject]$out | ConvertTo-Json -Compress`, psQuote(path), psQuote(user), psQuote(pass))
 }
 
 // CheckISOLibrary probes the declared share and reports what it found. It never
 // mounts a drive: Hyper-V references the UNC directly, so a mapping would be one
 // more piece of per-session state to keep in step and would not change what the
 // attach can reach.
-func (p *PowerShell) CheckISOLibrary(ctx context.Context, path string) (ISOLibraryState, error) {
+func (p *PowerShell) CheckISOLibrary(ctx context.Context, path, user, pass string) (ISOLibraryState, error) {
 	st := ISOLibraryState{Path: path}
 	if strings.TrimSpace(path) == "" {
 		return st, nil
 	}
-	out, err := p.run(ctx, isoLibraryScript(path))
+	out, err := p.run(ctx, isoLibraryScript(path, user, pass))
 	if err != nil {
 		return st, fmt.Errorf("check iso library %q: %w", path, err)
 	}

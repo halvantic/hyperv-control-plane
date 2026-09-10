@@ -335,6 +335,18 @@ type runner struct {
 	// cluster's for a member, its own for a standalone host, resolved by
 	// reconcile.EffectiveISOLibrary and refreshed only on a successful pull.
 	isoLib *types.ISOLibrarySpec
+	/* isoLibUser/isoLibPass are the stored credential for the library share,
+	   resolved at pull time from the secrets the centre delivered.
+
+	   Held on the runner beside isoLib because they arrive together and are used
+	   in the status pass rather than the reconcile. Never written to the local
+	   store: secrets are delivered fresh on every pull and are not ours to keep.
+
+	   It authenticates the AGENT's listing only. Hyper-V attaches media as the
+	   computer account whatever this says, which is why the probe reports the
+	   two separately. */
+	isoLibUser string
+	isoLibPass string
 	// isoLibState is the last probe result, carried forward across the cycles
 	// that skip the probe so a skipped pass shows the previous answer rather than
 	// blanking the library in the console.
@@ -1075,6 +1087,19 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 				secrets[s.Name] = s
 			}
 		}
+		/* The library's credential, resolved now because this is where both
+		   halves exist. A named credential the centre did not send leaves these
+		   empty and the probe reads the share as the service account — the same
+		   behaviour as declaring none, which is the safe direction. */
+		r.isoLibUser, r.isoLibPass = "", ""
+		if r.isoLib != nil && r.isoLib.CredentialSecret != "" {
+			if sec, ok := secrets[r.isoLib.CredentialSecret]; ok {
+				r.isoLibUser, r.isoLibPass = sec.Data["username"], sec.Data["password"]
+			} else {
+				r.log.Warn("iso library credential was not delivered",
+					"credential", r.isoLib.CredentialSecret, "path", r.isoLib.Path)
+			}
+		}
 	}
 
 	// Reconcile against the cached desired state. This runs whether or not the
@@ -1627,7 +1652,7 @@ func (r *runner) observeISOLibrary(ctx context.Context, force bool) *types.ISOLi
 	if !force && !changed && r.isoLibState != nil && r.cycles%isoLibraryEvery != 0 {
 		return r.isoLibState
 	}
-	st, err := r.hv.CheckISOLibrary(ctx, r.isoLib.Path)
+	st, err := r.hv.CheckISOLibrary(ctx, r.isoLib.Path, r.isoLibUser, r.isoLibPass)
 	if err != nil {
 		// The probe itself failed, which says nothing about the share. Keep the
 		// last real answer rather than replacing it with a verdict we do not have.

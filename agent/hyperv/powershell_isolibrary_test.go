@@ -19,7 +19,7 @@ import (
    share that was fine. */
 
 func TestISOLibraryProbeTestsTheComputerAccountNotJustTheAgent(t *testing.T) {
-	s := isoLibraryScript(`\\nas.lab.local\isos`)
+	s := isoLibraryScript(`\\nas.lab.local\isos`, "", "")
 
 	if !strings.Contains(s, "Get-ChildItem -LiteralPath $share -Filter *.iso") {
 		t.Error("the agent-context read must list the ISOs")
@@ -50,7 +50,7 @@ func TestISOLibraryProbeTestsTheComputerAccountNotJustTheAgent(t *testing.T) {
 // account showed no images and reported unreachable, while Hyper-V could boot
 // from it perfectly. Found on live hardware within minutes of shipping.
 func TestISOLibraryProbeListsAsTheComputerAccountToo(t *testing.T) {
-	s := isoLibraryScript(`\\nas.lab.local\iso`)
+	s := isoLibraryScript(`\\nas.lab.local\iso`, "", "")
 
 	// The SYSTEM probe must return the file NAMES, not merely a count.
 	if !strings.Contains(s, "-Filter *.iso -File -Force") {
@@ -70,7 +70,7 @@ func TestISOLibraryProbeListsAsTheComputerAccountToo(t *testing.T) {
 // following the advice this feature gives. It must read as working, with one
 // line of explanation — not as a fault.
 func TestISOLibraryProbeDoesNotTreatTheRecommendedGrantAsAFailure(t *testing.T) {
-	s := isoLibraryScript(`\\nas\iso`)
+	s := isoLibraryScript(`\\nas\iso`, "", "")
 	if !strings.Contains(s, "(-not $out.readable) -and $out.machineReadable -eq $true") {
 		t.Fatal("the machine-yes/agent-no case must be recognised explicitly")
 	}
@@ -83,7 +83,7 @@ func TestISOLibraryProbeDoesNotTreatTheRecommendedGrantAsAFailure(t *testing.T) 
 // share, and reporting false would condemn a working library — the same
 // absence-of-observation-is-not-observation-of-absence rule as everywhere else.
 func TestISOLibraryProbeLeavesUnknownUnknown(t *testing.T) {
-	s := isoLibraryScript(`\\nas\isos`)
+	s := isoLibraryScript(`\\nas\isos`, "", "")
 	if !strings.Contains(s, "machineReadable = $null") {
 		t.Fatal("machineReadable must start unknown, not false")
 	}
@@ -108,7 +108,7 @@ func TestISOLibraryProbeLeavesUnknownUnknown(t *testing.T) {
 // someone's NAS — so it must name the step precisely rather than failing
 // obscurely. "Grant a user access" is the wrong advice and the common mistake.
 func TestISOLibraryProbeNamesTheGrantThatIsMissing(t *testing.T) {
-	s := isoLibraryScript(`\\nas\isos`)
+	s := isoLibraryScript(`\\nas\isos`, "", "")
 	for _, want := range []string{
 		"computer account",
 		"Grant the node computer accounts",
@@ -124,7 +124,7 @@ func TestCheckISOLibraryParsesTheProbe(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{
 		[]byte(`{"readable":true,"machineReadable":false,"message":"grant the computer accounts","isos":["w2025.iso","rocky10.iso"]}`),
 	}}
-	got, err := newTestPS(f).CheckISOLibrary(context.Background(), `\\nas\isos`)
+	got, err := newTestPS(f).CheckISOLibrary(context.Background(), `\\nas\isos`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestCheckISOLibraryParsesTheProbe(t *testing.T) {
 // An omitted machineReadable must decode as unknown, not false.
 func TestCheckISOLibraryKeepsAnOmittedVerdictUnknown(t *testing.T) {
 	f := &fakeRunner{responses: [][]byte{[]byte(`{"readable":true,"isos":[]}`)}}
-	got, err := newTestPS(f).CheckISOLibrary(context.Background(), `\\nas\isos`)
+	got, err := newTestPS(f).CheckISOLibrary(context.Background(), `\\nas\isos`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestCheckISOLibraryKeepsAnOmittedVerdictUnknown(t *testing.T) {
 // No library declared is not a probe worth running, and must not error.
 func TestCheckISOLibraryWithNoPathDoesNothing(t *testing.T) {
 	f := &fakeRunner{}
-	got, err := newTestPS(f).CheckISOLibrary(context.Background(), "  ")
+	got, err := newTestPS(f).CheckISOLibrary(context.Background(), "  ", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

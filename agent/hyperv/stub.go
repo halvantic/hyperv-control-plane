@@ -735,7 +735,7 @@ func (s *Stub) EnsureGuestAVMA(_ context.Context, vmName, avmaKey, guestUser, gu
 	return OutcomeUpdated, nil
 }
 
-func (s *Stub) CheckISOLibrary(_ context.Context, path string) (ISOLibraryState, error) {
+func (s *Stub) CheckISOLibrary(_ context.Context, path, _, _ string) (ISOLibraryState, error) {
 	if path == "" {
 		return ISOLibraryState{}, nil
 	}
