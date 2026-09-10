@@ -2618,6 +2618,17 @@ const (
 	// choose a layout, so it can author the VM's new desired disk paths when the
 	// job succeeds. params: vm, dest (datastore root; files land in <dest>\<vm>).
 	JobVMMoveStorage       = "VMMoveStorage"
+	/* JobVMRename renames a VM on its host, and its cluster group with it.
+
+	   params: vm, newName, cluster (empty for a standalone VM).
+
+	   The name is the IDENTITY here — desired state is keyed on it and the agent
+	   matches VMs by it — so a rename is not a spec edit. Editing the name in
+	   desired state alone would leave the host holding a VM called the old thing
+	   and the agent creating a brand new one under the new name, on the same
+	   disks. The job renames the machine first; the centre re-keys desired state
+	   only once that has succeeded. */
+	JobVMRename = "VMRename"
 	JobClusterLog          = "ClusterLog"          // params: span (minutes), filter (optional substring) — Get-ClusterLog, relevant lines
 	JobMigrationDelegation = "MigrationDelegation" // run on the former: params: nodes (optional comma list) — set Kerberos constrained delegation for live migration
 

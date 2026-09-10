@@ -529,6 +529,10 @@ type Interface interface {
 	// dictated explicitly so the result is predictable and the centre can author
 	// the new disk paths into desired state. Reports progress. Imperative Job.
 	MoveVMStorage(ctx context.Context, vm, folder string, onProgress ProgressFunc) (string, error)
+	// RenameVM renames a VM and, when clustered, its cluster group with it. The
+	// name is the identity everything else keys on, so this is a job rather than
+	// a spec edit — see renamevm.go.
+	RenameVM(ctx context.Context, vm, newName, cluster string) error
 
 	// DiscardVMSavedState turns a Saved VM into an Off one by throwing away its
 	// saved memory. A clustered VM is Saved rather than Off whenever its role

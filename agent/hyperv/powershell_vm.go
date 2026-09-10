@@ -1003,6 +1003,37 @@ if (-not (Get-VMDvdDrive -VMName %[1]s | Where-Object { $_.Path -and ([IO.Path]:
 		clusterGuard = fmt.Sprintf("  try { if (Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue) { $ownedElsewhere = $true } } catch {}\n", name)
 	}
 
+	/* THE SAME VM UNDER ANOTHER NAME.
+
+	   Everything above matches by NAME, so a VM that has been renamed — by the
+	   rename job, in the window before the centre re-keys desired state, or by
+	   somebody in Hyper-V Manager — looks exactly like a VM that does not exist.
+	   The next line would then be New-VM: a second, empty machine wearing the old
+	   name, pointed at the SAME VHDX files. The attach fails with "being used by
+	   another process", which this script tolerates as transient, so the result is
+	   a phantom VM and no error anywhere.
+
+	   The Hyper-V GUID does not change when a VM is renamed, and the centre
+	   already carries it — VMStatus.VMID, reported by the agent and used as the
+	   console's preconnection blob. So when it is known, look for it before
+	   creating anything.
+
+	   Not an error: during a rename this is the correct, expected state and it
+	   settles when the centre re-keys. Said once as a warning, and nothing is
+	   created. */
+	renameGuard := ""
+	if id := strings.TrimSpace(vm.Status.VMID); id != "" {
+		renameGuard = fmt.Sprintf(`  try {
+    $byId = @(Get-VM -ErrorAction SilentlyContinue | Where-Object { [string]$_.Id -eq %[1]s })
+    if ($byId.Count -gt 0) {
+      $ownedElsewhere = $true
+      Write-Warning ('this VM exists on this host as ' + [string]$byId[0].Name + ', not ' + %[2]s +
+        ' - it has been renamed, and nothing was created. The declared name catches up when the centre records the rename')
+    }
+  } catch {}
+`, psQuote(id), name)
+	}
+
 	// Place the VM's files in a per-VM folder on the chosen datastore — the first
 	// disk's directory (e.g. C:\ClusterStorage\vol1\<VM>) — and point New-VM's
 	// config there with -Path. This keeps a cluster VM's config on shared storage
@@ -1040,7 +1071,7 @@ catch {
 }
 if (-not $vm) {
   $ownedElsewhere = $false
-%[10]s  if ($ownedElsewhere) {
+%[17]s%[10]s  if ($ownedElsewhere) {
     [pscustomobject]@{ created = $false; changed = $false; pendingPowerOff = $false } | ConvertTo-Json -Compress
     return
   }
@@ -1057,7 +1088,7 @@ if ($cur -and $cur.State -ne 'Off') { $running = $true }
 %[5]s
 %[13]s%[15]s%[16]s%[6]s%[7]s%[8]s%[9]s%[14]s
 [pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; ') } | ConvertTo-Json -Compress
-`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video, nested)
+`, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video, nested, renameGuard)
 }
 
 /*

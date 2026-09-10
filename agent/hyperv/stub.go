@@ -909,6 +909,8 @@ func (s *Stub) EnsureNodeMaintenance(_ context.Context, _ string, intent Mainten
 	s.MaintenancePaused = want
 	return OutcomeUpdated, NodeMaintenanceState{IsMember: true, Paused: want}, nil
 }
+func (s *Stub) RenameVM(_ context.Context, _, _, _ string) error { return nil }
+
 func (s *Stub) MoveVMStorage(_ context.Context, vm, folder string, _ ProgressFunc) (string, error) {
 	return "moved " + vm + " storage to " + folder, nil
 }

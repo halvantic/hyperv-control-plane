@@ -38,6 +38,9 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 		return done(r.hv.CloneVM(ctx, p["vm"], p["name"], p["folder"]), "cloned "+p["vm"]+" to "+p["name"])
 	case types.JobVMMoveStorage:
 		return r.hv.MoveVMStorage(ctx, p["vm"], p["dest"], onProgress)
+	case types.JobVMRename:
+		return done(r.hv.RenameVM(ctx, p["vm"], p["newName"], p["cluster"]),
+			"renamed "+p["vm"]+" to "+p["newName"])
 	case types.JobVMDiscardSavedState:
 		return done(r.hv.DiscardVMSavedState(ctx, p["vm"]), "discarded the saved state of "+p["vm"]+" (it is now Off)")
 	case types.JobVMDiscardSavedStateAndStart:
