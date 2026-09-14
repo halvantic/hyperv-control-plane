@@ -370,6 +370,13 @@ type runner struct {
 	// cached desired set so a deleted VM does not linger in the store for ever.
 	vmObservedGen map[string]int64
 
+	// clusterObservedGen tracks, per cluster name, the last desired Generation
+	// fully honoured for that cluster. Same model and same reason as
+	// vmObservedGen: it HOLDS at the last honoured value instead of collapsing to
+	// zero on a pass that did not honour, which is what made a running cluster
+	// report as one nothing had ever looked at.
+	clusterObservedGen map[string]int64
+
 	// jobsInflight dedups jobs that are executing in the background so a later
 	// cycle (which still sees them Pending until the agent reports Running) does
 	// not launch them twice. Guarded by jobsMu.
@@ -699,8 +706,13 @@ func (r *runner) adoptCachedState() {
 		if r.vmObservedGen == nil {
 			r.vmObservedGen = make(map[string]int64)
 		}
+		r.clusterObservedGen = o.Clusters
+		if r.clusterObservedGen == nil {
+			r.clusterObservedGen = make(map[string]int64)
+		}
 		r.log.Info("adopted observed generations",
-			"generation", r.observedGen, "vms", len(r.vmObservedGen))
+			"generation", r.observedGen, "vms", len(r.vmObservedGen),
+			"clusters", len(r.clusterObservedGen))
 	}
 
 	cached, ok, err := r.st.LoadDesiredHost()
@@ -1549,8 +1561,9 @@ func (r *runner) reconcileVMs(ctx context.Context, client ballastpb.AgentService
 // console after a restart, which is worth a warning and nothing more.
 func (r *runner) persistObserved() {
 	if err := r.st.SaveObserved(store.Observed{
-		Host: r.observedGen,
-		VMs:  r.vmObservedGen,
+		Host:     r.observedGen,
+		VMs:      r.vmObservedGen,
+		Clusters: r.clusterObservedGen,
 	}); err != nil {
 		r.log.Warn("persist observed generations failed", "err", err)
 	}
@@ -1670,12 +1683,57 @@ func (r *runner) observeISOLibrary(ctx context.Context, force bool) *types.ISOLi
 	return r.isoLibState
 }
 
+/*
+clusterObservedGeneration advances this cluster's honoured generation when a pass
+
+	honoured it, and returns whatever stands.
+
+	HELD, not recomputed. This used to report cluster.Meta.Generation outright and
+	then zero it on any pass that did not fully honour — and zero does not mean
+	"behind", it means "no agent has ever honoured anything", which is what the
+	console then says. Primary1 on the rig read "gen 0/8" with three members
+	reporting every pass, because two declared iSCSI portals do not answer: that
+	pass can never report Honoured, so the zero was not a transient state on the
+	way to the truth, it WAS the steady state.
+
+	Hosts and VMs already held this in the durable store for exactly this reason.
+	The cluster was the object left out of that work.
+
+	Keyed by name so a host that leaves one cluster for another does not carry the
+	old cluster's number across and claim work never done on the new one.
+*/
+func (r *runner) clusterObservedGeneration(name string, gen int64, honoured bool) int64 {
+	if r.clusterObservedGen == nil {
+		r.clusterObservedGen = make(map[string]int64)
+	}
+	if honoured && r.clusterObservedGen[name] != gen {
+		r.clusterObservedGen[name] = gen
+		if r.log != nil {
+			r.log.Info("cluster generation honoured", "cluster", name, "generation", gen)
+		}
+		r.persistObserved()
+	}
+	return r.clusterObservedGen[name]
+}
+
 // reportClusterStatus sends a cluster-only status report (no host status, so it
 // does not disturb the host's own status record).
 func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.AgentServiceClient, cluster types.Cluster, res reconcile.ClusterResult) {
+	/* The last generation fully honoured for this cluster, HELD rather than
+	   reported live.
+
+	   This read cluster.Meta.Generation and then zeroed it whenever the pass did
+	   not fully honour, which is not "behind" — it is "nothing has ever honoured
+	   anything", and the console says exactly that. Primary1 on the rig showed
+	   gen 0/8 with three members reporting, because two declared iSCSI portals do
+	   not answer; that pass can never be fully honoured, so the zero was not a
+	   transient state on the way to the truth, it WAS the steady state.
+
+	   Hosts and VMs already held their last honoured generation in a durable
+	   store for precisely this. The cluster was the object left out. */
 	cs := types.ClusterStatus{
 		Phase:              res.Phase,
-		ObservedGeneration: cluster.Meta.Generation,
+		ObservedGeneration: r.clusterObservedGeneration(cluster.Meta.Name, cluster.Meta.Generation, res.Honoured),
 		FormedMembers:      res.FormedMembers,
 		S2DEnabled:         res.S2DEnabled,
 		Conditions:         res.Conditions,
@@ -1691,9 +1749,6 @@ func (r *runner) reportClusterStatus(ctx context.Context, client ballastpb.Agent
 		FunctionalLevel:    res.FunctionalLevel,
 		NodeOSBuild:        res.NodeOSBuild,
 		ISCSI:              r.stampISCSINode(res.ISCSI),
-	}
-	if !res.Honoured {
-		cs.ObservedGeneration = 0
 	}
 	_, err := client.ReportStatus(ctx, &ballastpb.ReportStatusRequest{
 		HostName:      r.cfg.hostName,

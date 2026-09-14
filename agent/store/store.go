@@ -111,6 +111,20 @@ type Observed struct {
 	Host int64 `json:"host"`
 	// VMs maps VM name to the last generation fully honoured for it.
 	VMs map[string]int64 `json:"vms,omitempty"`
+	/* Clusters maps cluster name to the last generation fully honoured for it.
+
+	   The cluster was the one object left out of this, and it had the same fault
+	   the paragraph above describes — worse, because a cluster is far more likely
+	   to sit un-honoured indefinitely. It reported the generation outright and
+	   overwrote it with ZERO on any pass that did not fully honour, so Primary1
+	   on the rig read "gen 0/8" on its Desired state tab: not "behind", but
+	   "no agent has ever honoured anything", about a cluster running three
+	   reporting members. One unreachable iSCSI portal was enough, and because
+	   the portal stays unreachable the zero was permanent.
+
+	   Keyed by name like VMs, and for the same reason: a host that leaves one
+	   cluster and joins another must not carry the old cluster's number over. */
+	Clusters map[string]int64 `json:"clusters,omitempty"`
 }
 
 // SaveObserved records the generations this agent has honoured, replacing any
