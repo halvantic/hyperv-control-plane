@@ -844,18 +844,46 @@ if ($null -ne $vp.ExposeVirtualizationExtensions) {
 		   attach that — no error, VM boots, empty disk, real data left behind
 		   where it was moved from. The create only runs now when the disk is
 		   neither present nor found elsewhere. */
+		/* Grown, never shrunk, and only when this disk is the LIVE leaf.
+
+		   A size typed into the settings dialog for a disk that already exists used
+		   to be accepted and then discarded: SizeBytes was only ever read inside the
+		   "not present" branch above, so an operator raising the number, saving, and
+		   seeing it stick in the spec had actually changed nothing — the VHDX stayed
+		   its old size forever, with no error, no drift shown, nothing.
+		   $presentLeaf, not $present: a checkpoint's .avhdx also satisfies $present
+		   by walking the parent chain, and Resize-VHD on a base disk with children
+		   fails outright — so resize is attempted only when the declared path is the
+		   file actually attached right now, never an ancestor reached through one.
+		   Shrinking is refused outright: Resize-VHD can destroy data on the way
+		   down, and nothing here can tell an operator's typo from an intended
+		   shrink — that stays a manual, deliberate action outside Ballast. */
+		resize := ""
+		if d.SizeBytes > 0 {
+			resize = fmt.Sprintf(`try {
+      $cur = (Get-VHD -Path %[1]s -ErrorAction Stop).Size
+      if ($cur -lt %[2]d) { Resize-VHD -Path %[1]s -SizeBytes %[2]d -ErrorAction Stop; $changed = $true }
+      elseif ($cur -gt %[2]d) { Write-Warning ('the disk at ' + %[1]s + ' is ' + $cur + ' bytes, larger than the declared %[2]d - Ballast never shrinks a disk automatically because Resize-VHD can destroy data. Raise the declared size to match, or shrink it yourself if that is really intended') }
+    } catch {
+      throw ('could not resize the disk at ' + %[1]s + ' to %[2]d bytes: ' + $_.Exception.Message + ' - a disk on an IDE controller, or one with a checkpoint, usually needs the VM off or the checkpoint removed first')
+    }
+`, path, d.SizeBytes)
+		}
 		disks += fmt.Sprintf(`$want = [IO.Path]::GetFullPath(%[2]s)
 $leaf = [IO.Path]::GetFileName($want)
 $present = $false
+$presentLeaf = $false
 $movedTo = ''
 foreach ($d in (Get-VMHardDiskDrive -VMName %[1]s)) {
   $p = $d.Path
+  $isLeaf = $true
   while ($p) {
     $full = [IO.Path]::GetFullPath($p)
-    if ($full -ieq $want) { $present = $true; break }
+    if ($full -ieq $want) { $present = $true; if ($isLeaf) { $presentLeaf = $true }; break }
     if (-not $movedTo -and ([IO.Path]::GetFileName($full) -ieq $leaf) -and ($declaredDisks -notcontains $full)) { $movedTo = $full }
     $vhd = Get-VHD -Path $p -ErrorAction SilentlyContinue
     if ($vhd) { $p = $vhd.ParentPath } else { $p = $null }
+    $isLeaf = $false
   }
   if ($present) { break }
 }
@@ -872,8 +900,9 @@ if (-not $present) {
       if ($_.Exception.Message -notlike '*another process*' -and $_.Exception.Message -notlike '*being used*') { throw }
     }
   }
-}
-`, name, path, indentBlock(create, "    "))
+} elseif ($presentLeaf) {
+%[4]s}
+`, name, path, indentBlock(create, "    "), indentBlock(resize, "  "))
 	}
 
 	adapters := ""

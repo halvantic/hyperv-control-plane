@@ -216,6 +216,73 @@ func TestEnsureVMScriptWillNotCreateADiskOnAnUnreadableVolume(t *testing.T) {
 	}
 }
 
+// A size typed onto an ALREADY-ATTACHED disk used to be accepted by the
+// settings dialog and then discarded: SizeBytes was only ever read inside the
+// "disk not present" branch, so raising the number and saving genuinely
+// changed nothing on the host — no error, no drift, the VHDX just stayed its
+// old size forever. The script must grow it, guarded to the disk that is the
+// live leaf rather than an ancestor reached through a checkpoint chain, where
+// Resize-VHD would fail outright.
+func TestEnsureVMScriptGrowsAnExistingDisk(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{
+			MemoryStartupBytes: 4294967296,
+			Disks:              []types.VMDiskSpec{{Path: `C:\ClusterStorage\vol1\Web01\Web01.vhdx`, SizeBytes: 137438953472, Dynamic: true}},
+		},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	for _, want := range []string{
+		"$presentLeaf",
+		"elseif ($presentLeaf)",
+		"$cur = (Get-VHD -Path 'C:\\ClusterStorage\\vol1\\Web01\\Web01.vhdx' -ErrorAction Stop).Size",
+		"if ($cur -lt 137438953472) { Resize-VHD -Path 'C:\\ClusterStorage\\vol1\\Web01\\Web01.vhdx' -SizeBytes 137438953472 -ErrorAction Stop; $changed = $true }",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script missing %q — an existing disk's declared size is not enforced:\n%s", want, s)
+		}
+	}
+}
+
+// The declared size must never drive a shrink: Resize-VHD can destroy data on
+// the way down, and nothing here can tell an operator's typo from an intended
+// one. A disk larger than declared is left alone, with only a warning.
+func TestEnsureVMScriptNeverShrinksADisk(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{
+			MemoryStartupBytes: 4294967296,
+			Disks:              []types.VMDiskSpec{{Path: `C:\ClusterStorage\vol1\Web01\Web01.vhdx`, SizeBytes: 68719476736}},
+		},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	for _, want := range []string{
+		"if ($cur -lt 68719476736) { Resize-VHD",
+		"elseif ($cur -gt 68719476736) { Write-Warning",
+		"Ballast never shrinks a disk automatically because Resize-VHD can destroy data",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("script missing %q — a smaller declared size must warn, not silently do nothing or shrink:\n%s", want, s)
+		}
+	}
+}
+
+// A disk with no SizeBytes declared (attached as-is, size unmanaged) must not
+// gain a resize check at all — nothing was declared to enforce.
+func TestEnsureVMScriptDoesNotResizeAnUnsizedDisk(t *testing.T) {
+	vm := types.VM{
+		Meta: types.ObjectMeta{Name: "Web01"},
+		Spec: types.VMSpec{
+			MemoryStartupBytes: 4294967296,
+			Disks:              []types.VMDiskSpec{{Path: `C:\ClusterStorage\vol1\Web01\Web01.vhdx`}},
+		},
+	}
+	s := newTestPS(&fakeRunner{}).ensureVMScript(vm, 2)
+	if strings.Contains(s, "Resize-VHD") {
+		t.Errorf("a disk declared with no size must not be resized:\n%s", s)
+	}
+}
+
 // Stopping a CLUSTERED VM must shut the guest down before the group goes
 // offline. Stop-ClusterGroup obeys the Virtual Machine resource's OfflineAction,
 // which Windows defaults to Save — so the same "stop" that cleanly shut down a

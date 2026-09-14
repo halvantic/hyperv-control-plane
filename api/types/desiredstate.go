@@ -3360,9 +3360,12 @@ type VMDiskSpec struct {
 	// a clustered VM.
 	Path string `json:"path"`
 
-	// SizeBytes is the provisioned size of a disk the agent must create. Zero
-	// means the VHDX already exists at Path and is attached as-is rather than
-	// created.
+	// SizeBytes is the provisioned size of the disk at Path. Zero means the VHDX
+	// already exists and is attached as-is, with its size left unmanaged. Set,
+	// the agent creates the disk at this size when it is missing and grows an
+	// already-attached disk up to it when it is smaller — never shrinks one, since
+	// that can destroy data and a smaller declared size cannot be told apart from
+	// an operator's typo.
 	SizeBytes uint64 `json:"sizeBytes,omitempty"`
 
 	// Dynamic selects a dynamically-expanding VHDX (true) over a fixed one. Only
