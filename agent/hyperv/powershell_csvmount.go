@@ -66,41 +66,82 @@ foreach ($csv in @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue)) {
     # holds nothing for it -- and "reported no mount path" is equally true of a
     # volume that is fine and a volume that is offline. Only one of them is a
     # problem, and the difference cost two rounds of guessing.
+    #
+    # ORDERED BY WHAT ANSWERS THE QUESTION, which it was not. Thirteen cluster
+    # resources were listed in full and "The CSV object reports state Offline"
+    # arrived as the last clause -- the whole answer, behind everything that was
+    # not. The volume's own state leads now and the inventory is summarised.
+    $csvState = ''
+    $entries = 0
+    try { $csvState = [string]$csv.State } catch {}
+    try { $entries = @($csv.SharedVolumeInfo).Count } catch {}
+    $ent = [string]$entries + ' volume entr' + $(if ($entries -eq 1) { 'y' } else { 'ies' })
     $why = ''
+    $saidOffline = $false
+    if ($csvState -and $csvState -ne 'Online') {
+      $why = ': the volume is ' + $csvState + ' (' + $ent + '), and an offline volume has no mount path - so this is the state to fix rather than the name'
+      $saidOffline = $true
+    } elseif ($csvState) {
+      $why = ': the volume reports ' + $csvState + ' (' + $ent + ')'
+    }
     try {
       # Filtered rather than -Name: that parameter binds to a StringCollection
       # and throws on a PSObject. Here it is inside a diagnosis, so the throw
       # would replace the explanation with a cast error — the worst place for it.
       $r = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $name })[0]
       if ($r) {
-        $why = ', resource state ' + [string]$r.State + ' on owner ' + [string]$r.OwnerNode
-        if ([string]$r.State -ne 'Online') {
+        $why += '. Its resource is ' + [string]$r.State + ' on ' + [string]$r.OwnerNode
+        if (-not $saidOffline -and [string]$r.State -ne 'Online') {
           $why += ' - an offline volume has no mount path, so this is the state to fix rather than the name'
         }
       } else {
         # Say what DOES exist. "No resource of that name" is unfalsifiable on its
         # own -- it cannot distinguish a missing resource from a lookup that does
         # not match the way the resource is actually named, and the CSV
-        # enumeration two lines up clearly found something. The candidates settle
-        # it; a count would not.
-        # Every resource, not only Physical Disk ones. Filtering on that type is
-        # what produced "this cluster has no Physical Disk resources at all" while
-        # two CSVs were plainly present -- the filter was the thing that was wrong,
-        # and a narrower question cannot reveal that.
-        $have = @()
+        # enumeration two lines up clearly found something.
+        #
+        # EXCLUDING what cannot be a volume, never INCLUDING only what should be.
+        # Filtering on 'Physical Disk' is what once reported "this cluster has no
+        # Physical Disk resources at all" while two CSVs were plainly present --
+        # the filter was the thing that was wrong. So anything NOT on this list is
+        # named in full whatever its type turns out to be, and an oddly-typed
+        # storage resource still shows; the rest is counted rather than listed.
+        $notVolume = @('Network Name','Distributed Network Name','IP Address','IPv6 Address',
+          'IPv6 Tunnel Address','Virtual Machine','Virtual Machine Configuration',
+          'Virtual Machine Cluster WMI','Virtual Machine Replication Broker','User Manager',
+          'Storage QoS Policy Manager','Health Service','File Share Witness','Cloud Witness',
+          'Task Scheduler','Cluster Pool')
+        $cand = @(); $others = 0; $notOnline = @()
         foreach ($rr in @(Get-ClusterResource -ErrorAction SilentlyContinue)) {
-          $have += ('"' + [string]$rr.Name + '" [' + [string]$rr.ResourceType + '] (' + [string]$rr.State + ')')
+          $rn = [string]$rr.Name; $rt = [string]$rr.ResourceType; $rs = [string]$rr.State
+          if ($notVolume -contains $rt) {
+            $others += 1
+            # Named whatever its type: a resource that is not online may be the
+            # reason this volume cannot come up, and counting it hides that.
+            #
+            # Except a VM role, which is Offline whenever the VM is simply turned
+            # off. That is an ordinary state and not a cluster fault, so listing
+            # it here puts a normal thing in a line that reads as a fault list --
+            # the replay of the rig's own data named a stopped LinuxVM alongside a
+            # genuinely failed witness, as though the two were alike.
+            if ($rs -ne 'Online' -and $rt -notlike 'Virtual Machine*') {
+              $notOnline += ('"' + $rn + '" [' + $rt + '] ' + $rs)
+            }
+            continue
+          }
+          $cand += ('"' + $rn + '" [' + $rt + '] ' + $rs)
         }
-        $sv = ''
-        try { $sv = ' The CSV object reports state ' + [string]$csv.State + ' and ' + [string]@($csv.SharedVolumeInfo).Count + ' volume entries.' } catch {}
-        if ($have.Count -eq 0) {
-          $why = ', and this cluster reports no resources at all.' + $sv
+        if ($cand.Count -eq 0 -and $others -eq 0) {
+          $why += '. No cluster resource is named ' + $name + ', and this cluster reports no resources at all'
+        } elseif ($cand.Count -eq 0) {
+          $why += '. No cluster resource is named ' + $name + ', and none of this cluster''s ' + [string]$others + ' resources is a storage one'
         } else {
-          $why = ', and the resources this cluster does have are: ' + ($have -join ', ') + '.' + $sv
+          $why += '. No cluster resource is named ' + $name + '; the storage resources it does have are ' + ($cand -join ', ')
         }
+        if ($notOnline.Count -gt 0) { $why += '. Also not online: ' + ($notOnline -join ', ') }
       }
     } catch {}
-    $seen += ($name + ': reported no mount path' + $why)
+    $seen += ($name + ': reported no mount path' + $why + '.')
     continue
   }
   $leaf = Split-Path -Path $cur -Leaf
