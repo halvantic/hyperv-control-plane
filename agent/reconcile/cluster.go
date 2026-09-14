@@ -8,6 +8,7 @@ import (
 
 	"github.com/joshua-fourie/ballast/agent/hyperv"
 	"github.com/joshua-fourie/ballast/api/types"
+	"strconv"
 )
 
 // ClusterAssignment is the centre's per-host cluster instruction, delivered with
@@ -330,7 +331,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	// does not make the cluster degraded — quorum is unchanged from before the
 	// attempt, and the existing configuration keeps working.
 	if a.IsFormer && a.Cluster.Spec.Witness.Type != "" {
-		wOut, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind())
+		wOut, wRecovered, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind())
 		conds = append(conds, r.condition("ClusterWitness", wOut, wErr))
 		if wErr != nil {
 			r.log.Warn("ensure cluster witness failed (retries next pass)", "err", wErr)
@@ -338,10 +339,39 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 			changed = true
 			r.log.Info("cluster witness reconciled", "type", a.Cluster.Spec.Witness.Type,
 				"path", a.Cluster.Spec.Witness.FileSharePath, "outcome", wOut)
-			// Re-observe: the witness we just set is what should be reported, not
-			// the state read before the change.
+			// Removing a cluster resource is not a detail. A witness that had to be
+			// forced out is the difference between "the change applied" and "the
+			// change applied because Ballast tore something down first", and an
+			// operator comparing this against Failover Cluster Manager needs to know
+			// which happened.
+			if wRecovered != "" {
+				r.log.Warn("cleared a stuck witness resource to apply the declared one",
+					"cluster", a.Cluster.Meta.Name, "detail", wRecovered)
+				conds = append(conds, types.Condition{
+					Type: "ClusterWitnessRecovered", Status: true, Reason: "StuckWitnessCleared",
+					Message: wRecovered, LastTransitionTime: r.now(),
+				})
+			}
+			/* Re-observe: the witness we just set is what should be reported, not
+			   the state read before the change.
+
+			   GROUPS AND CORE RESOURCES TOO, not only the witness. The witness IS a
+			   core-group resource, so changing it changes the core group — and this
+			   refreshed one field and left the two that feed the core-group message
+			   holding the pre-change reading. On Secondary, 2026-09-14, the pass that
+			   successfully cleared a stuck witness and applied the new one reported,
+			   in the same breath: "ClusterWitnessRecovered — it was cleared and
+			   \podman.ballast.local\witness2 applied", and directly beneath it
+			   "the core group is Failed because its witness is down. The resource
+			   holding it down: File Share Witness is failed" — naming a resource that
+			   had just been deleted. Two conditions from one pass, contradicting each
+			   other, and the one that looked authoritative was the stale one.
+
+			   These three travel together because they are one observation. */
 			if st2, serr := r.clusterState(ctx); serr == nil && st2.Known {
 				state.Witness = st2.Witness
+				state.Groups = st2.Groups
+				state.CoreResources = st2.CoreResources
 			}
 		}
 	}
@@ -372,7 +402,7 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	// Group PartialOnline -- its Cluster Name and both Cluster IP Address
 	// resources offline -- so every diagnosis went to the storage that had failed
 	// downstream of it, and the console said the cluster was fine throughout.
-	if c := coreGroupProblem(state.Groups, state.CoreResources); c != nil {
+	if c := coreGroupProblem(state.Groups, state.CoreResources, len(state.Nodes)); c != nil {
 		conds = append(conds, *c)
 		phase, honoured = types.PhaseDegraded, false
 	}
@@ -588,7 +618,7 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, a ClusterAssignment, 
 // PartialOnline is included deliberately. It means some resources in the group
 // are online and some are not, which reads like a half-success and is not one:
 // the cluster name being offline is total, whatever else in the group is up.
-func coreGroupProblem(groups []hyperv.ClusterGroup, coreRes []hyperv.ClusterCoreResource) *types.Condition {
+func coreGroupProblem(groups []hyperv.ClusterGroup, coreRes []hyperv.ClusterCoreResource, nodes int) *types.Condition {
 	for _, g := range groups {
 		if !strings.EqualFold(g.Name, "Cluster Group") {
 			continue
@@ -596,14 +626,22 @@ func coreGroupProblem(groups []hyperv.ClusterGroup, coreRes []hyperv.ClusterCore
 		if strings.EqualFold(g.State, "Online") {
 			return nil
 		}
-		msg := "the cluster's core group is " + g.State +
-			", so the cluster name and its IP addresses are not fully online. " +
-			"While that is the case the cluster has no identity on the network: " +
-			"shared volumes will not come online and roles will fail, each reporting its own separate problem. " +
-			"Fix this first — the rest is downstream of it."
-		if g.State == "" {
-			msg = "the cluster's core group did not report a state, so whether the cluster name and its IP addresses are online is unknown."
-		}
+		/* WHICH RESOURCE, before deciding what the failure means.
+
+		   This said "the cluster name and its IP addresses are not fully online"
+		   for ANY non-online core group, and then appended the resource that was
+		   actually down — so on Secondary it asserted the name and IPs were down
+		   and named the File Share Witness in the same breath. Both halves in one
+		   message, contradicting each other.
+
+		   It matters beyond tidiness. A failed WITNESS costs a quorum vote and
+		   nothing else: the cluster keeps its identity, CSVs stay online and
+		   roles keep running. Telling an operator their shared volumes will not
+		   come online is crying wolf, and the operator said so — "it's only the
+		   share that is failed, problem looks bigger than it is". An alarm that
+		   overstates is one people learn to discount, which costs the alarm that
+		   is real. */
+		msg := coreGroupMessage(g.State, coreRes, nodes)
 		if d := coreResourceDetail(coreRes); d != "" {
 			msg += " " + d
 		}
@@ -619,6 +657,105 @@ func coreGroupProblem(groups []hyperv.ClusterGroup, coreRes []hyperv.ClusterCore
 		Message:            "this cluster reported no core group, so whether its name and IP addresses are online could not be established.",
 		LastTransitionTime: time.Now().UTC(),
 	}
+}
+
+// coreResourceKind classifies a core resource by what its failure costs.
+//
+// Windows' own type names, which are stable and are what Failover Cluster
+// Manager shows: "Network Name" is the cluster name, "IP Address" is one per
+// subnet, "File Share Witness" and "Physical Disk" are quorum votes.
+func coreResourceKind(r hyperv.ClusterCoreResource) string {
+	t := strings.ToLower(r.Type)
+	n := strings.ToLower(r.Name)
+	switch {
+	case strings.Contains(t, "witness") || strings.Contains(n, "witness"):
+		return "witness"
+	case strings.Contains(t, "network name") || strings.Contains(t, "ip address"):
+		return "identity"
+	}
+	return "other"
+}
+
+/*
+coreGroupMessage says what a core group being down actually MEANS, which
+
+	depends entirely on which resource is down.
+
+	Three answers, because they call for three different responses:
+
+	  - only the witness: a lost quorum VOTE. The cluster keeps its identity and
+	    everything on it keeps running. Worth fixing, not worth alarming about.
+	  - the cluster name or an IP: the cluster has no identity on the network,
+	    and everything downstream fails on its own terms. This is the one that
+	    earns "fix this first".
+	  - anything else, or nothing reported: say the group is down and let the
+	    resource list speak, rather than asserting a consequence not established.
+*/
+// itoa keeps the sentences above readable without threading strconv through
+// every message helper in this file.
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func coreGroupMessage(state string, coreRes []hyperv.ClusterCoreResource, nodes int) string {
+	if state == "" {
+		return "the cluster's core group did not report a state, so whether the cluster name and its IP addresses are online is unknown."
+	}
+
+	identity, witness, other := false, false, false
+	for _, r := range coreRes {
+		if strings.EqualFold(r.State, "Online") {
+			continue
+		}
+		switch coreResourceKind(r) {
+		case "identity":
+			identity = true
+		case "witness":
+			witness = true
+		default:
+			other = true
+		}
+	}
+
+	if witness && !identity && !other {
+		/* WHAT THE LOST VOTE COSTS depends on the node count, and saying it does
+		   not is how this understated a real risk.
+
+		   "Worth fixing and is not an outage" is true of an odd-node cluster: three
+		   nodes hold a majority between themselves and the witness is a margin. On
+		   an EVEN count the witness is what makes a majority possible at all, so
+		   without it losing EITHER node ends the cluster. Secondary on the rig is
+		   two nodes and read the odd-node sentence, which invites an operator to
+		   leave it. */
+		msg := "the cluster's core group is " + state + " because its witness is down. The cluster name and its IP " +
+			"addresses are online, so the cluster still has its identity: shared volumes stay online and roles keep " +
+			"running."
+		switch {
+		case nodes > 0 && nodes%2 == 0:
+			return msg + " What is lost is the witness's quorum VOTE, and on " + itoa(nodes) + " nodes that vote is what makes " +
+				"a majority possible at all: with it down, losing either node ends the cluster. Nothing is broken now and " +
+				"there is no margin left, so fix this before taking a node out for anything."
+		case nodes > 0:
+			return msg + " What is lost is the witness's quorum VOTE. On " + itoa(nodes) + " nodes a majority still holds " +
+				"without it, so this is worth fixing and is not an outage — but losing a node would then leave quorum on a single vote."
+		default:
+			return msg + " What is lost is the witness's quorum VOTE, which is what lets a cluster survive losing a node — " +
+				"so this is worth fixing and is not an outage."
+		}
+	}
+	/* Everything else keeps the wording it had, deliberately.
+
+	   That includes the case where no resources were read at all. It is tempting
+	   to hedge there — the group might be down for a witness, and this then
+	   overstates — but the earlier decision behind TestNoCoreResourcesLeavesThe
+	   MessageUnchanged holds: with nothing known, the ordering advice is the
+	   most useful thing that can be said, and a message that lists both
+	   possibilities helps nobody decide what to do next. The resource list is
+	   normally there, which is what makes the case above worth splitting out and
+	   this one worth leaving alone. */
+	return "the cluster's core group is " + state +
+		", so the cluster name and its IP addresses are not fully online. " +
+		"While that is the case the cluster has no identity on the network: " +
+		"shared volumes will not come online and roles will fail, each reporting its own separate problem. " +
+		"Fix this first — the rest is downstream of it."
 }
 
 // coreResourceDetail names the resources actually holding the core group down,

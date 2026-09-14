@@ -148,10 +148,19 @@ type Stub struct {
 	FormCalled          bool
 
 	// Witness models the cluster's observed quorum configuration; WitnessCalls
-	// and WitnessErr drive and record EnsureClusterWitness.
-	Witness      *ClusterWitness
-	WitnessCalls []types.WitnessSpec
-	WitnessErr   error
+	// and WitnessErr drive and record EnsureClusterWitness. WitnessRecovered
+	// models a stuck witness resource the apply had to clear on the way.
+	Witness          *ClusterWitness
+	WitnessCalls     []types.WitnessSpec
+	WitnessErr       error
+	WitnessRecovered string
+
+	// ClusterCoreResources models the core group's resources. Applying a witness
+	// REPLACES the File Share Witness among them and brings the group online,
+	// because that is what the real cmdlet does — without modelling that, a test
+	// cannot tell a reconciler that re-reads the core group from one that reports
+	// the reading it took before the change.
+	ClusterCoreResources []ClusterCoreResource
 
 	// Storage: S2DEnabled seeds the S2D state; CSVs models existing volumes.
 	// EnableS2DCalled records that the reconciler enabled it.
@@ -479,7 +488,8 @@ func (s *Stub) GetClusterState(_ context.Context) (ClusterState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := ClusterState{Exists: s.ClusterExists, Known: true, Name: s.ClusterName,
-		Members: s.ClusterMembers, Witness: s.Witness, Groups: s.ClusterGroups}
+		Members: s.ClusterMembers, Witness: s.Witness, Groups: s.ClusterGroups,
+		CoreResources: s.ClusterCoreResources}
 	// A formed cluster always HAS a core group — it is what holds the cluster name
 	// and its IP addresses — so a stub that reported none was modelling a state
 	// that cannot occur, and would have made "no core group" look survivable.
@@ -987,18 +997,38 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 // only what was asked for but that a non-former asked for nothing at all.
 // WitnessErr, when set, models a witness that cannot be applied (an unreachable
 // share, or permissions missing on the cluster computer object).
-func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind) (Outcome, error) {
+func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind) (Outcome, string, error) {
 	s.WitnessCalls = append(s.WitnessCalls, w)
 	if s.WitnessErr != nil {
-		return OutcomeUnchanged, s.WitnessErr
+		return OutcomeUnchanged, "", s.WitnessErr
 	}
 	// Model the real thing: applying a witness that already matches is a no-op.
 	if s.Witness != nil && s.Witness.Type == string(w.Type) && s.Witness.Path == w.FileSharePath {
-		return OutcomeUnchanged, nil
+		return OutcomeUnchanged, "", nil
 	}
 	s.Witness = &ClusterWitness{Type: string(w.Type), Path: w.FileSharePath,
 		State: "Online", QuorumType: "NodeAndFileShareMajority"}
-	return OutcomeUpdated, nil
+	// The resource is replaced and comes online, and the core group with it. The
+	// real Set-ClusterQuorum does exactly this, and a stub that left the old
+	// failed resource in place would make a stale read indistinguishable from a
+	// fresh one.
+	kept := s.ClusterCoreResources[:0]
+	for _, r := range s.ClusterCoreResources {
+		if r.Type != "File Share Witness" {
+			kept = append(kept, r)
+		}
+	}
+	s.ClusterCoreResources = kept
+	if w.Type == types.WitnessFileShare {
+		s.ClusterCoreResources = append(s.ClusterCoreResources,
+			ClusterCoreResource{Name: "File Share Witness", Type: "File Share Witness", State: "Online"})
+	}
+	for i := range s.ClusterGroups {
+		if s.ClusterGroups[i].Name == "Cluster Group" {
+			s.ClusterGroups[i].State = "Online"
+		}
+	}
+	return OutcomeUpdated, s.WitnessRecovered, nil
 }
 
 func (s *Stub) RemoveReplicaBroker(_ context.Context, _ string) (string, error) {

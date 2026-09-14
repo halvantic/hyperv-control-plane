@@ -714,7 +714,10 @@ type Interface interface {
 	// the witness resource even when re-applying the same value, which drops a
 	// vote for a moment, so re-applying every pass would be a recurring wobble
 	// rather than a no-op.
-	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, error)
+	// The string is what a stuck witness resource had to have done to it before
+	// the change could apply — empty when nothing did. Removing a cluster
+	// resource must never be something that happened without being reported.
+	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, string, error)
 
 	// RemoveReplicaBroker deletes the Hyper-V Replica Broker cluster role and the
 	// client access point it lives in. Run on the former. Idempotent: a cluster

@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -570,6 +571,16 @@ const witnessScript = `
 $ErrorActionPreference = 'Stop'
 $desired = %s
 $changed = $false
+
+# Declared up front, because the duplicate cleanup below runs EARLY and writes
+# $recovered. These sat after it and reset it to empty, so a cleanup that had
+# already happened reported nothing.
+$problem = $null
+$recovered = ''
+$dupes = 0
+$afterClear = $false
+$wrState = ''
+$node = [string]$env:COMPUTERNAME
 $q = Get-ClusterQuorum -ErrorAction Stop
 $curPath = ''
 $curType = 'None'
@@ -582,7 +593,107 @@ if ($q.QuorumResource) {
   $v = ($q.QuorumResource | Get-ClusterParameter -Name SharePath -ErrorAction SilentlyContinue).Value
   if ($v) { $curPath = [string]$v }
 }
+# A witness resource that is FAILED still reports the path it was configured
+# with, but Get-ClusterQuorum did not always give it up — $curPath came back
+# empty, the comparison below decided the declared witness was not configured,
+# and every pass applied it again. Each apply left another File Share Witness
+# resource behind: five of them on Secondary, 2026-09-14, from one declaration.
+#
+# So ask the RESOURCES as well. Whether a configured witness is healthy is a
+# different question from whether it is configured, and only the second one
+# belongs in this comparison — the first is what the core-group condition
+# reports. Re-creating a witness because it is unhealthy is not reconciliation,
+# it is a loop.
+$fsw = @()
+try { $fsw = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'File Share Witness' }) } catch {}
+if (-not $curPath -and $fsw.Count -gt 0) {
+  foreach ($r in $fsw) {
+    $rv = ''
+    try { $rv = [string]($r | Get-ClusterParameter -Name SharePath -ErrorAction SilentlyContinue).Value } catch {}
+    if ($rv) { $curPath = $rv; $curType = 'FileShare'; break }
+  }
+}
+
+# DUPLICATES BALLAST MADE, cleaned up before anything else is decided.
+#
+# The create loop above left nine File Share Witness resources on Primary1 and
+# five on Secondary from a single declaration. A cluster has exactly one witness;
+# more than one is a fault, and it is one this agent caused, so removing the
+# extras is its job rather than an operator's — CLAUDE.md is explicit that a
+# recovery needing a PowerShell session on a host is a defect.
+#
+# The one the cluster is ACTUALLY using is kept, identified by the quorum
+# object's own resource name. Anything else carrying the same type is spare. If
+# the quorum names none of them, the first is kept and the rest go: which single
+# one survives does not matter when they are all identical copies, and leaving
+# them all is strictly worse.
+# BY IDENTITY, NOT BY NAME. Simulated against the rig's nine, all of which carry
+# the same resource name: matching the keeper on its NAME matched every one of
+# them, so the loop skipped all nine and removed nothing. Id is what actually
+# distinguishes two resources; the name is a label they can share.
+$keepId = ''
+$keepName = ''
+try {
+  if ($q.QuorumResource) {
+    $keepName = [string]$q.QuorumResource.Name
+    try { $keepId = [string]$q.QuorumResource.Id } catch {}
+  }
+} catch {}
+if ($fsw.Count -gt 1) {
+  $kept = $false
+  foreach ($r in $fsw) {
+    $rid = ''
+    try { $rid = [string]$r.Id } catch {}
+    # The one the cluster is using, identified by Id where there is one. With no
+    # Id and no quorum resource to match, the FIRST is kept and the rest go —
+    # they are identical copies, so which one survives does not matter, and
+    # keeping them all is the state being repaired.
+    $isKeeper = $false
+    if ($keepId -ne '' -and $rid -ne '') { $isKeeper = ($rid -eq $keepId) }
+    elseif (-not $kept) { $isKeeper = $true }
+    if ($isKeeper) { $kept = $true; continue }
+    try {
+      Stop-ClusterResource -InputObject $r -ErrorAction SilentlyContinue | Out-Null
+      Remove-ClusterResource -InputObject $r -Force -ErrorAction Stop | Out-Null
+      $dupes += 1
+    } catch {}
+  }
+  # Nothing was identified as the keeper (no Id anywhere and the collection was
+  # somehow empty of a first) — leave the set alone rather than empty it.
+  if (-not $kept) { $dupes = 0 }
+  if ($dupes -gt 0) {
+    $recovered = [string]$dupes + ' duplicate File Share Witness resource(s) were removed; a cluster has one witness and these were left behind by repeated applies'
+    try { $fsw = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'File Share Witness' }) } catch {}
+  }
+}
+
 function Norm([string]$p) { return ($p.TrimEnd('\','/')).ToLowerInvariant() }
+
+
+# ProbeShare says WHY a share cannot be read, as the Win32 code behind the
+# failure. Test-Path was what stood here, and it answers $false identically for
+# a share that does not exist and a share this node may not read — so the one
+# remedy it could offer (grant the cluster account access) was named for both,
+# and sent an operator to change permissions on a share that was not there.
+#
+# 0 means it read. -1 means the failure carried no Win32 code worth classifying,
+# which is reported as unknown rather than guessed at. The enumeration is lazy
+# and stops at the first entry: this is a reachability question, not a listing.
+function ProbeShare([string]$p) {
+  try {
+    $it = [System.IO.Directory]::EnumerateFileSystemEntries($p).GetEnumerator()
+    try { $null = $it.MoveNext() } finally { $it.Dispose() }
+    return 0
+  } catch {
+    $e = $_.Exception
+    while ($e.InnerException) { $e = $e.InnerException }
+    $h = 0
+    try { $h = [int]$e.HResult } catch {}
+    if (($h -band 0xFFFF0000) -eq 0x80070000) { return ($h -band 0xFFFF) }
+    if ($e -is [System.UnauthorizedAccessException]) { return 5 }
+    return -1
+  }
+}
 
 if ($desired -eq '') {
   # Declared None: fall back to node majority, but only if a witness is set.
@@ -601,40 +712,116 @@ if ($desired -eq '') {
     Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
   } catch {
     # Set-ClusterQuorum reports the same code for a server that is not there, a
-    # share this node cannot read, and a server that will not accept the
-    # cluster's permission grant. Those have three different remedies, so
-    # establish which one it is instead of passing the code on.
+    # share that is not there, a share this node may not read, and a server that
+    # will not accept the cluster's permission grant. Those are four different
+    # remedies, so establish which one it is instead of passing the code on.
+    #
+    # The classification is REPORTED, not thrown. A thrown string reaches the
+    # operator wrapped in "ensure cluster witness: powershell: exit status 1:",
+    # and the sentence it carries is worth building in Go, where it can be
+    # tested — see witnessProblemMessage.
     $raw = [string]$_.Exception.Message
+
+    # THE OLD WITNESS WOULD NOT DELETE, so the new one can never be applied.
+    #
+    # Set-ClusterQuorum replaces the witness by tearing the old resource down
+    # and creating the new one, and a File Share Witness left in Failed does not
+    # always come out. The cluster then refuses every future witness change with
+    # "An error occurred while attempting to delete the resource 'File Share
+    # Witness'" -- so the declaration is stuck permanently, and clearing it by
+    # hand means a PowerShell session on a node, which CLAUDE.md counts as a
+    # defect rather than a runbook step. Measured on Secondary, 2026-09-14.
+    #
+    # ONLY WHEN THE EXISTING WITNESS IS NOT ONLINE. A witness that is online is
+    # casting a vote, and tearing it down to apply a new one would remove a
+    # working vote on the strength of a guess. One that is Failed is casting
+    # none already -- dropping it changes nothing about the quorum the cluster
+    # has right now, which is what makes this safe to do unasked.
+    #
+    # NodeMajority first, because that is how Failover Clustering is asked to
+    # let go of a witness; the cluster still owns the decision. Then the leftover
+    # resource, if the drop did not take it. Then the change that was wanted.
+    if ($raw -match 'delete the resource') {
+      # EVERY one of them. Taking [0] removed one resource per pass while the
+      # apply added one, so a set of duplicates could never shrink.
+      $wrAll = @()
+      try { $wrAll = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'File Share Witness' }) } catch {}
+      $wr = $null
+      if ($wrAll.Count -gt 0) { $wr = $wrAll[0] }
+      $wrState = ''
+      if ($wr) { $wrState = [string]$wr.State }
+      # None of them online: one that IS online is casting a vote and is not ours
+      # to tear down on a guess.
+      $anyOnline = $false
+      foreach ($r in $wrAll) { if ([string]$r.State -eq 'Online') { $anyOnline = $true } }
+      if ($wr -and -not $anyOnline) {
+        $cleared = $false
+        try {
+          Set-ClusterQuorum -NodeMajority -ErrorAction Stop | Out-Null
+          $cleared = $true
+        } catch {}
+        # The drop usually takes the resource with it. When it does not, the
+        # resource itself is what is stuck and has to go directly.
+        try {
+          $still = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'File Share Witness' })
+          foreach ($r in $still) {
+            try { Stop-ClusterResource -InputObject $r -ErrorAction SilentlyContinue | Out-Null } catch {}
+            Remove-ClusterResource -InputObject $r -Force -ErrorAction Stop | Out-Null
+            $cleared = $true
+          }
+        } catch {}
+        if ($cleared) {
+          try {
+            Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+            $recovered = 'the previous witness resource was ' + $wrState + ' and would not delete, which was blocking every witness change; it was cleared and ' + $desired + ' applied'
+            $problem = $null
+          } catch {
+            $raw = [string]$_.Exception.Message
+            $afterClear = $true
+          }
+        }
+      }
+    }
+
+    if (-not $recovered) {
     $up = $false
     try { $up = Test-NetConnection -ComputerName $server -Port 445 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
-    if (-not $up) { throw ('the file server ' + $server + ' is not reachable on SMB (tcp/445) from this node, so the witness cannot be configured. ' + $raw) }
-    $readable = $false
-    try { $readable = [bool](Test-Path -LiteralPath $desired -ErrorAction SilentlyContinue) } catch {}
-    # The file server is somebody else's to administer — Ballast has no agent on
-    # it — so name the one step rather than failing obscurely. A NAS appliance is
-    # the usual case: it serves SMB but does not accept remote share-permission
-    # changes, so the cluster's own grant cannot succeed and the access has to be
-    # given on the appliance.
-    if (-not $readable) {
-      throw ('the share ' + $desired + ' answers on SMB but this node cannot read it. Grant the cluster computer account ' + $cno + '$ read/write access to the share on the file server itself, then retry. ' + $raw)
+    $code = -1
+    if ($up) { $code = ProbeShare $desired }
+    $kind = 'unknown'
+    if (-not $up) {
+      $kind = 'unreachable'
+    } elseif ($raw -match 'denied to share path') {
+      # The cluster's OWN verdict about its OWN identity, and it outranks the
+      # probe. The probe asks as this node's computer account; the witness is
+      # reached as the cluster's. Seen on the rig against a Samba share where
+      # the node could not authenticate at all (1326) while the cluster could,
+      # and was then refused on the share — classifying that from the probe
+      # would have blamed the node for something the cluster had already
+      # answered.
+      $kind = 'clusterdenied'
+    } elseif ($code -eq 0) {
+      # Readable from here, so the path is right and the share is there. What
+      # failed is the cluster's own attempt to add its computer account to the
+      # share's permissions, which Windows reports as "unexpected error code 67"
+      # — wording that reads like the share is missing when it is sitting right
+      # there, and the share being readable is what proves it is not.
+      if ($raw -match '\b67\b') { $kind = 'grant' }
+      elseif ($raw -match 'ccess (is |was )?denied') { $kind = 'clusterdenied' }
+    } elseif ($code -eq 5) {
+      $kind = 'denied'
+    } elseif (@(2,3,53,67,1231,1232) -contains $code) {
+      $kind = 'noshare'
+    } elseif (@(1326,1327,1331,1385) -contains $code) {
+      $kind = 'credentials'
     }
-    if ($raw -match '\b67\b') {
-      # Configuring a witness makes the cluster add its own computer account to
-      # the share's permissions. A non-Windows file server (a NAS appliance) does
-      # not accept remote share-permission changes, so that grant cannot succeed
-      # and the share has to be permissioned on the appliance instead. The code
-      # is reported as "unexpected error code 67", which reads like the share is
-      # missing when it is sitting right there — and the share being readable is
-      # exactly what proves it is not missing.
-      $hint = ''
-      if ($server -as [ipaddress]) { $hint = ' Addressing the file server by name rather than by IP also matters, because the grant authenticates with Kerberos.' }
-      throw ('the share ' + $desired + ' exists and is readable from this node, so the path is right — but ' + $server + ' refused the cluster''s attempt to grant itself access to it. Grant the cluster computer account ' + $cno + '$ read/write permission on that share on ' + $server + ' itself (Ballast has no agent there and cannot do it), then retry. If another cluster already has a working witness on this server, copy that share''s permissions.' + $hint + ' ' + $raw)
+    if ($raw -match 'delete the resource') { $kind = 'deleteblocked' }
+    $problem = [pscustomobject]@{ kind = $kind; code = $code; server = $server; share = $share; path = $desired; cno = $cno; node = $node; raw = $raw; witnessState = $wrState; afterClear = [bool]$afterClear }
     }
-    throw $raw
   }
-  $changed = $true
+  if (-not $problem) { $changed = $true }
 }
-[pscustomobject]@{ changed = $changed } | ConvertTo-Json -Compress
+[pscustomobject]@{ changed = $changed; problem = $problem; recovered = $recovered } | ConvertTo-Json -Compress -Depth 4
 `
 
 // EnsureClusterWitness makes the cluster's quorum witness match w. FileShare and
@@ -650,12 +837,12 @@ if ($desired -eq '') {
 // Run by the former only. Every member can see the cluster, so without that
 // gate all of them would race to set the same witness and each would see the
 // others' write as drift.
-func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, error) {
+func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, string, error) {
 	var path string
 	switch w.Type {
 	case types.WitnessFileShare:
 		if strings.TrimSpace(w.FileSharePath) == "" {
-			return OutcomeUnchanged, fmt.Errorf("file share witness needs a share path")
+			return OutcomeUnchanged, "", fmt.Errorf("file share witness needs a share path")
 		}
 		path = strings.TrimSpace(w.FileSharePath)
 	case types.WitnessNone:
@@ -665,35 +852,54 @@ func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSp
 		// none — the refusal is not a limitation of Ballast's, and attempting it
 		// fails obscurely inside Set-ClusterQuorum, so say why here instead.
 		if kind == types.StorageKindS2D {
-			return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage and cannot be used with Storage Spaces Direct; use a file share or cloud witness")
+			return OutcomeUnchanged, "", fmt.Errorf("a disk witness needs shared block storage and cannot be used with Storage Spaces Direct; use a file share or cloud witness")
 		}
 		if kind != types.StorageKindISCSI {
-			return OutcomeUnchanged, fmt.Errorf("a disk witness needs shared block storage, and this cluster does not declare any; set the cluster's storage kind first, or use a file share witness")
+			return OutcomeUnchanged, "", fmt.Errorf("a disk witness needs shared block storage, and this cluster does not declare any; set the cluster's storage kind first, or use a file share witness")
 		}
 		if w.Disk == nil || (strings.TrimSpace(w.Disk.SerialNumber) == "" && strings.TrimSpace(w.Disk.TargetIQN) == "") {
-			return OutcomeUnchanged, fmt.Errorf("a disk witness needs the witness LUN identified: give the disk's serial number (or the target it is presented on) on the witness")
+			return OutcomeUnchanged, "", fmt.Errorf("a disk witness needs the witness LUN identified: give the disk's serial number (or the target it is presented on) on the witness")
 		}
-		return p.ensureDiskWitness(ctx, *w.Disk)
+		o, err := p.ensureDiskWitness(ctx, *w.Disk)
+		return o, "", err
 	case types.WitnessCloud:
-		return OutcomeUnchanged, fmt.Errorf("cloud witness is observed but not yet applied by Ballast; set it with Set-ClusterQuorum -CloudWitness")
+		return OutcomeUnchanged, "", fmt.Errorf("cloud witness is observed but not yet applied by Ballast; set it with Set-ClusterQuorum -CloudWitness")
 	default:
-		return OutcomeUnchanged, fmt.Errorf("unknown witness type %q", w.Type)
+		return OutcomeUnchanged, "", fmt.Errorf("unknown witness type %q", w.Type)
 	}
 
 	out, err := p.run(ctx, fmt.Sprintf(witnessScript, psQuote(path)))
 	if err != nil {
-		return OutcomeUnchanged, fmt.Errorf("ensure cluster witness: %w", err)
+		return OutcomeUnchanged, "", fmt.Errorf("ensure cluster witness: %w", err)
 	}
 	var res struct {
-		Changed bool `json:"changed"`
+		Changed bool            `json:"changed"`
+		Problem *witnessProblem `json:"problem"`
+		// Recovered describes a stuck witness resource this pass had to clear
+		// before the change could apply. Removing a cluster resource is not
+		// something that should happen without the operator ever being told.
+		Recovered string `json:"recovered"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
-		return OutcomeUnchanged, fmt.Errorf("ensure cluster witness: %w", err)
+		return OutcomeUnchanged, "", fmt.Errorf("ensure cluster witness: %w", err)
+	}
+	// A classified failure returns the operator's sentence and nothing else. The
+	// "ensure cluster witness: powershell: exit status 1:" that a thrown string
+	// arrives wrapped in names the plumbing, and the condition is already called
+	// ClusterWitness where this is read.
+	if res.Problem != nil {
+		return OutcomeUnchanged, "", errors.New(witnessProblemMessage(*res.Problem))
 	}
 	if res.Changed {
-		return OutcomeUpdated, nil
+		return OutcomeUpdated, strings.TrimSpace(res.Recovered), nil
 	}
-	return OutcomeUnchanged, nil
+	// Removing duplicates is a change to the cluster even when the witness
+	// declaration itself needed nothing, so it is reported rather than swallowed
+	// by an "unchanged" that would be true only of the declaration.
+	if r := strings.TrimSpace(res.Recovered); r != "" {
+		return OutcomeUpdated, r, nil
+	}
+	return OutcomeUnchanged, "", nil
 }
 
 func (p *PowerShell) GetClusterState(ctx context.Context) (ClusterState, error) {
