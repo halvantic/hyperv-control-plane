@@ -116,6 +116,11 @@ type Stub struct {
 	// returns an error), matching a host whose OU has genuinely not been read.
 	ComputerOU string
 
+	// PrivilegeCheckResult seeds CheckPrivileges. Nil means "everything fine"
+	// (IsLocalAdmin true, nothing else applicable) -- the healthy default
+	// most tests want; set it explicitly to model a shortfall.
+	PrivilegeCheckResult *PrivilegeCheck
+
 	vmHostVMPath  string
 	vmHostVHDPath string
 	liveMigration string
@@ -378,6 +383,15 @@ func (s *Stub) GetComputerOU(_ context.Context) (string, error) {
 		return "", fmt.Errorf("stub: ComputerOU not set")
 	}
 	return s.ComputerOU, nil
+}
+
+func (s *Stub) CheckPrivileges(_ context.Context, _ string) (PrivilegeCheck, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PrivilegeCheckResult != nil {
+		return *s.PrivilegeCheckResult, nil
+	}
+	return PrivilegeCheck{IsLocalAdmin: true}, nil
 }
 
 func (s *Stub) RenameComputer(_ context.Context, newName string) error {

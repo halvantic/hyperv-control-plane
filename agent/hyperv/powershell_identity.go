@@ -116,9 +116,25 @@ func (p *PowerShell) RenameComputer(ctx context.Context, newName string) error {
 }
 
 // JoinDomain joins the host to domain using the given account, without
-// rebooting. The credentials are passed through environment variables to the
-// child powershell.exe (never interpolated into the script or the command
-// line) so they do not appear in process listings or logs.
+// rebooting.
+//
+// The credential travels over the child powershell.exe's STDIN, one line
+// each for username then password -- never interpolated into the script
+// text, never a command-line argument, and deliberately not an environment
+// variable either. An environment variable set on a child process is
+// readable by any local administrator inspecting that process (its
+// environment block is not privileged the way a memory-protected secret
+// would be) and is captured whole in a crash dump of either process; stdin
+// is consumed once by the reader on the other end and is never something
+// the OS keeps around for a third party to inspect afterwards.
+//
+// The byte slice actually written to the pipe is zeroed once the process
+// exits, best-effort: this reduces how long the plaintext sits in Ballast's
+// own memory after use, but cannot reach (and does not attempt to reach)
+// the original username/password strings this function was called with --
+// Go strings are immutable, so the caller's copies are cleared only by the
+// garbage collector's own schedule, same as any other Go string. This is a
+// real limitation, not a gap in this function specifically.
 func (p *PowerShell) JoinDomain(ctx context.Context, domain, ouPath, username, password string) error {
 	ou := ""
 	if ouPath != "" {
@@ -126,13 +142,22 @@ func (p *PowerShell) JoinDomain(ctx context.Context, domain, ouPath, username, p
 	}
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
-$sec = ConvertTo-SecureString $env:BALLAST_JOIN_PW -AsPlainText -Force
-$cred = New-Object System.Management.Automation.PSCredential($env:BALLAST_JOIN_USER, $sec)
+$joinUser = [Console]::In.ReadLine()
+$joinPass = [Console]::In.ReadLine()
+$sec = ConvertTo-SecureString $joinPass -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential($joinUser, $sec)
 Add-Computer -DomainName %s -Credential $cred%s -Force | Out-Null
 `, psQuote(domain), ou)
 
-	env := []string{"BALLAST_JOIN_USER=" + username, "BALLAST_JOIN_PW=" + password}
-	if err := p.runWithEnv(ctx, script, env); err != nil {
+	stdin := []byte(username + "\n" + password + "\n")
+	err := p.runWithStdin(ctx, script, stdin)
+	for i := range stdin {
+		stdin[i] = 0
+	}
+	if err != nil {
+		// err can only carry the child's stdout/stderr (see psFailureDetail) --
+		// neither ever contains what was written to stdin, so this cannot leak
+		// the credential into a log line or an error message the operator sees.
 		return fmt.Errorf("join domain %q: %w", domain, err)
 	}
 	return nil
@@ -270,4 +295,113 @@ func splitCIDR(cidr string) (string, int, error) {
 		return "", 0, fmt.Errorf("invalid prefix in %q: %w", cidr, err)
 	}
 	return parts[0], prefix, nil
+}
+
+type privilegeCheckObservation struct {
+	IsLocalAdmin           bool   `json:"isLocalAdmin"`
+	ClusterApplicable      bool   `json:"clusterApplicable"`
+	ClusterAccessOK        bool   `json:"clusterAccessOK"`
+	ADDelegationApplicable bool   `json:"adDelegationApplicable"`
+	ADDelegationOK         bool   `json:"adDelegationOK"`
+	ADDelegationErr        string `json:"adDelegationErr"`
+}
+
+// checkPrivilegesScript is one PowerShell call answering all three questions
+// CheckPrivileges asks, so a registration-time check costs one process spawn
+// rather than three.
+//
+// Local admin: WindowsPrincipal.IsInRole, unambiguous.
+//
+// Cluster access: only asked when the ClusSvc service is actually running
+// (this host is a member) — Get-Cluster either succeeds or throws, no
+// heuristic involved.
+//
+// AD delegation: the one genuinely approximate check here, and worth being
+// honest about. It reads the OU's own ACL (DirectoryEntry.ObjectSecurity, the
+// same System.DirectoryServices path GetComputerOU and
+// EnsureMigrationDelegation already use, so no new dependency) and looks for
+// an ALLOW rule naming the running identity or one of its groups that grants
+// WriteProperty, CreateChild AND DeleteChild. It does NOT verify those rights
+// are scoped to the specific msDS-AllowedToDelegateTo property or the
+// "computer" object class the way provision-ballast-agent-account.ps1's
+// dsacls calls actually scope them — doing that precisely means matching
+// ActiveDirectoryAccessRule.ObjectType against the exact schema GUIDs, which
+// needs a schema lookup this check does not perform. A broader ALLOW rule
+// covering the same identity would read as sufficient here even if the real
+// grant is narrower or broader than what provisioning actually set up. That
+// makes this check meaningfully better than nothing (it will catch "no
+// delegation at all", the common case) without being a substitute for
+// actually trying the operation — which is exactly why a shortfall here is
+// reported, never acted on.
+const checkPrivilegesScript = `
+$ErrorActionPreference = 'Stop'
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+
+$clusterApplicable = $false
+$clusterOK = $false
+try {
+  $svc = Get-Service -Name ClusSvc -ErrorAction SilentlyContinue
+  if ($svc -and $svc.Status -eq 'Running') {
+    $clusterApplicable = $true
+    try { Get-Cluster -ErrorAction Stop | Out-Null; $clusterOK = $true } catch { $clusterOK = $false }
+  }
+} catch {}
+
+$adApplicable = $false
+$adOK = $false
+$adErr = ''
+$ouDn = %s
+if ($ouDn) {
+  $adApplicable = $true
+  try {
+    $de = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$ouDn")
+    $sd = $de.ObjectSecurity
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $sids = @($id.User.Value) + @($id.Groups | ForEach-Object { $_.Value })
+    $rules = $sd.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+    $hasWrite = $false
+    $hasCreate = $false
+    $hasDelete = $false
+    foreach ($r in $rules) {
+      if ($r.AccessControlType -ne 'Allow') { continue }
+      if ($sids -notcontains $r.IdentityReference.Value) { continue }
+      $rights = $r.ActiveDirectoryRights
+      if ($rights -band [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty) { $hasWrite = $true }
+      if ($rights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild) { $hasCreate = $true }
+      if ($rights -band [System.DirectoryServices.ActiveDirectoryRights]::DeleteChild) { $hasDelete = $true }
+    }
+    $adOK = $hasWrite -and $hasCreate -and $hasDelete
+  } catch {
+    $adErr = $_.Exception.Message
+  }
+}
+
+[pscustomobject]@{
+  isLocalAdmin            = [bool]$isAdmin
+  clusterApplicable       = [bool]$clusterApplicable
+  clusterAccessOK         = [bool]$clusterOK
+  adDelegationApplicable  = [bool]$adApplicable
+  adDelegationOK          = [bool]$adOK
+  adDelegationErr         = [string]$adErr
+} | ConvertTo-Json -Compress
+`
+
+func (p *PowerShell) CheckPrivileges(ctx context.Context, ouDN string) (PrivilegeCheck, error) {
+	script := fmt.Sprintf(checkPrivilegesScript, psQuote(ouDN))
+	out, err := p.run(ctx, script)
+	if err != nil {
+		return PrivilegeCheck{}, fmt.Errorf("check privileges: %w", err)
+	}
+	var o privilegeCheckObservation
+	if err := decodeJSON(out, &o); err != nil {
+		return PrivilegeCheck{}, fmt.Errorf("check privileges: %w", err)
+	}
+	return PrivilegeCheck{
+		IsLocalAdmin:           o.IsLocalAdmin,
+		ClusterApplicable:      o.ClusterApplicable,
+		ClusterAccessOK:        o.ClusterAccessOK,
+		ADDelegationApplicable: o.ADDelegationApplicable,
+		ADDelegationOK:         o.ADDelegationOK,
+		ADDelegationErr:        o.ADDelegationErr,
+	}, nil
 }

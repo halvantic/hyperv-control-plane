@@ -574,12 +574,20 @@ func (r *runner) run(ctx context.Context) error {
 	// intent it was last given.
 	r.adoptCachedState()
 
+	// Fail closed, not just logged: see the doc comment on transportCreds. A
+	// broken -tls-dir must stop the agent from starting, not quietly drop to
+	// an insecure channel carrying desired state and secrets.
+	creds, err := transportCreds(r.cfg.tlsDir, r.log)
+	if err != nil {
+		return err
+	}
+
 	// Cap the reconnect backoff well under the centre's 90s staleness window: the
 	// gRPC default maxes at ~120s, so after the centre restarts (or any blip) the
 	// agent could take up to two minutes to re-report, making a healthy host — and
 	// its cluster — flap to "offline". A 20s cap keeps LastContact fresh.
 	conn, err := grpc.NewClient(r.cfg.centreAddr,
-		transportCreds(r.cfg.tlsDir, r.log),
+		creds,
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.Config{BaseDelay: time.Second, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 20 * time.Second},
 			MinConnectTimeout: 10 * time.Second,

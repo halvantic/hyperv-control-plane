@@ -325,6 +325,36 @@ func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []s
 	return nil
 }
 
+// runWithStdin executes a script via powershell.exe with data piped to its
+// stdin, for a credential or other secret the script needs but which must
+// never be a command-line argument or an environment variable — see the doc
+// comment on JoinDomain for why an environment variable is not good enough
+// here. Same bypass-the-injectable-run-field reasoning as runWithEnv: only
+// the real host implementation needs it, and it is exercised by a real
+// powershell.exe in its own test rather than through the stub, because the
+// property being proved (nothing leaks into the child's environment) is a
+// fact about the real subprocess, not about Ballast's own logic.
+func (p *PowerShell) runWithStdin(ctx context.Context, script string, stdin []byte) error {
+	_, err := execPowerShellStdin(ctx, script, stdin)
+	return err
+}
+
+// execPowerShellStdin is execPowerShell with stdin piped from the given bytes
+// instead of the script's operands travelling as arguments or environment.
+func execPowerShellStdin(ctx context.Context, script string, stdin []byte) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", withExplicitSuccess(script))
+	cmd.Stdin = bytes.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
 // psQuote renders s as a PowerShell single-quoted string literal, escaping any
 // embedded single quotes. All host/switch/adapter names pass through this
 // before being interpolated into a script.

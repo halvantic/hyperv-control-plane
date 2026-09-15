@@ -166,6 +166,16 @@ type Reconciler struct {
 	ouDriftCond    types.Condition
 	ouDriftGen     int64
 
+	// privCheckSettled / privCheckConds / privCheckGen throttle the privilege
+	// self-check the same way the ouDrift* fields above throttle OU-drift
+	// detection — see the call site. Settled only when every applicable
+	// sub-check passed; any shortfall (or an AD delegation read that could
+	// not be completed) keeps it checking every pass until resolved, the
+	// same "settled only on nothing-to-report" rule replicaSettled uses.
+	privCheckSettled bool
+	privCheckConds   []types.Condition
+	privCheckGen     int64
+
 	// clusterReadBudget overrides how long a cluster STATE read may take before
 	// it is abandoned. Zero uses the package default; tests shorten it so they do
 	// not wait a real minute to prove a hang is given up on.
@@ -237,6 +247,13 @@ const replicaServerEvery = 8
 // needs sub-minute detection, and it is a DC round-trip repeated across every
 // domain-joined host in a fleet on every pass otherwise.
 const ouDriftCheckEvery = 20
+
+// privilegeCheckEvery throttles the privilege self-check the same way —
+// what rights the running identity holds changes on a human timescale (an
+// AD delegation granted or revoked, a group membership changed), not per
+// pass, and it is a local admin check plus an optional DC round-trip
+// repeated across every host in a fleet otherwise.
+const privilegeCheckEvery = 20
 
 // maintenanceDeepEvery is how often the node-maintenance check does its full
 // STORAGE read rather than only reading the node's cluster state.
@@ -363,6 +380,50 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		} else if out != hyperv.OutcomeUnchanged {
 			changed = true
 			r.log.Info("host dns reconciled", "dns", dns, "outcome", out)
+		}
+	}
+
+	// Privilege self-check: what the running identity can actually do,
+	// asserted directly rather than waited for a PowerShell cmdlet to be
+	// rejected mid-reconcile. Placed early, alongside DNS, because it is a
+	// pure read with no dependency on and no effect on anything below it —
+	// unlike DNS this doesn't gate the identity step, it just reports
+	// alongside everything else. Throttled once settled (see
+	// privilegeCheckEvery); a shortfall keeps it checking every pass so a
+	// fix (a group membership added, a delegation granted) is reflected
+	// promptly rather than waiting out the slow cadence.
+	//
+	// Report, never fix: moving a computer object, granting a delegation or
+	// adding an account to local Administrators all need rights this
+	// deliberately least-privileged agent is not given — see
+	// docs/agent-least-privilege-ad.md. This is Ballast naming the cause so
+	// an operator does not have to reconstruct it from a raw Access Denied,
+	// not Ballast attempting the fix itself.
+	{
+		ouDN := ""
+		if dj := desired.Spec.DomainJoin; dj != nil {
+			ouDN = dj.OUPath
+		}
+		if desired.Meta.Generation != r.privCheckGen {
+			r.privCheckSettled = false
+		}
+		if r.privCheckSettled && r.passes%privilegeCheckEvery != 0 {
+			conds = append(conds, r.privCheckConds...)
+		} else if chk, perr := r.hv.CheckPrivileges(ctx, ouDN); perr != nil {
+			r.log.Warn("privilege self-check failed (keeping last known)", "err", perr)
+			conds = append(conds, r.privCheckConds...)
+		} else {
+			pconds := privilegeConditions(chk, r.now())
+			conds = append(conds, pconds...)
+			r.privCheckConds, r.privCheckGen = pconds, desired.Meta.Generation
+			settled := true
+			for _, c := range pconds {
+				if !c.Status {
+					settled = false
+					break
+				}
+			}
+			r.privCheckSettled = settled
 		}
 	}
 

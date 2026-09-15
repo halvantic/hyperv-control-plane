@@ -270,8 +270,16 @@ func TestReconcileEmptyIsHonoured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Honoured || res.Phase != types.PhaseReady || res.Changed || len(res.Conditions) != 0 {
-		t.Fatalf("empty spec: want honoured/ready/unchanged/no-conditions, got %+v", res)
+	// The privilege self-check runs unconditionally (it asserts a fact about
+	// the running identity, not about anything the spec declares), so even
+	// an empty spec now carries the one condition it always produces —
+	// Privilege/LocalAdmin. Everything else about an empty spec stays
+	// no-op: no switches, no vNICs, nothing else to report.
+	if !res.Honoured || res.Phase != types.PhaseReady || res.Changed {
+		t.Fatalf("empty spec: want honoured/ready/unchanged, got %+v", res)
+	}
+	if len(res.Conditions) != 1 || res.Conditions[0].Type != "Privilege/LocalAdmin" {
+		t.Fatalf("empty spec: want exactly one Privilege/LocalAdmin condition, got %+v", res.Conditions)
 	}
 }
 

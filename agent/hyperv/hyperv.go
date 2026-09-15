@@ -163,6 +163,18 @@ type Interface interface {
 	// OUPath, or was moved out of it by hand -- see docs/agent-least-privilege-ad.md.
 	GetComputerOU(ctx context.Context) (string, error)
 
+	// CheckPrivileges is a best-effort, read-only assertion of what the
+	// running identity actually holds — local admin, cluster access (when
+	// this host is a member), and the AD delegation a declared OUPath needs
+	// (when one is declared) — checked directly rather than waiting for a
+	// PowerShell cmdlet to be rejected mid-reconcile. ouDN empty skips the AD
+	// delegation check (there is nothing declared to check against); see
+	// PrivilegeCheck.ADDelegationApplicable. Never attempts to fix anything a
+	// check finds missing — that decision belongs to whoever holds the
+	// actual AD rights to change it, not to the agent. See
+	// docs/agent-least-privilege-ad.md.
+	CheckPrivileges(ctx context.Context, ouDN string) (PrivilegeCheck, error)
+
 	// RenameComputer renames the OS to newName. It does not reboot — the rename
 	// takes effect on the next restart, which the reconciler drives per
 	// RebootPolicy. Idempotency is the caller's concern (only call when the name
@@ -1152,6 +1164,34 @@ type HostIdentity struct {
 	Domain string
 	// PartOfDomain is true when Domain is an AD domain rather than a workgroup.
 	PartOfDomain bool
+}
+
+// PrivilegeCheck reports what the agent's running identity can actually do.
+// A shortfall here is exactly the class of failure CLAUDE.md calls a defect
+// when it only ever surfaces as a raw PowerShell rejection mid-reconcile —
+// this is the diagnosis Ballast can make instead of waiting for that.
+type PrivilegeCheck struct {
+	// IsLocalAdmin is whether the running identity is a member of local
+	// Administrators. Always determinable; not applicable-gated.
+	IsLocalAdmin bool
+
+	// ClusterApplicable is false when this host is not currently a cluster
+	// member — there is nothing to check. ClusterAccessOK is only meaningful
+	// when ClusterApplicable is true.
+	ClusterApplicable bool
+	ClusterAccessOK   bool
+
+	// ADDelegationApplicable is false when no OU was given to check against
+	// (HostSpec.DomainJoin.OUPath not declared) — there is nothing to check.
+	// ADDelegationOK is only meaningful when Applicable is true AND
+	// ADDelegationErr is empty: a read failure (no DC reachable, an LDAP
+	// bind error) means the check could not be completed, not that the
+	// delegation is absent — absent is not the same as unknown. See the
+	// PowerShell implementation's doc comment for what this check can and
+	// cannot precisely prove.
+	ADDelegationApplicable bool
+	ADDelegationOK         bool
+	ADDelegationErr        string
 }
 
 // HostRoleState is the observed state of the host's Hyper-V role.
