@@ -157,6 +157,15 @@ type Reconciler struct {
 	// operator edit puts the step back on every pass.
 	replicaGen int64
 
+	// ouDriftSettled / ouDriftCond / ouDriftGen throttle the OU-drift check the
+	// same way as the replica-server fields above (see the call site in
+	// reconcileIdentity) -- a raw LDAP read against a DC on every pass, for
+	// every domain-joined host in a fleet, is exactly the kind of "looks cheap,
+	// costs the cluster" mistake CollectInventory already made once.
+	ouDriftSettled bool
+	ouDriftCond    types.Condition
+	ouDriftGen     int64
+
 	// clusterReadBudget overrides how long a cluster STATE read may take before
 	// it is abandoned. Zero uses the package default; tests shorten it so they do
 	// not wait a real minute to prove a hang is given up on.
@@ -221,6 +230,13 @@ const hostRoleEvery = 40
 // on every pass immediately, which is exactly where the every-pass retry was
 // earning its cost.
 const replicaServerEvery = 8
+
+// ouDriftCheckEvery throttles GetComputerOU the same way replicaServerEvery
+// throttles the replica-server step, once settled: an operator moving a
+// computer object between OUs is a human, rare event, not something that
+// needs sub-minute detection, and it is a DC round-trip repeated across every
+// domain-joined host in a fleet on every pass otherwise.
+const ouDriftCheckEvery = 20
 
 // maintenanceDeepEvery is how often the node-maintenance check does its full
 // STORAGE read rather than only reading the node's cluster state.
@@ -956,6 +972,51 @@ func (r *Reconciler) reconcileIdentity(ctx context.Context, desired types.Host, 
 			return r.rebootResult(ctx, spec.RebootPolicy, conds, "reboot after domain join")
 		}
 		conds = append(conds, r.condition(ct, hyperv.OutcomeUnchanged, nil))
+
+		// OU drift: this host's actual AD OU vs. the declared OUPath,
+		// checked only once the join check above found nothing to do --
+		// a host mid-join has no settled OU to compare yet.
+		//
+		// This is the case the join check above cannot see: a host
+		// domain-joined BEFORE Ballast ever declared an OUPath (the
+		// common case -- most Hyper-V hosts are joined ahead of any
+		// management tooling), or moved out of its OU by hand later,
+		// sits in the wrong OU FOREVER as far as Ballast is concerned,
+		// because id.Domain still matches and nothing else here looks at
+		// OU. Same shape as every other "absent is not zero" gap this
+		// codebase keeps finding -- see docs/agent-least-privilege-ad.md,
+		// which is what this closes: the least-privilege posture depends
+		// on a host being in the delegated OU, and there was no way to
+		// tell if it wasn't.
+		//
+		// Deliberately NOT auto-corrected: moving a computer object needs
+		// Create/Delete Child Objects on both the source and destination
+		// OU, broader than the narrow msDS-AllowedToDelegateTo write that
+		// whole design is built around granting. Naming the drift is
+		// Ballast's job; moving the object stays a human decision with
+		// the account's actual rights, per CLAUDE.md's boundary between
+		// diagnosing and overreaching.
+		if dj.OUPath != "" && id.PartOfDomain {
+			if desired.Meta.Generation != r.ouDriftGen {
+				r.ouDriftSettled = false
+			}
+			if r.ouDriftSettled && r.passes%ouDriftCheckEvery != 0 {
+				conds = append(conds, r.ouDriftCond)
+			} else {
+				observedOU, ouErr := r.hv.GetComputerOU(ctx)
+				if ouErr != nil {
+					r.log.Warn("read computer OU failed (keeping last known)", "err", ouErr)
+					if r.ouDriftCond.Type != "" {
+						conds = append(conds, r.ouDriftCond)
+					}
+				} else {
+					c := ouDriftCondition(observedOU, dj.OUPath, r.now())
+					conds = append(conds, c)
+					r.ouDriftCond, r.ouDriftGen = c, desired.Meta.Generation
+					r.ouDriftSettled = c.Status
+				}
+			}
+		}
 	}
 
 	return Result{Conditions: conds, Changed: changed}, false, nil

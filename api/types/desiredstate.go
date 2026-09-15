@@ -862,6 +862,16 @@ type PhysicalAdapter struct {
 	// vNIC. Zero when IPv4 is empty.
 	PrefixLength int `json:"prefixLength,omitempty"`
 
+	// AnyIPv4 is this adapter's IPv4 address whether static or DHCP-leased —
+	// display only. IPv4 above stays static-only deliberately: it is what the
+	// teaming guard checks to refuse swallowing a deliberately-assigned host
+	// address into a SET switch, and a DHCP lease was never meant to gate
+	// that. The console's "what IP does this NIC have" column reads this
+	// field, not IPv4, so a NIC freed from a switch and picked up by DHCP
+	// shows its real address instead of blank. See
+	// docs/gap-nic-ipv4-display-dhcp.md for the incident this closes.
+	AnyIPv4 string `json:"anyIPv4,omitempty"`
+
 	// MTUBytes is the payload MTU this adapter's IP interface currently carries
 	// (NlMtu). This is the number that governs, whatever the driver's own jumbo
 	// setting claims, so it is what gets compared against desired state.

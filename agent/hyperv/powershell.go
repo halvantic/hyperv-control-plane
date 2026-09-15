@@ -399,6 +399,14 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   $static = [bool]($a -and $a.PrefixOrigin -eq 'Manual')
   $ip = ''; $plen = 0
   if ($static) { $ip = [string]$a.IPAddress; $plen = [int]$a.PrefixLength }
+  # anyIp is deliberately separate from the static-only ip above: ip guards
+  # teaming (a NIC with a deliberately-assigned static address must not be
+  # swallowed into a SET team) and stays gated on $static so that guard never
+  # weakens. anyIp is display only — whatever address the NIC actually has,
+  # static or DHCP-leased — so the console has something to show a NIC that
+  # was just freed from a switch and picked up a DHCP lease, instead of blank.
+  # See docs/gap-nic-ipv4-display-dhcp.md.
+  $anyIp = [string]$a.IPAddress
   # Where-Object { $_ } is load-bearing, not tidiness.
   #
   # An adapter with no resolvers returns $null here, and @($null) is an array of
@@ -451,7 +459,7 @@ $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Obj
   }
   $jp = Get-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*JumboPacket' -ErrorAction SilentlyContinue
   if (-not $jp) { $jp = @(Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*Jumbo*' })[0] }
-  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }); rscEnabled = $rsc; lsoEnabled = $lso }
+  [pscustomobject]@{ name = $_.Name; mac = $_.MacAddress; linkSpeedBps = [uint64]$_.Speed; up = ($_.Status -eq 'Up'); isManagement = $isMgmt; ipv4 = $ip; anyIPv4 = $anyIp; prefixLength = $plen; dnsServers = @($dns); registersDNS = $reg; gateway = $gw; mtuBytes = $mtu; jumboKeyword = [string]$jp.RegistryKeyword; jumboSetting = [string]$jp.DisplayValue; jumboValues = @($jp.ValidDisplayValues | ForEach-Object { [string]$_ } | Where-Object { $_ }); rscEnabled = $rsc; lsoEnabled = $lso }
 }
 # Keyed on UniqueId, NOT DeviceId.
 #

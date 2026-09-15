@@ -42,6 +42,69 @@ func (p *PowerShell) GetHostIdentity(ctx context.Context) (HostIdentity, error) 
 	return HostIdentity{ComputerName: o.ComputerName, Domain: o.Domain, PartOfDomain: o.PartOfDomain}, nil
 }
 
+type computerOUObservation struct {
+	DistinguishedName string `json:"distinguishedName"`
+}
+
+// computerOUScript looks up this host's own AD computer object and returns
+// its distinguishedName, from which the caller derives the OU (everything
+// after the leading CN=<name>,).
+//
+// Uses [adsisearcher], not the ActiveDirectory module, for the same reason
+// EnsureMigrationDelegation avoids it in powershell_cluster.go: it does not
+// depend on AD Web Services (port 9389), which is often absent on a small
+// lab DC. Unlike that function this is read-only and does not need to
+// locate a specific DC by hand -- [adsisearcher]'s default SearchRoot
+// resolves the domain the ordinary way (the same DC-locator path DNS/Kerberos
+// already need to work at all), which is enough for a best-effort diagnostic
+// read that costs a stale reading, not a fault, when it fails.
+const computerOUScript = `
+$ErrorActionPreference = 'Stop'
+$searcher = [adsisearcher]"(&(objectClass=computer)(sAMAccountName=$env:COMPUTERNAME$))"
+$searcher.PropertiesToLoad.Add('distinguishedName') | Out-Null
+$result = $searcher.FindOne()
+if (-not $result) { throw "computer object for $env:COMPUTERNAME not found in AD" }
+[pscustomobject]@{
+  distinguishedName = [string]$result.Properties['distinguishedname'][0]
+} | ConvertTo-Json -Compress
+`
+
+// ouFromDN strips the leading CN=<name>, off a computer object's
+// distinguishedName, leaving the OU (or container) it sits in -- e.g.
+// "CN=HV01,OU=BallastHosts,DC=ballast,DC=local" becomes
+// "OU=BallastHosts,DC=ballast,DC=local". Returns "" if dn has no comma (not
+// a valid computer-object DN) so the caller can tell "parsed empty" apart
+// from "genuinely at the domain root", which is a comma-free DC=... string
+// and never reaches this function's empty-string return.
+//
+// Deliberately simple: splits on the first unescaped-looking comma. A CN
+// containing a literal comma (escaped in LDAP as "\,") is not handled --
+// computer names cannot contain a comma at all, so this does not arise for
+// what this function is actually used on.
+func ouFromDN(dn string) string {
+	idx := strings.Index(dn, ",")
+	if idx < 0 || idx == len(dn)-1 {
+		return ""
+	}
+	return dn[idx+1:]
+}
+
+func (p *PowerShell) GetComputerOU(ctx context.Context) (string, error) {
+	out, err := p.run(ctx, computerOUScript)
+	if err != nil {
+		return "", fmt.Errorf("get computer OU: %w", err)
+	}
+	var o computerOUObservation
+	if err := decodeJSON(out, &o); err != nil {
+		return "", fmt.Errorf("get computer OU: %w", err)
+	}
+	ou := ouFromDN(o.DistinguishedName)
+	if ou == "" {
+		return "", fmt.Errorf("get computer OU: could not parse an OU from distinguishedName %q", o.DistinguishedName)
+	}
+	return ou, nil
+}
+
 // RenameComputer renames the OS without rebooting (the reconciler reboots per
 // RebootPolicy).
 func (p *PowerShell) RenameComputer(ctx context.Context, newName string) error {

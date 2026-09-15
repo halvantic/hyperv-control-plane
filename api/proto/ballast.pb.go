@@ -3505,8 +3505,16 @@ type PhysicalAdapter struct {
 	// NIC — the third thing that has to agree for jumbo frames, and the only one
 	// no configuration anywhere shows is wrong: every MTU reads 9000 and large
 	// frames do not arrive. See PhysicalAdapter in api/types.
-	RscEnabled    bool `protobuf:"varint,15,opt,name=rsc_enabled,json=rscEnabled,proto3" json:"rsc_enabled,omitempty"`
-	LsoEnabled    bool `protobuf:"varint,16,opt,name=lso_enabled,json=lsoEnabled,proto3" json:"lso_enabled,omitempty"`
+	RscEnabled bool `protobuf:"varint,15,opt,name=rsc_enabled,json=rscEnabled,proto3" json:"rsc_enabled,omitempty"`
+	LsoEnabled bool `protobuf:"varint,16,opt,name=lso_enabled,json=lsoEnabled,proto3" json:"lso_enabled,omitempty"`
+	// any_ipv4 is this adapter's IPv4 address whether static or DHCP-leased —
+	// display only, and deliberately separate from ipv4 above. ipv4 stays
+	// static-only on purpose: it is what the teaming guard checks to refuse
+	// swallowing a deliberately-assigned host address into a SET switch, and a
+	// DHCP lease was never meant to gate that. Widening ipv4 itself would fix
+	// the console showing nothing for a DHCP-addressed NIC and silently loosen
+	// that guard in the same change — see docs/gap-nic-ipv4-display-dhcp.md.
+	AnyIpv4       string `protobuf:"bytes,17,opt,name=any_ipv4,json=anyIpv4,proto3" json:"any_ipv4,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3651,6 +3659,13 @@ func (x *PhysicalAdapter) GetLsoEnabled() bool {
 		return x.LsoEnabled
 	}
 	return false
+}
+
+func (x *PhysicalAdapter) GetAnyIpv4() string {
+	if x != nil {
+		return x.AnyIpv4
+	}
+	return ""
 }
 
 type PhysicalDisk struct {
@@ -7552,7 +7567,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
 	"os_version\x18\x05 \x01(\tR\tosVersion\x12,\n" +
-	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\xf7\x03\n" +
+	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\x92\x04\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +
@@ -7573,7 +7588,8 @@ const file_ballast_proto_rawDesc = "" +
 	"\vrsc_enabled\x18\x0f \x01(\bR\n" +
 	"rscEnabled\x12\x1f\n" +
 	"\vlso_enabled\x18\x10 \x01(\bR\n" +
-	"lsoEnabled\"\x8e\x04\n" +
+	"lsoEnabled\x12\x19\n" +
+	"\bany_ipv4\x18\x11 \x01(\tR\aanyIpv4\"\x8e\x04\n" +
 	"\fPhysicalDisk\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +

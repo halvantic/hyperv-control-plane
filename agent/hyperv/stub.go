@@ -111,6 +111,11 @@ type Stub struct {
 	JoinCalled   bool
 	hostIPs      map[string]string
 
+	// ComputerOU seeds GetComputerOU -- the OU a test wants the stub to report
+	// this computer object as sitting in. Empty means "unknown" (GetComputerOU
+	// returns an error), matching a host whose OU has genuinely not been read.
+	ComputerOU string
+
 	vmHostVMPath  string
 	vmHostVHDPath string
 	liveMigration string
@@ -364,6 +369,15 @@ func (s *Stub) GetHostIdentity(_ context.Context) (HostIdentity, error) {
 		name = "WIN-UNCONFIGURED"
 	}
 	return HostIdentity{ComputerName: name, Domain: s.Domain, PartOfDomain: s.Domain != ""}, nil
+}
+
+func (s *Stub) GetComputerOU(_ context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ComputerOU == "" {
+		return "", fmt.Errorf("stub: ComputerOU not set")
+	}
+	return s.ComputerOU, nil
 }
 
 func (s *Stub) RenameComputer(_ context.Context, newName string) error {

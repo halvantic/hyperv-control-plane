@@ -106,6 +106,28 @@ func TestInventoryScriptRequiresGatewayForManagement(t *testing.T) {
 	}
 }
 
+// A NIC freed from a switch and picked up by DHCP has a real address — an
+// external IP scanner confirms it — but the console showed nothing for it,
+// because $ip above is deliberately gated on $static. anyIPv4 exists so the
+// console has a display value regardless of how the address was assigned,
+// without touching $ip's teaming-guard semantics. Regression test for
+// docs/gap-nic-ipv4-display-dhcp.md.
+func TestInventoryScriptReportsAnyIPv4RegardlessOfStatic(t *testing.T) {
+	script := inventoryScript()
+	if !strings.Contains(script, "$anyIp = [string]$a.IPAddress") {
+		t.Error("anyIp must be read unconditionally, not gated on $static — a DHCP address must still be captured")
+	}
+	if !strings.Contains(script, "anyIPv4 = $anyIp") {
+		t.Error("anyIPv4 must be reported in the adapter object, or the console has nothing new to display")
+	}
+	// The static-only ip field must still exist and stay exactly as gated as
+	// before — this test's job is to prove anyIPv4 was ADDED, not that ip's
+	// guard semantics moved.
+	if !strings.Contains(script, "if ($static) { $ip = [string]$a.IPAddress") {
+		t.Error("the static-only ip field (the teaming guard) must be unchanged")
+	}
+}
+
 // The VM an operator most needs to delete is the one deletion refused to
 // attempt. A VM whose configuration storage has gone sits in SavedCritical, and
 // Stop-VM cannot work because Hyper-V has nothing to read — so under

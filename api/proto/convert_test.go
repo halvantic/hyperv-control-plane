@@ -82,11 +82,21 @@ func sampleHost() types.Host {
 				PhysicalAdapters: []types.PhysicalAdapter{
 					{
 						Name: "NIC1", MAC: "00:15:5D:00:00:01", LinkSpeedBps: 25_000_000_000, Up: true,
-						IsManagement: true, IPv4: "192.168.1.50", PrefixLength: 24,
+						IsManagement: true, IPv4: "192.168.1.50", AnyIPv4: "192.168.1.50", PrefixLength: 24,
 						DNSServers: []string{"192.168.1.168"}, RegistersDNS: true, Gateway: "192.168.1.1",
 						MTUBytes: 9000, JumboKeyword: "*JumboPacket", JumboSetting: "9014 Bytes",
 						JumboValues: []string{"Disabled", "4088 Bytes", "9014 Bytes"},
 						RSCEnabled:  true, LSOEnabled: true,
+					},
+					// A NIC with a DHCP-leased address and no static one — IPv4 empty
+					// (nothing here should ever look "manageable"/teaming-protected
+					// about it), AnyIPv4 set (the console should still show its
+					// address). This is the exact shape of the bug in
+					// docs/gap-nic-ipv4-display-dhcp.md, kept in the wire fixture so it
+					// can never silently regress to IPv4 dropping AnyIPv4 on the floor.
+					{
+						Name: "NIC2", MAC: "00:15:5D:00:00:02", LinkSpeedBps: 1_000_000_000, Up: true,
+						AnyIPv4: "192.168.1.187",
 					},
 				},
 				PhysicalDisks: []types.PhysicalDisk{

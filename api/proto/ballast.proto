@@ -561,6 +561,14 @@ message PhysicalAdapter {
   // frames do not arrive. See PhysicalAdapter in api/types.
   bool rsc_enabled = 15;
   bool lso_enabled = 16;
+  // any_ipv4 is this adapter's IPv4 address whether static or DHCP-leased —
+  // display only, and deliberately separate from ipv4 above. ipv4 stays
+  // static-only on purpose: it is what the teaming guard checks to refuse
+  // swallowing a deliberately-assigned host address into a SET switch, and a
+  // DHCP lease was never meant to gate that. Widening ipv4 itself would fix
+  // the console showing nothing for a DHCP-addressed NIC and silently loosen
+  // that guard in the same change — see docs/gap-nic-ipv4-display-dhcp.md.
+  string any_ipv4 = 17;
 }
 
 message PhysicalDisk {

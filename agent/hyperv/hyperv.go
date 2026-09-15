@@ -153,6 +153,16 @@ type Interface interface {
 	// (or workgroup). A pure read.
 	GetHostIdentity(ctx context.Context) (HostIdentity, error)
 
+	// GetComputerOU observes the OU this host's own AD computer object
+	// currently sits in, as the OU portion of its distinguishedName (everything
+	// after the leading CN=<name>,). A pure, best-effort read: it is a
+	// diagnostic, not a precondition for anything else, so a failure (the host
+	// cannot reach a DC to look itself up) costs a stale reading, never a
+	// degraded host. Used only to detect drift against HostSpec.DomainJoin.OUPath
+	// for a host that was already domain-joined before Ballast declared an
+	// OUPath, or was moved out of it by hand -- see docs/agent-least-privilege-ad.md.
+	GetComputerOU(ctx context.Context) (string, error)
+
 	// RenameComputer renames the OS to newName. It does not reboot — the rename
 	// takes effect on the next restart, which the reconciler drives per
 	// RebootPolicy. Idempotency is the caller's concern (only call when the name
