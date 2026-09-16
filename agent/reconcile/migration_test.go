@@ -57,26 +57,26 @@ func TestAMissingCredentialIsNamedSeparatelyFromAMissingAddress(t *testing.T) {
 		!strings.Contains(err.Error(), "address") {
 		t.Errorf("a job with no address gave: %v", err)
 	}
-	_, err := migrationEndpoint(map[string]string{"address": "vcsa-02.nuclear.home"})
+	_, err := migrationEndpoint(map[string]string{"address": "vcsa-02.lab.example"})
 	if err == nil {
 		t.Fatal("a job with no credential was accepted")
 	}
 	if !strings.Contains(err.Error(), "secret it names has been deleted") {
 		t.Errorf("the refusal does not name the likely cause: %v", err)
 	}
-	if !strings.Contains(err.Error(), "vcsa-02.nuclear.home") {
+	if !strings.Contains(err.Error(), "vcsa-02.lab.example") {
 		t.Errorf("the refusal does not say which source: %v", err)
 	}
 }
 
 func TestTheEndpointCarriesWhatTheJobSent(t *testing.T) {
 	e, err := migrationEndpoint(map[string]string{
-		"address": " vcsa-02.nuclear.home ", "username": "svc", "password": "s3cret", "insecure": "true",
+		"address": " vcsa-02.lab.example ", "username": "svc", "password": "s3cret", "insecure": "true",
 	})
 	if err != nil {
 		t.Fatalf("a complete endpoint was refused: %v", err)
 	}
-	if e.Address != "vcsa-02.nuclear.home" || e.Username != "svc" || e.Password != "s3cret" || !e.InsecureTLS {
+	if e.Address != "vcsa-02.lab.example" || e.Username != "svc" || e.Password != "s3cret" || !e.InsecureTLS {
 		t.Errorf("the endpoint came out as %+v", e)
 	}
 	// Absent means verify, not skip. A default of "insecure" would silently

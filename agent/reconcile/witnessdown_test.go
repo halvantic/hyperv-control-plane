@@ -10,7 +10,7 @@ import (
 /*
 A failed witness is not an outage, and Ballast said it was.
 
-	Secondary on ballasttest, 2026-09-11. The witness share server was switched
+	Secondary on labtest, 2026-09-11. The witness share server was switched
 	off and the core group went Failed, so the condition announced that "the
 	cluster name and its IP addresses are not fully online … shared volumes will
 	not come online and roles will fail" — and then, in the same message, named

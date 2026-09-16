@@ -11,9 +11,9 @@ import (
    The message this replaces named one remedy for two different faults. It ran
    Test-Path, and on $false said:
 
-     the share \\nfs.nuclear.home\witness answers on SMB but this node cannot
+     the share \\nfs.lab.example\witness answers on SMB but this node cannot
      read it. Grant the cluster computer account Secondary$ read/write access to
-     the share on the file server itself, then retry. '\\nfs.nuclear.home\witness'
+     the share on the file server itself, then retry. '\\nfs.lab.example\witness'
      is not a valid file share path.
 
    Two faults are behind that one $false — a share that is not there, and a
@@ -103,7 +103,7 @@ func witnessProblemMessage(p witnessProblem) string {
 		// SMB authenticates the session BEFORE it resolves the share name, so a
 		// rejected logon says nothing about whether the share is there. Saying
 		// otherwise would repeat the mistake this file exists to fix, one step
-		// along: measured against nfs.nuclear.home, which returns 1326 for a path
+		// along: measured against nfs.lab.example, which returns 1326 for a path
 		// whose existence is still unestablished.
 		msg = server + " answered on SMB but would not accept this node's credentials for " + path + " (Windows error 1326, logon failure). " +
 			"SMB authenticates before it resolves the share name, so this says nothing about whether the share is there — the server refused the identity that asked. " +

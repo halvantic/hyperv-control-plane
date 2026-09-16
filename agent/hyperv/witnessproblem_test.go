@@ -12,16 +12,16 @@ import (
 func TestAMissingShareIsNotAPermissionsProblem(t *testing.T) {
 	msg := witnessProblemMessage(witnessProblem{
 		Kind: "noshare", Code: 53,
-		Server: "nfs.nuclear.home", Share: "witness",
-		Path: `\\nfs.nuclear.home\witness`, CNO: "Secondary", Node: "HVNEW02",
-		Raw: `'\\nfs.nuclear.home\witness' is not a valid file share path.`,
+		Server: "nfs.lab.example", Share: "witness",
+		Path: `\\nfs.lab.example\witness`, CNO: "Secondary", Node: "HVNEW02",
+		Raw: `'\\nfs.lab.example\witness' is not a valid file share path.`,
 	})
 	for _, forbidden := range []string{"Grant the cluster computer account", "read/write access to the share", "cannot read it"} {
 		if strings.Contains(msg, forbidden) {
 			t.Fatalf("a missing share must not be reported as a permissions fault; message contained %q:\n%s", forbidden, msg)
 		}
 	}
-	for _, want := range []string{"does not have a share called witness", "nfs.nuclear.home", "NFS export is not an SMB share"} {
+	for _, want := range []string{"does not have a share called witness", "nfs.lab.example", "NFS export is not an SMB share"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message should say %q:\n%s", want, msg)
 		}

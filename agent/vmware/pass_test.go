@@ -449,8 +449,8 @@ The host is the one that could not reach the source, and says so.
 	and checks the centre, where everything works.
 */
 func TestAConnectFailureSaysWhichSideCouldNotReachTheSource(t *testing.T) {
-	got := explainConnect("vcsa-02.nuclear.home",
-		errors.New(`Post "https://vcsa-02.nuclear.home/sdk": dial tcp: lookup vcsa-02.nuclear.home: no such host`))
+	got := explainConnect("vcsa-02.lab.example",
+		errors.New(`Post "https://vcsa-02.lab.example/sdk": dial tcp: lookup vcsa-02.lab.example: no such host`))
 	for _, want := range []string{"did not resolve on this Hyper-V host", "this host's own DNS", "by IP address"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the explanation does not carry %q:\n %s", want, got)

@@ -22,7 +22,7 @@ what does an NFC export lease actually serve, and can it be read at an offset?
 
 Usage:
 
-	go run ./cmd/nfcprobe -host vcsa-02.nuclear.home -user administrator@vsphere.local -vm BallastJumphost -insecure
+	go run ./cmd/nfcprobe -host vcsa-02.lab.example -user administrator@vsphere.local -vm BallastJumphost -insecure
 
 The password is read from BALLAST_PROBE_PASSWORD, or prompted for, so it does
 not end up in a shell history.
