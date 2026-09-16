@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Which interface a session actually leaves through.

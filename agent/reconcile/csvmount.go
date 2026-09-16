@@ -3,8 +3,8 @@ package reconcile
 import (
 	"context"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // reconcileCSVMountPoints makes each declared volume's mount point match its

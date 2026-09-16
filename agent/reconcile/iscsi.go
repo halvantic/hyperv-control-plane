@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // reconcileISCSI connects THIS node to the cluster's iSCSI array.

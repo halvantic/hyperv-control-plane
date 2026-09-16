@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // This file is the PowerShell backing for day-0 host identity: reading the OS

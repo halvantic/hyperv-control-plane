@@ -9,7 +9,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // seedJournal writes n delivered entries the way the unbounded version did,

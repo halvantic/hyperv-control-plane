@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // PowerShell backing for imperative Jobs. These run locally on the host (the

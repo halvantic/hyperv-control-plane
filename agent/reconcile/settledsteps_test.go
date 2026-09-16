@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Two steps were paying a great deal, every pass, to learn that nothing had

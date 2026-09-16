@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A VM that cannot start because its saved state was captured on another host

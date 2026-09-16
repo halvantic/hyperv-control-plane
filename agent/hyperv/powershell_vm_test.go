@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // A VM with a disk on a datastore is created in a per-VM folder: the script

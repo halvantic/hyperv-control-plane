@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // sampleHost is a fully-populated Host used to prove the conversion is lossless.

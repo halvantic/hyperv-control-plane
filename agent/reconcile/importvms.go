@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Reporting the VMs that are on this host's storage but registered nowhere.

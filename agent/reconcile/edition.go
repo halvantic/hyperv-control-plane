@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // reconcileWindowsEdition converts the host to its declared Windows edition.

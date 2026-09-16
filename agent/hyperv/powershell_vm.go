@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // This file is the PowerShell-module backing for VM lifecycle. As with the

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // ouDriftCondition compares a host's observed AD OU against its declared

@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/reconcile"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* The gap between what the agent OBSERVES and what it REPORTS has no guard, and

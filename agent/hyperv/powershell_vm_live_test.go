@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* GetVMState reads everything about one VM — power, memory, CPU, IPs, guest OS

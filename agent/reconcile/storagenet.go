@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // Reporting whether a host's storage redundancy is real.

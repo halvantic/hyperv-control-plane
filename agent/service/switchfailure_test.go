@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A switch that cannot be built is nearly always a switch whose team members

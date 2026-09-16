@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // Stub is an in-memory implementation of Interface for developing and testing

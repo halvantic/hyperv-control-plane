@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/agent/vmware"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/vmware"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* The agent's side of a VMware migration.

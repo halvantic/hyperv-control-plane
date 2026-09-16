@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* The S2D reconciler must run for exactly the clusters that want S2D, and the

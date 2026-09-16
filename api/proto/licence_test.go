@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A field the proto does not carry round-trips as its zero value, silently. For

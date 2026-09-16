@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // The delete race, in one test.

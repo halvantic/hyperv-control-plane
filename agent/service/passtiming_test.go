@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/agent/reconcile"
-	"github.com/joshua-fourie/ballast/agent/store"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/agent/store"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A pass's cost and the list of calls that explain it must describe the same

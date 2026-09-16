@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Moving a VM by copying it.

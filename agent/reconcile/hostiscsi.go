@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // reconcileHostISCSI connects a STANDALONE host to its own iSCSI array.

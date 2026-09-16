@@ -11,11 +11,11 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/agent/reconcile"
-	"github.com/joshua-fourie/ballast/agent/store"
-	ballastpb "github.com/joshua-fourie/ballast/api/proto"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/agent/store"
+	ballastpb "github.com/halvantic/hyperv-control-plane/api/proto"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // fakeClient is a programmable AgentServiceClient. errAll makes every RPC fail,

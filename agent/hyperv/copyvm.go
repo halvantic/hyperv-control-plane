@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Moving a VM by copying it, for two hosts that were not built to know about

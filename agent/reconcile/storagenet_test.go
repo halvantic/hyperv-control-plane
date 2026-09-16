@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 func fixedNow() time.Time { return time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC) }

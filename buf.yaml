@@ -1,0 +1,17 @@
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # Our package is ballast.v1; the directory is api/proto (Go-module layout),
+    # not v1/ — so the default package-directory-match rule does not apply.
+    - PACKAGE_DIRECTORY_MATCH
+    # Enum value names (PHASE_READY etc.) mirror the Go schema constants rather
+    # than carrying the enum-name prefix buf prefers.
+    - ENUM_VALUE_PREFIX
+    - ENUM_ZERO_VALUE_SUFFIX
+breaking:
+  use:
+    - FILE

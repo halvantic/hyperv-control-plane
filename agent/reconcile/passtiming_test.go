@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Pass timings belong to the window that was measured, and the accumulator is a

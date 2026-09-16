@@ -22,8 +22,8 @@ import (
 
 	"log/slog"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // Reconciler converges a host towards desired state via hyperv.Interface.

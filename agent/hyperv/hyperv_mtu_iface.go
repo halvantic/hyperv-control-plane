@@ -3,7 +3,7 @@ package hyperv
 import (
 	"context"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // JumboPathTester is the end-to-end half of MTU: whether a frame that size

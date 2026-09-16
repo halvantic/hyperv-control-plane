@@ -7983,7 +7983,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\fRegisterHost\x12\x1f.ballast.v1.RegisterHostRequest\x1a .ballast.v1.RegisterHostResponse\x12]\n" +
 	"\x10PullDesiredState\x12#.ballast.v1.PullDesiredStateRequest\x1a$.ballast.v1.PullDesiredStateResponse\x12Q\n" +
 	"\fReportStatus\x12\x1f.ballast.v1.ReportStatusRequest\x1a .ballast.v1.ReportStatusResponse\x12Z\n" +
-	"\x0fReportJobResult\x12\".ballast.v1.ReportJobResultRequest\x1a#.ballast.v1.ReportJobResultResponseB6Z4github.com/joshua-fourie/ballast/api/proto;ballastpbb\x06proto3"
+	"\x0fReportJobResult\x12\".ballast.v1.ReportJobResultRequest\x1a#.ballast.v1.ReportJobResultResponseB?Z=github.com/halvantic/hyperv-control-plane/api/proto;ballastpbb\x06proto3"
 
 var (
 	file_ballast_proto_rawDescOnce sync.Once

@@ -1,6 +1,6 @@
 package reconcile
 
-import "github.com/joshua-fourie/ballast/api/types"
+import "github.com/halvantic/hyperv-control-plane/api/types"
 
 // EffectiveISOLibrary decides which ISO library share, if any, this host should
 // be using — the single place the "declared for a cluster OR for a standalone

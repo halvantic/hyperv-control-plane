@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A host joins a domain by resolving its SRV records, so DNS has to point at the

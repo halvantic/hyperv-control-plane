@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
 )
 
 // phaseTimer accumulates how long each part of a cycle took, so "the cycle is

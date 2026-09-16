@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
 )
 
 /* A node falling out of its cluster cost every reading that host had.

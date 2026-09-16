@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/store"
+	"github.com/halvantic/hyperv-control-plane/agent/store"
 )
 
 /* The cluster's last honoured generation is a fact that is KEPT, not a reading

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* An ISO library is declared in two places and never in both for the same host:

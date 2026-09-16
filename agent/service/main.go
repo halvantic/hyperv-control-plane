@@ -16,9 +16,9 @@ import (
 
 	"log/slog"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/agent/reconcile"
-	"github.com/joshua-fourie/ballast/agent/store"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/agent/store"
 )
 
 const (

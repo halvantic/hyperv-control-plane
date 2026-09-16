@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Swapping a NIC is ordinary maintenance, and Windows gives the replacement a new

@@ -1,0 +1,10 @@
+# NOTE: no `clean: true`. Generated .pb.go lands in api/proto alongside the
+# source ballast.proto; cleaning that directory would delete the source.
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: api/proto
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: api/proto
+    opt: paths=source_relative

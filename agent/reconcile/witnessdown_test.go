@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
 )
 
 /*

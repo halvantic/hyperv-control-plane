@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
 )
 
 // Only explicitly recognised in-flight signatures are transient. Anything else

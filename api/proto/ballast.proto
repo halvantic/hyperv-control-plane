@@ -10,7 +10,7 @@ package ballast.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/joshua-fourie/ballast/api/proto;ballastpb";
+option go_package = "github.com/halvantic/hyperv-control-plane/api/proto;ballastpb";
 
 // ---------------------------------------------------------------------------
 // Service

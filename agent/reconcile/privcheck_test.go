@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 func TestPrivilegeConditions(t *testing.T) {

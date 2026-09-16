@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* Does a frame that size actually cross the wire?

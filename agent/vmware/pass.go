@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
 )
 
 /* One pass of a migration, end to end.

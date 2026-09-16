@@ -13,7 +13,7 @@ package hyperv
 import (
 	"context"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // Outcome reports what an idempotent ensure-operation did. It lets the

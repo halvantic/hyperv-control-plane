@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // sampleResources populates every observed-resource field, so the round trip

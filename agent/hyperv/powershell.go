@@ -13,7 +13,7 @@ import (
 
 	"log/slog"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // ProgressFunc receives a human-readable progress note from a long-running

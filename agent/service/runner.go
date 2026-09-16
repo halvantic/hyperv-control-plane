@@ -14,12 +14,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/agent/reconcile"
-	"github.com/joshua-fourie/ballast/agent/store"
-	ballastpb "github.com/joshua-fourie/ballast/api/proto"
-	"github.com/joshua-fourie/ballast/api/types"
-	"github.com/joshua-fourie/ballast/version"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/reconcile"
+	"github.com/halvantic/hyperv-control-plane/agent/store"
+	ballastpb "github.com/halvantic/hyperv-control-plane/api/proto"
+	"github.com/halvantic/hyperv-control-plane/api/types"
+	"github.com/halvantic/hyperv-control-plane/version"
 )
 
 // jobTimeout caps a single imperative job. A job that exceeds it is cancelled

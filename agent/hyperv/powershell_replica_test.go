@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // "Hyper-V failed to enable replication" is a sentence, not a diagnosis. It

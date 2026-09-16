@@ -8,7 +8,7 @@ import (
 
 	"log/slog"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // fakeRunner returns queued outputs in order and records every script it was

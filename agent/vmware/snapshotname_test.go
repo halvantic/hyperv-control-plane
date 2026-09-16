@@ -3,7 +3,7 @@ package vmware
 import (
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // SnapshotName is a pure forward to the shared schema helper (see its own

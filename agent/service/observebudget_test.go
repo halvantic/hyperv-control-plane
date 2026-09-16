@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 /* A cached observation that hangs cost the whole pass.

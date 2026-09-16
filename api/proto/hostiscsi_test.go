@@ -3,7 +3,7 @@ package ballastpb
 import (
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // A standalone host's array connection has to survive the wire in both

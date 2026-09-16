@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // ---------------------------------------------------------------------------

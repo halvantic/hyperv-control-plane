@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
 )
 
 /* Every host reported 100-170 seconds apart on a 15-second heartbeat, so all five

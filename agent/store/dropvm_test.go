@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // A successful RemoveVM must change what the agent WANTS, not only what the host

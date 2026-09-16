@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/joshua-fourie/ballast/agent/hyperv"
-	"github.com/joshua-fourie/ballast/api/types"
+	"github.com/halvantic/hyperv-control-plane/agent/hyperv"
+	"github.com/halvantic/hyperv-control-plane/api/types"
 )
 
 // VMResult is the outcome of reconciling one VM, for the agent to fold into the
