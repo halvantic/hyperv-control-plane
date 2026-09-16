@@ -17,11 +17,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
 
-require github.com/halvantic/hyperv-control-plane/api v0.0.0
-
-// TEMPORARY: api/ is not yet tagged/pushed (see repo split plan step 9).
-// Remove this replace and pin the require above to a real api/vX.Y.Z tag
-// the moment api/ is tagged and this repo is pushed. A replace pointing at
-// a local path must never survive into the pushed repo -- it works for
-// nobody who clones this without the exact same directory next to it.
-replace github.com/halvantic/hyperv-control-plane/api => ./api
+require github.com/halvantic/hyperv-control-plane/api v0.1.0
