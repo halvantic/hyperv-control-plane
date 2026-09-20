@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const Version = "0.4.277-slice"
+const Version = "1.0.0"
 
 // ReleaseLine returns the release line Version belongs to, as "<major>.x" —
 // "0.4.277-slice" and "0.3.90-slice" are both "0.x"; "1.4.2-slice" is "1.x".

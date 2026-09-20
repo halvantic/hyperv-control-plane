@@ -29,7 +29,7 @@ func TestReleaseLine(t *testing.T) {
 func TestReleaseLineOfTheActualShippedVersion(t *testing.T) {
 	// Version itself, unmodified -- this is what every other package that
 	// calls ReleaseLine() actually gets today, so it earns its own case.
-	if got := ReleaseLine(); got != "0.x" {
-		t.Errorf("ReleaseLine() for the real Version %q = %q, want 0.x", Version, got)
+	if got := ReleaseLine(); got != "1.x" {
+		t.Errorf("ReleaseLine() for the real Version %q = %q, want 1.x", Version, got)
 	}
 }
