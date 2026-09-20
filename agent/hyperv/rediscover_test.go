@@ -99,6 +99,34 @@ func TestRediscoverFailsWhenThePortalsAreStillThere(t *testing.T) {
 	}
 }
 
+/*
+Re-queries each portal immediately before removing it, rather than removing
+the object enumerated at the top of the script.
+
+	$before is a snapshot. The reconcile loop runs on its own timer and, for a
+	portal still declared in the spec — the normal case for something an
+	operator reaches for Rediscover on — can re-add it in the gap between
+	enumeration and removal. Remove-IscsiTargetPortal is a CDXML cmdlet: it
+	re-resolves the piped object's own key against current WMI state rather
+	than acting on the instance held in memory, so a stale $h fails with "The
+	specified portal was not found" even though the address is still there a
+	moment later. HVNEW01 and HVNEW02, 2026-09-17: iscsicpl succeeded by hand
+	on the same portals because a human's timing does not collide with
+	reconcile the way a scripted run reliably does.
+*/
+func TestRediscoverRequeriesBeforeRemoving(t *testing.T) {
+	s := rediscoverScript(t)
+	if !strings.Contains(s, "$fresh = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | Where-Object {") {
+		t.Fatalf("it does not re-query the portal before removing it:\n%s", s)
+	}
+	// Matched on source binding as well as address: two entries can share a
+	// TargetPortalAddress with different InitiatorPortalAddress bindings, and
+	// re-querying by address alone risks removing the wrong one.
+	if !strings.Contains(s, "[string]$_.InitiatorPortalAddress -eq $ipa") {
+		t.Errorf("the re-query does not account for the source binding:\n%s", s)
+	}
+}
+
 // Piped, never named: -TargetPortalPortNumber fails with "Type mismatch for
 // parameter" on this cmdlet whatever is put in it.
 func TestRediscoverPipesThePortalObject(t *testing.T) {

@@ -88,7 +88,7 @@ func TestResetClearsInTheRightOrder(t *testing.T) {
 	// Remove-IscsiTargetPortal and reported the order wrong — the third assertion
 	// in this package today to read prose instead of code.
 	unreg := strings.Index(seen, "$s | Unregister-IscsiSession")
-	disc := strings.Index(seen, "$s | Disconnect-IscsiTarget")
+	disc := strings.Index(seen, "$tgt | Disconnect-IscsiTarget")
 	portal := strings.Index(seen, "Remove-IscsiTargetPortal @rm")
 	persist := strings.Index(seen, "RemovePersistentTarget $init")
 	for n, i := range map[string]int{"unregister": unreg, "disconnect": disc, "portal removal": portal, "persistent removal": persist} {
@@ -252,6 +252,55 @@ func TestASessionThatWillNotDisconnectSaysWhy(t *testing.T) {
 }
 
 /*
+A session at 0 connections is invisible to the connected-targets loop.
+
+	Get-IscsiTarget's IsConnected reflects the TARGET, which stops reading
+	connected the moment its last connection drops — so a session left behind
+	at 0 connections (reproduced live on HVNEW01, 2026-09-20, right after a
+	ClusterDestroy: the disconnect hit "device currently being used", the OS
+	then dropped the connection on its own, and the session object outlived
+	it) is never reached by "Get-IscsiTarget | Where IsConnected |
+	Disconnect-IscsiTarget". Only iscsicli LogoutTarget, keyed on the
+	session's own SessionIdentifier, reaches it — confirmed live.
+*/
+func TestAZombieSessionIsReapedByItsOwnID(t *testing.T) {
+	var p PowerShell
+	var seen string
+	p.run = func(_ context.Context, script string) ([]byte, error) { seen = script; return []byte(`RESULT={}`), nil }
+	_, _ = p.ResetISCSIInitiator(context.Background())
+
+	// Runs AFTER the connected-only disconnect loop, so a session that loop
+	// could still reach is disconnected properly first.
+	disc := strings.Index(seen, "$tgt | Disconnect-IscsiTarget")
+	reap := strings.Index(seen, "iscsicli LogoutTarget $sid")
+	if reap < 0 {
+		t.Fatal("no fallback reap of remaining sessions by their own id")
+	}
+	if disc < 0 || reap < disc {
+		t.Error("the id-based reap must run after the connected-targets disconnect loop, not instead of it")
+	}
+	// Re-reads Get-IscsiSession fresh rather than reusing $sessions from step 2:
+	// a session that loop actually did disconnect must not be logged out again
+	// by an identifier it no longer holds.
+	if !strings.Contains(seen, "$remaining = @(Get-IscsiSession -ErrorAction SilentlyContinue)") {
+		t.Error("the reap must re-enumerate sessions, not reuse the earlier snapshot")
+	}
+	// Keyed on the session's own id, not the target's node address -- the same
+	// property Get-IscsiSession and iscsicli SessionList both use.
+	if !strings.Contains(seen, "$sid = [string]$s.SessionIdentifier") {
+		t.Error("the reap must use the session's own SessionIdentifier")
+	}
+	// Runs BEFORE the readback, or the very thing it exists to fix still counts
+	// as a survivor.
+	if !strings.Contains(seen, "$leftSessions = @(Get-IscsiSession -ErrorAction SilentlyContinue).Count") {
+		t.Fatal("no final readback found")
+	}
+	if strings.Index(seen, "$leftSessions =") < reap {
+		t.Error("the readback must happen after the reap, or a session the reap just cleared still fails the job")
+	}
+}
+
+/*
 iSCSI target names are CASE-SENSITIVE, and the session reports them lowercased.
 
 	Disconnect-IscsiTarget was given -NodeAddress $s.TargetNodeAddress.
@@ -261,8 +310,14 @@ iSCSI target names are CASE-SENSITIVE, and the session reports them lowercased.
 	target and refused with "The parameter is incorrect", while the session it was
 	looking at sat there connected. HVNEW04 and HVNEW05, 2026-08-25.
 
-	This repo already recorded that these names are case-sensitive, for the LOGIN
-	path. The disconnect kept rebuilding the key anyway.
+	Piping the SESSION object (2026-08-25's fix) turned out not to fix the
+	disconnect at all — Disconnect-IscsiTarget only binds pipeline input on
+	-NodeAddress, and Get-IscsiSession's object exposes TargetNodeAddress, a
+	different name, so it never bound to anything ("cannot be bound to any
+	parameters"). It looked fixed only because nothing tested actually needed
+	disconnecting. HVNEW01, 2026-09-17: switched to piping Get-IscsiTarget
+	objects instead, which expose NodeAddress directly and still carry the
+	target's own (correctly cased) record rather than the session's echo of it.
 */
 func TestTheDisconnectDoesNotRebuildTheTargetName(t *testing.T) {
 	var p PowerShell
@@ -271,13 +326,19 @@ func TestTheDisconnectDoesNotRebuildTheTargetName(t *testing.T) {
 	_, _ = p.ResetISCSIInitiator(context.Background())
 
 	if strings.Contains(seen, "Disconnect-IscsiTarget -NodeAddress") {
-		t.Fatal("naming the target reintroduces the case mismatch — pipe the session instead")
+		t.Fatal("naming the target reintroduces the case mismatch — pipe the connected target instead")
 	}
-	if !strings.Contains(seen, "$s | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop") {
-		t.Fatalf("the session object carries the identity the initiator assigned:\n%s", seen)
+	if !strings.Contains(seen, "$tgt | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop") {
+		t.Fatalf("a connected Get-IscsiTarget object carries the identity the initiator assigned:\n%s", seen)
 	}
-	// Same for the unregister: a session identifier enumerated a moment ago can
-	// already be gone, which is what "Invalid Session Id" was.
+	// Disconnect must go through Get-IscsiTarget, filtered to connected ones --
+	// not Get-IscsiSession, whose object property name never binds.
+	if !strings.Contains(seen, "Get-IscsiTarget -ErrorAction Stop | Where-Object { $_.IsConnected }") {
+		t.Error("the disconnect step must list connected targets via Get-IscsiTarget, not Get-IscsiSession")
+	}
+	// The unregister step is unaffected -- Unregister-IscsiSession only exists on
+	// the session object -- and still pipes it: a session identifier enumerated a
+	// moment ago can already be gone, which is what "Invalid Session Id" was.
 	if !strings.Contains(seen, "$s | Unregister-IscsiSession -ErrorAction Stop") {
 		t.Error("the unregister must pipe the session too")
 	}

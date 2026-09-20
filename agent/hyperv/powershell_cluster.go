@@ -240,7 +240,15 @@ $coreRes = @($allRes |
 # Volume health is observed separately from pool health: the two fail
 # independently, and attributing a volume's problem to the pool sends the
 # operator to repair storage that is fine. A CSV is named "Cluster Virtual Disk
-# (<volume>)", so match it back to its virtual disk by that inner name.
+# (<volume>)", so match it back to its virtual disk by that inner name — but
+# Get-VirtualDisk is Storage Spaces' own cmdlet and returns NOTHING for a
+# CSV backed by an iSCSI/SAN LUN, which left every such volume's Health and
+# Operational columns permanently blank on a cluster whose storage isn't S2D
+# (an array-backed cluster like WLGDC/Secondary). Get-Disk works for either
+# kind — it is the generic Windows disk object underneath both an S2D virtual
+# disk and a SAN LUN — so that is the primary source now; Get-VirtualDisk is
+# consulted only for DetachedReason, an S2D-specific concept with no SAN
+# equivalent.
 $vds = @{}
 foreach ($vd in @(Get-VirtualDisk -ErrorAction SilentlyContinue)) {
   $vds[[string]$vd.FriendlyName] = $vd
@@ -277,15 +285,23 @@ $csvs = @(Get-ClusterSharedVolume -ErrorAction SilentlyContinue | ForEach-Object
   # a volume is always slightly smaller than the disk it is on, so size is a
   # guess and this is an identity.
   $serial = ''
+  $disk = $null
   if ($info -and $info.Partition -and $info.Partition.DiskNumber -ne $null) {
-    try { $serial = [string](Get-Disk -Number $info.Partition.DiskNumber -ErrorAction Stop).SerialNumber } catch {}
+    try { $disk = Get-Disk -Number $info.Partition.DiskNumber -ErrorAction Stop; $serial = [string]$disk.SerialNumber } catch {}
   }
-  if (-not $serial -and $info -and $info.Partition -and $info.Partition.Name) {
+  if (-not $disk -and $info -and $info.Partition -and $info.Partition.Name) {
     # Fall back to the volume path, which Get-Partition can resolve to a disk.
     try {
       $pn = @(Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.AccessPaths -contains ([string]$info.Partition.Name) })[0]
-      if ($pn) { $serial = [string](Get-Disk -Number $pn.DiskNumber -ErrorAction SilentlyContinue).SerialNumber }
+      if ($pn) { $disk = Get-Disk -Number $pn.DiskNumber -ErrorAction SilentlyContinue; $serial = [string]$disk.SerialNumber }
     } catch {}
+  }
+  # Get-Disk's own Health/OperationalStatus, whatever is backing it. Preferred
+  # over the S2D-only reading above when both exist, since it is the one
+  # source that answers for every storage kind this CSV could be on.
+  if ($disk -and $disk.HealthStatus) {
+    $h = [string]$disk.HealthStatus
+    $op = [string]($disk.OperationalStatus -join ',')
   }
   [pscustomobject]@{ name = $csvName; owner = [string]$_.OwnerNode; state = [string]$_.State; health = $h; operational = $op; detachedReason = $dr; sizeBytes = $sz; freeBytes = $free; serialNumber = ([string]$serial).Trim() } })
 $cvms = @(Get-ClusterGroup -ErrorAction SilentlyContinue | Where-Object { $_.GroupType -eq 'VirtualMachine' } | ForEach-Object {

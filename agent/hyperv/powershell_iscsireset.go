@@ -111,22 +111,71 @@ foreach ($s in $sessions) {
     # to stop, and reporting them buried the ONE error that mattered under noise.
     if ($m -notmatch 'not persistent|does not exist|not found|Failed to remove persistent login') { $sessionErr += ($t + ' (unregister): ' + $m.Trim()) }
   }
-  # THE SESSION OBJECT IS PIPED. Do not name the target.
-  #
-  # -NodeAddress was given $s.TargetNodeAddress, and Get-IscsiSession echoes that
-  # name LOWERCASED while the initiator holds the array's own capitalisation —
-  # "iqn.2000-01.com.synology:Xpenology.default-target..." against
-  # "...xpenology.default-target...". iSCSI names are case-sensitive per RFC 3720,
-  # so the initiator found no such target and refused with "The parameter is
-  # incorrect", while the session it was looking at sat there connected.
-  # Observed on HVNEW04 and HVNEW05, 2026-08-25.
-  #
-  # This repo already knew names here are case-sensitive; it was recorded for the
-  # LOGIN path and the disconnect kept rebuilding the key anyway. Piping the
-  # object carries the identity the initiator itself assigned, which is the same
-  # remedy as Remove-IscsiTargetPortal and Remove-ClusterGroup.
-  try { $s | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop }
+}
+
+# DISCONNECT VIA Get-IscsiTarget, NOT BY PIPING THE Get-IscsiSession OBJECT.
+#
+# Disconnect-IscsiTarget's only pipeline-binding parameter is -NodeAddress,
+# bound BY PROPERTY NAME — and Get-IscsiSession's object exposes
+# TargetNodeAddress, not NodeAddress, so piping a session object into it can
+# never bind to anything: "The input object cannot be bound to any
+# parameters for the command either because the command does not take
+# pipeline input or the input and its properties do not match any of the
+# parameters that take pipeline input." Observed on HVNEW01, 2026-09-17, on
+# every session that survived a reset — the HVNEW04/05 case-sensitivity fix
+# below never actually worked for the disconnect step; it only looked fixed
+# because nothing was left to disconnect in whatever session tested it.
+#
+# Get-IscsiTarget's object DOES expose NodeAddress directly. This is
+# Microsoft's own documented pattern for this exact operation
+# ("Get-IscsiTarget | Where IsConnected | Disconnect-IscsiTarget"), and it
+# still carries the target's own capitalisation from the provider — the same
+# property the case-sensitivity fix needed — without rebuilding the string
+# by hand:
+#
+# iSCSI target names are CASE-SENSITIVE (RFC 3720). Get-IscsiSession echoes a
+# session's target name LOWERCASED while the initiator holds the array's own
+# capitalisation — "iqn.2000-01.com.synology:Xpenology.default-target..."
+# against "...xpenology.default-target...". Passing -NodeAddress with a
+# hand-rebuilt string from a session object reintroduces that mismatch and
+# the initiator refuses with "The parameter is incorrect", while the session
+# it was looking at sits there connected. Observed on HVNEW04 and HVNEW05,
+# 2026-08-25. Get-IscsiTarget's NodeAddress does not have this problem: it
+# comes from the target's own record, not the session's echo of it.
+$connected = @()
+try { $connected = @(Get-IscsiTarget -ErrorAction Stop | Where-Object { $_.IsConnected }) }
+catch { $sessionErr += ('could not list connected targets: ' + $_.Exception.Message) }
+foreach ($tgt in $connected) {
+  $t = [string]$tgt.NodeAddress
+  try { $tgt | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop }
   catch { $sessionErr += ($t + ': ' + ([string]$_.Exception.Message).Trim()) }
+}
+
+# 2b. A session already at 0 connections is invisible to the loop above: its
+# TARGET no longer reads IsConnected once the last connection has gone, so
+# Get-IscsiTarget's filter skips it, and nothing else here would otherwise
+# touch it. Left alone it never disconnects — the session object itself
+# outlives its own connections — and the readback at the end counted it as
+# "still connected" regardless, which is not what it is any more either.
+#
+# Reproduced live on HVNEW01, 2026-09-20: right after a ClusterDestroy, the
+# disconnect loop above hit "device on that session is currently being
+# used" (the disk had not yet fully released), the OS then dropped the
+# connection on its own a moment later, and the session was left sitting at
+# 0 connections forever — shown by the initiator's own GUI as
+# Reconnecting/Inactive. iscsicli LogoutTarget takes the session by its own
+# id regardless of connection count; confirmed live as the one thing that
+# actually reaches this state (Disconnect-IscsiTarget cannot: it has no
+# parameter set that binds a session object at all, the same defect the
+# fix above exists for).
+$remaining = @(Get-IscsiSession -ErrorAction SilentlyContinue)
+foreach ($s in $remaining) {
+  $sid = [string]$s.SessionIdentifier
+  if (-not $sid) { continue }
+  try {
+    & iscsicli LogoutTarget $sid | Out-Null
+    if ($LASTEXITCODE -ne 0) { $sessionErr += ($sid + ' (logout): iscsicli exit code ' + $LASTEXITCODE) }
+  } catch { $sessionErr += ($sid + ' (logout): ' + $_.Exception.Message) }
 }
 
 # 3. Persistent logins — the ones that outlive everything else and make a host

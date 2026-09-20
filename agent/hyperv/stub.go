@@ -438,7 +438,7 @@ func (s *Stub) EnsureVMHostPaths(_ context.Context, vmPath, vhdPath string) (Out
 	return OutcomeUpdated, nil
 }
 
-func (s *Stub) RemoveSwitch(_ context.Context, _ string) error       { return nil }
+func (s *Stub) RemoveSwitch(_ context.Context, _ string) (string, error) { return "", nil }
 func (s *Stub) RemoveVM(_ context.Context, _ string) error           { return nil }
 func (s *Stub) FormatDisk(_ context.Context, _ string) error         { return nil }
 func (s *Stub) FormatDiskDrive(_ context.Context, _, _ string) error { return nil }

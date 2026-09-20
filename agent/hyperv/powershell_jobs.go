@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -249,14 +250,118 @@ func (p *PowerShell) ResumeNode(ctx context.Context, node string) error {
 	return nil
 }
 
-// RemoveSwitch deletes a virtual switch from the host. Idempotent: absent switch
-// is a no-op. -Force suppresses the confirmation prompt.
-func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) error {
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; if (Get-VMSwitch -Name %s -ErrorAction SilentlyContinue) { Remove-VMSwitch -Name %s -Force }", psQuote(name), psQuote(name))
-	if err := p.run2(ctx, script); err != nil {
-		return fmt.Errorf("remove switch %q: %w", name, err)
+// RemoveSwitch deletes a virtual switch from the host. Idempotent: absent
+// switch is a no-op. -Force suppresses the confirmation prompt.
+//
+// A converged switch can carry the management-OS vNIC that an iSCSI session is
+// bound to. JobRemoveSwitch and JobResetISCSIInitiator can be dispatched for
+// the same host as independent, concurrently-run jobs (see
+// fanOutDecommissionCleanup and runJobs), so Remove-VMSwitch can be asked to
+// tear down a switch while a session is still holding that vNIC's address
+// open. So before removing anything, this disconnects only sessions actually
+// bound to an address that belongs to THIS switch's own management-OS
+// vNIC(s) — nothing on another switch or NIC is touched. That is deliberately
+// narrower than ResetISCSIInitiator, which tears down every iSCSI session on
+// the host regardless of relevance; that is too broad for something that runs
+// every time a switch is removed, including the overwhelmingly common case of
+// a switch that carries no iSCSI traffic at all.
+//
+// A session that will not disconnect is recorded but does not block the
+// switch removal: Remove-VMSwitch's own error is the more useful one to the
+// operator if an iSCSI session really is what is holding the vNIC open, and a
+// disconnect failure here may not even be why the removal itself fails.
+//
+// Not verified against a real host — reasoned from Get-VMNetworkAdapter,
+// Get-NetIPAddress and the iSCSI cmdlets' documented behaviour, the same way
+// as the rest of this file's iSCSI handling, but there is no Windows/Hyper-V
+// host reachable to exercise it against.
+func (p *PowerShell) RemoveSwitch(ctx context.Context, name string) (string, error) {
+	out, err := p.run(ctx, removeSwitchScript(name))
+	if err != nil {
+		return "", fmt.Errorf("remove switch %q: %w", name, err)
 	}
-	return nil
+	var res struct {
+		Disconnected     int      `json:"disconnected"`
+		DisconnectErrors []string `json:"disconnectErrors"`
+	}
+	msg := fmt.Sprintf("removed switch %q", name)
+	// A result that fails to parse means the switch removal itself already ran
+	// (or refused, and p.run would have returned that error above) — reporting
+	// that plainly is better than failing a job that actually succeeded over a
+	// reporting defect in the disconnect side-channel.
+	if uerr := json.Unmarshal([]byte(resultJSON(string(out))), &res); uerr == nil {
+		if res.Disconnected > 0 {
+			msg += fmt.Sprintf("; disconnected %d iSCSI session(s) that were bound to its management vNIC first", res.Disconnected)
+		}
+		if len(res.DisconnectErrors) > 0 {
+			msg += fmt.Sprintf("; could not disconnect: %s (the switch removal was attempted regardless)", strings.Join(res.DisconnectErrors, "; "))
+		}
+	}
+	return msg, nil
+}
+
+// removeSwitchScript builds the removal script. Split out so its shape is
+// unit-tested without a host, like the other template scripts in this file.
+func removeSwitchScript(name string) string {
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$switch = %[1]s
+$disconnected = 0
+$disconnectErr = @()
+if (Get-VMSwitch -Name $switch -ErrorAction SilentlyContinue) {
+  # Management-OS vNICs on THIS switch, and the IP address(es) each surfaces
+  # as on the host. A vNIC always presents to Windows networking as
+  # "vEthernet (<name>)" -- that is how Hyper-V names the host-side adapter it
+  # creates for it, not a guess.
+  $vnics = @(Get-VMNetworkAdapter -ManagementOS -SwitchName $switch -ErrorAction SilentlyContinue)
+  $addrs = @()
+  foreach ($v in $vnics) {
+    $alias = 'vEthernet (' + [string]$v.Name + ')'
+    try { $addrs += @(Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.IPAddress }) } catch {}
+  }
+  $addrs = @($addrs | Where-Object { $_ } | Sort-Object -Unique)
+  if ($addrs.Count -gt 0) {
+    # Correlate a SESSION to this switch by PIPING it into Get-IscsiConnection,
+    # not by parsing or rebuilding an identifier -- the same lesson
+    # ResetISCSIInitiator already learned about Disconnect-IscsiTarget: an
+    # association cmdlet binds the object it is given, not a key reconstructed
+    # from it. Get-IscsiConnection exposes InitiatorAddress per connection,
+    # which Get-IscsiSession does not expose at all.
+    $matchedTargets = @()
+    foreach ($s in @(Get-IscsiSession -ErrorAction SilentlyContinue)) {
+      $conns = @()
+      try { $conns = @($s | Get-IscsiConnection -ErrorAction SilentlyContinue) } catch {}
+      foreach ($c in $conns) {
+        if ($addrs -contains [string]$c.InitiatorAddress) { $matchedTargets += [string]$s.TargetNodeAddress; break }
+      }
+    }
+    $matchedTargets = @($matchedTargets | Sort-Object -Unique)
+    if ($matchedTargets.Count -gt 0) {
+      # DISCONNECT VIA Get-IscsiTarget, NOT THE SESSION OBJECT. Same reason as
+      # ResetISCSIInitiator: Disconnect-IscsiTarget only binds -NodeAddress by
+      # property name, which Get-IscsiSession's object does not expose, and a
+      # hand-rebuilt name reintroduces the RFC 3720 case mismatch that has
+      # already cost two incidents in this codebase (HVNEW04/05, HVNEW01).
+      # -eq is case-insensitive by default in PowerShell, so matching
+      # TargetNodeAddress against NodeAddress here to pick which targets are
+      # relevant is safe; it is only the disconnect call that must go through
+      # the target's own record rather than the session's echo of it.
+      $connected = @()
+      try { $connected = @(Get-IscsiTarget -ErrorAction Stop | Where-Object { $_.IsConnected }) }
+      catch { $disconnectErr += ('could not list connected targets: ' + $_.Exception.Message) }
+      foreach ($tgt in $connected) {
+        if ($matchedTargets -contains [string]$tgt.NodeAddress) {
+          try { $tgt | Disconnect-IscsiTarget -Confirm:$false -ErrorAction Stop; $disconnected++ }
+          catch { $disconnectErr += ([string]$tgt.NodeAddress + ': ' + $_.Exception.Message) }
+        }
+      }
+    }
+  }
+  # THEN remove the switch. A disconnect failure above is recorded, not fatal:
+  # Remove-VMSwitch's own error is the more useful one if a session really is
+  # what is holding the vNIC open.
+  Remove-VMSwitch -Name $switch -Force
+}
+'RESULT=' + (@{ disconnected = $disconnected; disconnectErrors = $disconnectErr } | ConvertTo-Json -Compress -Depth 3)`, psQuote(name))
 }
 
 // RemoveMgmtVNIC removes a management-OS vNIC by name. Idempotent: a no-op when
@@ -1054,6 +1159,13 @@ func isAllDigits(s string) bool {
 // ValidateCluster runs Test-Cluster and returns the report path. Storage tests
 // are excluded by default because they can be disruptive on an in-use CSV; the
 // caller can opt into a different category set via include.
+// ValidateCluster runs Test-Cluster and returns the HTML report it writes,
+// not just its path — the report lives on this node's local disk, which the
+// centre and console have no other way to reach, and CLAUDE.md's rule is
+// that a recovery (or, here, a diagnosis) an operator needs must be reachable
+// from the centre. Read once, right after the run, and handed back as the
+// job's own result: the console opens it directly rather than sending
+// someone to RDP into the node for a file that already exists.
 func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []string) (string, error) {
 	if len(include) == 0 {
 		include = []string{"Inventory", "Network", "System Configuration"}
@@ -1062,17 +1174,21 @@ func (p *PowerShell) ValidateCluster(ctx context.Context, nodes, include []strin
 	if len(nodes) > 0 {
 		nodeClause = "-Node " + psStringList(nodes) + " "
 	}
-	script := fmt.Sprintf("$ErrorActionPreference='Stop'; Import-Module FailoverClusters; (Test-Cluster %s-Include %s -WarningAction SilentlyContinue).FullName",
+	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+Import-Module FailoverClusters
+$report = (Test-Cluster %s-Include %s -WarningAction SilentlyContinue).FullName
+if ($report -and (Test-Path $report)) { Get-Content -Path $report -Raw -Encoding UTF8 }
+else { '<html><body><p>Test-Cluster ran but returned no report file.</p></body></html>' }`,
 		nodeClause, psStringList(include))
 	out, err := p.run(ctx, script)
 	if err != nil {
 		return "", fmt.Errorf("validate cluster: %w", err)
 	}
-	report := strings.TrimSpace(string(out))
-	if report == "" {
-		return "validation ran (no report path returned)", nil
+	html := strings.TrimSpace(string(out))
+	if html == "" {
+		return "", fmt.Errorf("validate cluster: Test-Cluster produced an empty report")
 	}
-	return "validation report: " + report, nil
+	return html, nil
 }
 
 // RepairHostDNS fixes the multi-homed-host DNS problem: a DHCP secondary NIC is

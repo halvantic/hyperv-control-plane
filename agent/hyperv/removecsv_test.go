@@ -39,6 +39,57 @@ func TestRemoveCSVAsksTheClusterBeforeConcludingThereIsNothing(t *testing.T) {
 	}
 }
 
+/* Remove-ClusterSharedVolume demotes a CSV, it does not evict it. Left there
+   the disk resource stays claimed by the cluster for ever under the same
+   name — a permanent orphan, indistinguishable from storage an operator
+   deliberately wants kept in reserve. Confirmed live on WLGDC, 2026-09-18:
+   after a "removal", the LUN was still listed as attached to the cluster
+   in Failover Cluster Manager. */
+func TestRemoveCSVEvictsTheDiskResourceLeftBehind(t *testing.T) {
+	var script string
+	p := &PowerShell{}
+	p.run = func(_ context.Context, s string) ([]byte, error) {
+		script = s
+		return []byte("RESULT=took 'DS1' out of the cluster entirely. The disk behind it (C:\\ClusterStorage\\DS1) still holds its data."), nil
+	}
+	if _, err := p.RemoveCSV(context.Background(), "DS1"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !strings.Contains(script, "Stop-ClusterResource -InputObject $res") {
+		t.Errorf("the leftover disk resource is not stopped before removal:\n%s", script)
+	}
+	if !strings.Contains(script, "Remove-ClusterResource -InputObject $res -Force") {
+		t.Errorf("the leftover disk resource is not evicted:\n%s", script)
+	}
+	// Re-fetched by name filter, never -Name — Remove-ClusterSharedVolume just
+	// changed this resource's own type, and this build does not always find
+	// one by -Name (see powershell_volumeonline.go, powershell_iscsiadopt.go).
+	if strings.Contains(script, "Get-ClusterResource -Name") {
+		t.Errorf("the resource is looked up by -Name, which this build does not always find:\n%s", script)
+	}
+}
+
+// A resource that resists eviction is named, not swallowed — CLAUDE.md's rule
+// against a known failure with no remedy applies here just as much as it does
+// to the LUN's own data never being touched.
+func TestRemoveCSVReportsWhenTheDiskResourceCouldNotBeEvicted(t *testing.T) {
+	p := &PowerShell{}
+	p.run = func(_ context.Context, _ string) ([]byte, error) {
+		return []byte("RESULT=took 'DS1' out of the cluster as a shared volume, but could not evict the disk resource left behind (Access is denied). " +
+			"It is now Available Storage rather than a shared volume, still claimed by the cluster. " +
+			"The disk behind it (C:\\ClusterStorage\\DS1) still holds its data either way. Ballast does not administer the array that serves this LUN, so deleting it has to be done there."), nil
+	}
+	msg, err := p.RemoveCSV(context.Background(), "DS1")
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	for _, want := range []string{"could not evict the disk resource", "Access is denied", "still claimed by the cluster"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the result does not say %q:\n%s", want, msg)
+		}
+	}
+}
+
 // Nothing found is reported as nothing found. Reporting it as a removal is the
 // entire bug.
 func TestRemoveCSVFailsWhenThereIsNothingToRemove(t *testing.T) {
