@@ -565,7 +565,7 @@ func (r *runner) requestObserveNudge() {
 	}
 }
 
-const agentVersion = version.Version
+var agentVersion = version.Version
 
 // run drives the agent until ctx is cancelled.
 func (r *runner) run(ctx context.Context) error {

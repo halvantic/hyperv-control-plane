@@ -3391,6 +3391,11 @@ type HostInventory struct {
 	LogicalCpus      int32                  `protobuf:"varint,4,opt,name=logical_cpus,json=logicalCpus,proto3" json:"logical_cpus,omitempty"`
 	OsVersion        string                 `protobuf:"bytes,5,opt,name=os_version,json=osVersion,proto3" json:"os_version,omitempty"`
 	UsedDriveLetters []string               `protobuf:"bytes,6,rep,name=used_drive_letters,json=usedDriveLetters,proto3" json:"used_drive_letters,omitempty"`
+	Manufacturer     string                 `protobuf:"bytes,7,opt,name=manufacturer,proto3" json:"manufacturer,omitempty"`
+	Model            string                 `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`
+	CpuModel         string                 `protobuf:"bytes,9,opt,name=cpu_model,json=cpuModel,proto3" json:"cpu_model,omitempty"`
+	CpuMaxMhz        int32                  `protobuf:"varint,10,opt,name=cpu_max_mhz,json=cpuMaxMhz,proto3" json:"cpu_max_mhz,omitempty"`
+	CpuCores         int32                  `protobuf:"varint,11,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -3465,6 +3470,41 @@ func (x *HostInventory) GetUsedDriveLetters() []string {
 		return x.UsedDriveLetters
 	}
 	return nil
+}
+
+func (x *HostInventory) GetManufacturer() string {
+	if x != nil {
+		return x.Manufacturer
+	}
+	return ""
+}
+
+func (x *HostInventory) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *HostInventory) GetCpuModel() string {
+	if x != nil {
+		return x.CpuModel
+	}
+	return ""
+}
+
+func (x *HostInventory) GetCpuMaxMhz() int32 {
+	if x != nil {
+		return x.CpuMaxMhz
+	}
+	return 0
+}
+
+func (x *HostInventory) GetCpuCores() int32 {
+	if x != nil {
+		return x.CpuCores
+	}
+	return 0
 }
 
 type PhysicalAdapter struct {
@@ -7559,7 +7599,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x06shared\x18\x05 \x01(\bR\x06shared\x12\x1e\n" +
 	"\n" +
 	"unlettered\x18\x06 \x01(\bR\n" +
-	"unlettered\"\xb8\x02\n" +
+	"unlettered\"\xcc\x03\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +
@@ -7567,7 +7607,13 @@ const file_ballast_proto_rawDesc = "" +
 	"\flogical_cpus\x18\x04 \x01(\x05R\vlogicalCpus\x12\x1d\n" +
 	"\n" +
 	"os_version\x18\x05 \x01(\tR\tosVersion\x12,\n" +
-	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\"\x92\x04\n" +
+	"\x12used_drive_letters\x18\x06 \x03(\tR\x10usedDriveLetters\x12\"\n" +
+	"\fmanufacturer\x18\a \x01(\tR\fmanufacturer\x12\x14\n" +
+	"\x05model\x18\b \x01(\tR\x05model\x12\x1b\n" +
+	"\tcpu_model\x18\t \x01(\tR\bcpuModel\x12\x1e\n" +
+	"\vcpu_max_mhz\x18\n" +
+	" \x01(\x05R\tcpuMaxMhz\x12\x1b\n" +
+	"\tcpu_cores\x18\v \x01(\x05R\bcpuCores\"\x92\x04\n" +
 	"\x0fPhysicalAdapter\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\x12$\n" +

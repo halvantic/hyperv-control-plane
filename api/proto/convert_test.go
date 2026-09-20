@@ -118,6 +118,13 @@ func sampleHost() types.Host {
 				},
 				TotalMemoryBytes: 137_438_953_472,
 				LogicalCPUs:      32,
+				OSVersion:        "Microsoft Windows Server 2025 Datacenter 10.0.26100",
+				UsedDriveLetters: []string{"C", "E"},
+				Manufacturer:     "Dell Inc.",
+				Model:            "PowerEdge R750",
+				CPUModel:         "Intel(R) Xeon(R) Gold 6248R CPU @ 3.00GHz",
+				CPUMaxMHz:        3000,
+				CPUCores:         24,
 			},
 			Conditions: []types.Condition{{
 				Type:               "SwitchConfigured",
@@ -504,6 +511,36 @@ func TestHostRoundTripCarriesEveryField(t *testing.T) {
 			disk.PartitionStyle, disk.LayoutKnown)
 	}
 	check("PhysicalAdapter", reflect.ValueOf(sampleHost().Status.Inventory.PhysicalAdapters[0]))
+
+	// The host's own hardware identity — server manufacturer/model and CPU
+	// model/speed/cores — added for the inventory workbook. Checked by name
+	// rather than with the generic sweep above: PhysicalAdapters and
+	// PhysicalDisks are already proven by the two checks above it, and the
+	// generic IsZero sweep has no way to tell "deliberately proven elsewhere"
+	// from "forgotten".
+	hw := sampleHost().Status.Inventory
+	for _, f := range []struct {
+		name string
+		zero bool
+	}{
+		{"OSVersion", hw.OSVersion == ""},
+		{"UsedDriveLetters", len(hw.UsedDriveLetters) == 0},
+		{"Manufacturer", hw.Manufacturer == ""},
+		{"Model", hw.Model == ""},
+		{"CPUModel", hw.CPUModel == ""},
+		{"CPUMaxMHz", hw.CPUMaxMHz == 0},
+		{"CPUCores", hw.CPUCores == 0},
+	} {
+		if f.zero {
+			t.Errorf("this test does not set HostInventory.%s, so the round trip cannot prove the proto carries it — populate it", f.name)
+		}
+	}
+	gotInv := InventoryFromProto(InventoryToProto(hw))
+	if gotInv.OSVersion != hw.OSVersion || gotInv.Manufacturer != hw.Manufacturer || gotInv.Model != hw.Model ||
+		gotInv.CPUModel != hw.CPUModel || gotInv.CPUMaxMHz != hw.CPUMaxMHz || gotInv.CPUCores != hw.CPUCores ||
+		!reflect.DeepEqual(gotInv.UsedDriveLetters, hw.UsedDriveLetters) {
+		t.Errorf("HostInventory hardware/OS fields did not survive the round trip:\n in:  %+v\n got: %+v", hw, gotInv)
+	}
 }
 
 // A field the proto does not carry round-trips perfectly as its zero value, so

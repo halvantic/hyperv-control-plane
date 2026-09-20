@@ -208,6 +208,11 @@ func InventoryToProto(inv types.HostInventory) *HostInventory {
 		TotalMemoryBytes: inv.TotalMemoryBytes,
 		LogicalCpus:      int32(inv.LogicalCPUs),
 		OsVersion:        inv.OSVersion,
+		Manufacturer:     inv.Manufacturer,
+		Model:            inv.Model,
+		CpuModel:         inv.CPUModel,
+		CpuMaxMhz:        int32(inv.CPUMaxMHz),
+		CpuCores:         int32(inv.CPUCores),
 	}
 	for _, a := range inv.PhysicalAdapters {
 		out.PhysicalAdapters = append(out.PhysicalAdapters, &PhysicalAdapter{
@@ -262,6 +267,11 @@ func InventoryFromProto(inv *HostInventory) types.HostInventory {
 		TotalMemoryBytes: inv.GetTotalMemoryBytes(),
 		LogicalCPUs:      int(inv.GetLogicalCpus()),
 		OSVersion:        inv.GetOsVersion(),
+		Manufacturer:     inv.GetManufacturer(),
+		Model:            inv.GetModel(),
+		CPUModel:         inv.GetCpuModel(),
+		CPUMaxMHz:        int(inv.GetCpuMaxMhz()),
+		CPUCores:         int(inv.GetCpuCores()),
 	}
 	for _, a := range inv.GetPhysicalAdapters() {
 		out.PhysicalAdapters = append(out.PhysicalAdapters, types.PhysicalAdapter{

@@ -17,6 +17,7 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -829,6 +830,32 @@ type HostInventory struct {
 	// on the host (e.g. ["C","D"]). The UI uses this to prevent assigning a
 	// letter that is already taken when formatting a disk to a volume.
 	UsedDriveLetters []string `json:"usedDriveLetters,omitempty"`
+
+	// Manufacturer and Model are the physical server's own identity
+	// (Win32_ComputerSystem), for the inventory workbook and an operator
+	// matching a Ballast host to a rack asset tag or a vendor support ticket.
+	// Both read "Virtual Machine"/vendor-specific strings on a nested host —
+	// not filtered out, since that fact ("this Ballast host is itself
+	// virtualised") is exactly what a reader would want to know.
+	Manufacturer string `json:"manufacturer,omitempty"`
+	Model        string `json:"model,omitempty"`
+
+	// CPUModel is Win32_Processor's own Name string (e.g. "Intel(R) Xeon(R)
+	// Gold 6248R CPU @ 3.00GHz"). Deliberately not decomposed into a separate
+	// "generation" field: Intel has no single WMI property for it, generation
+	// is inferable only from the model number and that mapping goes stale
+	// with every new CPU family, so a field claiming to carry it would be a
+	// guess dressed as a fact. The model string itself already carries the
+	// generation for anyone who reads it, which is where that judgement
+	// belongs.
+	CPUModel string `json:"cpuModel,omitempty"`
+	// CPUMaxMHz is the processor's rated maximum clock speed (MaxClockSpeed).
+	CPUMaxMHz int `json:"cpuMaxMHz,omitempty"`
+	// CPUCores is physical cores, as distinct from LogicalCPUs above (which
+	// counts hyperthreaded logical processors) — the two answer different
+	// capacity-planning questions and conflating them undercounts what
+	// hyperthreading is actually doing for a workload.
+	CPUCores int `json:"cpuCores,omitempty"`
 }
 
 type PhysicalAdapter struct {
@@ -3765,6 +3792,28 @@ func ParseCapturedBytes(message string) uint64 {
 		return 0
 	}
 	return n
+}
+
+// ClusterBlueprint is a saved snapshot of the New Cluster wizard's own form
+// state, so an operator can reprovision the same shape of cluster — most
+// often the very fleet a decommission just tore down — without walking every
+// wizard tab again.
+//
+// Deliberately opaque: Config is exactly what the wizard's own state
+// serialises to and is applied back onto, not a schema Ballast interprets.
+// A blueprint is centre-only metadata in the same category as VMTemplate and
+// Site — no proto, no agent, and nothing reconciles towards one. Modelling
+// every wizard field as a first-class typed field here would only churn in
+// lockstep with the wizard's own UI, for no benefit the centre would ever
+// use: it never reads inside Config, only stores and returns it verbatim,
+// and the one place that gives it meaning is the same wizard that wrote it.
+type ClusterBlueprint struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Config      json.RawMessage `json:"config"`
+
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	CreatedBy string    `json:"createdBy,omitempty"`
 }
 
 // GuestProfileSpec is how a deployed guest customises itself on first boot.

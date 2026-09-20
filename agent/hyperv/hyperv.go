@@ -209,8 +209,11 @@ type Interface interface {
 	EnsureLiveMigration(ctx context.Context, spec types.LiveMigrationSpec) (Outcome, error)
 
 	// RemoveSwitch deletes a virtual switch from the host (Remove-VMSwitch).
-	// Imperative Job. A no-op (no error) when the switch does not exist.
-	RemoveSwitch(ctx context.Context, name string) error
+	// Imperative Job. A no-op (no error) when the switch does not exist. First
+	// disconnects any iSCSI session bound to one of the switch's own
+	// management-OS vNICs, so a converged switch carrying iSCSI traffic does
+	// not fail the removal; returns what (if anything) it disconnected.
+	RemoveSwitch(ctx context.Context, name string) (string, error)
 
 	// RemoveVM stops and deletes a VM from the host (hard delete). Imperative
 	// Job. A no-op (no error) when the VM does not exist.

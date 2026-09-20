@@ -182,6 +182,22 @@ RemoveCSV takes a Cluster Shared Volume out of the cluster.
 	    a NAS or SAN it has no presence on — so it says so and names where the
 	    remaining step has to happen, rather than half-doing the job silently.
 	  - Nothing of that name anywhere is reported as nothing, not as a removal.
+
+	Stopping at Remove-ClusterSharedVolume left the disk as a permanent
+	"Available Storage" physical-disk resource — still owned and shown by the
+	cluster, just no longer a shared volume — and that is NOT what "remove"
+	means to an operator. Confirmed live on WLGDC, 2026-09-18: after a
+	removal the LUN was still listed as attached in Failover Cluster
+	Manager, and a fresh, undeclared ghost row for its on-disk volume label
+	appeared in the console (a second, separate defect fixed the same day —
+	see volumeprovisioning.js's `unclaimed` state). Evicting the physical-disk
+	RESOURCE from the cluster is squarely Ballast's own domain — cluster
+	membership — as distinct from the LUN's data, which this still never
+	touches. So the array-LUN path now also stops and removes the resource
+	Remove-ClusterSharedVolume left behind, the same two-step (Stop then
+	Remove, object piped, never -Name) this codebase already uses for every
+	other cluster resource eviction (see the witness and replication-broker
+	removal code in powershell_cluster.go and powershell_replica.go).
 */
 func (p *PowerShell) RemoveCSV(ctx context.Context, name string) (string, error) {
 	script := fmt.Sprintf(`
@@ -210,13 +226,39 @@ if (-not $csv) {
   return
 }
 
-# A CSV on storage Ballast does not own. Taking it out of the cluster is ours;
-# the LUN behind it is not.
+# A CSV on storage Ballast does not own. Taking it, and the cluster
+# resource it leaves behind, out of the cluster is ours; the LUN itself is
+# not.
 $path = [string]$csv.SharedVolumeInfo.FriendlyVolumeName
+$resourceName = [string]$csv.Name
 Remove-ClusterSharedVolume -InputObject $csv -ErrorAction Stop | Out-Null
-'RESULT=took ' + %[1]s + ' out of the cluster. It is now Available Storage rather than a shared volume, and ' +
-  'the disk behind it (' + $path + ') still holds its data. Ballast does not administer the array that serves ' +
-  'this LUN, so deleting it has to be done there.'
+
+# Remove-ClusterSharedVolume demotes the CSV to a plain "Available Storage"
+# Physical Disk resource under the SAME name — it does not leave the
+# cluster. Left there it is a permanent orphan, still claimed by the
+# cluster, indistinguishable from storage an operator actually wants kept
+# in reserve. Re-fetched by NAME FILTER rather than -Name (this build does
+# not always find one by -Name — see the same lesson in powershell_
+# volumeonline.go and powershell_iscsiadopt.go) since Remove-ClusterSharedVolume
+# just changed this resource's own type.
+$evictErr = ''
+$res = @(Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -eq $resourceName })[0]
+if ($res) {
+  try {
+    Stop-ClusterResource -InputObject $res -ErrorAction SilentlyContinue | Out-Null
+    Remove-ClusterResource -InputObject $res -Force -ErrorAction Stop | Out-Null
+  } catch { $evictErr = ([string]$_.Exception.Message).Trim() }
+}
+
+if ($evictErr) {
+  'RESULT=took ' + %[1]s + ' out of the cluster as a shared volume, but could not evict the disk resource left behind (' + $evictErr + '). ' +
+    'It is now Available Storage rather than a shared volume, still claimed by the cluster. ' +
+    'The disk behind it (' + $path + ') still holds its data either way. Ballast does not administer the array that serves this LUN, so deleting it has to be done there.'
+} else {
+  'RESULT=took ' + %[1]s + ' out of the cluster entirely. ' +
+    'The disk behind it (' + $path + ') still holds its data. Ballast does not administer the array that serves ' +
+    'this LUN, so deleting it has to be done there.'
+}
 `, psQuote(name))
 
 	out, err := p.run(ctx, script)

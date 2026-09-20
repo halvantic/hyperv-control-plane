@@ -974,7 +974,27 @@ if ($before.Count -eq 0) {
 $attempted = @(); $failed = @()
 foreach ($h in $before) {
   $addr = [string]$h.TargetPortalAddress
+  $ipa = [string]$h.InitiatorPortalAddress
   $attempted += $addr
+  # RE-QUERY IMMEDIATELY BEFORE REMOVING. $h was enumerated at the top of this
+  # script, and the reconcile loop runs independently on its own timer — for a
+  # PORTAL STILL DECLARED IN THE SPEC (the normal case for this action; that is
+  # exactly what an operator uses Rediscover on), reconcile can re-add it in the
+  # gap between enumeration and removal. Remove-IscsiTargetPortal is a CDXML
+  # cmdlet: piping $h does not act on the instance held in memory, it re-resolves
+  # the object's own key against current WMI state, so a stale $h then fails with
+  # "The specified portal was not found" even though the address is still there
+  # a moment later. HVNEW01 and HVNEW02, 2026-09-17 — hand-deleting the same
+  # portal in iscsicpl worked every time because a human's timing does not
+  # collide with reconcile the way a four-second script run reliably does.
+  # Matched on both address and source binding, not address alone: two entries
+  # can share a TargetPortalAddress with different InitiatorPortalAddress
+  # bindings, and re-querying by address only would risk removing the wrong one.
+  $fresh = @(Get-IscsiTargetPortal -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.TargetPortalAddress -eq $addr -and [string]$_.InitiatorPortalAddress -eq $ipa
+  })
+  if ($fresh.Count -eq 0) { continue }
+  $h = $fresh[0]
   # Piped, never named. -TargetPortalPortNumber fails with "Type mismatch for
   # parameter" on this cmdlet whatever is put in it, and the object carries the
   # identity the initiator itself assigned.

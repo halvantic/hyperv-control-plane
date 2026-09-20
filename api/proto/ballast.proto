@@ -520,6 +520,11 @@ message HostInventory {
   int32 logical_cpus = 4;
   string os_version = 5;
   repeated string used_drive_letters = 6;
+  string manufacturer = 7;
+  string model = 8;
+  string cpu_model = 9;
+  int32 cpu_max_mhz = 10;
+  int32 cpu_cores = 11;
 }
 
 message PhysicalAdapter {

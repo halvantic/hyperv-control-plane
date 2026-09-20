@@ -93,3 +93,45 @@ func TestTheEventLogProbeNeverReportsItsOwnFailure(t *testing.T) {
 	// Whatever this host is, the probe must return a string and not panic.
 	_ = recentHostErrors(time.Now())
 }
+
+/* A genuine tidied cause used to always get "powershell: exit status 1: "
+   glued in front of it, repeating "it failed" ahead of the sentence that
+   already says why and what to do. Reported live 2026-09-17 against an
+   adopt-LUN refusal: the operator saw
+
+       adopt iSCSI disk "claude-test-vol": powershell: exit status 1: the LUN
+       ... already contains a ReFS volume ...
+
+   when everything useful starts after the second colon. */
+
+func TestATidiedCauseCarriesNoExitStatusPrefix(t *testing.T) {
+	detail, tidied := psFailureDetailTidied(context.Background(), time.Now(), "", "the LUN already contains a ReFS volume labelled \"DS1\"")
+	if !tidied {
+		t.Fatal("a real stderr diagnostic must be reported as tidied")
+	}
+	err := wrapPSError(errFakeExit{}, detail, tidied)
+	if strings.Contains(err.Error(), "exit status") || strings.Contains(err.Error(), "powershell:") {
+		t.Fatalf("a genuine cause must not be prefixed with process-exit noise: %q", err)
+	}
+	if !strings.Contains(err.Error(), "already contains a ReFS volume") {
+		t.Fatalf("the actual cause must survive: %q", err)
+	}
+}
+
+// The fallback descriptions (cancelled, no diagnostic, host-log fact) are
+// partly ABOUT the process exiting non-zero, so the prefix stays there — it
+// is real information in that case, not noise ahead of a cause.
+func TestAFallbackDescriptionKeepsTheExitStatusPrefix(t *testing.T) {
+	detail, tidied := psFailureDetailTidied(context.Background(), time.Now(), "", "")
+	if tidied {
+		t.Fatal("no real stderr diagnostic exists here, so this must not be reported as tidied")
+	}
+	err := wrapPSError(errFakeExit{}, detail, tidied)
+	if !strings.Contains(err.Error(), "powershell:") {
+		t.Fatalf("a fallback description must still say a powershell command failed: %q", err)
+	}
+}
+
+type errFakeExit struct{}
+
+func (errFakeExit) Error() string { return "exit status 1" }

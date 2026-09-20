@@ -2,8 +2,11 @@
 
 Today the documented posture is "the agent's service account needs to be a
 domain admin" (see `-service-user` in `agent/service/main.go`: *"Cluster/domain
-operations need a domain admin"*). Reading every AD-touching code path says
-that's more than is actually required.
+operations need a domain admin"*). That is no longer true in practice: the
+two AD needs below are both confirmed working on real lab hardware
+(2026-09-16) with an account that is neither a Domain Admin nor an Account
+Operator. `-service-user`'s comment is now stale and should be updated in the
+same change that next touches `agent/service/main.go`.
 
 **This doc is rationale and status only.** The actual, runnable setup and test
 tooling lives in two scripts — this doc used to embed their code inline, which
@@ -45,21 +48,25 @@ rights at all.
 That leaves exactly two AD needs, both narrowly scoped to an OU:
 
 1. Write access to `msDS-AllowedToDelegateTo`, for classic Kerberos
-   constrained delegation (live migration) — *if* the object-ACL delegation
-   is actually sufficient on its own. Test A/B in the plan below exist
-   because that "if" is the open question: writing this attribute is
-   documented in places as also requiring the `SeEnableDelegationPrivilege`
-   **user right** on the DC (distinct from an object ACL), which by default
-   only Domain Admins hold.
+   constrained delegation (live migration). **Confirmed on the lab
+   (2026-09-16, Test A): the object-ACL delegation alone is sufficient** — a
+   real live migration succeeded with the write granted only via the OU's
+   object ACL, no `SeEnableDelegationPrivilege` on the DC. Some Microsoft
+   documentation suggests that user right is also required; on this rig it
+   was not. Test B (temporarily granting the right) was never run because A
+   already passed.
 2. The ability to create/delete a Cluster Name Object — see below, this
-   changed shape after a real failure.
+   changed shape after a real failure, and the fix is confirmed (Test D: a
+   cluster was formed, destroyed, and re-formed under a second name with no
+   per-name prestage).
 
 ## What this account should NOT have
 
 - Not a member of **Domain Admins**.
 - Not a member of **Account Operators**.
-- Not granted `SeEnableDelegationPrivilege` as a permanent default (Test B
-  grants it temporarily and reverts it).
+- Not granted `SeEnableDelegationPrivilege` — confirmed unnecessary (Test A
+  passed without it; Test B, which would have granted it temporarily, was
+  never needed).
 
 ## CNO creation: OU-scoped create/delete, not a per-name prestaged object
 
@@ -96,9 +103,18 @@ option for this exact scenario — instead of Full Control on one prestaged
 object:
 
 ```
-dsacls <OU DN> /I:S /G "<account>:CC;computer"
-dsacls <OU DN> /I:S /G "<account>:DC;computer"
+dsacls <OU DN> /I:T /G "<account>:CC;computer"
+dsacls <OU DN> /I:T /G "<account>:DC;computer"
 ```
+
+`/I:T` ("this object and subobjects"), not `/I:S` ("subobjects" only) — `/I:S`
+is `INHERIT_ONLY` and explicitly excludes the OU itself, so an ACE granted
+that way never applies to a computer object created directly in the OU, only
+to one created in some OU nested beneath it. The first version of this script
+used `/I:S` and it looked correct (the ACE was visibly present on the OU) but
+failed live on 2026-09-16 forming a real cluster (`WLGDC`, `Access is denied`
+creating the CNO) because the CNO is created directly in the delegated OU,
+not in a child OU under it.
 
 This is broader than "Full Control on one object" (it covers *any* computer
 object in the OU, not just one chosen name), but still meaningfully narrower
@@ -108,6 +124,30 @@ groups, or the OU's own properties. It means: any cluster name, formed or
 re-formed, at any time, with zero advance setup per name. `provision-ballast-agent-account.ps1`
 implements this; there is no `-CnoName` parameter to set because there's
 nothing left to name in advance.
+
+## The mirror-image `/I:S` case: domain join
+
+`-AllowDomainJoin` delegates two more rights, for completing (or repeating) a
+domain join rather than just creating the CNO:
+
+```
+dsacls <OU DN> /I:S /G "<account>:WP;;computer"
+dsacls <OU DN> /I:S /G "<account>:CA;Reset Password;computer"
+```
+
+These use `/I:S`, the opposite of the CC/DC pair above, and getting this
+backwards by analogy with them is the exact mistake that shipped first: `CC;
+computer` and `DC;computer` put `computer` in the **object type** slot
+(`Permission;ObjectType`) — the right (create a child) applies to the OU
+itself, so `/I:T` is correct. `WP;;computer` and `CA;Reset
+Password;computer` put `computer` in the **inherited object type** slot
+instead (`Permission;;InheritedObjectType` — note the empty middle field):
+the right applies only to *existing* computer-class descendants, never to
+the OU object itself, which is exactly what `/I:S` means. dsacls enforces
+this itself — asking for `/I:T` on an inherited object type fails outright
+with "computer is specified as Inherited Object Type. `/I:S` must be
+present." / "The parameter is incorrect." Confirmed live 2026-09-17
+provisioning a real fleet (HVnew01–06).
 
 ---
 
@@ -119,38 +159,41 @@ For each step: **PASS/FAIL** and, on failure, the **exact error text**.
 
 - **Test A** — classic delegation write, object ACL only, no
   `SeEnableDelegationPrivilege`. Meshed across every ordered pair in `-Nodes`,
-  matching what `EnsureMigrationDelegation` actually does. Predicted **FAIL**
-  with an AD constraint violation (commonly `DirectoryServicesCOMException`
-  `0x2098` or LDAP `INSUFF_ACCESS_RIGHTS`), despite the object ACL granting
-  write.
+  matching what `EnsureMigrationDelegation` actually does. **Confirmed PASS
+  on the lab, 2026-09-16** — the object-ACL write was sufficient on its own; a
+  real live migration between the tested pair succeeded. (The doc originally
+  predicted this would fail; it didn't. Recorded here as a correction, not
+  quietly dropped.)
 - **Test B** — grants `SeEnableDelegationPrivilege` on the DC, retests one
-  representative pair, then **reverts the grant** — never left in place past
-  the test that needed it. If it flips A's result to PASS, that confirms the
-  DC right (not the ACL) was the blocker.
-- **Test C** — the key unknown. Resource-based constrained delegation
-  (`msDS-AllowedToActOnBehalfOfOtherIdentity` on the destination) instead of
-  classic delegation, with the DC right still not granted, then a **real live
-  migration** to prove whether Hyper-V's migration path actually honours
-  RBCD — genuinely unverified before running it, not assumed either way.
+  representative pair, then **reverts the grant**. **Not run** — moot once A
+  passed on its own.
+- **Test C** — resource-based constrained delegation instead of classic
+  delegation. **Not run** — moot once A passed; nothing here needs RBCD.
 - **Test D** — cluster formation under the OU-scoped create/delete
   delegation above: form, destroy, then form again under a **second,
-  different name**, proving no per-name prestage is needed for either.
+  different name**. **Confirmed PASS on the lab, 2026-09-16** — this is what
+  surfaced and then validated the fix in the CNO section above.
 - **Test E** — a manual checklist (host reconcile, switch/vNIC, VM, disk
   resize, cluster ops, migration), read from the console rather than
-  automated — report anything that fails specifically on a privilege error.
+  automated. **Not run.** The two AD-specific unknowns this doc exists to
+  answer (A and D) are now closed; E is a broader smoke test across the rest
+  of the surface and is still worth doing before calling the posture fully
+  proven end to end, but it isn't gating the AD delegation conclusion above.
 
 Results print as a table at the end of the run (`$script:Results`), built
 from what actually ran — not something to fill in by hand.
 
 ## Open follow-ups
 
-- If **A** confirms `SeEnableDelegationPrivilege` is required: document the
-  grant/revert pair in Test B as a named, narrow exception — not a reason to
-  fall back to Domain Admins.
-- If **C** proves RBCD both writable and migration-compatible: raise a
-  follow-up proposal for an `agent/hyperv` code change (a second delegation
-  mode). Not done as part of this doc.
-- The `Primary` failure above is the first real (not lab-predicted) data
-  point this posture has produced. Treat future real-world failures the same
-  way: fix the actual cause, then fold the fix back into both the script and
-  this doc in the same change — not just the script.
+- **Closed**: whether the object ACL alone is sufficient for migration
+  delegation (Test A, PASS) and whether OU-scoped create/delete removes the
+  per-name CNO prestage requirement (Test D, PASS). Domain Admins /
+  `SeEnableDelegationPrivilege` are confirmed unnecessary for either.
+- **Still open**: Test E, the manual checklist across the rest of the
+  reconcile surface (switch/vNIC, disk resize, general VM ops) under this
+  account. Worth running before treating the least-privilege posture as
+  proven beyond cluster formation and migration.
+- The `Primary`/`WLGDC` failures above are the first real (not lab-predicted)
+  data points this posture has produced. Treat future real-world failures the
+  same way: fix the actual cause, then fold the fix back into both the script
+  and this doc in the same change — not just the script.

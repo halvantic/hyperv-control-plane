@@ -98,14 +98,29 @@ func NewPowerShell(log *slog.Logger) *PowerShell {
 // "cancelled" and "failed silently" legible, which is what the empty message
 // took away.
 func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string) string {
+	detail, _ := psFailureDetailTidied(ctx, since, stdout, stderr)
+	return detail
+}
+
+// psFailureDetailTidied is psFailureDetail plus whether the detail is a
+// genuine tidied cause (tidyPSError matched real content) as opposed to one
+// of the fallback descriptions below.
+//
+// The distinction matters one level up: a genuine cause is the whole answer —
+// prefixing it with "powershell: exit status 1:" repeats "it failed" ahead of
+// the sentence that already says why and what to do, which is the "raw error
+// passed through" defect by another route (see wrapPSError). A fallback
+// description, by contrast, IS partly about the process exiting non-zero —
+// dropping that prefix there would lose real information, not noise.
+func psFailureDetailTidied(ctx context.Context, since time.Time, stdout, stderr string) (string, bool) {
 	if s := tidyPSError(stderr); s != "" {
-		return s
+		return s, true
 	}
 	switch ctx.Err() {
 	case context.DeadlineExceeded:
-		return "the operation ran past its time limit and was cancelled before it reported anything"
+		return "the operation ran past its time limit and was cancelled before it reported anything", false
 	case context.Canceled:
-		return "the operation was cancelled before it reported anything (the agent stopped, lost the centre, or the job was superseded)"
+		return "the operation was cancelled before it reported anything (the agent stopped, lost the centre, or the job was superseded)", false
 	}
 	// Whatever it managed to print is more use than nothing — a script that dies
 	// part-way at least says how far it got.
@@ -113,16 +128,36 @@ func psFailureDetail(ctx context.Context, since time.Time, stdout, stderr string
 		if i := strings.LastIndexByte(s, '\n'); i >= 0 {
 			s = strings.TrimSpace(s[i+1:])
 		}
-		return "the command failed without writing any error output; its last output was: " + s
+		return "the command failed without writing any error output; its last output was: " + s, false
 	}
 	// Nothing on either stream and not cancelled. Telling the operator to go and
 	// read the host's event log is the shape CLAUDE.md calls a defect: the agent
 	// is ON that host and reads those same logs in half a dozen other places, so
 	// a fact it can establish must not be posted as homework. Ask the host.
 	if ev := recentHostErrors(since); ev != "" {
-		return "the command failed without writing any error output, but the host logged this while it ran: " + ev
+		return "the command failed without writing any error output, but the host logged this while it ran: " + ev, false
 	}
-	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason"
+	return "the command failed without writing any error output, was not cancelled, and the host's Hyper-V and System logs recorded nothing at the same time — so PowerShell exited non-zero without reporting a reason", false
+}
+
+// wrapPSError builds the error execPowerShell and its siblings return from a
+// failed powershell.exe run.
+//
+// A genuine tidied cause — reconcile's own carefully written sentence, with
+// the remedy in it — used to always get "powershell: exit status 1: " glued
+// in front, which repeats "it failed" ahead of the sentence that already
+// explains why and what to do. Reported live against an adopt-LUN refusal,
+// 2026-09-17: the operator saw "adopt iSCSI disk \"claude-test-vol\":
+// powershell: exit status 1: the LUN ... already contains a ReFS volume ..."
+// when the useful part starts after the second colon. The exit-status prefix
+// is kept for the fallback descriptions above (cancelled, no diagnostic,
+// host-log fact), where "PowerShell exited non-zero" IS part of the honest
+// answer, not noise ahead of one.
+func wrapPSError(cmdErr error, detail string, tidied bool) error {
+	if tidied {
+		return fmt.Errorf("%s", detail)
+	}
+	return fmt.Errorf("powershell: %w: %s", cmdErr, detail)
 }
 
 // tidyPSError reduces a PowerShell error record to the sentence a person needs.
@@ -259,7 +294,8 @@ func execPowerShell(ctx context.Context, script string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
+		detail, tidied := psFailureDetailTidied(ctx, start, stdout.String(), stderr.String())
+		return stdout.Bytes(), wrapPSError(err, detail, tidied)
 	}
 	return stdout.Bytes(), nil
 }
@@ -302,7 +338,8 @@ func execPowerShellStreamEnv(ctx context.Context, script string, extraEnv []stri
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, "", stderr.String()))
+		detail, tidied := psFailureDetailTidied(ctx, start, "", stderr.String())
+		return wrapPSError(err, detail, tidied)
 	}
 	return nil
 }
@@ -320,7 +357,8 @@ func (p *PowerShell) runWithEnv(ctx context.Context, script string, extraEnv []s
 	cmd.Stderr = &stderr
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
+		detail, tidied := psFailureDetailTidied(ctx, start, stdout.String(), stderr.String())
+		return wrapPSError(err, detail, tidied)
 	}
 	return nil
 }
@@ -350,7 +388,8 @@ func execPowerShellStdin(ctx context.Context, script string, stdin []byte) ([]by
 	cmd.Stderr = &stderr
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("powershell: %w: %s", err, psFailureDetail(ctx, start, stdout.String(), stderr.String()))
+		detail, tidied := psFailureDetailTidied(ctx, start, stdout.String(), stderr.String())
+		return stdout.Bytes(), wrapPSError(err, detail, tidied)
 	}
 	return stdout.Bytes(), nil
 }
@@ -590,6 +629,14 @@ $disks = $pdisks | ForEach-Object {
 $cs = Get-CimInstance Win32_ComputerSystem
 $os = Get-CimInstance Win32_OperatingSystem
 $driveLetters = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Name.Length -eq 1 } | ForEach-Object { $_.Name })
+# The physical server's own identity and its processor, for the inventory
+# workbook. A multi-socket host reports one Win32_Processor instance per
+# socket; the first is taken as representative (a mismatched-socket build is
+# rare enough, and unusual enough to be worth its own diagnosis, that
+# reporting cores summed across sockets as though they were one part would
+# misdescribe it rather than help). NumberOfCores is physical cores, kept
+# distinct from logicalCPUs above (hyperthreaded logical processors).
+$cpu = @(Get-CimInstance Win32_Processor)[0]
 [pscustomobject]@{
   physicalAdapters = @($adapters)
   physicalDisks    = @($disks)
@@ -597,6 +644,11 @@ $driveLetters = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContin
   logicalCPUs      = [int]$cs.NumberOfLogicalProcessors
   osVersion        = [string]($os.Caption + ' ' + $os.Version).Trim()
   usedDriveLetters = @($driveLetters)
+  manufacturer     = [string]$cs.Manufacturer
+  model            = [string]$cs.Model
+  cpuModel         = [string]$cpu.Name
+  cpuMaxMHz        = [int]$cpu.MaxClockSpeed
+  cpuCores         = [int]$cpu.NumberOfCores
 } | ConvertTo-Json -Depth 5 -Compress
 `
 }
