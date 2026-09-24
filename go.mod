@@ -17,4 +17,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
 
-require github.com/halvantic/hyperv-control-plane/api v0.2.0
+require github.com/halvantic/hyperv-control-plane/api v0.3.0
