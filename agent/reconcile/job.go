@@ -341,6 +341,8 @@ func (r *Reconciler) ExecuteJob(ctx context.Context, job types.Job, onProgress h
 			return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], ""), "formatted disk "+p["deviceId"]+" with no drive letter")
 		}
 		return done(r.hv.FormatDiskDrive(ctx, p["deviceId"], p["driveLetter"]), "formatted disk "+p["deviceId"]+" as "+p["driveLetter"]+":")
+	case types.JobFormatVolume:
+		return done(r.hv.FormatVolume(ctx, p["driveLetter"]), "formatted volume "+p["driveLetter"]+":")
 	case types.JobCreateVolumeInFreeSpace:
 		/* A bad size must not become "the whole free extent".
 

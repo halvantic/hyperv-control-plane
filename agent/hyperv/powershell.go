@@ -761,12 +761,42 @@ try {
     ForEach-Object { [string]$_.DriveLetter })
   $osDriveLetters = @($osDriveLetters | Sort-Object -Unique)
 } catch {}
+# Which physical disk backs each lettered volume, and which disks carry the
+# boot/system partition — self-contained here rather than reused from the
+# separate physical-disk inventory pass, because that runs as its own
+# PowerShell invocation and shares no variables with this one.
+#
+# This is what lets a volume report DiskUniqueId/SharesDiskWithOS honestly: a
+# disk can carry more than one lettered partition (I: on HVNEW06 shares its
+# disk with a hidden 16MB system partition, see the OS-volume comment above),
+# so PhysicalDisk.DriveLetter — which only ever holds ONE letter per disk —
+# cannot answer "which disk backs I:" on its own.
+$letterToDiskUniqueId = @{}
+$osDiskIds = @{}
+try {
+  Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
+    $parts = @($_ | Get-Partition -ErrorAction SilentlyContinue)
+    $isOSDisk = @($parts | Where-Object { $_.IsBoot -or $_.IsSystem }).Count -gt 0
+    foreach ($pd in @($_ | Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+      if ($isOSDisk) { $osDiskIds[[string]$pd.UniqueId] = $true }
+      foreach ($p in $parts) {
+        if ($p.DriveLetter) { $letterToDiskUniqueId[[string]$p.DriveLetter] = [string]$pd.UniqueId }
+      }
+    }
+  }
+} catch {}
 # A CSV mount lives under C:\ClusterStorage, and C is excluded already, so
 # there is no way for one to be reported twice.
 $vols += @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter -and ($osDriveLetters -notcontains [string]$_.DriveLetter) } | ForEach-Object {
   # Claimed too, so a lettered volume cannot also arrive as a letter-less one.
   if ($_.Path) { $claimedPaths[([string]$_.Path).TrimEnd('\').ToLower()] = $true }
-  [pscustomobject]@{ name = "$($_.DriveLetter):"; path = "$($_.DriveLetter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining); shared = $false }
+  $letter = [string]$_.DriveLetter
+  $diskId = if ($letterToDiskUniqueId.ContainsKey($letter)) { $letterToDiskUniqueId[$letter] } else { '' }
+  # Whether the disk BEHIND this volume also carries the boot/system partition
+  # — not whether this volume itself is the OS volume, which is excluded from
+  # $osDriveLetters already and never reaches here.
+  $sharesOS = $diskId -and $osDiskIds.ContainsKey($diskId)
+  [pscustomobject]@{ name = "$($letter):"; path = "$($letter):\"; sizeBytes = [uint64]$_.Size; usedBytes = [uint64]($_.Size - $_.SizeRemaining); shared = $false; diskUniqueId = $diskId; sharesDiskWithOS = [bool]$sharesOS }
 })
 
 # A formatted volume with NO drive letter is still a volume.

@@ -26,6 +26,16 @@ func TestReleaseLine(t *testing.T) {
 	}
 }
 
+// Tag is a hand-written literal, not derived from Version (see Tag's own
+// comment). That hand pairing has nothing else keeping it honest, so this fails
+// loudly the moment somebody bumps Version and forgets Tag.
+func TestTagMatchesVersion(t *testing.T) {
+	want := TagPrefix + Version + TagTerminator
+	if Tag != want {
+		t.Fatalf("Tag = %q, want %q: Tag was not updated alongside Version", Tag, want)
+	}
+}
+
 func TestReleaseLineOfTheActualShippedVersion(t *testing.T) {
 	// Version itself, unmodified -- this is what every other package that
 	// calls ReleaseLine() actually gets today, so it earns its own case.

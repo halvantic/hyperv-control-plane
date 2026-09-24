@@ -104,3 +104,39 @@ func TestTheClaimIsNormalisedBeforeComparing(t *testing.T) {
 		t.Errorf("paths are compared without normalising, so the claim never matches:\n%s", s)
 	}
 }
+
+/* A lettered volume reports which physical disk it lives on, and whether that
+   disk also carries the boot/system partition — two different questions.
+
+   Found live on HVNEW06: I: is a 3.8TB data volume carved from spare space on
+   the same physical disk that carries the tiny hidden system partition. It is
+   not the OS volume (excluded from $osDriveLetters already, same as always),
+   but a console asking "which disk backs I:, and is wiping that disk safe"
+   had nothing but PhysicalDisk.DriveLetter to go on — which only ever holds
+   ONE letter per disk, so it could resolve at most one of a disk's several
+   lettered partitions. $letterToDiskUniqueId is built from every letter on
+   every disk, not just the first, precisely so this stops being a guess. */
+func TestLetteredVolumesReportTheirDisk(t *testing.T) {
+	s := resourcesScript
+	// Self-contained within THIS script, not reused from the separate
+	// physical-disk inventory pass — that runs as its own PowerShell
+	// invocation and shares no variables with this one. A cross-script
+	// variable reference here would throw "cannot call a method on a
+	// null-valued expression" and take down the whole resources collection.
+	if !strings.Contains(s, "if ($p.DriveLetter) { $letterToDiskUniqueId[[string]$p.DriveLetter] = [string]$pd.UniqueId }") {
+		t.Fatalf("every letter on a disk must resolve to it, not just the first:\n%s", s)
+	}
+	if !strings.Contains(s, "diskUniqueId = $diskId") {
+		t.Errorf("the volume does not report which disk backs it:\n%s", s)
+	}
+	// Disk-level $osDiskIds, not the volume's own letter — SharesDiskWithOS
+	// answers "would a whole-disk wipe endanger the boot chain", a fact about
+	// the DISK, unrelated to whether this volume is excluded from
+	// $osDriveLetters (it always is, by construction, before this line runs).
+	if !strings.Contains(s, "$sharesOS = $diskId -and $osDiskIds.ContainsKey($diskId)") {
+		t.Errorf("sharesDiskWithOS must be checked against the disk-level $osDiskIds, not the volume's own letter:\n%s", s)
+	}
+	if !strings.Contains(s, "sharesDiskWithOS = [bool]$sharesOS") {
+		t.Errorf("the volume does not report whether its disk shares the OS:\n%s", s)
+	}
+}

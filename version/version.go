@@ -8,7 +8,33 @@ import (
 	"strings"
 )
 
-const Version = "1.0.0"
+const Version = "1.0.1"
+
+// TagPrefix and TagTerminator bound the marker Tag holds. They are constants so
+// that tooling which locates the marker in a compiled binary searches for exactly
+// these bytes.
+const (
+	TagPrefix     = "ballast-version:"
+	TagTerminator = ";"
+)
+
+// Tag wraps Version in a marker no other string in a compiled binary would
+// plausibly share, so a release's version can be read out of the file on disk.
+// A bare version number is not specific enough for that: a Go binary embeds many
+// dependency and toolchain version strings, and a search for "1.0.1" alone finds
+// several of them and cannot tell which is Ballast's.
+//
+// It is its own literal, updated by hand alongside Version, and not built as
+// TagPrefix + Version + TagTerminator. Version is a constant here, but Tag is a
+// variable: a variable initialised from a concatenation is computed when the
+// program starts and never appears in the file's static data, which is the one
+// place that reading looks. TestTagMatchesVersion fails the moment the two
+// drift apart.
+//
+// Tag is also logged once at agent start-up (see agent/service). That is not for
+// the log's sake: a package-level variable that nothing reads is something the
+// linker may drop, taking the marker with it. Passing it to a real call keeps it.
+var Tag = "ballast-version:1.0.1;"
 
 // ReleaseLine returns the release line Version belongs to, as "<major>.x" —
 // "0.4.277-slice" and "0.3.90-slice" are both "0.x"; "1.4.2-slice" is "1.x".
