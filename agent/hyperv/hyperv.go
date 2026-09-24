@@ -225,6 +225,13 @@ type Interface interface {
 	// FormatDiskDrive initialises a physical disk, creates a single GPT partition,
 	// formats it NTFS and assigns the requested drive letter. Refuses the OS disk.
 	FormatDiskDrive(ctx context.Context, deviceID, driveLetter string) error
+	// FormatVolume reformats an EXISTING partition's filesystem in place
+	// (Format-Volume), keeping its drive letter and its place on the disk.
+	// Destructive imperative Job; refuses the OS/boot volume. Unlike FormatDisk
+	// this does not touch the partition table or the disk's initialised state —
+	// it is the lighter of the two, for an operator who wants the same drive
+	// letter back empty rather than the whole disk returned to raw.
+	FormatVolume(ctx context.Context, driveLetter string) error
 	// CreateVolumeInFreeSpace carves a volume out of a disk's UNALLOCATED space,
 	// leaving existing partitions alone. It is the one disk operation that may
 	// run on the OS disk, because it neither clears nor initialises anything —

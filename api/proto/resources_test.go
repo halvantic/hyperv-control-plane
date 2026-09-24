@@ -30,6 +30,9 @@ func sampleResources() types.HostResources {
 			   field is honestly set rather than a shape the agent never sends. */
 			Name: "Volume1", Path: `C:\ClusterStorage\Volume1`, SizeBytes: 1 << 40, UsedBytes: 1 << 39,
 			Shared: true, Unlettered: true,
+			// A CSV can sit on a member's own disk when it has no dedicated
+			// storage disks yet, so this is a real combination, not padding.
+			DiskUniqueID: "eui.0000000000000001", SharesDiskWithOS: true,
 		}, {
 			Name: "I:", Path: `I:\`, SizeBytes: 2 << 40, UsedBytes: 512 << 30,
 		}, {

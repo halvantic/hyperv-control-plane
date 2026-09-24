@@ -3306,9 +3306,19 @@ type StorageVolume struct {
 	// folder, or one handed to a cluster. Stated this way round so an older agent,
 	// which sends nothing here, is read as "has a letter" rather than having every
 	// volume it reports look letter-less.
-	Unlettered    bool `protobuf:"varint,6,opt,name=unlettered,proto3" json:"unlettered,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Unlettered bool `protobuf:"varint,6,opt,name=unlettered,proto3" json:"unlettered,omitempty"`
+	// disk_unique_id is the PhysicalDisk.UniqueId of the disk this volume's
+	// partition lives on, resolved by the agent at collection time. See
+	// StorageVolume.DiskUniqueID in api/types for why this cannot be
+	// reconstructed downstream from PhysicalDisk.DriveLetter alone.
+	DiskUniqueId string `protobuf:"bytes,7,opt,name=disk_unique_id,json=diskUniqueId,proto3" json:"disk_unique_id,omitempty"`
+	// shares_disk_with_os is true when disk_unique_id's disk also carries the
+	// boot/system partition — a data volume carved from spare space on the OS
+	// disk, distinct from this volume itself BEING the OS volume (which is
+	// never reported here at all). See StorageVolume.SharesDiskWithOS.
+	SharesDiskWithOs bool `protobuf:"varint,8,opt,name=shares_disk_with_os,json=sharesDiskWithOs,proto3" json:"shares_disk_with_os,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StorageVolume) Reset() {
@@ -3379,6 +3389,20 @@ func (x *StorageVolume) GetShared() bool {
 func (x *StorageVolume) GetUnlettered() bool {
 	if x != nil {
 		return x.Unlettered
+	}
+	return false
+}
+
+func (x *StorageVolume) GetDiskUniqueId() string {
+	if x != nil {
+		return x.DiskUniqueId
+	}
+	return ""
+}
+
+func (x *StorageVolume) GetSharesDiskWithOs() bool {
+	if x != nil {
+		return x.SharesDiskWithOs
 	}
 	return false
 }
@@ -7588,7 +7612,7 @@ const file_ballast_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fnet_adapters\x18\x02 \x03(\tR\vnetAdapters\x12.\n" +
 	"\x13allow_management_os\x18\x03 \x01(\bR\x11allowManagementOs\x12\x17\n" +
-	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"\xad\x01\n" +
+	"\avlan_id\x18\x04 \x01(\x05R\x06vlanId\"\x82\x02\n" +
 	"\rStorageVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +
@@ -7599,7 +7623,9 @@ const file_ballast_proto_rawDesc = "" +
 	"\x06shared\x18\x05 \x01(\bR\x06shared\x12\x1e\n" +
 	"\n" +
 	"unlettered\x18\x06 \x01(\bR\n" +
-	"unlettered\"\xcc\x03\n" +
+	"unlettered\x12$\n" +
+	"\x0edisk_unique_id\x18\a \x01(\tR\fdiskUniqueId\x12-\n" +
+	"\x13shares_disk_with_os\x18\b \x01(\bR\x10sharesDiskWithOs\"\xcc\x03\n" +
 	"\rHostInventory\x12H\n" +
 	"\x11physical_adapters\x18\x01 \x03(\v2\x1b.ballast.v1.PhysicalAdapterR\x10physicalAdapters\x12?\n" +
 	"\x0ephysical_disks\x18\x02 \x03(\v2\x18.ballast.v1.PhysicalDiskR\rphysicalDisks\x12,\n" +

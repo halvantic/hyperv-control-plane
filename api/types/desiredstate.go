@@ -805,6 +805,36 @@ type StorageVolume struct {
 	   a letter, which made the option that creates one a way to produce
 	   something the inventory then dropped. */
 	Unlettered bool `json:"unlettered,omitempty"`
+
+	/* DiskUniqueID identifies the PHYSICAL DISK this volume's partition lives
+	   on (a PhysicalDisk.UniqueID, matching PhysicalDisk elsewhere in this
+	   file), empty when the agent could not resolve one.
+
+	   Without this, telling which disk backs a lettered volume meant matching
+	   drive letters against PhysicalDisk.DriveLetter — which only ever holds
+	   ONE letter per disk (see diskToLetter in the agent's inventory script),
+	   so a disk carrying more than one lettered partition could only ever be
+	   found for one of them. A console gating a per-volume action on "which
+	   disk is this" had no reliable way to ask. The agent knows the answer at
+	   collection time (Get-Partition's own DiskNumber), so it is reported
+	   directly instead of being reconstructed downstream by guessing. */
+	DiskUniqueID string `json:"diskUniqueId,omitempty"`
+
+	/* SharesDiskWithOS is true when DiskUniqueID's disk also carries the
+	   boot/system partition — a data volume carved from spare space on the
+	   OS's own physical disk, which is common on these hosts (see the
+	   osDriveLetters comment in the agent's resourcesScript for how HVNEW06's
+	   I: came to exist this way).
+
+	   This is NOT the same question as "is this volume the OS volume" — the OS
+	   volume itself is never reported here at all (excluded at collection,
+	   same as Unlettered's own history). It answers a narrower, downstream
+	   question: a whole-DISK destructive operation (wiping the disk back to
+	   raw) would take the boot/system partition down with it, even though
+	   reformatting THIS volume's own partition in place would not touch it.
+	   Gate the first kind of operation on this flag; the second needs no gate
+	   beyond DiskUniqueID being known at all. */
+	SharesDiskWithOS bool `json:"sharesDiskWithOS,omitempty"`
 }
 
 // HostMetrics is observed, dynamic host utilisation. All fields are best-effort;
@@ -2899,6 +2929,14 @@ const (
 
 	JobFormatDisk      = "FormatDisk"      // params: deviceId — wipe a physical disk back to a poolable raw state (destructive)
 	JobFormatDiskDrive = "FormatDiskDrive" // params: deviceId, driveLetter (optional — empty leaves the volume with no letter) — initialise, partition, format NTFS
+
+	// JobFormatVolume reformats an existing partition in place — same drive
+	// letter, same place on the disk, just empty. The lighter counterpart to
+	// JobFormatDisk: that one takes the whole disk back to raw so it can rejoin
+	// a pool, this one is for an operator who just wants the volume emptied.
+	// params: driveLetter. Refuses the OS/boot volume. Standalone hosts only —
+	// a CSV is cluster-owned and has its own removal path (RemoveCSV).
+	JobFormatVolume = "FormatVolume"
 	/* JobCreateVolumeInFreeSpace carves a volume out of a disk's UNALLOCATED
 	   space, leaving every existing partition alone.
 

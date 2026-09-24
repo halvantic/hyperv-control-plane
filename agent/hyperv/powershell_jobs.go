@@ -480,6 +480,19 @@ func (p *PowerShell) FormatDisk(ctx context.Context, deviceID string) error {
 	return nil
 }
 
+// FormatVolume reformats an existing partition's filesystem in place, keeping
+// its drive letter and the disk's partition table untouched. This is the
+// lighter of the two ways to empty a provisioned standalone disk: FormatDisk
+// takes the disk back to raw (so it can rejoin a pool); this keeps the same
+// letter and layout, just empty. Refuses the OS/boot volume. Idempotent: an
+// already-empty NTFS volume simply gets reformatted again.
+func (p *PowerShell) FormatVolume(ctx context.Context, driveLetter string) error {
+	if err := p.run2(ctx, formatVolumeScript(driveLetter)); err != nil {
+		return fmt.Errorf("format volume %q: %w", driveLetter, err)
+	}
+	return nil
+}
+
 // ResetPoolDisks wipes every LOCAL non-OS disk that is not already an S2D pool
 // member, so a node newly added to the cluster contributes its disks to the pool
 // (S2D only claims blank/CanPool disks). It enumerates via Get-Disk, which is
@@ -1589,6 +1602,32 @@ func formatDiskScriptForTest() string {
 func formatDiskScript(id string) string {
 	return fmt.Sprintf(formatDiskTemplate, psQuote(id))
 }
+
+// formatVolumeScriptForTest exposes the volume-reformat script so its OS-drive
+// refusal can be asserted without a host.
+func formatVolumeScriptForTest() string {
+	return formatVolumeScript("__test__")
+}
+
+// formatVolumeScript is the script FormatVolume runs. A drive letter is
+// already unique on a host, so this needs none of formatDiskScript's
+// disk-identification ambiguity handling — only the same OS-volume refusal.
+func formatVolumeScript(driveLetter string) string {
+	return fmt.Sprintf(formatVolumeTemplate, psQuote(driveLetter))
+}
+
+const formatVolumeTemplate = `$ErrorActionPreference='Stop'
+$letter = %[1]s
+$part = Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue
+if (-not $part) { throw ('no partition with drive letter ' + $letter + ': on this host') }
+# Checked on the PARTITION, not the disk. IsBoot/IsSystem are per-partition —
+# a data volume carved from spare space on the OS disk (D:, I: on these hosts)
+# is a different partition on the same disk and is not boot/system itself.
+# Checking the DISK's IsBoot/IsSystem instead would refuse every partition on
+# that disk, including ones Format-Volume never touches.
+if ($part.IsBoot -or $part.IsSystem) { throw 'refusing to format the OS/boot volume' }
+Format-Volume -DriveLetter $letter -FileSystem NTFS -Force -Confirm:$false | Out-Null
+`
 
 const formatDiskTemplate = `$ErrorActionPreference='Stop'
 $want = %[1]s

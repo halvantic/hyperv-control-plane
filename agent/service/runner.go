@@ -754,7 +754,7 @@ func (r *runner) tryRegister(ctx context.Context, client ballastpb.AgentServiceC
 	r.uid = resp.GetUid()
 	r.registered = true
 	r.log.Info("registered with centre",
-		"host", r.cfg.hostName, "uid", r.uid, "known", resp.GetKnown())
+		"host", r.cfg.hostName, "uid", r.uid, "known", resp.GetKnown(), "versionTag", version.Tag)
 }
 
 // keepalive refreshes the centre's LastContact between reconcile cycles by

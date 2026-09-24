@@ -511,6 +511,16 @@ message StorageVolume {
   // which sends nothing here, is read as "has a letter" rather than having every
   // volume it reports look letter-less.
   bool unlettered = 6;
+  // disk_unique_id is the PhysicalDisk.UniqueId of the disk this volume's
+  // partition lives on, resolved by the agent at collection time. See
+  // StorageVolume.DiskUniqueID in api/types for why this cannot be
+  // reconstructed downstream from PhysicalDisk.DriveLetter alone.
+  string disk_unique_id = 7;
+  // shares_disk_with_os is true when disk_unique_id's disk also carries the
+  // boot/system partition — a data volume carved from spare space on the OS
+  // disk, distinct from this volume itself BEING the OS volume (which is
+  // never reported here at all). See StorageVolume.SharesDiskWithOS.
+  bool shares_disk_with_os = 8;
 }
 
 message HostInventory {
