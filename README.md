@@ -112,10 +112,12 @@ Most of the reconcile logic is unit-tested without needing a live Hyper-V host, 
 
 ## 📦 Downloads
 
-Prefer a built binary over building from source? Official `v1.0.0` releases are published two ways, both with `SHA256SUMS` for verification:
+Prefer a built binary over building from source? The current release, `v1.0.1`, is published two ways, both with `SHA256SUMS` for verification:
 
 - [GitHub Releases](https://github.com/halvantic/hyperv-control-plane/releases) — the agent, attached to this repository's own tags.
 - [ballast.halvantic.com/download](https://ballast.halvantic.com/download) — the agent alongside the closed-source centre and Ballast Manager binaries.
+
+What changed in each release is in the [release notes](https://ballast.halvantic.com/docs/reference/release-notes).
 
 ---
 
