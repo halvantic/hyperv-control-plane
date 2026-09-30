@@ -915,6 +915,14 @@ func (r *runner) cycle(parent context.Context, client ballastpb.AgentServiceClie
 	// the next cycle retries — the cycle can never wedge the agent.
 	ctx, cancel := context.WithTimeout(parent, cycleTimeout)
 	defer cancel()
+	// One PowerShell process for the cycle's pooled calls (the VM inventory, the
+	// live VM read, each VM's reconcile and full read), so the Hyper-V module
+	// and each cmdlet warm up once a cycle instead of once per process. Measured
+	// on HVNEW06: nine Hyper-V reads cost 1.85s on their first call in a process
+	// and 0.39s on the second. Calls still run one at a time, in the order the
+	// cycle makes them.
+	ctx, endSession := r.hv.Session(ctx)
+	defer endSession()
 	defer func() {
 		// INFO, not DEBUG: this is the number anyone diagnosing a slow console
 		// asks for first, and an agent log nobody can read at its default level
@@ -1347,6 +1355,17 @@ func (r *runner) runJobs(ctx context.Context, client ballastpb.AgentServiceClien
 				// without waiting for the next heartbeat.
 				r.requestNudge()
 			}()
+			// ShutdownHost and RebootHost have no "vm" param to hold via jobsVMs —
+			// they hold every VM on the host, by taking down VMMS itself. Stand the
+			// VM reconciler off for the whole window: if the drain they may run
+			// first is refused and ExecuteJob returns without powering off, this
+			// defer clears it so the next pass reconciles normally again. If the
+			// host actually powers off or reboots, the process dies before the
+			// defer runs, which is fine — the flag dies with it.
+			if job.Kind == types.JobShutdownHost || job.Kind == types.JobRebootHost {
+				r.reconciler.SetHostPoweringOff(true)
+				defer r.reconciler.SetHostPoweringOff(false)
+			}
 			jctx, cancel := context.WithTimeout(ctx, jobTimeoutFor(job))
 			defer cancel()
 			r.reportJob(jctx, client, job.ID, types.JobRunning, "")

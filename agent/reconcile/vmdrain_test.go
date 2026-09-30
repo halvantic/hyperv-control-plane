@@ -78,3 +78,47 @@ func TestTheSameErrorOnAHealthyHostStillFails(t *testing.T) {
 		t.Fatal("a VM that cannot be ensured on a node nobody is draining is a fault and must be reported as one")
 	}
 }
+
+/* Shutting down a whole cluster at once (nowhere to drain to) hits the same
+   "cannot enumerate VMs" and disk-resize-mid-shutdown errors as a drain does,
+   but from ShutdownHost/RebootHost racing the reconcile cycle's own tick
+   rather than from a live migration. Reproduced on labtest 2026-09-28. */
+
+func TestAVMOnAPoweringOffHostIsNotAFailure(t *testing.T) {
+	r := New(&failingVM{Stub: &hyperv.Stub{}}, nil)
+	r.hostPoweringOff.Store(true)
+
+	res := r.ReconcileVM(context.Background(), vmFor("DC01"))
+
+	if res.Phase == types.PhaseDegraded {
+		t.Fatal("a VM on a host Ballast itself is powering off must not be reported Degraded")
+	}
+	var found bool
+	for _, c := range res.Conditions {
+		if c.Type == "VM/DC01" {
+			found = true
+			if c.Reason != "HostPoweringOff" {
+				t.Errorf("want reason HostPoweringOff, got %q: %q", c.Reason, c.Message)
+			}
+			if strings.Contains(c.Message, "Hyper-V is not answering") || strings.Contains(c.Message, "powershell") {
+				t.Errorf("a raw cmdlet error must not reach the operator here: %q", c.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the VM must still report a condition: going silent about it is how an operator loses track")
+	}
+}
+
+// The gate is the power-off, and only the power-off. Once it clears (a
+// refused drain, say) the same error is a real failure again.
+func TestTheSameErrorAfterPowerOffClearsStillFails(t *testing.T) {
+	r := New(&failingVM{Stub: &hyperv.Stub{}}, nil)
+	r.hostPoweringOff.Store(false)
+
+	res := r.ReconcileVM(context.Background(), vmFor("DC01"))
+
+	if res.Phase != types.PhaseDegraded {
+		t.Fatal("a VM that cannot be ensured on a host nobody is powering off is a fault and must be reported as one")
+	}
+}

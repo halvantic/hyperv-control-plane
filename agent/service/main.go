@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"log/slog"
@@ -33,7 +34,7 @@ func main() {
 		hostName   = flag.String("host", defaultHostName(), "this host's name (must match its desired-state object)")
 		storePath  = flag.String("store", defaultStorePath(), "path to the agent's embedded store")
 		heartbeat  = flag.Duration("heartbeat", 15*time.Second, "interval between pull/report cycles")
-		hypervKind = flag.String("hyperv", "stub", "host backend: stub|powershell (powershell requires a real Hyper-V host)")
+		hypervKind = flag.String("hyperv", defaultBackend(runtime.GOOS), "host backend: powershell|stub (stub reports a fake host and changes nothing; development only)")
 		debug      = flag.Bool("debug", false, "run in the console even when started by the SCM")
 		install    = flag.Bool("install", false, "install the Windows service and exit")
 		uninstall  = flag.Bool("uninstall", false, "remove the Windows service and exit")
@@ -92,11 +93,14 @@ func main() {
 	defer st.Close()
 
 	// The rest of the agent depends only on hyperv.Interface, so the backend is
-	// a runtime choice. Default is the stub; powershell selects the real host
-	// implementation and is intended for a Hyper-V host.
+	// a runtime choice. See defaultBackend for why powershell is the default on
+	// Windows.
 	var hv hyperv.Interface
 	switch *hypervKind {
 	case "stub":
+		// Said loudly because nothing else says it: a stub host registers,
+		// heartbeats and shows online like a real one, with fake inventory.
+		log.Warn("running the stub backend: this agent reports a fake host (adapters NIC1 and NIC2, no switches, storage or VMs) and changes nothing on this machine; reinstall with -hyperv powershell to manage this host")
 		hv = &hyperv.Stub{}
 	case "powershell":
 		hv = hyperv.NewPowerShell(log)
@@ -131,6 +135,22 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("agent stopped")
+}
+
+// defaultBackend is the -hyperv value used when the flag is not given.
+//
+// It was stub everywhere, so a bare `ballast-agent -install` on a real Hyper-V
+// host installed a service that reported hard-coded NIC1/NIC2 and no switches,
+// storage or VMs, while the host showed online and green. That reads as a
+// permissions problem and is not one, and the only way in was an install
+// command missing a flag. The stub is a development aid, so it is now opt-in:
+// Windows, where the agent manages a Hyper-V host, defaults to powershell.
+// Elsewhere there is no Hyper-V to reach, and the stub stays the default.
+func defaultBackend(goos string) string {
+	if goos == "windows" {
+		return "powershell"
+	}
+	return "stub"
 }
 
 func defaultHostName() string {

@@ -132,6 +132,28 @@ type Interface interface {
 	// GetIntegrationServices reads what a VM's guest services are set to.
 	GetIntegrationServices(ctx context.Context, vm string) ([]IntegrationServiceState, error)
 
+	// Session opens a shared PowerShell process for the per-VM calls made under
+	// the returned context (EnsureVM, GetVMState), started on first use; end
+	// stops it. A fresh process per call spent ~1.8s warming up the Hyper-V
+	// cmdlets before any work, once per VM per pass. Calls behave exactly as
+	// they do without one, and anything wrong with the session falls back to a
+	// process per call.
+	Session(ctx context.Context) (context.Context, func())
+
+	// GetIntegrationServicesBatch reads the guest services of every named VM in
+	// ONE invocation, keyed by lower-cased name. A VM missing from the result
+	// was not read, and the caller falls back to reading it alone.
+	//
+	// The per-VM read is a single cmdlet in a PowerShell process of its own: 7s
+	// of a pass on HVNEW06 for seven VMs that declare services, about 0.6s of
+	// each being powershell.exe and the Hyper-V module loading.
+	GetIntegrationServicesBatch(ctx context.Context, names []string) (map[string][]IntegrationServiceState, error)
+
+	// ApplyIntegrationServices is EnsureIntegrationServices against a reading the
+	// caller already took, so a settled VM costs no invocation at all. Writes
+	// only what differs from have.
+	ApplyIntegrationServices(ctx context.Context, vm string, want *types.VMIntegrationServices, have []IntegrationServiceState) (Outcome, error)
+
 	// ClusterVMRolesPresent reports which of the named VMs already exist as
 	// highly-available cluster roles, in one query. EnsureClusterVMRole answers
 	// that for a single VM by enumerating every cluster group, so reconciling n

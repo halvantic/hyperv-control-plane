@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -143,6 +144,23 @@ type Reconciler struct {
 	// a VM that has already left is not readable here — which is the drain
 	// working, not a fault. See the drain branch in reconcileVM.
 	hostDraining bool
+
+	// hostPoweringOff is true for the whole window between a ShutdownHost or
+	// RebootHost job starting and the computer actually going down (or the job
+	// failing, e.g. a refused drain). It is set from the job's own goroutine —
+	// runJobs launches jobs independently of the reconcile/report cycle so a
+	// slow one never blocks the heartbeat — while reconcileVM reads it from the
+	// cycle's goroutine, so unlike hostDraining (set and read in the same
+	// goroutine each pass) it needs to be race-safe.
+	//
+	// Without this, a VM reconcile pass ticking during that window hits VMMS
+	// mid-shutdown or a CSV going away under an in-flight disk resize, gets a
+	// raw PowerShell error, and reports the VM Degraded — the operator's last
+	// word on a VM Ballast itself is turning off on purpose, indistinguishable
+	// from a real fault. Mirrors the hostDraining branch below: the reconciler
+	// knowing what its own agent is doing beats teaching it to recognise how
+	// each conflict happens to fail.
+	hostPoweringOff atomic.Bool
 
 	// replicaSettled is set once EnsureReplicaServer has reported a pass with
 	// nothing to change. While it holds, the step runs on replicaServerEvery
@@ -277,6 +295,14 @@ const maintenanceDeepEvery = 40
 // SetVMBusy wires the "is a job operating on this VM" lookup. Without one the
 // reconciler behaves as before and reconciles everything.
 func (r *Reconciler) SetVMBusy(f func(name string) (string, bool)) { r.vmBusy = f }
+
+// SetHostPoweringOff records whether a ShutdownHost or RebootHost job is
+// currently in flight on this host. Called from the job's own goroutine
+// (runJobs), read from the reconcile cycle's goroutine — see hostPoweringOff.
+func (r *Reconciler) SetHostPoweringOff(v bool) { r.hostPoweringOff.Store(v) }
+
+// IsHostPoweringOff reports the value SetHostPoweringOff last set.
+func (r *Reconciler) IsHostPoweringOff() bool { return r.hostPoweringOff.Load() }
 
 // New returns a Reconciler driving the given host interface.
 func New(hv hyperv.Interface, log *slog.Logger) *Reconciler {

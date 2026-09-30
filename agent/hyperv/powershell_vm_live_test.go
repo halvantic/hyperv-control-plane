@@ -37,6 +37,23 @@ func TestVMLiveScriptQueriesTheHostOncePerThingNotOncePerVM(t *testing.T) {
 	}
 }
 
+/*
+One query for the adapters, not one hidden inside a pipeline.
+
+	Get-VM | Get-VMNetworkAdapter reads as a single call and costs a round trip
+	per VM: 3.6s on HVNEW06's fourteen VMs, against 0.48s for -VMName *, which
+	asks once. The count above cannot tell the two apart, so this pins the form.
+*/
+func TestVMLiveScriptReadsAdaptersHostWideNotThroughAPipeline(t *testing.T) {
+	s := psCode(vmLiveScript([]string{"Windows", "Linux"}))
+	if !strings.Contains(s, "Get-VMNetworkAdapter -VMName *") {
+		t.Errorf("the adapters must be read with one host-wide query:\n%s", s)
+	}
+	if strings.Contains(s, "| Get-VMNetworkAdapter") {
+		t.Errorf("piping VMs into Get-VMNetworkAdapter restores the per-VM cost:\n%s", s)
+	}
+}
+
 func TestVMLiveScriptCoversEveryNameAndQuotesThem(t *testing.T) {
 	s := vmLiveScript([]string{"Windows", "It's Odd"})
 	for _, n := range []string{"Windows", "It's Odd"} {

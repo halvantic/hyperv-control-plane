@@ -199,7 +199,8 @@ try {
 } | ConvertTo-Json -Compress -Depth 6
 `, psQuote(name))
 
-	out, err := p.run(ctx, script)
+	// Pooled: a read, and safe in a shared process (no exit, $script: or Add-Type).
+	out, err := p.runPooled(ctx, script)
 	if err != nil {
 		return VMState{}, fmt.Errorf("get vm state %q: %w", name, err)
 	}
@@ -293,31 +294,37 @@ type observedVMListItem struct {
 // ListObservedVMs enumerates every VM on the host. Best-effort per VM: a read
 // error on one does not drop the rest.
 func (p *PowerShell) ListObservedVMs(ctx context.Context) ([]types.ObservedVM, error) {
-	const script = `
+	// Guest IPs and replication come from the host-wide WMI reads the live read
+	// uses (see guestIPsScript): 6.5s of this call's 16.4s on HVNEW06 was IPs
+	// fetched adapter by adapter, and 1.3s asking each VM for a replication
+	// relationship none of them had. Each VM's adapters are read once, for both
+	// its IPs and its NIC list, where they used to be read twice.
+	script := `
 $ErrorActionPreference = 'Stop'
-$out = @()
+` + replicationModeScript + guestIPsScript + `$out = @()
 foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
   try {
+    $vmAds = @($vm | Get-VMNetworkAdapter -ErrorAction SilentlyContinue)
     $ips = ''
-    try { $ips = (@($vm | Get-VMNetworkAdapter | Select-Object -ExpandProperty IPAddresses | Where-Object { $_ -and $_ -notlike 'fe80*' -and $_ -ne '127.0.0.1' }) -join ', ') } catch {}
+    try { $ips = ((@(foreach ($a in $vmAds) { __ips $a }) | Where-Object { $_ -and $_ -notlike 'fe80*' -and $_ -ne '127.0.0.1' }) -join ', ') } catch {}
     $disks = @()
     try { foreach ($d in @($vm | Get-VMHardDiskDrive -ErrorAction SilentlyContinue)) {
       $sz = 0; try { $sz = [uint64]((Get-VHD -Path $d.Path -ErrorAction Stop).Size) } catch {}
       $disks += [pscustomobject]@{ path = [string]$d.Path; sizeBytes = [uint64]$sz }
     } } catch {}
     $nics = @()
-    try { foreach ($a in @($vm | Get-VMNetworkAdapter -ErrorAction SilentlyContinue)) {
+    try { foreach ($a in $vmAds) {
       $vl = 0; try { $vv = Get-VMNetworkAdapterVlan -VMNetworkAdapter $a -ErrorAction SilentlyContinue; if ($vv -and $vv.OperationMode -eq 'Access') { $vl = [int]$vv.AccessVlanId } } catch {}
       $nics += [pscustomobject]@{ name = [string]$a.Name; switchName = [string]$a.SwitchName; vlanID = [int]$vl }
     } } catch {}
     $repl = $null
-    try {
+    if (__replicated $vm.Id) { try {
       $rr = Get-VMReplication -VM $vm -ErrorAction SilentlyContinue
       if ($rr) {
         $lt = ''; try { if ($rr.LastReplicationTime) { $lt = $rr.LastReplicationTime.ToUniversalTime().ToString('o') } } catch {}
         $repl = [pscustomobject]@{ mode=[string]$rr.ReplicationMode; state=[string]$rr.State; health=[string]$rr.Health; primaryServer=[string]$rr.PrimaryServer; replicaServer=[string]$rr.ReplicaServer; lastRepl=$lt; frequencySec=[int]$rr.FrequencySec }
       }
-    } catch {}
+    } catch {} }
     $clustered = $false; try { $clustered = [bool]$vm.IsClustered } catch {}
     $integ = @()
     try { foreach ($i in @(Get-VMIntegrationService -VMName $vm.Name -ErrorAction SilentlyContinue)) {
@@ -336,7 +343,8 @@ foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
 }
 ConvertTo-Json -InputObject @($out) -Compress -Depth 6
 `
-	out, err := p.run(ctx, script)
+	// Pooled: read-only, and held by a test to nothing unsafe in a shared process.
+	out, err := p.runPooled(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("list observed vms: %w", err)
 	}
@@ -393,18 +401,25 @@ func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult,
 	}
 	script := p.ensureVMScript(vm, gen)
 
-	out, err := p.run(ctx, script)
+	// Pooled: safe in a shared process (no exit, $script: or Add-Type), and a
+	// test holds the script to that.
+	began := time.Now()
+	out, err := p.runPooled(ctx, script)
 	if err != nil {
 		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
 	}
 	var res struct {
-		Created         bool   `json:"created"`
-		Changed         bool   `json:"changed"`
-		PendingPowerOff bool   `json:"pendingPowerOff"`
-		PendingDetail   string `json:"pendingDetail"`
+		Created         bool             `json:"created"`
+		Changed         bool             `json:"changed"`
+		PendingPowerOff bool             `json:"pendingPowerOff"`
+		PendingDetail   string           `json:"pendingDetail"`
+		Ms              map[string]int64 `json:"ms"`
 	}
 	if err := decodeJSON(out, &res); err != nil {
 		return VMEnsureResult{}, fmt.Errorf("ensure vm %q: %w", vm.Meta.Name, err)
+	}
+	if wall := time.Since(began); wall >= slowEnsureVM && res.Ms != nil {
+		p.log.Info("ensure vm timing", append([]any{"vm", vm.Meta.Name}, ensureTimingFields(res.Ms, wall)...)...)
 	}
 	r := VMEnsureResult{PendingPowerOff: res.PendingPowerOff, PendingDetail: res.PendingDetail}
 	switch {
@@ -416,6 +431,38 @@ func (p *PowerShell) EnsureVM(ctx context.Context, vm types.VM) (VMEnsureResult,
 		r.Outcome = OutcomeUnchanged
 	}
 	return r, nil
+}
+
+// slowEnsureVM is when one VM's EnsureVM is slow enough to log at Info. A
+// settled VM takes 1-3s on HVNEW06; logging every one would be ~17,000 lines a
+// day there, burying the one that matters.
+const slowEnsureVM = 5 * time.Second
+
+// ensureSections is the order the EnsureVM script marks its sections in. The
+// marks are cumulative, so each section's cost is its mark less the one before.
+var ensureSections = []string{"lookup", "cpumem", "firmware", "video", "nested", "start", "disks", "adapters", "iso", "boot"}
+
+// ensureTimingFields turns the script's cumulative marks into log fields: each
+// section's own milliseconds, the script's total, and "outside", the rest of
+// the call's wall time (process start, parsing, the session round trip).
+//
+// Built to find where a warm EnsureVM's ~2.2s a VM went on HVNEW06, after three
+// guesses about that host had been wrong. It found adapters at 39%, and the fix
+// took EnsureVM from ~31s to ~26s for 14 VMs. Kept so the next slow VM names its
+// own slow section, logged from slowEnsureVM. Not at Debug below that: the
+// agent's log level is fixed at Info, so a Debug line would never be written.
+func ensureTimingFields(ms map[string]int64, wall time.Duration) []any {
+	var fields []any
+	var prev int64
+	for _, s := range ensureSections {
+		v, ok := ms[s]
+		if !ok {
+			continue
+		}
+		fields = append(fields, s, v-prev)
+		prev = v
+	}
+	return append(fields, "script", prev, "outside", wall.Milliseconds()-prev)
 }
 
 // normaliseBootOrder maps declared boot-order tokens onto the canonical device
@@ -490,8 +537,12 @@ if ($curDecl.Count -gt 1 -and ($curDecl -join ',') -ne ($decl -join ',')) {
 
 // Gen 2 UEFI: entries are objects, classified by their backing device. Fewer than
 // two declared entries means there is no relative order to enforce.
+//
+// $fw is reused from the Secure Boot check when nothing has changed since: every
+// write that can add, remove or reorder a boot entry (a disk, adapter or DVD
+// attached, an adapter removed, firmware or TPM changed) sets $changed.
 const gen2BootOrderScript = `$want = @(%[2]s)
-$fw = Get-VMFirmware -VMName %[1]s
+if ($changed -or -not $fw) { $fw = Get-VMFirmware -VMName %[1]s }
 $entries = @($fw.BootOrder)
 if ($entries.Count -gt 0) {
   $cls = {
@@ -520,6 +571,134 @@ if ($entries.Count -gt 0) {
   }
 }
 `
+
+/* Read before write, for the four settings that used to be written on every
+   pass whether or not they differed: VLAN, static MAC, MAC spoofing and the
+   automatic start action. Each write is a modify call through VMMS, and on a
+   four-NIC nested host that was eight of them per VM per pass, all no-ops.
+
+   Two rules keep this from changing what the reconcile does:
+
+   - If the current value cannot be read, it writes, exactly as before. Only a
+     positive reading that already matches skips the write.
+   - None of them sets $changed. They never did, so a VM's outcome is decided by
+     the same things it was before. Counting them would be the right thing
+     eventually, but a comparison that never matches would then report the VM
+     changed on every pass, and that deserves its own change and its own proof.
+
+   Constants rather than inline literals so a test can run the real thing
+   against stubbed cmdlets, like the boot-order scripts. */
+
+// adapterListScript: %[1]s VM. Reads the VM's adapters, and every adapter's
+// VLAN in one call keyed by the adapter's Id. Measured on HVNEW06: 36ms for
+// all four VLANs of a four-NIC VM, against ~70ms EACH through an adapter's own
+// VlanSetting, which Hyper-V fetches on demand. Keyed by Id and not by name
+// because Id is unique where names need not be; a VLAN list that cannot be
+// read leaves the map empty and every NIC reads its own, as before.
+const adapterListScript = `$__ads = @(Get-VMNetworkAdapter -VMName %[1]s)
+$__vlanById = @{}
+try { foreach ($__v in @(Get-VMNetworkAdapterVlan -VMName %[1]s -ErrorAction Stop)) { $__k = [string]$__v.ParentAdapter.Id; if ($__k) { $__vlanById[$__k] = $__v } } } catch {}
+`
+
+// The per-NIC fragments below run in this order for each declared adapter, and
+// share three variables: $ads, the adapters of that name (from $__ads, the VM's
+// list read once); $__touched, set when this pass added or reconnected the NIC,
+// so nothing is taken from readings that predate that; and $__wrote, set by any
+// write to the NIC so the spoofing check reads it fresh rather than acting on
+// an object from before the write.
+
+// adapterSelectScript: %[1]s VM, %[2]s adapter, %[3]s switch. Finds the NIC in
+// the VM's list, adds or reconnects it, and re-reads it only if it did either.
+const adapterSelectScript = `$ads = @($__ads | Where-Object { $_.Name -eq %[2]s })
+$__wrote = $false
+$__touched = $false
+if ($ads.Count -eq 0) {
+  try { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
+  catch {
+    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction Stop; $changed = $true; Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
+    else { throw }
+  }
+  $__wrote = $true
+} elseif (@($ads | Where-Object { $_.SwitchName -ne %[3]s }).Count -gt 0) {
+  try { Connect-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
+  catch {
+    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
+    else { throw }
+  }
+  $__wrote = $true
+}
+if ($__wrote) { $ads = @(Get-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction SilentlyContinue); $__wrote = $false; $__touched = $true }
+`
+
+// vlanScript: %[1]s VM, %[2]s adapter, %[3]s a predicate over one VLAN setting
+// ($_) that is true when it differs, %[4]s the Set-VMNetworkAdapterVlan mode.
+// Every adapter of that name is checked, because the write applies to all.
+//
+// Each adapter's setting comes from the VM's VLAN map by Id, unless the NIC was
+// added or reconnected this pass or is missing from the map; then that adapter
+// is read on its own. Never a guess, and never a reading from before a write.
+const vlanScript = `$vlanOK = $false
+try {
+  $vls = @(foreach ($x in $ads) { $__k = [string]$x.Id; if ($__k -and -not $__touched -and $__vlanById.ContainsKey($__k)) { $__vlanById[$__k] } else { Get-VMNetworkAdapterVlan -VMNetworkAdapter $x -ErrorAction Stop } })
+  $vlanOK = ($vls.Count -gt 0) -and (@($vls | Where-Object { %[3]s }).Count -eq 0)
+} catch {}
+if (-not $vlanOK) { Set-VMNetworkAdapterVlan -VMName %[1]s -VMNetworkAdapterName %[2]s %[4]s; $__wrote = $true }
+`
+
+// staticMACScript: %[1]s VM, %[2]s adapter, %[3]s the declared MAC as written,
+// %[4]s the same reduced to bare upper-case hex, since Hyper-V reports
+// 00155D010203 for a MAC declared as 00-15-5D-01-02-03.
+const staticMACScript = `$macOK = ($ads.Count -gt 0) -and (@($ads | Where-Object { $_.DynamicMacAddressEnabled -or ((([string]$_.MacAddress) -replace '[^0-9A-Fa-f]', '').ToUpper() -ne %[4]s) }).Count -eq 0)
+if (-not $macOK) { Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -StaticMacAddress %[3]s; $__wrote = $true }
+`
+
+// spoofScript: %[1]s VM, %[2]s adapter, %[3]s 'On' or 'Off'.
+const spoofScript = `if ($__wrote) { $ads = @(Get-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction SilentlyContinue) }
+$ad = @($ads)[0]
+if ($ad -and $ad.SwitchName) {
+  if ([string]$ad.MacAddressSpoofing -ne %[3]s) { Set-VMNetworkAdapter -VMNetworkAdapter $ad -MacAddressSpoofing %[3]s }
+} elseif ($ad) {
+  Write-Output ('NOTE ' + %[2]s + ' on ' + %[1]s + ' is not connected to a switch, so MAC address spoofing cannot be set yet. ' +
+    'It is a port setting and there is no port until the adapter is connected; Ballast applies it on the pass after that.')
+}
+`
+
+// startActionScript: %[1]s VM, %[2]s the start action. $cur is the Get-VM the
+// script has already taken.
+const startActionScript = `if ([string]$cur.AutomaticStartAction -ne %[2]s) { Set-VM -Name %[1]s -AutomaticStartAction %[2]s }
+`
+
+// vlanFragment drives one adapter's VLAN: Access with the tag when vlan is
+// positive, Untagged otherwise. name and adapter arrive already quoted.
+func vlanFragment(name, adapter string, vlan int) string {
+	if vlan > 0 {
+		return fmt.Sprintf(vlanScript, name, adapter,
+			fmt.Sprintf("[string]$_.OperationMode -ne 'Access' -or [int]$_.AccessVlanId -ne %d", vlan),
+			fmt.Sprintf("-Access -VlanId %d", vlan))
+	}
+	return fmt.Sprintf(vlanScript, name, adapter, "[string]$_.OperationMode -ne 'Untagged'", "-Untagged")
+}
+
+// staticMACFragment pins one adapter's MAC. name and adapter arrive already
+// quoted; mac is as declared.
+func staticMACFragment(name, adapter, mac string) string {
+	return fmt.Sprintf(staticMACScript, name, adapter, psQuote(mac), psQuote(normaliseMAC(mac)))
+}
+
+// normaliseMAC reduces a MAC address to bare upper-case hex, the form Hyper-V
+// reports it in.
+func normaliseMAC(mac string) string {
+	var b strings.Builder
+	for _, r := range mac {
+		switch {
+		case r >= '0' && r <= '9', r >= 'A' && r <= 'F':
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'f':
+			b.WriteRune(r - 'a' + 'A')
+		}
+	}
+	return b.String()
+}
 
 // indentBlock indents every non-empty line of a generated block, so a script
 // fragment built for the top level reads correctly once it is nested inside an
@@ -553,7 +732,7 @@ func (p *PowerShell) ensureVMScript(vm types.VM, gen int) string {
 	// reconcile never reconfigures what was not asked for.
 	procScript := ""
 	if s.ProcessorCount > 0 {
-		procScript = fmt.Sprintf(`if ((Get-VMProcessor -VMName %[1]s).Count -ne %[2]d) {
+		procScript = fmt.Sprintf(`if ($vp.Count -ne %[2]d) {
   if ($running) { $pending = $true; $pendingWhat += 'processor count' } else { Set-VMProcessor -VMName %[1]s -Count %[2]d; $changed = $true }
 }`, name, s.ProcessorCount)
 	}
@@ -607,10 +786,11 @@ if (%[2]s) {
 	}
 
 	// Set-VM only when there is an automatic-start-action to apply; calling it
-	// with just -Name is rejected.
+	// with just -Name is rejected. Compared against $cur, which the script has
+	// already read, so a VM that matches costs nothing.
 	startAction := ""
-	if arg := automaticStartActionArg(s.AutomaticStartAction); arg != "" {
-		startAction = fmt.Sprintf("Set-VM -Name %s %s\n", name, arg)
+	if v := automaticStartActionValue(s.AutomaticStartAction); v != "" {
+		startAction = fmt.Sprintf(startActionScript, name, psQuote(v))
 	}
 
 	// Secure Boot (Gen 2 only): converge the UEFI policy so a Linux guest can boot
@@ -744,8 +924,7 @@ if ($tpmIs -ne $tpmWant) {
 	   Guarded on the property existing: ExposeVirtualizationExtensions is absent
 	   on Hyper-V before 2016, and a missing property must not fail a whole
 	   reconcile — power and networking are queued behind it. */
-	nested := fmt.Sprintf(`$vp = Get-VMProcessor -VMName %[1]s
-if ($null -ne $vp.ExposeVirtualizationExtensions) {
+	nested := fmt.Sprintf(`if ($null -ne $vp.ExposeVirtualizationExtensions) {
   if ([bool]$vp.ExposeVirtualizationExtensions -ne $%[2]t) {
     if ($running) { $pending = $true; $pendingWhat += 'nested virtualisation' } else {
       Set-VMProcessor -VMName %[1]s -ExposeVirtualizationExtensions $%[2]t
@@ -905,7 +1084,21 @@ if (-not $present) {
 `, name, path, indentBlock(create, "    "), indentBlock(resize, "  "))
 	}
 
+	/* The VM's adapters are read ONCE, and every declared NIC is looked up in
+	   that list. Per NIC this used to read the adapters to find it, read its
+	   VLAN, and read it again for spoofing, then read them all again for the
+	   removal sweep: 13 calls on a four-NIC VM, at ~100-130ms each during a
+	   pass on HVNEW06, which made adapters 39% of EnsureVM.
+
+	   A NIC is read again only after this pass wrote to it (added, reconnected,
+	   VLAN or MAC set), so nothing downstream acts on an object that describes
+	   the adapter before the write. The sweep needs no re-read: the loop only
+	   adds DECLARED adapters, so every adapter it could remove was in the list
+	   before the loop began. */
 	adapters := ""
+	if len(s.NetworkAdapters) > 0 {
+		adapters = fmt.Sprintf(adapterListScript, name)
+	}
 	for _, a := range s.NetworkAdapters {
 		an := psQuote(a.Name)
 		sw := psQuote(a.SwitchName)
@@ -917,32 +1110,14 @@ if (-not $present) {
 		// virtual switch": leave the NIC disconnected and warn, and let the rest
 		// of the reconcile proceed. It reconnects on a later pass once the switch
 		// exists (or the desired switch is corrected).
-		adapters += fmt.Sprintf(`$ad = Get-VMNetworkAdapter -VMName %[1]s | Where-Object { $_.Name -eq %[2]s }
-if (-not $ad) {
-  try { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
-  catch {
-    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Add-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction Stop; $changed = $true; Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
-    else { throw }
-  }
-} elseif ($ad.SwitchName -ne %[3]s) {
-  try { Connect-VMNetworkAdapter -VMName %[1]s -Name %[2]s -SwitchName %[3]s -ErrorAction Stop; $changed = $true }
-  catch {
-    if ($_.Exception.Message -like '*unable to find a virtual switch*') { Write-Warning ('switch ' + %[3]s + ' not found on this host; ' + %[2]s + ' left disconnected') }
-    else { throw }
-  }
-}
-`, name, an, sw)
+		adapters += fmt.Sprintf(adapterSelectScript, name, an, sw)
 		// Always drive the VLAN to the desired value: a positive VLAN tags the port
 		// (Access mode); VLAN 0 means native/untagged, which must actively clear any
 		// existing tag (e.g. when a VM moves from a VLAN-100 dvport to a VLAN-0 one).
-		// Both are idempotent no-ops when already in that state.
-		if a.VLANID > 0 {
-			adapters += fmt.Sprintf("Set-VMNetworkAdapterVlan -VMName %[1]s -VMNetworkAdapterName %[2]s -Access -VlanId %[3]d\n", name, an, a.VLANID)
-		} else {
-			adapters += fmt.Sprintf("Set-VMNetworkAdapterVlan -VMName %[1]s -VMNetworkAdapterName %[2]s -Untagged\n", name, an)
-		}
+		// Read first, so a port already in that state costs a read, not a write.
+		adapters += vlanFragment(name, an, a.VLANID)
 		if a.MACAddress != "" {
-			adapters += fmt.Sprintf("Set-VMNetworkAdapter -VMName %[1]s -Name %[2]s -StaticMacAddress %[3]s\n", name, an, psQuote(a.MACAddress))
+			adapters += staticMACFragment(name, an, a.MACAddress)
 		}
 		/* MAC address spoofing follows nested virtualisation, on every adapter.
 
@@ -975,14 +1150,7 @@ if (-not $ad) {
 
 		   So it is skipped while disconnected and SAID, which is the difference
 		   between a fault and a fact. */
-		adapters += fmt.Sprintf(`$ad = @(Get-VMNetworkAdapter -VMName %[1]s -Name %[2]s -ErrorAction SilentlyContinue)[0]
-if ($ad -and $ad.SwitchName) {
-  Set-VMNetworkAdapter -VMNetworkAdapter $ad -MacAddressSpoofing %[3]s
-} elseif ($ad) {
-  Write-Output ('NOTE ' + %[2]s + ' on ' + %[1]s + ' is not connected to a switch, so MAC address spoofing cannot be set yet. ' +
-    'It is a port setting and there is no port until the adapter is connected; Ballast applies it on the pass after that.')
-}
-`, name, an, psQuote(spoof))
+		adapters += fmt.Sprintf(spoofScript, name, an, psQuote(spoof))
 	}
 	// Remove any adapter not in the declared set — New-VM always creates a default
 	// "Network Adapter" (unconnected) and the operator should see only the declared
@@ -994,11 +1162,12 @@ if ($ad -and $ad.SwitchName) {
 		for i, a := range s.NetworkAdapters {
 			keep[i] = a.Name
 		}
+		// $__ads, the list read before the loop: see adapterSelectScript.
 		adapters += fmt.Sprintf(`$keep = @(%[1]s)
-foreach ($ad in (Get-VMNetworkAdapter -VMName %[2]s)) {
+foreach ($ad in $__ads) {
   if ($keep -notcontains $ad.Name) { Remove-VMNetworkAdapter -VMNetworkAdapter $ad; $changed = $true }
 }
-`, psStringList(keep), name)
+`, psStringList(keep))
 	}
 
 	// Boot ISO: ensure a DVD drive backed by the ISO exists (path-normalised so
@@ -1078,6 +1247,10 @@ if (-not (Get-VMDvdDrive -VMName %[1]s | Where-Object { $_.Path -and ([IO.Path]:
 
 	return fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
+# Section timings, cumulative ms, returned with the result so a slow reconcile
+# names its own slow part (see ensureTimingFields).
+$__t = [Diagnostics.Stopwatch]::StartNew()
+$__ms = [ordered]@{}
 $created = $false
 $changed = $false
 $pending = $false
@@ -1111,12 +1284,35 @@ $running = $false
 # By here the VM exists (found above, or just created), so a failure to read it
 # back is a host fault, not an absent VM. Let it propagate: guessing "not
 # running" would apply firmware/CPU/memory changes to a live VM.
-$cur = Get-VM -Name %[1]s -ErrorAction Stop
+#
+# A VM found above was read a moment ago, so that reading is used; only one
+# created by this script has to be read back.
+if ($created) { $cur = Get-VM -Name %[1]s -ErrorAction Stop } else { $cur = $vm }
 if ($cur -and $cur.State -ne 'Off') { $running = $true }
+# Read once for both the processor-count check and nested virtualisation.
+# Neither check changes what the other reads.
+$vp = Get-VMProcessor -VMName %[1]s
+$__ms.lookup = $__t.ElapsedMilliseconds
 %[4]s
 %[5]s
-%[13]s%[15]s%[16]s%[6]s%[7]s%[8]s%[9]s%[14]s
-[pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; ') } | ConvertTo-Json -Compress
+$__ms.cpumem = $__t.ElapsedMilliseconds
+%[13]s
+$__ms.firmware = $__t.ElapsedMilliseconds
+%[15]s
+$__ms.video = $__t.ElapsedMilliseconds
+%[16]s
+$__ms.nested = $__t.ElapsedMilliseconds
+%[6]s
+$__ms.start = $__t.ElapsedMilliseconds
+%[7]s
+$__ms.disks = $__t.ElapsedMilliseconds
+%[8]s
+$__ms.adapters = $__t.ElapsedMilliseconds
+%[9]s
+$__ms.iso = $__t.ElapsedMilliseconds
+%[14]s
+$__ms.boot = $__t.ElapsedMilliseconds
+[pscustomobject]@{ created = $created; changed = $changed; pendingPowerOff = $pending; pendingDetail = ($pendingWhat -join '; '); ms = $__ms } | ConvertTo-Json -Compress
 `, name, gen, s.MemoryStartupBytes, procScript, memScript, startAction, disks, adapters, iso, clusterGuard, mkVMDir, vmPathArg, firmware, bootOrder, video, nested, renameGuard)
 }
 
@@ -1433,16 +1629,17 @@ func powerStateFromHyperV(s string) types.VMPowerState {
 	}
 }
 
-// automaticStartActionArg renders the -AutomaticStartAction flag for Set-VM, or
-// empty when no action is specified (leaving the Hyper-V default).
-func automaticStartActionArg(a types.VMStartAction) string {
+// automaticStartActionValue is Hyper-V's name for the start action, which is
+// both what Set-VM takes and what Get-VM reports, or empty when no action is
+// specified (leaving the Hyper-V default).
+func automaticStartActionValue(a types.VMStartAction) string {
 	switch a {
 	case types.VMStartNothing:
-		return "-AutomaticStartAction Nothing"
+		return "Nothing"
 	case types.VMStartIfWasRunning:
-		return "-AutomaticStartAction StartIfRunning"
+		return "StartIfRunning"
 	case types.VMStartAlways:
-		return "-AutomaticStartAction Start"
+		return "Start"
 	default:
 		return ""
 	}

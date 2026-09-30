@@ -1480,7 +1480,9 @@ type ClusterSpec struct {
 	// Members are the host names that should form the cluster.
 	Members []string `json:"members"`
 
-	// ManagementIP is the cluster's virtual management address (CIDR).
+	// ManagementIP is the cluster's static management address, a bare IPv4
+	// address such as "192.168.1.200". It is passed to New-Cluster
+	// -StaticAddress, so a prefix length ("/24") is not part of it.
 	ManagementIP string `json:"managementIP"`
 
 	// Witness configures quorum. For a small cluster this is typically a

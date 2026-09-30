@@ -133,6 +133,30 @@ func TestGen2BootOrderApplyKeepsUndeclaredEntryInPlace(t *testing.T) {
 	}
 }
 
+// The firmware the Secure Boot check already read is reused, unless something
+// this pass changed could have added, removed or reordered a boot entry. Here
+// the reading in hand is in order and the host now says otherwise: the reading
+// is trusted while nothing has changed, and the host is asked once something
+// has.
+func TestGen2BootOrderReusesTheFirmwareReadUnlessSomethingChanged(t *testing.T) {
+	inOrder := strings.Join([]string{entry("dvd", "DvdDrive"), entry("disk", "HardDiskDrive")}, ",")
+	onHost := strings.Join([]string{entry("disk", "HardDiskDrive"), entry("dvd", "DvdDrive")}, ",")
+	for _, tc := range []struct {
+		changed string
+		pending string
+	}{
+		{"$false", "PENDING=False"}, // the reading in hand decides
+		{"$true", "PENDING=True"},   // a write happened: the host decides
+	} {
+		h := strings.Replace(gen2Harness(onHost, "'DVD','Drive'", true),
+			"$changed = $false\n",
+			"$changed = "+tc.changed+"\n$fw = [pscustomobject]@{ BootOrder = @("+inOrder+") }\n", 1)
+		if got := runBootOrderScript(t, h); !strings.HasPrefix(got, tc.pending) {
+			t.Fatalf("changed=%s: want %s\ngot: %s", tc.changed, tc.pending, got)
+		}
+	}
+}
+
 // A VM with only one declared entry has no relative order to enforce, so it must
 // never report a difference regardless of where the undeclared entries sit.
 func TestGen2BootOrderSingleDeclaredEntryIsNeverPending(t *testing.T) {
