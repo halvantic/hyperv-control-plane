@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const Version = "1.0.1"
+const Version = "1.0.2"
 
 // TagPrefix and TagTerminator bound the marker Tag holds. They are constants so
 // that tooling which locates the marker in a compiled binary searches for exactly
@@ -34,7 +34,7 @@ const (
 // Tag is also logged once at agent start-up (see agent/service). That is not for
 // the log's sake: a package-level variable that nothing reads is something the
 // linker may drop, taking the marker with it. Passing it to a real call keeps it.
-var Tag = "ballast-version:1.0.1;"
+var Tag = "ballast-version:1.0.2;"
 
 // ReleaseLine returns the release line Version belongs to, as "<major>.x" —
 // "0.4.277-slice" and "0.3.90-slice" are both "0.x"; "1.4.2-slice" is "1.x".

@@ -1395,6 +1395,25 @@ func (s *Stub) EnsureIntegrationServices(ctx context.Context, vm string, want *t
 	if err != nil {
 		return OutcomeUnchanged, err
 	}
+	return s.ApplyIntegrationServices(ctx, vm, want, have)
+}
+
+// Session is a no-op: the stub has no process to share.
+func (s *Stub) Session(ctx context.Context) (context.Context, func()) { return ctx, func() {} }
+
+func (s *Stub) GetIntegrationServicesBatch(ctx context.Context, names []string) (map[string][]IntegrationServiceState, error) {
+	out := make(map[string][]IntegrationServiceState, len(names))
+	for _, n := range names {
+		got, err := s.GetIntegrationServices(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(n)] = got
+	}
+	return out, nil
+}
+
+func (s *Stub) ApplyIntegrationServices(_ context.Context, vm string, want *types.VMIntegrationServices, have []IntegrationServiceState) (Outcome, error) {
 	enable, disable := integrationPlan(want, have)
 	if len(enable) == 0 && len(disable) == 0 {
 		return OutcomeUnchanged, nil

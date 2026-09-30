@@ -126,6 +126,66 @@ func (p *PowerShell) EnsureIntegrationServices(ctx context.Context, vm string, w
 	if err != nil {
 		return OutcomeUnchanged, err
 	}
+	return p.ApplyIntegrationServices(ctx, vm, want, have)
+}
+
+/*
+integrationBatchScript reads the named VMs' services in one process, one
+query per named VM.
+
+	Named rather than -VMName *, because the cmdlet's cost is per VM it reads
+	even inside one process: ~286ms a VM for *, ~440ms a VM by name, on
+	HVNEW06. * reads EVERY VM on the host, so one VM declaring services made
+	the pass pay for all of them, and nearly every VM declares none. By name
+	the cost follows what is declared.
+
+	Each name in its own try, so a declared VM that is not on the host yet is
+	just absent from the result and reads for itself, rather than failing the
+	batch for the rest.
+*/
+func integrationBatchScript(names []string) string {
+	quoted := make([]string, 0, len(names))
+	for _, n := range names {
+		quoted = append(quoted, psQuote(n))
+	}
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$names = @(%[1]s)
+$out = @{}
+foreach ($n in $names) {
+  try {
+    foreach ($s in @(Get-VMIntegrationService -VMName $n -ErrorAction Stop)) {
+      $k = ([string]$s.VMName).ToLower()
+      if (-not $out.ContainsKey($k)) { $out[$k] = @() }
+      $out[$k] += [pscustomobject]@{ name = [string]$s.Name; enabled = [bool]$s.Enabled }
+    }
+  } catch {}
+}
+$out | ConvertTo-Json -Compress -Depth 4
+`, strings.Join(quoted, ","))
+}
+
+// GetIntegrationServicesBatch reads the named VMs' services in one invocation.
+func (p *PowerShell) GetIntegrationServicesBatch(ctx context.Context, names []string) (map[string][]IntegrationServiceState, error) {
+	if len(names) == 0 {
+		return map[string][]IntegrationServiceState{}, nil
+	}
+	out, err := p.run(ctx, integrationBatchScript(names))
+	if err != nil {
+		return nil, fmt.Errorf("read integration services: %w", err)
+	}
+	var got map[string][]IntegrationServiceState
+	if derr := decodeJSON(out, &got); derr != nil {
+		return nil, fmt.Errorf("read integration services: %w", derr)
+	}
+	res := make(map[string][]IntegrationServiceState, len(got))
+	for k, v := range got {
+		res[strings.ToLower(k)] = v
+	}
+	return res, nil
+}
+
+// ApplyIntegrationServices writes what differs between want and have.
+func (p *PowerShell) ApplyIntegrationServices(ctx context.Context, vm string, want *types.VMIntegrationServices, have []IntegrationServiceState) (Outcome, error) {
 	enable, disable := integrationPlan(want, have)
 	if len(enable) == 0 && len(disable) == 0 {
 		return OutcomeUnchanged, nil

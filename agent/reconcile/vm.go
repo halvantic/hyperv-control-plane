@@ -177,6 +177,23 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 		r.log.Info("vm not readable while host drains", "vm", vm.Meta.Name, "err", err)
 		return res
 	}
+	// The same reasoning, for the host powering off rather than draining: a
+	// ShutdownHost or RebootHost job runs in its own goroutine, independent of
+	// the reconcile cycle's own tick, so a pass can land right as Stop-Computer
+	// takes down VMMS or a CSV goes away under an in-flight disk resize. Seen on
+	// labtest 2026-09-28 shutting down a whole cluster at once (nowhere to
+	// drain to): "cannot enumerate VMs on this host (Hyper-V is not answering)"
+	// and a disk resize failing mid-shutdown, both reported ApplyFailed/Degraded
+	// as the last word on VMs Ballast itself was turning off on purpose.
+	if err != nil && r.hostPoweringOff.Load() {
+		res.Conditions = append(res.Conditions, types.Condition{
+			Type: "VM/" + vm.Meta.Name, Status: false, Reason: "HostPoweringOff",
+			Message:            "this host is shutting down or rebooting, so " + vm.Meta.Name + "'s state cannot be read here — nothing to do; the host will report itself offline and this VM's last honoured configuration stands until it returns",
+			LastTransitionTime: r.now(),
+		})
+		r.log.Info("vm not readable while host powers off", "vm", vm.Meta.Name, "err", err)
+		return res
+	}
 	res.Conditions = append(res.Conditions, r.condition("VM/"+vm.Meta.Name, ensured.Outcome, err))
 	if err != nil {
 		r.log.Error("ensure vm failed", "vm", vm.Meta.Name, "err", err)
@@ -197,7 +214,13 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 	   RUNNING guest — unlike Secure Boot or a generation change, which wait for
 	   a power cycle. Nothing is touched that the spec does not name. */
 	if is := vm.Spec.IntegrationServices; is != nil {
-		out, ierr := r.hv.EnsureIntegrationServices(ctx, vm.Meta.Name, is)
+		var out hyperv.Outcome
+		var ierr error
+		if obs.haveInteg {
+			out, ierr = r.hv.ApplyIntegrationServices(ctx, vm.Meta.Name, is, obs.integ)
+		} else {
+			out, ierr = r.hv.EnsureIntegrationServices(ctx, vm.Meta.Name, is)
+		}
 		res.Conditions = append(res.Conditions, r.condition("IntegrationServices/"+vm.Meta.Name, out, ierr))
 		if ierr != nil {
 			r.log.Warn("set integration services failed", "vm", vm.Meta.Name, "err", ierr)
@@ -364,6 +387,12 @@ func (r *Reconciler) reconcileVM(ctx context.Context, vm types.VM, knownRoles ma
 // what changed — the drift safety net, and what the caller sets after a job, a
 // desired-state change, or on the first pass after start.
 func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM, fullSweep bool) []VMResult {
+	// One PowerShell process for the pass's per-VM calls. Each VM is still sent
+	// on its own, in turn, after its own checks; only the process is shared, so
+	// the Hyper-V cmdlets warm up once rather than once per VM.
+	ctx, endSession := r.hv.Session(ctx)
+	defer endSession()
+
 	// Cluster role membership is per-CLUSTER data, so read it once for the whole
 	// set. EnsureClusterVMRole answers it for a single VM by enumerating every
 	// cluster group — 2437ms on the rig — so asking per VM re-read the same list
@@ -405,14 +434,39 @@ func (r *Reconciler) ReconcileVMs(ctx context.Context, vms []types.VM, fullSweep
 		}
 	}
 
+	// Guest integration services for every VM that declares any, in one
+	// invocation. Read per VM, each was a PowerShell process of its own for a
+	// single cmdlet: ~1s apiece on HVNEW06, about 0.6s of it launch cost.
+	//
+	// Best effort, like the two batches above. A failure, or a VM missing from
+	// the result (one EnsureVM is about to create, say), falls back to that VM
+	// reading for itself.
+	var integ map[string][]hyperv.IntegrationServiceState
+	var integNames []string
+	for _, vm := range vms {
+		if vm.Spec.IntegrationServices != nil {
+			integNames = append(integNames, vm.Meta.Name)
+		}
+	}
+	if len(integNames) > 0 {
+		if got, err := r.hv.GetIntegrationServicesBatch(ctx, integNames); err != nil {
+			r.log.Warn("batch integration services read failed; falling back to per-VM", "err", err)
+		} else {
+			integ = got
+		}
+	}
+
 	out := make([]VMResult, 0, len(vms))
 	for _, vm := range vms {
 		key := strings.ToLower(vm.Meta.Name)
 		lv, haveLive := live[key]
+		iv, haveInteg := integ[key]
 		out = append(out, r.reconcileVM(ctx, vm, roles, vmObservation{
-			live:     lv,
-			haveLive: haveLive && live != nil,
-			full:     fullSweep || r.shouldReadFullVMState(key, lv, haveLive && live != nil),
+			live:      lv,
+			haveLive:  haveLive && live != nil,
+			full:      fullSweep || r.shouldReadFullVMState(key, lv, haveLive && live != nil),
+			integ:     iv,
+			haveInteg: haveInteg,
 		}))
 	}
 	return out
@@ -424,6 +478,11 @@ type vmObservation struct {
 	live     hyperv.VMLive
 	haveLive bool
 	full     bool
+
+	// integ is the VM's integration services as the batch read them, when
+	// haveInteg is set. Otherwise the VM reads its own.
+	integ     []hyperv.IntegrationServiceState
+	haveInteg bool
 }
 
 // shouldReadFullVMState decides whether this VM's configuration is worth

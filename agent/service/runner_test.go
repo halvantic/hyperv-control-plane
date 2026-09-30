@@ -219,6 +219,56 @@ func TestVMBusyClaimAndRelease(t *testing.T) {
 	}
 }
 
+// blockingShutdown wraps the stub so a test can hold ShutdownHost open long
+// enough to observe the reconciler stood off mid-job, then release it and
+// observe the stand-off lifted again.
+type blockingShutdown struct {
+	*hyperv.Stub
+	release chan struct{}
+}
+
+func (b *blockingShutdown) ShutdownHost(ctx context.Context, drain bool) error {
+	<-b.release
+	return b.Stub.ShutdownHost(ctx, drain)
+}
+
+// ShutdownHost has no "vm" param for jobsVMs to key on — it holds every VM on
+// the host by taking VMMS down with it. runJobs must stand the VM reconciler
+// off for the whole window the job is in flight, and lift it once the job
+// ends, so a pass that lands mid-shutdown does not report the host's VMs
+// Degraded for an outage Ballast itself caused. Reproduced on labtest
+// 2026-09-28.
+func TestShutdownHostStandsOffVMReconcileForItsDuration(t *testing.T) {
+	r := newTestRunner(t)
+	release := make(chan struct{})
+	hv := &blockingShutdown{Stub: &hyperv.Stub{}, release: release}
+	r.hv = hv
+	r.reconciler = reconcile.New(hv, r.log)
+
+	job := &ballastpb.Job{Id: "j1", Kind: string(types.JobShutdownHost)}
+	r.runJobs(context.Background(), &fakeClient{}, []*ballastpb.Job{job})
+
+	deadline := time.After(2 * time.Second)
+	for !r.reconciler.IsHostPoweringOff() {
+		select {
+		case <-deadline:
+			t.Fatal("reconciler never saw the host as powering off once the job started")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	close(release)
+
+	deadline = time.After(2 * time.Second)
+	for r.reconciler.IsHostPoweringOff() {
+		select {
+		case <-deadline:
+			t.Fatal("reconciler still stood off after the job finished")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 /*
 A VMware copy pass gets hours, not the default ten minutes.
 

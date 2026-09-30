@@ -2,6 +2,8 @@ package hyperv
 
 import (
 	"context"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -118,6 +120,94 @@ func TestEnsureIntegrationServicesSettles(t *testing.T) {
 	}
 	if len(s.IntegrationWrites) != 2 {
 		t.Fatalf("a steady pass rewrote services: %v", s.IntegrationWrites)
+	}
+}
+
+/*
+The batch reads only the VMs that declare services, in one process.
+
+	The per-VM path was a powershell.exe of its own for each. -VMName * would
+	put them in one process but read every VM on the host: 4.0s for fourteen
+	on HVNEW06 when seven declared anything, and on a host where one VM of
+	thirty declares services, the pass would pay for all thirty.
+*/
+func TestIntegrationBatchScriptReadsOnlyTheNamedVMs(t *testing.T) {
+	s := psCode(integrationBatchScript([]string{"Web01", "It's Odd"}))
+	if got := strings.Count(s, "Get-VMIntegrationService"); got != 1 {
+		t.Fatalf("Get-VMIntegrationService: found %d, want 1:\n%s", got, s)
+	}
+	if !strings.Contains(s, "Get-VMIntegrationService -VMName $n -ErrorAction Stop") {
+		t.Errorf("each named VM must be read by name:\n%s", s)
+	}
+	if strings.Contains(s, "-VMName *") {
+		t.Errorf("a wildcard reads every VM on the host, not the ones that declare services:\n%s", s)
+	}
+	// One missing VM must not cost the rest their reading.
+	if i, j := strings.Index(s, "try {"), strings.Index(s, "Get-VMIntegrationService"); i < 0 || i > j {
+		t.Errorf("each VM's read must be guarded on its own:\n%s", s)
+	}
+	for _, n := range []string{"Web01", "It's Odd"} {
+		if !strings.Contains(s, psQuote(n)) {
+			t.Errorf("%q must be named and quoted through psQuote:\n%s", n, s)
+		}
+	}
+	if !strings.Contains(s, ".ToLower()") {
+		t.Error("name matching must be case-insensitive")
+	}
+}
+
+// Run for real against a stubbed cmdlet: a declared VM the host does not have
+// is left out, and the others are still read.
+func TestIntegrationBatchSkipsAMissingVMAndKeepsTheRest(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("needs powershell.exe")
+	}
+	exe, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Skip("powershell.exe not on PATH")
+	}
+	harness := `
+function Get-VMIntegrationService { [CmdletBinding()] param($VMName)
+  if ($VMName -eq 'Gone') { throw ('Hyper-V was unable to find a virtual machine with name "' + $VMName + '".') }
+  [pscustomobject]@{ VMName = $VMName; Name = 'Heartbeat'; Enabled = $true }
+  [pscustomobject]@{ VMName = $VMName; Name = 'Guest Service Interface'; Enabled = $false }
+}
+` + integrationBatchScript([]string{"Web01", "Gone", "App02"})
+	out, err := exec.Command(exe, "-NoProfile", "-NonInteractive", "-Command", harness).CombinedOutput()
+	if err != nil {
+		t.Fatalf("script failed: %v\n%s", err, out)
+	}
+	var got map[string][]IntegrationServiceState
+	if derr := decodeJSON(out, &got); derr != nil {
+		t.Fatalf("%v\n%s", derr, out)
+	}
+	if _, ok := got["gone"]; ok {
+		t.Errorf("a VM the host does not have must be absent, not empty: %v", got)
+	}
+	for _, k := range []string{"web01", "app02"} {
+		if len(got[k]) != 2 {
+			t.Errorf("%s must still be read when another VM is missing, got %v", k, got[k])
+		}
+	}
+}
+
+// Applying against a reading the caller already took writes only what differs,
+// exactly as the self-reading path does.
+func TestApplyIntegrationServicesUsesTheGivenReading(t *testing.T) {
+	s := &Stub{}
+	want := &types.VMIntegrationServices{GuestServiceInterface: on()}
+
+	// The reading says it is already on, so nothing is written.
+	settled := defaults()
+	settled[0].Enabled = true
+	out, err := s.ApplyIntegrationServices(context.Background(), "web01", want, settled)
+	if err != nil || out != OutcomeUnchanged || len(s.IntegrationWrites) != 0 {
+		t.Fatalf("a reading that already matches must write nothing: out=%v err=%v writes=%v", out, err, s.IntegrationWrites)
+	}
+
+	out, err = s.ApplyIntegrationServices(context.Background(), "web01", want, defaults())
+	if err != nil || out != OutcomeUpdated || strings.Join(s.IntegrationWrites, ",") != "+Guest Service Interface" {
+		t.Fatalf("a reading that differs must be applied: out=%v err=%v writes=%v", out, err, s.IntegrationWrites)
 	}
 }
 

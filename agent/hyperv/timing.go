@@ -96,7 +96,7 @@ func callerName() string {
 		}
 		// Skip the helpers that every call passes through on its way out.
 		switch name {
-		case "timed", "run", "run2", "runStream", "runWithEnvOut", "runWithEnv", "func1", "":
+		case "timed", "run", "run2", "runPooled", "runStream", "runWithEnvOut", "runWithEnv", "func1", "":
 		default:
 			return name
 		}

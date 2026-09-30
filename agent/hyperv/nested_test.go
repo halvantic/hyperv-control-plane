@@ -44,10 +44,13 @@ func TestNestedExposesTheExtensionsAndSpoofsEveryAdapter(t *testing.T) {
 	   Set through the adapter OBJECT now, and only when it has a switch. MAC
 	   spoofing is a port feature and an unconnected adapter has no port, so
 	   Hyper-V refuses -- which held a whole VM Degraded after a copy landed it
-	   with its networks disconnected. */
+	   with its networks disconnected.
+
+	   Each NIC is found in the VM's adapter list, read once for the VM. */
 	for _, want := range []string{
-		"@(Get-VMNetworkAdapter -VMName 'Web01' -Name 'net0' -ErrorAction SilentlyContinue)[0]",
-		"@(Get-VMNetworkAdapter -VMName 'Web01' -Name 'net1' -ErrorAction SilentlyContinue)[0]",
+		"$ads = @($__ads | Where-Object { $_.Name -eq 'net0' })",
+		"$ads = @($__ads | Where-Object { $_.Name -eq 'net1' })",
+		"$ad = @($ads)[0]",
 		"Set-VMNetworkAdapter -VMNetworkAdapter $ad -MacAddressSpoofing 'On'",
 		"if ($ad -and $ad.SwitchName) {",
 	} {

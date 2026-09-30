@@ -56,6 +56,57 @@ type vmLiveObs struct {
 	Repl                *vmReplObs `json:"repl"`
 }
 
+/* Two host-wide WMI reads that replace per-object cmdlet work, shared by the
+   live read and the VM inventory. Measured on HVNEW06 (14 VMs, 31 NICs):
+
+   - Guest IPs. Each adapter's IPAddresses is fetched on demand, ~92ms apiece,
+     2.9s for the host. Msvm_GuestNetworkAdapterConfiguration holds the same
+     addresses for every guest NIC in one query, 1.8s, and returned exactly the
+     cmdlet's IPs on all fourteen VMs.
+   - Replication. Get-VMReplication cost 2.5s to report that nothing on the
+     host was replicated. Msvm_ComputerSystem carries each VM's ReplicationMode
+     in one query, 0.23s, so Get-VMReplication runs only for VMs that have any.
+
+   Both fall back to the cmdlet rather than guess. A NIC with no WMI record
+   reads its own IPAddresses, and replication is read as before if the query
+   fails, or any VM's mode is missing, or a VM is not in the answer. So the worst
+   case is the old cost, never a missing or wrong reading.
+
+   The IPs keep the ADAPTER order, not WMI's: a runbook gate probes the first
+   routable IPv4 (firstGuestIP in centre/controllers/runbook.go), and a
+   multi-homed guest's order decides which network that is. */
+
+// guestIPsScript defines __ips: the guest IPs of one adapter object, from the
+// WMI map keyed "<VM GUID>\<NIC GUID>", which is the adapter's Id without its
+// "Microsoft:" prefix.
+const guestIPsScript = `$__gip = @{}
+try { foreach ($__g in @(Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName Msvm_GuestNetworkAdapterConfiguration -ErrorAction Stop)) {
+  $__p = ([string]$__g.InstanceID) -split '\\'
+  if ($__p.Count -ge 3) { $__gip[$__p[1] + '\' + $__p[2]] = @($__g.IPAddresses) }
+} } catch {}
+function __ips($a) {
+  $__key = ([string]$a.Id) -replace '^Microsoft:', ''
+  if ($__key -and $__gip.ContainsKey($__key)) { $__gip[$__key] } else { @($a.IPAddresses) }
+}
+`
+
+// replicationModeScript defines __replicated: whether a VM (by Id) may have a
+// replication relationship worth asking Get-VMReplication about. True unless
+// WMI said, for that VM, that its mode is None.
+const replicationModeScript = `$__replMode = $null
+try {
+  $__cs = @(Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName Msvm_ComputerSystem -ErrorAction Stop | Where-Object { [string]$_.Name -match '^[0-9A-Fa-f]{8}-' })
+  if (@($__cs | Where-Object { $null -eq $_.ReplicationMode }).Count -eq 0) {
+    $__replMode = @{}
+    foreach ($__c in $__cs) { $__replMode[[string]$__c.Name] = [int]$__c.ReplicationMode }
+  }
+} catch {}
+function __replicated($id) {
+  $__i = [string]$id
+  ($null -eq $__replMode) -or (-not $__replMode.ContainsKey($__i)) -or ($__replMode[$__i] -ne 0)
+}
+`
+
 // vmLiveScript is built by a pure function so its content is pinned by tests
 // without a host, like vnicsBatchScript and maintenanceScript.
 func vmLiveScript(names []string) string {
@@ -67,18 +118,22 @@ func vmLiveScript(names []string) string {
 $names = @(%[1]s)
 $want = @{}
 foreach ($n in $names) { $want[([string]$n).ToLower()] = $true }
-# Three host-wide queries, not three per VM. Each is one module load and one
-# CIM round trip however many VMs there are.
-$repl = @{}
-try { foreach ($r in @(Get-VMReplication -ErrorAction SilentlyContinue)) { $repl[([string]$r.VMName).ToLower()] = $r } } catch {}
+$__vms = @(Get-VM -ErrorAction SilentlyContinue)
+# Host-wide queries, not per VM: see guestIPsScript and replicationModeScript.
+%[2]s$repl = @{}
+if (@($__vms | Where-Object { $want.ContainsKey(([string]$_.Name).ToLower()) -and (__replicated $_.Id) }).Count -gt 0) {
+  try { foreach ($r in @(Get-VMReplication -ErrorAction SilentlyContinue)) { $repl[([string]$r.VMName).ToLower()] = $r } } catch {}
+}
+%[3]s# -VMName * and not Get-VM piped in: the pipeline makes a round trip per VM.
+# 3.6s against 0.48s for the same fourteen VMs on HVNEW06.
 $adapters = @{}
-try { foreach ($a in @(Get-VM -ErrorAction SilentlyContinue | Get-VMNetworkAdapter -ErrorAction SilentlyContinue)) {
+try { foreach ($a in @(Get-VMNetworkAdapter -VMName * -ErrorAction SilentlyContinue)) {
   $k = ([string]$a.VMName).ToLower()
   if (-not $adapters.ContainsKey($k)) { $adapters[$k] = @() }
-  $adapters[$k] += @($a.IPAddresses)
+  $adapters[$k] += @(__ips $a)
 } } catch {}
 $out = @{}
-foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
+foreach ($vm in $__vms) {
   $key = ([string]$vm.Name).ToLower()
   if (-not $want.ContainsKey($key)) { continue }
   # Uptime is null for a VM that has never run, and link-local/loopback
@@ -116,7 +171,7 @@ foreach ($vm in @(Get-VM -ErrorAction SilentlyContinue)) {
   }
 }
 $out | ConvertTo-Json -Compress -Depth 6
-`, strings.Join(quoted, ","))
+`, strings.Join(quoted, ","), replicationModeScript, guestIPsScript)
 }
 
 // GetVMLiveStates observes the live state of every named VM in one invocation,
@@ -126,7 +181,8 @@ func (p *PowerShell) GetVMLiveStates(ctx context.Context, names []string) (map[s
 	if len(names) == 0 {
 		return map[string]VMLive{}, nil
 	}
-	out, err := p.run(ctx, vmLiveScript(names))
+	// Pooled: read-only, and held by a test to nothing unsafe in a shared process.
+	out, err := p.runPooled(ctx, vmLiveScript(names))
 	if err != nil {
 		return nil, fmt.Errorf("get vm live states: %w", err)
 	}
