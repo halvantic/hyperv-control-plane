@@ -878,6 +878,9 @@ message WitnessSpec {
   // disk identifies the LUN behind a Disk witness, the same way a volume
   // identifies its own. Adopted as a clustered disk, never as a CSV.
   CSVSourceSpec disk = 4;
+  // credential_secret names a stored credential for a FileShare witness on a
+  // share outside the domain. Empty means the cluster computer object.
+  string credential_secret = 5;
 }
 
 message ClusterStatus {
@@ -1089,6 +1092,8 @@ message VMSpec {
   DynamicMemorySpec dynamic_memory = 5;
   repeated VMDiskSpec disks = 6;
   repeated VMNetworkAdapterSpec network_adapters = 7;
+  // Read once: RUNNING starts the VM after the agent creates it. Not a state the
+  // VM is held to; power is imperative (start/stop/restart jobs).
   VMPowerState desired_power_state = 8;
   VMStartAction automatic_start_action = 9;
   string iso_path = 10;

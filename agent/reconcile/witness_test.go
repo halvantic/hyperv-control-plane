@@ -168,7 +168,7 @@ func TestAnUnreachableWitnessDoesNotDegradeTheCluster(t *testing.T) {
 func TestADiskWitnessIsRefusedOnS2DWithAReason(t *testing.T) {
 	ps := &hyperv.PowerShell{}
 	_, _, err := ps.EnsureClusterWitness(context.Background(),
-		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindS2D)
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindS2D, nil)
 	if err == nil {
 		t.Fatal("a disk witness must be refused on an S2D cluster")
 	}
@@ -184,7 +184,7 @@ func TestADiskWitnessIsRefusedOnS2DWithAReason(t *testing.T) {
 func TestADiskWitnessOnISCSIAsksWhichLUN(t *testing.T) {
 	ps := &hyperv.PowerShell{}
 	_, _, err := ps.EnsureClusterWitness(context.Background(),
-		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindISCSI)
+		types.WitnessSpec{Type: types.WitnessDisk}, types.StorageKindISCSI, nil)
 	if err == nil {
 		t.Fatal("a disk witness that does not say which disk cannot be applied")
 	}
@@ -200,7 +200,7 @@ func TestADiskWitnessOnISCSIAsksWhichLUN(t *testing.T) {
 // either, and must not be told it is an S2D limitation.
 func TestADiskWitnessWithNoStorageKindSaysSo(t *testing.T) {
 	ps := &hyperv.PowerShell{}
-	_, _, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk}, "")
+	_, _, err := ps.EnsureClusterWitness(context.Background(), types.WitnessSpec{Type: types.WitnessDisk}, "", nil)
 	if err == nil {
 		t.Fatal("no storage means no disk witness")
 	}
@@ -216,7 +216,7 @@ func TestAFileShareWitnessNeedsAPath(t *testing.T) {
 	// A file share witness is valid on any storage kind, so the kind is irrelevant
 	// here — the missing path is the fault.
 	_, _, err := ps.EnsureClusterWitness(context.Background(),
-		types.WitnessSpec{Type: types.WitnessFileShare}, types.StorageKindS2D)
+		types.WitnessSpec{Type: types.WitnessFileShare}, types.StorageKindS2D, nil)
 	if err == nil {
 		t.Fatal("a file share witness with no path must be refused")
 	}

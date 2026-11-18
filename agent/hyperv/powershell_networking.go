@@ -613,6 +613,17 @@ func (p *PowerShell) reconcileVNICIP(ctx context.Context, name string, desired *
 	if !ipDiffers(desired, obs) {
 		return false, nil
 	}
+	// Only DNS (or DNS registration) differs: set that and nothing else. The full
+	// apply removes and re-adds the address and default route, which takes the
+	// host off the network for seconds — far too much to pay for a resolver list,
+	// and, on the management vNIC, the whole host's connectivity. HV01/HV02
+	// 2026-11-18 dropped for ~5s every pass over a DNS-only difference.
+	if !addressDiffers(desired, obs) {
+		if err := p.run2(ctx, dnsOnlyScript(name, desired)); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	if err := p.run2(ctx, applyIPScript(name, ip, prefix, desired)); err != nil {
 		return false, err
 	}
@@ -797,6 +808,40 @@ func ipDiffers(desired *types.IPConfig, obs ipObservation) bool {
 	return !sameOrderedStrings(desired.DNSServers, obs.DNSServers)
 }
 
+// addressDiffers reports whether the address or default gateway differs — the
+// parts only the full, disruptive apply can change.
+func addressDiffers(desired *types.IPConfig, obs ipObservation) bool {
+	return desired.Address != obs.Address || desired.Gateway != obs.Gateway
+}
+
+// dnsOnlyScript sets a vNIC's DNS servers and DNS registration without touching
+// its address or routes. Resolves the adapter exactly as applyIPScript does.
+func dnsOnlyScript(name string, cfg *types.IPConfig) string {
+	var b strings.Builder
+	b.WriteString("$ErrorActionPreference = 'Stop'\n")
+	b.WriteString(vnicAliasHelper)
+	fmt.Fprintf(&b, "$alias = Get-BallastVNICAlias %s\n", psQuote(name))
+	writeVNICDNS(&b, cfg)
+	return b.String()
+}
+
+// writeVNICDNS emits the DNS servers and registration a vNIC's IP config implies.
+// Shared by the full apply and the DNS-only one so the two can never disagree.
+func writeVNICDNS(b *strings.Builder, cfg *types.IPConfig) {
+	if len(cfg.DNSServers) > 0 {
+		fmt.Fprintf(b, "Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses %s | Out-Null\n",
+			psStringList(cfg.DNSServers))
+		b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $true -ErrorAction SilentlyContinue\n")
+		return
+	}
+	// No DNS declared: an isolated cluster network (storage, live migration).
+	// Also stop it registering in DNS — a published A record for a non-routed
+	// address breaks name resolution to the host, and DNS on the interface
+	// makes clustering treat the network as client-facing.
+	b.WriteString("Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses | Out-Null\n")
+	b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue\n")
+}
+
 func applyIPScript(name, ip string, prefix int, cfg *types.IPConfig) string {
 	var b strings.Builder
 	b.WriteString("$ErrorActionPreference = 'Stop'\n")
@@ -923,18 +968,7 @@ catch {
   }
 }
 `, newIP, psQuote(ip))
-	if len(cfg.DNSServers) > 0 {
-		fmt.Fprintf(&b, "Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses %s | Out-Null\n",
-			psStringList(cfg.DNSServers))
-		b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $true -ErrorAction SilentlyContinue\n")
-	} else {
-		// No DNS declared: an isolated cluster network (storage, live migration).
-		// Also stop it registering in DNS — a published A record for a non-routed
-		// address breaks name resolution to the host, and DNS on the interface
-		// makes clustering treat the network as client-facing.
-		b.WriteString("Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses | Out-Null\n")
-		b.WriteString("Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue\n")
-	}
+	writeVNICDNS(&b, cfg)
 	if cfg.Gateway == "" {
 		// Isolated networks must not pick up an IPv6 default route from router
 		// advertisements either — on an untagged/flat layer-2 every vNIC hears

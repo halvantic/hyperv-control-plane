@@ -52,6 +52,9 @@ type Stub struct {
 	FailSwitch string
 	FailVNIC   string
 
+	// HostDNSCalls records every EnsureHostDNS call in order.
+	HostDNSCalls []HostDNSCall
+
 	// ClusterIP is the cluster's current core address, and ClusterIPErr drives the
 	// failure path for re-addressing it.
 	ClusterIP    string
@@ -162,6 +165,7 @@ type Stub struct {
 	// models a stuck witness resource the apply had to clear on the way.
 	Witness          *ClusterWitness
 	WitnessCalls     []types.WitnessSpec
+	WitnessCreds     []*ShareCredential
 	WitnessErr       error
 	WitnessRecovered string
 
@@ -1026,8 +1030,9 @@ func (s *Stub) EnsureReplicaBroker(_ context.Context, _ types.ReplicaBrokerSpec)
 // only what was asked for but that a non-former asked for nothing at all.
 // WitnessErr, when set, models a witness that cannot be applied (an unreachable
 // share, or permissions missing on the cluster computer object).
-func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind) (Outcome, string, error) {
+func (s *Stub) EnsureClusterWitness(_ context.Context, w types.WitnessSpec, _ types.ClusterStorageKind, cred *ShareCredential) (Outcome, string, error) {
 	s.WitnessCalls = append(s.WitnessCalls, w)
+	s.WitnessCreds = append(s.WitnessCreds, cred)
 	if s.WitnessErr != nil {
 		return OutcomeUnchanged, "", s.WitnessErr
 	}
@@ -1157,8 +1162,18 @@ func (s *Stub) EnsureNetworkProfilesPrivate(_ context.Context) (Outcome, error) 
 	return OutcomeUnchanged, nil
 }
 
-func (s *Stub) EnsureHostDNS(_ context.Context, _ []string) (Outcome, error) {
+func (s *Stub) EnsureHostDNS(_ context.Context, dns, ownDNS []string) (Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.HostDNSCalls = append(s.HostDNSCalls, HostDNSCall{DNS: append([]string(nil), dns...), OwnDNS: append([]string(nil), ownDNS...)})
 	return OutcomeUnchanged, nil
+}
+
+// HostDNSCall records one EnsureHostDNS call, so a test can assert which vNICs
+// were left to their own DNS.
+type HostDNSCall struct {
+	DNS    []string
+	OwnDNS []string
 }
 
 func (s *Stub) EnsureMigrationDelegation(_ context.Context, _ []string) (Outcome, error) {

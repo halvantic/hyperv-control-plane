@@ -222,8 +222,9 @@ type Interface interface {
 	// EnsureHostDNS sets the host's physical NIC IPv4 DNS servers to the given
 	// list (idempotent; OutcomeUnchanged when already set). Works regardless of
 	// domain membership, so it can run before a domain join to let the host
-	// resolve the domain's SRV records.
-	EnsureHostDNS(ctx context.Context, dns []string) (Outcome, error)
+	// resolve the domain's SRV records. ownDNS names management vNICs whose spec
+	// declares its own DNS; their interfaces are left to the vNIC reconciler.
+	EnsureHostDNS(ctx context.Context, dns, ownDNS []string) (Outcome, error)
 
 	// EnsureLiveMigration configures host live migration (enable, auth type,
 	// concurrency, and which networks to use). Idempotent: a no-op when the host
@@ -771,7 +772,8 @@ type Interface interface {
 	// The string is what a stuck witness resource had to have done to it before
 	// the change could apply — empty when nothing did. Removing a cluster
 	// resource must never be something that happened without being reported.
-	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, string, error)
+	// cred is the credential for a file share outside the domain, nil for none.
+	EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind, cred *ShareCredential) (Outcome, string, error)
 
 	// RemoveReplicaBroker deletes the Hyper-V Replica Broker cluster role and the
 	// client access point it lives in. Run on the former. Idempotent: a cluster

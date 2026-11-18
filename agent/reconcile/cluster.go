@@ -331,7 +331,15 @@ func (r *Reconciler) ReconcileCluster(ctx context.Context, a ClusterAssignment, 
 	// does not make the cluster degraded — quorum is unchanged from before the
 	// attempt, and the existing configuration keeps working.
 	if a.IsFormer && a.Cluster.Spec.Witness.Type != "" {
-		wOut, wRecovered, wErr := r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind())
+		wCred, wCredErr := witnessCredential(a.Cluster.Spec.Witness, secrets)
+		var wOut hyperv.Outcome
+		var wRecovered string
+		var wErr error
+		if wCredErr != nil {
+			wOut, wErr = hyperv.OutcomeUnchanged, wCredErr
+		} else {
+			wOut, wRecovered, wErr = r.hv.EnsureClusterWitness(ctx, a.Cluster.Spec.Witness, a.Cluster.Spec.StorageKind(), wCred)
+		}
 		conds = append(conds, r.condition("ClusterWitness", wOut, wErr))
 		if wErr != nil {
 			r.log.Warn("ensure cluster witness failed (retries next pass)", "err", wErr)

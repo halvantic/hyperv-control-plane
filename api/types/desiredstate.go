@@ -1683,10 +1683,19 @@ type ReplicaBrokerSpec struct {
 type WitnessSpec struct {
 	Type WitnessType `json:"type"`
 	// FileSharePath is the UNC path for a FileShare witness, e.g.
-	// \\fileserver\bcluster2-witness. The share is reached as the cluster
-	// computer object (the CNO), which must have change permission on it, so no
-	// credential belongs in this spec.
+	// \\fileserver\bcluster2-witness. On a domain share it is reached as the
+	// cluster computer object (the CNO), which must have change permission on it,
+	// and no credential is needed.
 	FileSharePath string `json:"fileSharePath,omitempty"`
+	// CredentialSecret names a stored credential (username + password) for a
+	// FileShare witness the CNO cannot authenticate to — a share on a NAS or any
+	// other device outside the domain. Passed to Set-ClusterQuorum -Credential;
+	// the cluster keeps it and uses it whenever it reaches the share. Empty means
+	// the CNO's own identity, which is right for a domain share.
+	//
+	// A reference rather than a value for the same reason as the iSCSI CHAP
+	// credential: the spec is stored, versioned and delivered to every member.
+	CredentialSecret string `json:"credentialSecret,omitempty"`
 	// CloudAccount / endpoint for cloud witnesses (secret handled out of band).
 	CloudAccount string `json:"cloudAccount,omitempty"`
 
@@ -3369,7 +3378,16 @@ type VMSpec struct {
 
 	ISOPath string `json:"isoPath,omitempty"`
 
-	// DesiredPowerState is the power state the agent should drive the VM to.
+	// DesiredPowerState is read ONCE: Running means "start the VM after the agent
+	// creates it". It is not a state the VM is held to. Power is imperative —
+	// start, stop and restart are requests the centre passes on as jobs, and the
+	// agent never drives an existing VM back to this value. What brings a VM back
+	// after a host reboot is AutomaticStartAction; after a node failure, the
+	// cluster. Nothing should compare a VM's observed power against this field:
+	// on a VM someone stopped it still says Running, and that is not drift.
+	//
+	// Kept under its original name because api/ is a published module and the
+	// field is on the wire; the name is the only thing about it that overstates.
 	DesiredPowerState VMPowerState `json:"desiredPowerState"`
 
 	// AutomaticStartAction governs what the host does with the VM when the host

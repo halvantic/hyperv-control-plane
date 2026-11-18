@@ -5275,9 +5275,12 @@ type WitnessSpec struct {
 	CloudAccount  string                 `protobuf:"bytes,3,opt,name=cloud_account,json=cloudAccount,proto3" json:"cloud_account,omitempty"`
 	// disk identifies the LUN behind a Disk witness, the same way a volume
 	// identifies its own. Adopted as a clustered disk, never as a CSV.
-	Disk          *CSVSourceSpec `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Disk *CSVSourceSpec `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
+	// credential_secret names a stored credential for a FileShare witness on a
+	// share outside the domain. Empty means the cluster computer object.
+	CredentialSecret string `protobuf:"bytes,5,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WitnessSpec) Reset() {
@@ -5336,6 +5339,13 @@ func (x *WitnessSpec) GetDisk() *CSVSourceSpec {
 		return x.Disk
 	}
 	return nil
+}
+
+func (x *WitnessSpec) GetCredentialSecret() string {
+	if x != nil {
+		return x.CredentialSecret
+	}
+	return ""
 }
 
 type ClusterStatus struct {
@@ -6357,12 +6367,14 @@ type VMSpec struct {
 	ProcessorCount     int32  `protobuf:"varint,3,opt,name=processor_count,json=processorCount,proto3" json:"processor_count,omitempty"`
 	MemoryStartupBytes uint64 `protobuf:"varint,4,opt,name=memory_startup_bytes,json=memoryStartupBytes,proto3" json:"memory_startup_bytes,omitempty"`
 	// dynamic_memory absent means a fixed memory assignment.
-	DynamicMemory        *DynamicMemorySpec      `protobuf:"bytes,5,opt,name=dynamic_memory,json=dynamicMemory,proto3" json:"dynamic_memory,omitempty"`
-	Disks                []*VMDiskSpec           `protobuf:"bytes,6,rep,name=disks,proto3" json:"disks,omitempty"`
-	NetworkAdapters      []*VMNetworkAdapterSpec `protobuf:"bytes,7,rep,name=network_adapters,json=networkAdapters,proto3" json:"network_adapters,omitempty"`
-	DesiredPowerState    VMPowerState            `protobuf:"varint,8,opt,name=desired_power_state,json=desiredPowerState,proto3,enum=ballast.v1.VMPowerState" json:"desired_power_state,omitempty"`
-	AutomaticStartAction VMStartAction           `protobuf:"varint,9,opt,name=automatic_start_action,json=automaticStartAction,proto3,enum=ballast.v1.VMStartAction" json:"automatic_start_action,omitempty"`
-	IsoPath              string                  `protobuf:"bytes,10,opt,name=iso_path,json=isoPath,proto3" json:"iso_path,omitempty"`
+	DynamicMemory   *DynamicMemorySpec      `protobuf:"bytes,5,opt,name=dynamic_memory,json=dynamicMemory,proto3" json:"dynamic_memory,omitempty"`
+	Disks           []*VMDiskSpec           `protobuf:"bytes,6,rep,name=disks,proto3" json:"disks,omitempty"`
+	NetworkAdapters []*VMNetworkAdapterSpec `protobuf:"bytes,7,rep,name=network_adapters,json=networkAdapters,proto3" json:"network_adapters,omitempty"`
+	// Read once: RUNNING starts the VM after the agent creates it. Not a state the
+	// VM is held to; power is imperative (start/stop/restart jobs).
+	DesiredPowerState    VMPowerState  `protobuf:"varint,8,opt,name=desired_power_state,json=desiredPowerState,proto3,enum=ballast.v1.VMPowerState" json:"desired_power_state,omitempty"`
+	AutomaticStartAction VMStartAction `protobuf:"varint,9,opt,name=automatic_start_action,json=automaticStartAction,proto3,enum=ballast.v1.VMStartAction" json:"automatic_start_action,omitempty"`
+	IsoPath              string        `protobuf:"bytes,10,opt,name=iso_path,json=isoPath,proto3" json:"iso_path,omitempty"`
 	// replication, when set, replicates this VM with Hyper-V Replica.
 	Replication *VMReplicationSpec `protobuf:"bytes,11,opt,name=replication,proto3" json:"replication,omitempty"`
 	// secure_boot is the Gen 2 UEFI Secure Boot policy: "" or "windows" for the
@@ -7804,12 +7816,13 @@ const file_ballast_proto_rawDesc = "" +
 	"\tclustered\x18\x06 \x01(\bR\tclustered\x12\x18\n" +
 	"\aoffline\x18\a \x01(\bR\aoffline\x12\x1a\n" +
 	"\bcontents\x18\b \x01(\tR\bcontents\x12%\n" +
-	"\x0econtents_known\x18\t \x01(\bR\rcontentsKnown\"\xb6\x01\n" +
+	"\x0econtents_known\x18\t \x01(\bR\rcontentsKnown\"\xe3\x01\n" +
 	"\vWitnessSpec\x12+\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x17.ballast.v1.WitnessTypeR\x04type\x12&\n" +
 	"\x0ffile_share_path\x18\x02 \x01(\tR\rfileSharePath\x12#\n" +
 	"\rcloud_account\x18\x03 \x01(\tR\fcloudAccount\x12-\n" +
-	"\x04disk\x18\x04 \x01(\v2\x19.ballast.v1.CSVSourceSpecR\x04disk\"\xba\x06\n" +
+	"\x04disk\x18\x04 \x01(\v2\x19.ballast.v1.CSVSourceSpecR\x04disk\x12+\n" +
+	"\x11credential_secret\x18\x05 \x01(\tR\x10credentialSecret\"\xba\x06\n" +
 	"\rClusterStatus\x12)\n" +
 	"\x10state_unreadable\x18< \x01(\bR\x0fstateUnreadable\x12'\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x11.ballast.v1.PhaseR\x05phase\x12/\n" +
