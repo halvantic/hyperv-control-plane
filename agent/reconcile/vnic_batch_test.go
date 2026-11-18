@@ -161,3 +161,86 @@ func TestBatchedVNICsAreIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// The management vNIC that declares DNS of its own is left out of the host-level
+// DNS write, so the two reconcilers never fight over its interface — and when the
+// two lists differ, the HostDNS condition says so instead of the difference
+// being silent. HV01/HV02 2026-11-18: a second server added in Settings reached
+// the host level only; the vNIC re-applied its address every pass to undo it.
+func TestHostDNSLeavesAVNICWithItsOwnDNSAloneAndSaysSo(t *testing.T) {
+	h := hostWithThreeVNICs()
+	h.Spec.Networking.DNSServers = []string{"192.168.1.80", "192.168.1.81"}
+	h.Spec.Networking.ManagementVNICs[0].IPConfig.DNSServers = []string{"192.168.1.80"}
+
+	stub := &hyperv.Stub{}
+	res, err := testReconciler(stub).Reconcile(context.Background(), h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.HostDNSCalls) != 1 {
+		t.Fatalf("want one host DNS call, got %d", len(stub.HostDNSCalls))
+	}
+	if own := stub.HostDNSCalls[0].OwnDNS; len(own) != 1 || own[0] != "Management" {
+		t.Fatalf("Management declares its own DNS and must be left to its own reconciler, got %v", own)
+	}
+	var msg string
+	for _, c := range res.Conditions {
+		if c.Type == "HostDNS" {
+			msg = c.Message
+		}
+	}
+	if !strings.Contains(msg, `"Management"`) || !strings.Contains(msg, "192.168.1.80,192.168.1.81") {
+		t.Fatalf("the HostDNS condition must name the vNIC keeping different DNS, got %q", msg)
+	}
+}
+
+// A vNIC that inherits (declares no DNS) is NOT left out: the host-level list is
+// what it is meant to get, and the two reconcilers then agree by construction.
+func TestHostDNSStillReachesAVNICThatInherits(t *testing.T) {
+	stub := &hyperv.Stub{}
+	res, err := testReconciler(stub).Reconcile(context.Background(), hostWithThreeVNICs(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own := stub.HostDNSCalls[0].OwnDNS; len(own) != 0 {
+		t.Fatalf("no vNIC declares its own DNS, so none may be skipped, got %v", own)
+	}
+	for _, c := range res.Conditions {
+		if c.Type == "HostDNS" && strings.Contains(c.Message, "keeps its own DNS") {
+			t.Fatalf("nothing differs, so nothing may be reported: %q", c.Message)
+		}
+	}
+}
+
+// prod, 2026-11-19: the management vNIC's DNS was stored as ONE entry,
+// "192.168.1.80; 192.168.1.81". Windows applied both servers, the agent compared
+// them with the single stored entry and re-applied DNS every pass. The agent now
+// applies, and compares, the servers the entry names.
+func TestADNSListStoredAsOneEntryIsAppliedAsItsServers(t *testing.T) {
+	h := hostWithThreeVNICs()
+	h.Spec.Networking.DNSServers = []string{"192.168.1.80", "192.168.1.81"}
+	h.Spec.Networking.ManagementVNICs[0].IPConfig.DNSServers = []string{"192.168.1.80; 192.168.1.81"}
+
+	stub := &hyperv.Stub{}
+	res, err := testReconciler(stub).Reconcile(context.Background(), h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := stub.MgmtVNIC("Management")
+	if !ok {
+		t.Fatal("Management not created")
+	}
+	if strings.Join(got.IPConfig.DNSServers, "|") != "192.168.1.80|192.168.1.81" {
+		t.Fatalf("the entry must be applied as two servers, got %q", got.IPConfig.DNSServers)
+	}
+	// And it now matches the host level, so nothing is reported as differing.
+	for _, c := range res.Conditions {
+		if c.Type == "HostDNS" && strings.Contains(c.Message, "keeps its own DNS") {
+			t.Fatalf("normalised, the two lists agree: %q", c.Message)
+		}
+	}
+	// The cached desired state is not mutated.
+	if h.Spec.Networking.ManagementVNICs[0].IPConfig.DNSServers[0] != "192.168.1.80; 192.168.1.81" {
+		t.Fatal("normalising must copy, not rewrite the shared desired state")
+	}
+}

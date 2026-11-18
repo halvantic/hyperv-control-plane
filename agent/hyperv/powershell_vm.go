@@ -1383,11 +1383,17 @@ $ErrorActionPreference = 'Stop'
 # Seen on HVNEW06 the moment a VM was evacuated onto it: the destination of an
 # evacuation is exactly the host least likely to be a cluster member.
 $grp = $null
+$vmRes = $null
 if (Get-Command Get-ClusterGroup -ErrorAction SilentlyContinue) {
   $grp = Get-ClusterGroup -Name %[1]s -ErrorAction SilentlyContinue
 }
 if ($grp) {
   if ([string]$grp.State -eq '%[4]s') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
+  # The role's Virtual Machine resource. A stop takes only this offline (below),
+  # so a stopped VM's role is not wholly Offline — its configuration resource is
+  # still up — and the group state alone would call it not yet stopped.
+  $vmRes = @($grp | Get-ClusterResource -ErrorAction SilentlyContinue | Where-Object { [string]$_.ResourceType -eq 'Virtual Machine' })[0]
+  if ('%[2]s' -eq 'Off' -and $vmRes -and [string]$vmRes.State -eq 'Offline') { [pscustomobject]@{ changed = $false } | ConvertTo-Json -Compress; return }
 } else {
   $vm = Get-VM -Name %[1]s -ErrorAction SilentlyContinue
   if (-not $vm) { throw 'VM does not exist' }
@@ -1427,7 +1433,25 @@ try {
         }
       }
     }
-    %[5]s -Name %[1]s -ErrorAction Stop | Out-Null
+    # STOP TAKES THE VM RESOURCE OFFLINE, NOT THE GROUP.
+    #
+    # Stop-ClusterGroup also took the Virtual Machine Configuration resource
+    # offline, and with it offline the VM is registered on no node — Get-VM
+    # finds nothing anywhere. So a configuration change held until the VM was
+    # off (memory, vCPU, Secure Boot, boot order) could never land: the console
+    # promised it would apply on the next reconcile after the stop, and there
+    # was no VM for that reconcile to apply it to. prod, 2026-11-18: dc stopped,
+    # its memory change waiting indefinitely.
+    #
+    # Leaving the configuration resource online keeps the VM registered on its
+    # owner, Off, the same as a VM shut down from Hyper-V Manager. Start is
+    # unchanged: Start-ClusterGroup brings the VM resource back. A role with no
+    # VM resource to find falls back to the whole group, as before.
+    if ('%[2]s' -eq 'Off' -and $vmRes) {
+      Stop-ClusterResource -InputObject $vmRes -ErrorAction Stop | Out-Null
+    } else {
+      %[5]s -Name %[1]s -ErrorAction Stop | Out-Null
+    }
   }
   else { %[3]s | Out-Null }
 } catch {

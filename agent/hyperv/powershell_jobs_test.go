@@ -240,7 +240,7 @@ func TestRepairHostDNSRunsOnAWorkgroupHostWhenTheDCIsGiven(t *testing.T) {
 	if elseAt == -1 || guard < elseAt {
 		t.Fatal("the workgroup test must be inside the discovery branch; above it, an explicitly given DC DNS is refused too and the host stays stuck")
 	}
-	if forced := strings.Index(s, "if ($forced) { $dc = $forced }"); forced == -1 || forced > guard {
+	if forced := strings.Index(s, "if ($forced) { $dc = "); forced == -1 || forced > guard {
 		t.Fatal("an explicitly supplied DC DNS must be taken before any domain membership is considered")
 	}
 }

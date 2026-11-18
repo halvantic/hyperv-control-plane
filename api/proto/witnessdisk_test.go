@@ -63,3 +63,16 @@ func TestAWitnessWithNoDiskStaysThatWay(t *testing.T) {
 		t.Errorf("share path: got %q want %q", out.Witness.FileSharePath, in.Witness.FileSharePath)
 	}
 }
+
+// The credential for a share outside the domain must survive the wire, or the
+// agent applies the witness as the cluster computer object and the NAS refuses
+// it with an access-denied that names nothing Ballast declared.
+func TestAFileShareWitnessCredentialRoundTrips(t *testing.T) {
+	in := types.ClusterSpec{
+		Witness: types.WitnessSpec{Type: types.WitnessFileShare, FileSharePath: `\\nas01\witness`, CredentialSecret: "nas-witness"},
+	}
+	out := clusterSpecFromProto(clusterSpecToProto(in))
+	if out.Witness.CredentialSecret != "nas-witness" {
+		t.Fatalf("credential reference lost on the wire: got %q", out.Witness.CredentialSecret)
+	}
+}

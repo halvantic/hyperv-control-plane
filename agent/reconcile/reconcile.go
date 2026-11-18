@@ -398,9 +398,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// intent was right; the placement made it false.
 	//
 	// Best-effort: a failure surfaces as a condition without degrading the host.
-	if dns := desired.Spec.Networking.DNSServers; len(dns) > 0 {
-		out, err := r.hv.EnsureHostDNS(ctx, dns)
-		conds = append(conds, r.advisoryCondition("HostDNS", out, err))
+	if dns := normalizeDNS(desired.Spec.Networking.DNSServers); len(dns) > 0 {
+		// A vNIC whose spec declares its own DNS owns its interface: the host-level
+		// list must not be written there, or the vNIC reconciler sees its DNS
+		// "drift" and re-applies the whole IP config every pass — removing and
+		// re-adding the host's management address. See EnsureHostDNS.
+		ownDNS, differ := vnicsWithOwnDNS(desired.Spec.Networking.ManagementVNICs, dns)
+		out, err := r.hv.EnsureHostDNS(ctx, dns, ownDNS)
+		c := r.advisoryCondition("HostDNS", out, err)
+		if err == nil && len(differ) > 0 {
+			// Not a failure — each interface gets exactly what it declares — but a
+			// host-level change that silently does not reach the management vNIC is
+			// what an operator needs told, or they wonder why Settings did nothing.
+			c.Message = strings.TrimSpace(c.Message + " " + strings.Join(differ, "; ") +
+				" — edit the vNIC's DNS (or clear it to inherit) to change it there.")
+		}
+		conds = append(conds, c)
 		if err != nil {
 			r.log.Warn("set host dns failed (best-effort, not degrading)", "err", err)
 		} else if out != hyperv.OutcomeUnchanged {
@@ -629,6 +642,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 	// on one still fails on its own and reports against its own condition.
 	vnics := make([]types.ManagementVNICSpec, 0, len(net.ManagementVNICs))
 	for _, v := range net.ManagementVNICs {
+		// A DNS list stored as one entry with several servers in it is applied as
+		// the servers it names — see normalizeDNS. Copied, never mutated in place:
+		// the cached desired state is shared.
+		if v.IPConfig != nil && len(v.IPConfig.DNSServers) > 0 {
+			if n := normalizeDNS(v.IPConfig.DNSServers); len(n) != len(v.IPConfig.DNSServers) {
+				cfg := *v.IPConfig
+				cfg.DNSServers = n
+				v.IPConfig = &cfg
+			}
+		}
 		// DNS belongs on the management vNIC — the NIC that carries the routable
 		// static IP. If the vNIC declares no DNS of its own, apply the host-level
 		// DNS servers so the reconcile SETS DNS on it instead of clearing it (which
@@ -654,7 +677,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, desired types.Host, secrets 
 		// the cluster damage was the symptom.
 		if v.IPConfig != nil && v.IPConfig.Gateway != "" && len(v.IPConfig.DNSServers) == 0 && len(net.DNSServers) > 0 {
 			cfg := *v.IPConfig
-			cfg.DNSServers = append([]string(nil), net.DNSServers...)
+			cfg.DNSServers = append([]string(nil), normalizeDNS(net.DNSServers)...)
 			v.IPConfig = &cfg
 		}
 		vnics = append(vnics, v)

@@ -280,7 +280,7 @@ func TestTheScriptClearsAStuckWitnessOnlyWhenItIsNotVoting(t *testing.T) {
 		t.Fatal("the not-online guard must come before the quorum change, or a healthy witness gets torn down")
 	}
 	// And the retry of the declared witness comes after the clear, not before it.
-	if k := strings.Index(rec, "Set-ClusterQuorum -FileShareWitness $desired"); k < 0 || k < j {
+	if k := strings.Index(rec, "Set-ClusterQuorum @wargs"); k < 0 || k < j {
 		t.Fatal("the declared witness must be re-applied after the stuck one is cleared")
 	}
 }

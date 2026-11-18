@@ -844,10 +844,11 @@ func clusterSpecToProto(s types.ClusterSpec) *ClusterSpec {
 		ManagementIp: s.ManagementIP,
 		EnableS2D:    s.EnableS2D,
 		Witness: &WitnessSpec{
-			Type:          witnessTypeToProto(s.Witness.Type),
-			FileSharePath: s.Witness.FileSharePath,
-			CloudAccount:  s.Witness.CloudAccount,
-			Disk:          csvSourceToProto(s.Witness.Disk),
+			Type:             witnessTypeToProto(s.Witness.Type),
+			FileSharePath:    s.Witness.FileSharePath,
+			CloudAccount:     s.Witness.CloudAccount,
+			Disk:             csvSourceToProto(s.Witness.Disk),
+			CredentialSecret: s.Witness.CredentialSecret,
 		},
 	}
 	for _, v := range s.Volumes {
@@ -981,10 +982,11 @@ func clusterSpecFromProto(s *ClusterSpec) types.ClusterSpec {
 	}
 	if w := s.GetWitness(); w != nil {
 		out.Witness = types.WitnessSpec{
-			Type:          witnessTypeFromProto(w.GetType()),
-			FileSharePath: w.GetFileSharePath(),
-			CloudAccount:  w.GetCloudAccount(),
-			Disk:          csvSourceFromProto(w.GetDisk()),
+			Type:             witnessTypeFromProto(w.GetType()),
+			FileSharePath:    w.GetFileSharePath(),
+			CloudAccount:     w.GetCloudAccount(),
+			Disk:             csvSourceFromProto(w.GetDisk()),
+			CredentialSecret: w.GetCredentialSecret(),
 		}
 	}
 	for _, v := range s.GetVolumes() {

@@ -1224,16 +1224,50 @@ else { '<html><body><p>Test-Cluster ran but returned no report file.</p></body><
 // ClusterAndClient, and New-Cluster then demands a cluster IP for it — DNS
 // pushed onto a storage vNIC broke cluster formation exactly that way.
 // Idempotent; unlike RepairHostDNS it does not require domain membership.
-func (p *PowerShell) EnsureHostDNS(ctx context.Context, dns []string) (Outcome, error) {
+//
+// ownDNS names the management vNICs whose spec declares DNS of its own. Their
+// interfaces are left entirely alone: the vNIC reconciler owns them. Writing the
+// host-level list onto an interface whose vNIC spec says something different
+// is two reconcilers disagreeing on one adapter, and the vNIC side "corrects" it
+// by re-applying the whole IP config — removing and re-adding the address and
+// default route. HV01/HV02 2026-11-18: a second DNS server added in Settings
+// reached the host level only, and both hosts dropped off the network for ~5s
+// of every ~55s pass until the vNIC's DNS was made to match.
+func (p *PowerShell) EnsureHostDNS(ctx context.Context, dns, ownDNS []string) (Outcome, error) {
 	if len(dns) == 0 {
 		return OutcomeUnchanged, nil
 	}
-	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
+	out, err := p.run(ctx, ensureHostDNSScript(dns, ownDNS))
+	if err != nil {
+		return OutcomeUnchanged, fmt.Errorf("ensure host dns: %w", err)
+	}
+	if strings.Contains(string(out), "RESULT=UPDATED") {
+		return OutcomeUpdated, nil
+	}
+	return OutcomeUnchanged, nil
+}
+
+// ensureHostDNSScript builds EnsureHostDNS's script. A pure function so its shape
+// is pinned by tests without a host.
+func ensureHostDNSScript(dns, ownDNS []string) string {
+	own := "@()"
+	if len(ownDNS) > 0 {
+		own = "@(" + psStringList(ownDNS) + ")"
+	}
+	return fmt.Sprintf(`$ErrorActionPreference='Stop'`+vnicAliasHelper+`
 $servers = @(%[1]s.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if (-not $servers) { 'RESULT=NOOP'; return }
 $want = ($servers -join ',')
 $changed = $false
+# Interfaces of vNICs that declare their own DNS: resolved the same way the vNIC
+# reconciler resolves them, so both agree on which adapter is whose.
+$ownIdx = @()
+foreach ($v in %[2]s) {
+  $a = Get-BallastVNICAlias $v
+  $ownIdx += @(Get-NetAdapter -Name $a -IncludeHidden -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.ifIndex })
+}
 foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+  if ($ownIdx -contains [int]$n.ifIndex) { continue }
   # ANY real IPv4 address, however it was obtained — not just a static one.
   #
   # Requiring PrefixOrigin 'Manual' skipped every DHCP-addressed NIC, which is
@@ -1273,15 +1307,7 @@ foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_
     }
   }
 }
-if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join(dns, ",")))
-	out, err := p.run(ctx, script)
-	if err != nil {
-		return OutcomeUnchanged, fmt.Errorf("ensure host dns: %w", err)
-	}
-	if strings.Contains(string(out), "RESULT=UPDATED") {
-		return OutcomeUpdated, nil
-	}
-	return OutcomeUnchanged, nil
+if ($changed) { 'RESULT=UPDATED' } else { 'RESULT=NOOP' }`, psQuote(strings.Join(dns, ",")), own)
 }
 
 // RepairNetworkProfile sets any NIC on the Public network profile to Private. A
@@ -1413,7 +1439,11 @@ func (p *PowerShell) RepairHostDNS(ctx context.Context, dns string) (string, err
 	script := fmt.Sprintf(`$ErrorActionPreference='Stop'
 $forced = %[1]s
 $dc = $null
-if ($forced) { $dc = $forced }
+# The forced value can be a LIST ("10.0.0.1,10.0.0.2"). Normalised here and split
+# at the point of use: handed to -ServerAddresses as one string it is rejected as
+# an invalid address, and the try/catch around that call hid it, so Fix DNS
+# silently did nothing whenever a second DNS server was configured.
+if ($forced) { $dc = (@($forced.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ',') }
 else {
   # Discovery works by asking each configured resolver for the domain's SOA, so
   # it needs a domain to ask about. A workgroup host has none — but that is
@@ -1487,7 +1517,7 @@ foreach ($n in (Get-NetAdapter -ErrorAction SilentlyContinue)) {
   }
   $needDns = (($cur -join ',') -ne $dc)
   if ((-not $needDns) -and ($reg -eq $wantReg)) { continue }
-  if ($needDns) { try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $dc -ErrorAction Stop } catch {} }
+  if ($needDns) { try { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses @($dc.Split(',')) -ErrorAction Stop } catch { $fixed += ($n.Name + ' (could not set DNS: ' + $_.Exception.Message + ')'); continue } }
   try { Set-DnsClient -InterfaceIndex $n.ifIndex -RegisterThisConnectionsAddress $wantReg -ErrorAction SilentlyContinue } catch {}
   $fixed += ($n.Name + ' (dns was ' + ($cur -join ',') + ', reg ' + $reg + '->' + $wantReg + ')')
 }

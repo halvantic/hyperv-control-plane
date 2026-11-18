@@ -723,9 +723,18 @@ if ($desired -eq '') {
   if (-not $server) { throw ("the witness path " + $desired + " is not a \\server\share path") }
   $cno = ''
   try { $cno = [string](Get-Cluster -ErrorAction Stop).Name } catch {}
+  # A share outside the domain (a NAS, a workgroup server) cannot be reached as
+  # the cluster computer object, so the declared credential is handed to the
+  # cluster, which stores it with the witness resource. It arrives through the
+  # environment, never the script text, like every other secret here.
+  $wargs = @{ FileShareWitness = $desired }
+  if ($env:BALLAST_WITNESS_USER) {
+    $wsec = ConvertTo-SecureString ([string]$env:BALLAST_WITNESS_PASS) -AsPlainText -Force
+    $wargs['Credential'] = New-Object System.Management.Automation.PSCredential ([string]$env:BALLAST_WITNESS_USER, $wsec)
+  }
 
   try {
-    Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+    Set-ClusterQuorum @wargs -ErrorAction Stop | Out-Null
   } catch {
     # Set-ClusterQuorum reports the same code for a server that is not there, a
     # share that is not there, a share this node may not read, and a server that
@@ -788,7 +797,7 @@ if ($desired -eq '') {
         } catch {}
         if ($cleared) {
           try {
-            Set-ClusterQuorum -FileShareWitness $desired -ErrorAction Stop | Out-Null
+            Set-ClusterQuorum @wargs -ErrorAction Stop | Out-Null
             $recovered = 'the previous witness resource was ' + $wrState + ' and would not delete, which was blocking every witness change; it was cleared and ' + $desired + ' applied'
             $problem = $null
           } catch {
@@ -853,7 +862,10 @@ if ($desired -eq '') {
 // Run by the former only. Every member can see the cluster, so without that
 // gate all of them would race to set the same witness and each would see the
 // others' write as drift.
-func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind) (Outcome, string, error) {
+//
+// cred, when non-nil, is the credential for a file share outside the domain; nil
+// reaches the share as the cluster computer object.
+func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSpec, kind types.ClusterStorageKind, cred *ShareCredential) (Outcome, string, error) {
 	var path string
 	switch w.Type {
 	case types.WitnessFileShare:
@@ -884,7 +896,14 @@ func (p *PowerShell) EnsureClusterWitness(ctx context.Context, w types.WitnessSp
 		return OutcomeUnchanged, "", fmt.Errorf("unknown witness type %q", w.Type)
 	}
 
-	out, err := p.run(ctx, fmt.Sprintf(witnessScript, psQuote(path)))
+	script := fmt.Sprintf(witnessScript, psQuote(path))
+	var out []byte
+	var err error
+	if cred != nil && path != "" {
+		out, err = p.runWithEnvOut(ctx, script, []string{"BALLAST_WITNESS_USER=" + cred.Username, "BALLAST_WITNESS_PASS=" + cred.Password})
+	} else {
+		out, err = p.run(ctx, script)
+	}
 	if err != nil {
 		return OutcomeUnchanged, "", fmt.Errorf("ensure cluster witness: %w", err)
 	}
